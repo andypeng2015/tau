@@ -1623,19 +1623,20 @@ impl EventRenderer {
         self.diff_blocks.clear();
         self.prompt_started_at.clear();
         self.thinking_history.clear();
-        self.current_model = tau_proto::ModelId::from("");
-        self.current_effort = tau_proto::Effort::Off;
+        // Model selection and effort are harness-global, not
+        // session-scoped. `/new` only causes a SessionStarted event;
+        // the harness does not re-emit HarnessModelSelected for the
+        // unchanged model. Keep the cached selection so the status bar
+        // can be recreated after clearing the terminal output.
         self.current_context_percent = None;
         self.current_context_input_tokens = None;
         self.current_context_cached_tokens = None;
-        self.current_context_window = None;
         self.last_turn_latency = None;
         self.last_turn_cache_hit_percent = None;
-        self.effort_state.store(
-            effort_to_u8(tau_proto::Effort::Off),
-            std::sync::atomic::Ordering::Relaxed,
-        );
         self.handle.clear_output();
+        if !self.current_model.is_empty() {
+            self.render_model_status();
+        }
     }
 
     fn render_model_status(&mut self) {
@@ -2221,8 +2222,9 @@ mod tests {
     use tau_cli_term::TermHandle;
     use tau_cli_term_raw::Term;
     use tau_proto::{
-        AgentResponseFinished, AgentResponseUpdated, CborValue, Event, SessionPromptCreated,
-        SessionPromptQueued, SessionStartReason, SessionStarted, ToolResult, UiPromptSubmitted,
+        AgentResponseFinished, AgentResponseUpdated, CborValue, Event, HarnessModelSelected,
+        SessionPromptCreated, SessionPromptQueued, SessionStartReason, SessionStarted, ToolResult,
+        UiPromptSubmitted,
     };
 
     use super::EventRenderer;
@@ -2350,6 +2352,32 @@ mod tests {
         assert!(!vt.screen_contains(80, "old prompt"));
         assert!(!vt.screen_contains(80, "old response"));
         assert!(!vt.screen_contains(80, "read src/lib.rs"));
+        assert!(!vt.screen_contains(80, "no model selected"));
+    }
+
+    #[test]
+    fn new_session_preserves_model_status() {
+        let (_term, handle, vt) = setup(80, 24);
+        let mut renderer = EventRenderer::new(
+            handle.clone(),
+            tau_cli_term::CompletionData::new(),
+            tau_themes::Theme::builtin(),
+        );
+
+        renderer.handle(&Event::HarnessModelSelected(HarnessModelSelected {
+            model: "test/model".into(),
+            context_window: Some(100_000),
+        }));
+        sync(&handle);
+        assert!(vt.screen_contains(80, "test/model"));
+
+        renderer.handle(&Event::SessionStarted(SessionStarted {
+            session_id: "s2".into(),
+            reason: SessionStartReason::New,
+        }));
+        sync(&handle);
+
+        assert!(vt.screen_contains(80, "test/model"));
         assert!(!vt.screen_contains(80, "no model selected"));
     }
 
