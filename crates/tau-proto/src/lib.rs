@@ -607,6 +607,19 @@ mod tests {
             Event::ExtensionContextReady(ExtensionContextReady {
                 session_id: "s1".into(),
             }),
+            Event::ExtensionEvent(CustomEvent {
+                name: "demo.progress".parse().expect("event name"),
+                session_id: Some("s1".into()),
+                payload: CborValue::Text("working".to_owned()),
+            }),
+            Event::EmitEvent(EmitEvent {
+                event: Box::new(Event::ExtensionEvent(CustomEvent {
+                    name: "demo.transient_progress".parse().expect("event name"),
+                    session_id: Some("s1".into()),
+                    payload: CborValue::Text("working".to_owned()),
+                })),
+                transient: true,
+            }),
             Event::LogEvent(LogEvent {
                 id: LogEventId::new(42),
                 event: Box::new(Event::SessionStarted(SessionStarted {

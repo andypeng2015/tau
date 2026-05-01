@@ -877,7 +877,17 @@ impl Harness {
 
     /// Publishes an event to both the event bus and the event log.
     fn publish_event(&mut self, source: Option<&str>, event: Event) {
-        self.persist_session_event(source, &event);
+        let transient = event.defaults_to_transient();
+        self.publish_event_with_transient(source, event, transient);
+    }
+
+    fn publish_event_with_transient(
+        &mut self,
+        source: Option<&str>,
+        event: Event,
+        transient: bool,
+    ) {
+        self.persist_session_event(source, &event, transient);
         let seq = self
             .event_log
             .append(source.map(tau_proto::ConnectionId::from), event.clone());
@@ -891,8 +901,8 @@ impl Harness {
         let _ = self.bus.publish_from(source, log_event);
     }
 
-    fn persist_session_event(&mut self, source: Option<&str>, event: &Event) {
-        if event.is_transient() {
+    fn persist_session_event(&mut self, source: Option<&str>, event: &Event, transient: bool) {
+        if transient || event.is_transient() {
             return;
         }
         let Some(session_id) = self.session_id_for_event(event) else {
@@ -939,6 +949,7 @@ impl Harness {
             Event::ExtAgentsMdAvailable(_) | Event::ExtensionContextReady(_) => {
                 Some(self.current_session_id.clone())
             }
+            Event::ExtensionEvent(event) => event.session_id.clone(),
             _ => None,
         }
     }
@@ -1179,6 +1190,9 @@ impl Harness {
                 self.publish_event(Some(source_id), Event::LifecycleReady(ready));
                 self.set_extension_state(source_id, ExtensionState::Ready);
                 self.try_advance_queue();
+            }
+            Event::EmitEvent(emit) => {
+                self.publish_event_with_transient(Some(source_id), *emit.event, emit.transient);
             }
             Event::ToolRegister(ToolRegister { tool }) => {
                 let _ = self.registry.register(source_id, tool);
@@ -2770,13 +2784,16 @@ impl Harness {
             }),
         };
 
-        // Persist, publish, and complete the tool call.
+        // Publish before persisting the completion: `persist_tool_result` /
+        // `persist_tool_error` remove the pending call -> session mapping that
+        // `publish_event` needs to put the completion in the durable session
+        // event log for replay.
+        self.publish_event(None, result_event.clone());
         match &result_event {
             Event::ToolResult(r) => self.persist_tool_result(r)?,
             Event::ToolError(e) => self.persist_tool_error(e)?,
             _ => {}
         }
-        self.publish_event(None, result_event);
         self.on_tool_call_complete(&call.id);
 
         Ok(())
@@ -5539,6 +5556,14 @@ mod tests {
             )
         });
         assert!(has_skill_result, "expected skill tool result in session");
+        let events = h.store.session_events("s1").expect("session events");
+        assert!(
+            events.iter().any(|entry| matches!(
+                &entry.event,
+                Event::ToolResult(result) if result.call_id.as_str() == "call-skill"
+            )),
+            "expected skill tool result in durable session event log"
+        );
     }
 
     #[test]
@@ -5576,6 +5601,14 @@ mod tests {
             )
         });
         assert!(has_skill_error, "expected skill tool error in session");
+        let events = h.store.session_events("s1").expect("session events");
+        assert!(
+            events.iter().any(|entry| matches!(
+                &entry.event,
+                Event::ToolError(error) if error.call_id.as_str() == "call-missing"
+            )),
+            "expected skill tool error in durable session event log"
+        );
     }
 
     #[test]

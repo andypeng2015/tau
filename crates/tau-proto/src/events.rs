@@ -227,6 +227,7 @@ impl EventName {
         Self::from_static(EventCategory::Harness, "effort_changed");
     pub const HARNESS_EFFORTS_AVAILABLE: Self =
         Self::from_static(EventCategory::Harness, "efforts_available");
+    pub const HARNESS_EMIT: Self = Self::from_static(EventCategory::Harness, "emit");
 
     pub const UI_PROMPT_SUBMITTED: Self = Self::from_static(EventCategory::Ui, "prompt_submitted");
     pub const UI_MODEL_SELECT: Self = Self::from_static(EventCategory::Ui, "model_select");
@@ -783,6 +784,21 @@ pub struct ExtensionContextReady {
     pub session_id: SessionId,
 }
 
+/// Extension-defined event payload.
+///
+/// `name` is the dotted event name used for routing and subscription
+/// matching. `payload` carries extension-owned CBOR data. When
+/// `session_id` is set, the harness may include the event in that
+/// session's durable event log according to the surrounding emit
+/// metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomEvent {
+    pub name: EventName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    pub payload: CborValue,
+}
+
 // ---------------------------------------------------------------------------
 // Wire transport — at-least-once delivery for event-log entries
 // ---------------------------------------------------------------------------
@@ -825,6 +841,19 @@ impl fmt::Display for LogEventId {
 pub struct LogEvent {
     pub id: LogEventId,
     pub event: Box<Event>,
+}
+
+/// Extension/client request to emit one event with harness-owned
+/// delivery metadata.
+///
+/// The inner `event` is the fact that subscribers see. `transient`
+/// controls whether the harness writes it to durable per-session
+/// event history; it is not part of the emitted fact itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EmitEvent {
+    pub event: Box<Event>,
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub transient: bool,
 }
 
 /// Receiver → sender acknowledgement that all log events with id
@@ -1213,6 +1242,8 @@ pub enum Event {
     ExtAgentsMdAvailable(ExtAgentsMdAvailable),
     #[serde(rename = "extension.context_ready")]
     ExtensionContextReady(ExtensionContextReady),
+    #[serde(rename = "extension.event")]
+    ExtensionEvent(CustomEvent),
 
     // Harness info
     #[serde(rename = "harness.info")]
@@ -1227,6 +1258,8 @@ pub enum Event {
     HarnessEffortChanged(HarnessEffortChanged),
     #[serde(rename = "harness.efforts_available")]
     HarnessEffortsAvailable(HarnessEffortsAvailable),
+    #[serde(rename = "harness.emit")]
+    EmitEvent(EmitEvent),
 
     // UI
     #[serde(rename = "ui.prompt_submitted")]
@@ -1284,7 +1317,7 @@ pub enum Event {
 impl Event {
     /// Returns the dotted event name carried by this envelope.
     #[must_use]
-    pub const fn name(&self) -> EventName {
+    pub fn name(&self) -> EventName {
         match self {
             Self::LifecycleHello(_) => EventName::LIFECYCLE_HELLO,
             Self::LifecycleSubscribe(_) => EventName::LIFECYCLE_SUBSCRIBE,
@@ -1308,12 +1341,14 @@ impl Event {
             Self::ExtSkillAvailable(_) => EventName::EXTENSION_SKILL_AVAILABLE,
             Self::ExtAgentsMdAvailable(_) => EventName::EXTENSION_AGENTS_MD_AVAILABLE,
             Self::ExtensionContextReady(_) => EventName::EXTENSION_CONTEXT_READY,
+            Self::ExtensionEvent(event) => event.name.clone(),
             Self::HarnessInfo(_) => EventName::HARNESS_INFO,
             Self::HarnessModelsAvailable(_) => EventName::HARNESS_MODELS_AVAILABLE,
             Self::HarnessModelSelected(_) => EventName::HARNESS_MODEL_SELECTED,
             Self::HarnessContextUsageChanged(_) => EventName::HARNESS_CONTEXT_USAGE_CHANGED,
             Self::HarnessEffortChanged(_) => EventName::HARNESS_EFFORT_CHANGED,
             Self::HarnessEffortsAvailable(_) => EventName::HARNESS_EFFORTS_AVAILABLE,
+            Self::EmitEvent(_) => EventName::HARNESS_EMIT,
             Self::UiPromptSubmitted(_) => EventName::UI_PROMPT_SUBMITTED,
             Self::UiModelSelect(_) => EventName::UI_MODEL_SELECT,
             Self::UiSetEffort(_) => EventName::UI_SET_EFFORT,
@@ -1337,11 +1372,17 @@ impl Event {
         }
     }
 
-    /// True for events that are useful while work is in progress but
-    /// redundant once a later completion event exists. Transient
-    /// events are not written to durable session event logs.
+    /// Events received through [`EmitEvent`] with transient metadata
+    /// are not written to durable session event logs.
     #[must_use]
     pub const fn is_transient(&self) -> bool {
+        false
+    }
+
+    /// Returns true for protocol events that historically behaved as
+    /// transient when sent directly without an [`EmitEvent`] wrapper.
+    #[must_use]
+    pub const fn defaults_to_transient(&self) -> bool {
         matches!(
             self,
             Self::AgentResponseUpdated(_) | Self::ToolProgress(_) | Self::ShellCommandProgress(_)
