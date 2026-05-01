@@ -82,6 +82,11 @@ impl HighTerm {
         self.handle.redraw();
     }
 
+    /// Clears persistent output, live blocks, and suggestion blocks.
+    pub fn clear_output(&self) {
+        self.handle.clear_output();
+    }
+
     /// Appends persistent output to history.
     pub fn print_output(&self, block: impl Into<StyledBlock>) -> BlockId {
         self.handle.print_output(block)

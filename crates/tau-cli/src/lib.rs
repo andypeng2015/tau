@@ -1607,6 +1607,37 @@ impl EventRenderer {
         self.save_cli_state();
     }
 
+    /// Clears all session-scoped UI state and re-renders an empty
+    /// transcript. Persistent user preferences such as `/show-diff`
+    /// and `/show-thinking` are intentionally preserved.
+    fn clear_for_new_session(&mut self) {
+        self.prompt_blocks.clear();
+        self.thinking_blocks.clear();
+        self.thinking_text.clear();
+        self.last_user_block = None;
+        self.queued_user_blocks.clear();
+        self.tool_blocks.clear();
+        self.shell_blocks.clear();
+        self.extension_blocks.clear();
+        self.model_status_block = None;
+        self.diff_blocks.clear();
+        self.prompt_started_at.clear();
+        self.thinking_history.clear();
+        self.current_model = tau_proto::ModelId::from("");
+        self.current_effort = tau_proto::Effort::Off;
+        self.current_context_percent = None;
+        self.current_context_input_tokens = None;
+        self.current_context_cached_tokens = None;
+        self.current_context_window = None;
+        self.last_turn_latency = None;
+        self.last_turn_cache_hit_percent = None;
+        self.effort_state.store(
+            effort_to_u8(tau_proto::Effort::Off),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.handle.clear_output();
+    }
+
     fn render_model_status(&mut self) {
         use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
@@ -1647,6 +1678,11 @@ impl EventRenderer {
         use tau_themes::names;
 
         match event {
+            Event::SessionStarted(started)
+                if matches!(started.reason, tau_proto::SessionStartReason::New) =>
+            {
+                self.clear_for_new_session();
+            }
             Event::UiPromptSubmitted(prompt) => {
                 let block = themed_block(
                     &self.theme,
@@ -2186,7 +2222,7 @@ mod tests {
     use tau_cli_term_raw::Term;
     use tau_proto::{
         AgentResponseFinished, AgentResponseUpdated, CborValue, Event, SessionPromptCreated,
-        SessionPromptQueued, ToolResult, UiPromptSubmitted,
+        SessionPromptQueued, SessionStartReason, SessionStarted, ToolResult, UiPromptSubmitted,
     };
 
     use super::EventRenderer;
@@ -2246,6 +2282,75 @@ mod tests {
 
     fn sync(handle: &TermHandle) {
         handle.redraw_sync();
+    }
+
+    #[test]
+    fn new_session_clears_session_ui_state() {
+        let (_term, handle, vt) = setup(80, 24);
+        let mut renderer = EventRenderer::new(
+            handle.clone(),
+            tau_cli_term::CompletionData::new(),
+            tau_themes::Theme::builtin(),
+        );
+
+        renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "old prompt".into(),
+        }));
+        renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+            session_prompt_id: "sp-0".into(),
+            session_id: "s1".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            model: None,
+            effort: tau_proto::Effort::Off,
+            thinking_summary: tau_proto::ThinkingSummary::Off,
+        }));
+        renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
+            session_prompt_id: "sp-0".into(),
+            text: Some("old response".into()),
+            tool_calls: vec![tau_proto::AgentToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                arguments: CborValue::Map(vec![(
+                    CborValue::Text("path".into()),
+                    CborValue::Text("src/lib.rs".into()),
+                )]),
+            }],
+            input_tokens: Some(100),
+            cached_tokens: Some(50),
+            thinking: None,
+        }));
+        renderer.handle(&Event::ToolResult(ToolResult {
+            call_id: "call-1".into(),
+            tool_name: "read".into(),
+            result: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".into()),
+                    CborValue::Text("src/lib.rs".into()),
+                ),
+                (
+                    CborValue::Text("content".into()),
+                    CborValue::Text("fn main() {}\n".into()),
+                ),
+            ]),
+        }));
+        sync(&handle);
+        assert!(vt.screen_contains(80, "old prompt"));
+        assert!(vt.screen_contains(80, "old response"));
+        assert!(vt.screen_contains(80, "read src/lib.rs"));
+
+        renderer.handle(&Event::SessionStarted(SessionStarted {
+            session_id: "s2".into(),
+            reason: SessionStartReason::New,
+        }));
+        sync(&handle);
+
+        assert!(!vt.screen_contains(80, "old prompt"));
+        assert!(!vt.screen_contains(80, "old response"));
+        assert!(!vt.screen_contains(80, "read src/lib.rs"));
+        assert!(!vt.screen_contains(80, "no model selected"));
     }
 
     #[test]

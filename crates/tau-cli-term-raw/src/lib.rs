@@ -203,6 +203,22 @@ impl TermHandle {
         self.redraw.notify();
     }
 
+    /// Drops every rendered block from every output zone and forces a
+    /// full repaint. The prompt, current input buffer, and input-line
+    /// history are left intact.
+    pub fn clear_output(&self) {
+        let mut st = self.lock();
+        st.blocks.clear();
+        st.history.clear();
+        st.above_active.clear();
+        st.above_sticky.clear();
+        st.suggestions.clear();
+        st.below.clear();
+        st.invalidate_screen = true;
+        drop(st);
+        self.redraw.notify();
+    }
+
     /// Forces the next redraw to take the full-render path: clear
     /// the visible screen + scrollback (`\x1b[2J\x1b[H\x1b[3J`)
     /// and re-emit every line from `all_lines`. Overflow scrolls
@@ -568,6 +584,22 @@ impl Term {
 
     /// Triggers a redraw of the terminal.
     pub fn redraw(&self) {
+        self.redraw.notify();
+    }
+
+    /// Drops every rendered block from every output zone and forces a
+    /// full repaint. The prompt, current input buffer, and input-line
+    /// history are left intact.
+    pub fn clear_output(&self) {
+        let mut st = self.state.lock().expect("term state mutex poisoned");
+        st.blocks.clear();
+        st.history.clear();
+        st.above_active.clear();
+        st.above_sticky.clear();
+        st.suggestions.clear();
+        st.below.clear();
+        st.invalidate_screen = true;
+        drop(st);
         self.redraw.notify();
     }
 
