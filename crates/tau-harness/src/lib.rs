@@ -845,6 +845,12 @@ impl Harness {
         };
 
         let _ = harness.enable_debug_log(&state_dir.join(eager_session_id))?;
+        // Record cwd in meta.json so `-r` (resume most recent for this
+        // cwd) can find this session even before it has any log entries.
+        // Also acquires the flock on `<state_dir>/<eager_session_id>/lock`.
+        harness
+            .store
+            .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
 
         for i in 0..harness.extensions.len() {
             let name = harness.extensions[i].name.clone();
