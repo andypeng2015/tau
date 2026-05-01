@@ -437,6 +437,7 @@ fn dispatch_user_shell_command(cmd: tau_proto::UiShellCommand, tx: &mpsc::Sender
         .arg(&cmd.command)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    apply_command_isolation(&mut child_cmd);
 
     let mut child = match child_cmd.spawn() {
         Ok(child) => child,
@@ -1724,6 +1725,58 @@ fn optional_argument_bool(arguments: &CborValue, key: &str) -> Option<bool> {
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// Allowlist of environment variables forwarded to spawned shell
+/// commands. Anything outside this set (SSH agent sockets, cloud
+/// credentials, shell history config, dev-shell injections) is
+/// stripped so commands run in a predictable environment instead of
+/// inheriting whatever the harness happened to be launched with.
+const ENV_ALLOWLIST: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE",
+    "LC_MESSAGES",
+];
+
+/// Sanitize a `Command` so the child runs with a minimal environment
+/// and is fully detached from the harness's controlling terminal:
+///
+/// - Replaces the inherited environment with [`ENV_ALLOWLIST`] plus
+///   `TERM=dumb` / `NO_COLOR=1` / `CLICOLOR=0` so well-behaved tools
+///   suppress ANSI escapes and TTY-only fancy output.
+/// - Closes stdin so interactive prompts (`sudo`, `ssh`, `read`) fail
+///   fast instead of hanging on input that will never arrive.
+/// - On Unix, runs `setsid()` in the child so it becomes the leader
+///   of a new session with no controlling terminal — even an explicit
+///   `open("/dev/tty")` will fail rather than reach the harness's tty.
+fn apply_command_isolation(cmd: &mut Command) {
+    cmd.env_clear();
+    for key in ENV_ALLOWLIST {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+    cmd.env("TERM", "dumb")
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "0");
+
+    cmd.stdin(std::process::Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid` is async-signal-safe and only mutates the
+        // calling (child) process's session/pgid — no allocator, no
+        // locks, no shared state with the parent.
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
 fn run_command(arguments: &CborValue) -> Result<CborValue, (String, Option<CborValue>)> {
     let command = argument_text(arguments, "command").map_err(|message| (message, None))?;
     let cwd = optional_argument_text(arguments, "cwd");
@@ -1741,6 +1794,7 @@ fn run_command(arguments: &CborValue) -> Result<CborValue, (String, Option<CborV
     if let Some(cwd) = &cwd {
         child_cmd.current_dir(cwd);
     }
+    apply_command_isolation(&mut child_cmd);
 
     let mut child = child_cmd.spawn().map_err(|error| {
         (

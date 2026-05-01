@@ -1465,6 +1465,7 @@ dependencies = [
  "dirs",
  "globset",
  "ignore",
+ "libc",
  "serde_json",
  "similar",
  "tau-proto",
