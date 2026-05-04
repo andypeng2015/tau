@@ -1,4 +1,12 @@
-//! Tree-structured session history types and the records that persist them.
+//! Tree-structured session history types and the persisted-event
+//! record they are derived from.
+//!
+//! The on-disk source of truth is the per-session protocol-event log
+//! ([`PersistedSessionEvent`] / `events.cbor`); the in-memory
+//! [`SessionTree`] is built from it via [`SessionTree::from_events`]
+//! and kept in sync incrementally by [`SessionTree::apply_event`]. No
+//! other API mutates the tree, so the on-disk log and the cached
+//! view cannot drift.
 
 use std::path::PathBuf;
 
@@ -60,9 +68,19 @@ pub struct SessionNode {
 
 /// Tree-structured session history with branching.
 ///
-/// Each entry is a node with a unique ID and parent pointer. The
-/// `head` tracks the current position. Branching = moving head to an
-/// earlier node; the next append creates a new branch.
+/// Each entry is a node with a unique id and parent pointer. The
+/// `head` tracks the *write cursor* — where the next append will
+/// land. Branching = moving the cursor back to an earlier node; the
+/// next append creates a new branch off that node. There is only ever
+/// one cursor; multiple "branch tips" are derived as the leaves of
+/// the tree (see [`SessionTree::leaves`]).
+///
+/// The tree is never mutated through any imperative API on this type
+/// from outside `tau-core`; it is built by folding the per-session
+/// durable event log via [`SessionTree::from_events`] /
+/// [`SessionTree::apply_event`]. That keeps a single source of truth
+/// (the event log on disk) and removes the possibility for the tree
+/// and the events log to disagree.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionTree {
     pub(crate) session_id: SessionId,
@@ -77,13 +95,17 @@ impl SessionTree {
         &self.session_id
     }
 
-    /// Returns the current head node ID, if any.
+    /// Returns the current head node id, if any.
+    ///
+    /// This is the *write cursor* — where the next append from a
+    /// folded event will be parented. To enumerate the tips of every
+    /// existing branch, use [`SessionTree::leaves`] instead.
     #[must_use]
     pub fn head(&self) -> Option<NodeId> {
         self.head
     }
 
-    /// Returns a node by ID.
+    /// Returns a node by id.
     #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&SessionNode> {
         self.nodes.get(id.0 as usize)
@@ -122,7 +144,22 @@ impl SessionTree {
             .collect()
     }
 
-    pub(crate) fn append_node(&mut self, entry: SessionEntry) -> NodeId {
+    /// Returns the leaves of the tree — every node that has no
+    /// children. Each leaf is the tip of one branch the user can
+    /// resume by setting the head to it. Order matches insertion
+    /// order (NodeId-ascending).
+    #[must_use]
+    pub fn leaves(&self) -> Vec<NodeId> {
+        use std::collections::HashSet;
+        let parents: HashSet<NodeId> = self.nodes.iter().filter_map(|n| n.parent_id).collect();
+        self.nodes
+            .iter()
+            .map(|n| n.id)
+            .filter(|id| !parents.contains(id))
+            .collect()
+    }
+
+    fn append_node(&mut self, entry: SessionEntry) -> NodeId {
         let id = NodeId(self.nodes.len() as u64);
         self.nodes.push(SessionNode {
             id,
@@ -132,18 +169,85 @@ impl SessionTree {
         self.head = Some(id);
         id
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) enum PersistedSessionRecord {
-    Node {
-        id: NodeId,
-        parent_id: Option<NodeId>,
-        entry: SessionEntry,
-    },
-    SetHead {
-        node_id: NodeId,
-    },
+    /// Folds a slice of durable session events into a fresh tree.
+    ///
+    /// Replay is purely positional: NodeIds are assigned by insertion
+    /// order, so the same event slice always yields the same tree.
+    /// Events that don't directly produce a session entry (lifecycle
+    /// chatter, harness info, etc.) are ignored.
+    #[must_use]
+    pub fn from_events(session_id: SessionId, events: &[PersistedSessionEvent]) -> Self {
+        let mut tree = Self {
+            session_id,
+            nodes: Vec::new(),
+            head: None,
+        };
+        for entry in events {
+            tree.apply_event(&entry.event);
+        }
+        tree
+    }
+
+    /// Incrementally apply one durable event to the tree. Mirrors the
+    /// fold rules of [`SessionTree::from_events`].
+    pub fn apply_event(&mut self, event: &Event) {
+        match event {
+            Event::UiPromptSubmitted(prompt) => {
+                self.append_node(SessionEntry::UserMessage {
+                    text: prompt.text.clone(),
+                });
+            }
+            Event::SessionUserMessageInjected(injected) => {
+                self.append_node(SessionEntry::UserMessage {
+                    text: injected.text.clone(),
+                });
+            }
+            Event::AgentResponseFinished(response) => {
+                if let Some(text) = response.text.as_ref() {
+                    self.append_node(SessionEntry::AgentMessage {
+                        text: text.clone(),
+                        thinking: response.thinking.clone(),
+                    });
+                }
+            }
+            Event::ToolRequest(request) => {
+                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
+                    call_id: request.call_id.clone(),
+                    tool_name: request.tool_name.clone(),
+                    outcome: ToolActivityOutcome::Requested {
+                        arguments: request.arguments.clone(),
+                    },
+                }));
+            }
+            Event::ToolResult(result) => {
+                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
+                    call_id: result.call_id.clone(),
+                    tool_name: result.tool_name.clone(),
+                    outcome: ToolActivityOutcome::Result {
+                        result: result.result.clone(),
+                    },
+                }));
+            }
+            Event::ToolError(error) => {
+                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
+                    call_id: error.call_id.clone(),
+                    tool_name: error.tool_name.clone(),
+                    outcome: ToolActivityOutcome::Error {
+                        message: error.message.clone(),
+                        details: error.details.clone(),
+                    },
+                }));
+            }
+            Event::UiNavigateTree(req) => {
+                let target = NodeId(req.node_id);
+                if (target.0 as usize) < self.nodes.len() {
+                    self.head = Some(target);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// One durable session-scoped protocol event.

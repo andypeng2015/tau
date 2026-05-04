@@ -252,6 +252,8 @@ impl EventName {
     pub const SESSION_SHUTDOWN: Self = Self::from_static(EventCategory::Session, "shutdown");
     pub const SESSION_PROMPT_CREATED: Self =
         Self::from_static(EventCategory::Session, "prompt_created");
+    pub const SESSION_USER_MESSAGE_INJECTED: Self =
+        Self::from_static(EventCategory::Session, "user_message_injected");
 
     pub const AGENT_PROMPT_SUBMITTED: Self =
         Self::from_static(EventCategory::Agent, "prompt_submitted");
@@ -1048,6 +1050,19 @@ pub struct SessionShutdown {
     pub session_id: SessionId,
 }
 
+/// A synthetic user message injected into the session by the harness
+/// (not authored by the human user directly). Sources include
+/// `!`-prefixed shell command output and the eager AGENTS.md context
+/// preamble. Carries the fully-rendered text so session replay does
+/// not need to re-run any harness-side formatter; the SessionTree
+/// folder treats this event the same as `UiPromptSubmitted` —
+/// appending one `UserMessage` entry at the current head.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionUserMessageInjected {
+    pub session_id: SessionId,
+    pub text: String,
+}
+
 /// The harness persisted a user prompt and assigned it an ID.
 /// Also carries the assembled conversation context for the agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1298,6 +1313,8 @@ pub enum Event {
     SessionShutdown(SessionShutdown),
     #[serde(rename = "session.prompt_created")]
     SessionPromptCreated(SessionPromptCreated),
+    #[serde(rename = "session.user_message_injected")]
+    SessionUserMessageInjected(SessionUserMessageInjected),
 
     // Agent
     #[serde(rename = "agent.prompt_submitted")]
@@ -1364,6 +1381,7 @@ impl Event {
             Self::SessionStarted(_) => EventName::SESSION_STARTED,
             Self::SessionShutdown(_) => EventName::SESSION_SHUTDOWN,
             Self::SessionPromptCreated(_) => EventName::SESSION_PROMPT_CREATED,
+            Self::SessionUserMessageInjected(_) => EventName::SESSION_USER_MESSAGE_INJECTED,
             Self::AgentPromptSubmitted(_) => EventName::AGENT_PROMPT_SUBMITTED,
             Self::AgentResponseUpdated(_) => EventName::AGENT_RESPONSE_UPDATED,
             Self::AgentResponseFinished(_) => EventName::AGENT_RESPONSE_FINISHED,

@@ -11,14 +11,13 @@ use std::time::{Duration, Instant};
 use tau_config::Config;
 use tau_core::{
     Connection, ConnectionMetadata, ConnectionOrigin, DefaultSubscriptionPolicy, EventBus,
-    EventLog, PolicyStore, RouteError, SessionStore, ToolActivityOutcome, ToolActivityRecord,
-    ToolRegistry, ToolRouteError,
+    EventLog, PolicyStore, RouteError, SessionStore, ToolRegistry, ToolRouteError,
 };
 use tau_proto::{
     AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Event, EventSelector,
     HarnessContextUsageChanged, HarnessModelSelected, HarnessModelsAvailable, LifecycleDisconnect,
     ModelId, SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued, ToolCallId,
-    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, ToolResult,
+    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest,
 };
 
 use crate::daemon::InteractionOutcome;
@@ -68,9 +67,12 @@ pub(crate) struct Harness {
     /// outgoing `ToolRequest` to the extension that registered the
     /// tool.
     pub(crate) registry: ToolRegistry,
-    /// Append-only on-disk session store. Owns the `SessionTree` per
-    /// session id (user/agent messages and tool activity), backed by
-    /// `<state_dir>/<session_id>/log.cbor`.
+    /// Append-only on-disk session store. Owns one `SessionTree` per
+    /// session id, derived by folding the durable per-session event log
+    /// at `<state_dir>/<session_id>/events.cbor`. The tree is never
+    /// mutated through any other path — every entry comes from a
+    /// persisted protocol event, so the on-disk log and the in-memory
+    /// view cannot drift.
     pub(crate) store: SessionStore,
     /// The single session this harness owns. UserMessages with a
     /// different `session_id` are rejected. Pi-style: one harness =
@@ -332,9 +334,9 @@ impl Harness {
             dirs,
         };
 
-        // Debug log lives next to the eager-init session's log so a
-        // session dir is self-contained: `log.cbor` + `events.jsonl` +
-        // `meta.json` + `lock`.
+        // Debug log lives next to the eager-init session's events file
+        // so the session dir stays self-contained: `events.cbor` +
+        // `events.jsonl` + `meta.json` + `lock`.
         let _ = harness.enable_debug_log(&state_dir.join(eager_session_id))?;
         // Record cwd in meta.json so `-r` (resume most recent for this
         // cwd) can find this session even before it has any log entries.
@@ -564,6 +566,7 @@ impl Harness {
             Event::SessionStarted(started) => Some(started.session_id.clone()),
             Event::SessionShutdown(shutdown) => Some(shutdown.session_id.clone()),
             Event::SessionPromptCreated(created) => Some(created.session_id.clone()),
+            Event::SessionUserMessageInjected(injected) => Some(injected.session_id.clone()),
             Event::AgentPromptSubmitted(submitted) => self
                 .prompt_sessions
                 .get(&submitted.session_prompt_id)
@@ -837,7 +840,11 @@ impl Harness {
                 let _ = self.registry.register(source_id, tool);
             }
             Event::ToolRequest(request) => {
-                self.persist_tool_request(&request)?;
+                // Track session attribution before publishing — the
+                // publish path's `session_id_for_event` reads
+                // `pending_tool_sessions` to attach the persisted
+                // record to the right session.
+                self.track_tool_request_session(&request);
                 self.publish_event(Some(source_id), Event::ToolRequest(request.clone()));
                 match self
                     .registry
@@ -848,14 +855,15 @@ impl Harness {
                             .insert(request.call_id.clone(), route.provider_connection_id);
                     }
                     Err(ToolRouteError::NoProvider { tool_name }) => {
+                        let call_id = request.call_id.to_string();
                         let error = ToolError {
                             call_id: request.call_id,
                             tool_name,
                             message: "no live provider available".to_owned(),
                             details: None,
                         };
-                        self.publish_event(None, Event::ToolError(error.clone()));
-                        self.persist_tool_error(&error)?;
+                        self.publish_event(None, Event::ToolError(error));
+                        self.clear_tool_call_tracking(&call_id);
                     }
                     Err(error) => return Err(HarnessError::ToolRoute(error)),
                 }
@@ -863,8 +871,8 @@ impl Harness {
             Event::ToolResult(result) => {
                 if self.pending_tool_sessions.contains_key(&result.call_id) {
                     let call_id = result.call_id.to_string();
-                    self.publish_event(Some(source_id), Event::ToolResult(result.clone()));
-                    self.persist_tool_result(&result)?;
+                    self.publish_event(Some(source_id), Event::ToolResult(result));
+                    self.clear_tool_call_tracking(&call_id);
                     self.on_tool_call_complete(&call_id);
                 } else {
                     self.emit_info(&format!(
@@ -876,8 +884,8 @@ impl Harness {
             Event::ToolError(error) => {
                 if self.pending_tool_sessions.contains_key(&error.call_id) {
                     let call_id = error.call_id.to_string();
-                    self.publish_event(Some(source_id), Event::ToolError(error.clone()));
-                    self.persist_tool_error(&error)?;
+                    self.publish_event(Some(source_id), Event::ToolError(error));
+                    self.clear_tool_call_tracking(&call_id);
                     self.on_tool_call_complete(&call_id);
                 } else {
                     self.emit_info(&format!(
@@ -901,7 +909,7 @@ impl Harness {
                     Event::ShellCommandFinished(finished.clone()),
                 );
                 if finished.include_in_context {
-                    self.inject_user_shell_output(&finished)?;
+                    self.inject_user_shell_output(&finished);
                 }
             }
             Event::ExtSkillAvailable(ref skill) => {
@@ -1092,8 +1100,14 @@ impl Harness {
                 Ok(true)
             }
             Event::UiNavigateTree(req) => {
-                self.publish_event(Some(client_id), Event::UiNavigateTree(req.clone()));
-                self.handle_navigate_tree(&req.session_id, req.node_id)?;
+                // Validate the target node exists in *this* harness's
+                // bound session before publishing — `apply_event` for
+                // `UiNavigateTree` is also a no-op for unknown ids,
+                // but we want a user-visible error message rather
+                // than a silent drop.
+                if self.handle_navigate_tree(&req.session_id, req.node_id) {
+                    self.publish_event(Some(client_id), Event::UiNavigateTree(req));
+                }
                 Ok(true)
             }
             Event::LifecycleDisconnect(_) => Ok(false),
@@ -1145,19 +1159,20 @@ impl Harness {
         for call_id in failed_call_ids {
             let tool_name = self
                 .pending_tool_names
-                .remove(&call_id)
+                .get(&call_id)
+                .cloned()
                 .unwrap_or_else(|| ToolName::from("unknown_tool"));
-            self.pending_tool_providers.remove(&call_id);
             let error = ToolError {
                 call_id: call_id.clone(),
                 tool_name,
                 message: "tool provider disconnected".to_owned(),
                 details: None,
             };
-            if self.pending_tool_sessions.contains_key(&call_id) {
-                let _ = self.persist_tool_error(&error);
-            }
+            // Publish first so `session_id_for_event` can still attribute
+            // the persisted record via `pending_tool_sessions`. Then drop
+            // the call's tracking maps.
             self.publish_event(None, Event::ToolError(error));
+            self.clear_tool_call_tracking(call_id.as_str());
             self.on_tool_call_complete(call_id.as_str());
         }
     }
@@ -1212,70 +1227,41 @@ impl Harness {
     }
 
     // -----------------------------------------------------------------------
-    // Persistence helpers
+    // Tool-call session bookkeeping
     // -----------------------------------------------------------------------
+    //
+    // Persistence of tool activity into the session tree is handled
+    // automatically by the publish path: every published `ToolRequest`
+    // / `ToolResult` / `ToolError` flows through
+    // `persist_session_event`, which writes the event to the durable
+    // per-session log and applies the same event to the in-memory
+    // tree. The helpers below only maintain the runtime maps that
+    // `session_id_for_event` reads to attribute incoming results back
+    // to the originating session.
 
-    fn persist_tool_request(&mut self, request: &ToolRequest) -> Result<(), HarnessError> {
+    /// Records that an extension-originated `ToolRequest` belongs to
+    /// the next session in `pending_request_sessions`. Must run
+    /// *before* the request is published, so `session_id_for_event`
+    /// can attribute the corresponding persisted event.
+    fn track_tool_request_session(&mut self, request: &ToolRequest) {
         let session_id = self
             .pending_request_sessions
             .pop_front()
             .unwrap_or_else(|| "default".into());
         self.pending_tool_sessions
-            .insert(request.call_id.clone(), session_id.clone());
+            .insert(request.call_id.clone(), session_id);
         self.pending_tool_names
             .insert(request.call_id.clone(), request.tool_name.clone());
-        self.store.append_tool_activity(
-            session_id.into_string(),
-            ToolActivityRecord {
-                call_id: request.call_id.clone(),
-                tool_name: request.tool_name.clone(),
-                outcome: ToolActivityOutcome::Requested {
-                    arguments: request.arguments.clone(),
-                },
-            },
-        )?;
-        Ok(())
     }
 
-    fn persist_tool_result(&mut self, result: &ToolResult) -> Result<(), HarnessError> {
-        let session_id = self
-            .pending_tool_sessions
-            .remove(result.call_id.as_str())
-            .unwrap_or_else(|| "default".into());
-        self.pending_tool_names.remove(result.call_id.as_str());
-        self.pending_tool_providers.remove(result.call_id.as_str());
-        self.store.append_tool_activity(
-            session_id.into_string(),
-            ToolActivityRecord {
-                call_id: result.call_id.clone(),
-                tool_name: result.tool_name.clone(),
-                outcome: ToolActivityOutcome::Result {
-                    result: result.result.clone(),
-                },
-            },
-        )?;
-        Ok(())
-    }
-
-    fn persist_tool_error(&mut self, error: &ToolError) -> Result<(), HarnessError> {
-        let session_id = self
-            .pending_tool_sessions
-            .remove(error.call_id.as_str())
-            .unwrap_or_else(|| "default".into());
-        self.pending_tool_names.remove(error.call_id.as_str());
-        self.pending_tool_providers.remove(error.call_id.as_str());
-        self.store.append_tool_activity(
-            session_id.into_string(),
-            ToolActivityRecord {
-                call_id: error.call_id.clone(),
-                tool_name: error.tool_name.clone(),
-                outcome: ToolActivityOutcome::Error {
-                    message: error.message.clone(),
-                    details: error.details.clone(),
-                },
-            },
-        )?;
-        Ok(())
+    /// Releases the session/name/provider mappings for a completed
+    /// tool call. Must run *after* the result/error event has been
+    /// published, otherwise `session_id_for_event` would no longer be
+    /// able to attribute the durable record.
+    fn clear_tool_call_tracking(&mut self, call_id: &str) {
+        self.pending_tool_sessions.remove(call_id);
+        self.pending_tool_names.remove(call_id);
+        self.pending_tool_providers.remove(call_id);
     }
 
     // -----------------------------------------------------------------------
@@ -1526,15 +1512,17 @@ impl Harness {
         session_id: SessionId,
         text: String,
     ) -> Result<(), HarnessError> {
+        // `publish_event` flows through `persist_session_event`, which
+        // both writes the event to the durable per-session log and
+        // applies it to the in-memory tree. No separate store-side
+        // append needed.
         self.publish_event(
             None,
             Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
                 session_id: session_id.clone(),
-                text: text.clone(),
+                text,
             }),
         );
-        self.store
-            .append_user_message(session_id.as_str(), text.clone())?;
         self.turn_state = TurnState::AgentThinking {
             _session_id: session_id.clone(),
         };
@@ -1625,20 +1613,20 @@ impl Harness {
         }
     }
 
-    /// Sets the head pointer to `node_id`. Bound-session-only.
-    fn handle_navigate_tree(
-        &mut self,
-        session_id: &SessionId,
-        node_id: u64,
-    ) -> Result<(), HarnessError> {
+    /// Validates a `UiNavigateTree` request against the bound session.
+    /// Returns `true` if the request should be published (and the
+    /// resulting `apply_event` will move the head); `false` if it
+    /// should be dropped with a user-visible info message. The store
+    /// itself has no imperative `set_head`; head moves come from
+    /// folding the published `UiNavigateTree` event.
+    fn handle_navigate_tree(&mut self, session_id: &SessionId, node_id: u64) -> bool {
         if session_id != &self.current_session_id {
             self.emit_info(&format!(
                 "navigate ignored: harness is bound to `{}`",
                 self.current_session_id.as_str()
             ));
-            return Ok(());
+            return false;
         }
-        // Validate the node exists in this session.
         let valid = self
             .store
             .session(session_id.as_str())
@@ -1646,12 +1634,10 @@ impl Harness {
             .is_some();
         if !valid {
             self.emit_info(&format!("no node `{node_id}` in session"));
-            return Ok(());
+            return false;
         }
-        self.store
-            .set_head(session_id.as_str(), tau_core::NodeId(node_id))?;
         self.emit_info(&format!("navigated to node {node_id}"));
-        Ok(())
+        true
     }
 
     /// Tear down the current session and bind the harness to a new one.
@@ -1796,10 +1782,17 @@ impl Harness {
         }
 
         let text = render_agents_context_message(self.discovered_agents_files.iter());
-        self.store
-            .append_user_message(session_id.to_owned(), text)
-            .map_err(HarnessError::from)?;
-
+        // Publish the injection as an event so it reaches the durable
+        // session log and folds into the SessionTree the same way
+        // every other entry does. No direct store mutation — the
+        // event is the source of truth.
+        self.publish_event(
+            None,
+            Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
+                session_id: session_id.into(),
+                text,
+            }),
+        );
         Ok(())
     }
 
@@ -1810,10 +1803,7 @@ impl Harness {
     /// distinguish output the user pasted vs. output from its own
     /// tool calls, and survives round-tripping through conversation
     /// assembly.
-    fn inject_user_shell_output(
-        &mut self,
-        finished: &tau_proto::ShellCommandFinished,
-    ) -> Result<(), HarnessError> {
+    fn inject_user_shell_output(&mut self, finished: &tau_proto::ShellCommandFinished) {
         let exit = finished
             .exit_code
             .map(|c| c.to_string())
@@ -1822,10 +1812,13 @@ impl Harness {
             "<user_shell command={:?} exit_code={:?}>\n{}\n</user_shell>",
             finished.command, exit, finished.output,
         );
-        self.store
-            .append_user_message(finished.session_id.as_str().to_owned(), text)
-            .map_err(HarnessError::from)?;
-        Ok(())
+        self.publish_event(
+            None,
+            Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
+                session_id: finished.session_id.clone(),
+                text,
+            }),
+        );
     }
 
     fn send_prompt_to_agent(&mut self, session_id: &str) -> SessionPromptId {
@@ -1904,21 +1897,18 @@ impl Harness {
             return Ok(());
         };
 
+        // `publish_event` flows the AgentResponseFinished into the
+        // durable per-session log; the SessionTree fold appends an
+        // `AgentMessage` carrying both `text` and `thinking` (when
+        // text is present). Keep `session_id` looked up above so the
+        // cleanup below still routes correctly even though the publish
+        // path now owns the persistence.
+        let _ = session_id;
         self.publish_event(None, Event::AgentResponseFinished(response.clone()));
         self.prompt_sessions
             .remove(response.session_prompt_id.as_str());
         self.completed_prompts
             .insert(response.session_prompt_id.clone());
-
-        // Persist agent text if present, with the captured reasoning
-        // summary (if any) attached to the same session entry.
-        if let Some(ref text) = response.text {
-            self.store.append_agent_message_with_thinking(
-                &*session_id,
-                text.clone(),
-                response.thinking.clone(),
-            )?;
-        }
 
         if !response.tool_calls.is_empty() {
             // Tool calls to execute — agent stays busy. After all
@@ -2223,30 +2213,18 @@ impl Harness {
 
         let call_id: ToolCallId = call.id.clone().into();
 
-        // Persist the request.
-        self.store.append_tool_activity(
-            session_id,
-            ToolActivityRecord {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                outcome: ToolActivityOutcome::Requested {
-                    arguments: call.arguments.clone(),
-                },
-            },
-        )?;
-
-        // Route to tool provider.
+        // Track session attribution before publishing — the publish
+        // path persists the `ToolRequest` into the session log and
+        // folds it into the SessionTree via `apply_event`.
+        self.pending_tool_sessions
+            .insert(call_id.clone(), session_id.into());
+        self.pending_tool_names
+            .insert(call_id.clone(), tool_name.clone());
         let request = ToolRequest {
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
             arguments: call.arguments.clone(),
         };
-
-        // Track which session this call belongs to.
-        self.pending_tool_sessions
-            .insert(call_id.clone(), session_id.into());
-        self.pending_tool_names
-            .insert(call_id.clone(), tool_name.clone());
         self.publish_event(None, Event::ToolRequest(request.clone()));
 
         match self
@@ -2264,8 +2242,8 @@ impl Harness {
                     message: "no live provider available".to_owned(),
                     details: None,
                 };
-                self.persist_tool_error(&error)?;
-                // Mark this call as completed so the turn can proceed.
+                self.publish_event(None, Event::ToolError(error));
+                self.clear_tool_call_tracking(call_id.as_str());
                 self.on_tool_call_complete(&call.id);
             }
             Err(error) => return Err(HarnessError::ToolRoute(error)),
@@ -2274,17 +2252,18 @@ impl Harness {
         Ok(())
     }
 
-    /// Synthesize a `ToolError` for a tool call whose name couldn't be
-    /// accepted as a `ToolName` (e.g. empty string from a hallucinated
-    /// streaming response), persist both the request and the error,
-    /// publish the error, and drive the turn state-machine forward.
+    /// Synthesize a matched `ToolRequest` + `ToolError` pair for a
+    /// tool call whose name couldn't be accepted as a `ToolName` (e.g.
+    /// empty string from a hallucinated streaming response), publish
+    /// both so they fold into the session tree, and drive the turn
+    /// state machine forward.
     ///
     /// We use a placeholder `invalid_tool` name because
     /// `ToolError::tool_name` is a validated `ToolName`; the actual
     /// offending string is surfaced via the error message so the agent
     /// sees it in its next conversation turn.
     ///
-    /// Persisting a `Requested` activity alongside the `Error` is
+    /// Publishing the `Requested` alongside the `Error` is
     /// load-bearing: `assemble_conversation` renders `Requested` as a
     /// `ContentBlock::ToolUse` and `Error` as a matching
     /// `ContentBlock::ToolResult`. Without the `Requested`, the next
@@ -2301,30 +2280,32 @@ impl Harness {
     ) -> Result<(), HarnessError> {
         let placeholder: ToolName = "invalid_tool".into();
         let call_id_owned: ToolCallId = call_id.to_owned().into();
-        self.store.append_tool_activity(
-            session_id,
-            ToolActivityRecord {
+        // Seed the session mapping so `session_id_for_event` attributes
+        // both the synthetic request and the synthetic error to this
+        // session. A rejected call never reached the normal dispatch
+        // path that would have inserted these entries.
+        self.pending_tool_sessions
+            .insert(call_id_owned.clone(), session_id.into());
+        self.pending_tool_names
+            .insert(call_id_owned.clone(), placeholder.clone());
+        self.publish_event(
+            None,
+            Event::ToolRequest(ToolRequest {
                 call_id: call_id_owned.clone(),
                 tool_name: placeholder.clone(),
-                outcome: ToolActivityOutcome::Requested {
-                    arguments: arguments.clone(),
-                },
-            },
-        )?;
-        let error = ToolError {
-            call_id: call_id_owned,
-            tool_name: placeholder,
-            message,
-            details: None,
-        };
-        // `persist_tool_error` looks the session up via
-        // `pending_tool_sessions` (normal path: inserted at dispatch
-        // time). A rejected call never got that far, so seed the
-        // mapping here so the error lands on the right session history.
-        self.pending_tool_sessions
-            .insert(error.call_id.clone(), session_id.into());
-        self.persist_tool_error(&error)?;
-        self.publish_event(None, Event::ToolError(error));
+                arguments: arguments.clone(),
+            }),
+        );
+        self.publish_event(
+            None,
+            Event::ToolError(ToolError {
+                call_id: call_id_owned,
+                tool_name: placeholder,
+                message,
+                details: None,
+            }),
+        );
+        self.clear_tool_call_tracking(call_id);
         self.on_tool_call_complete(call_id);
         Ok(())
     }
@@ -2364,19 +2345,21 @@ impl Harness {
         let call_id: ToolCallId = call.id.clone().into();
         let tool_name: ToolName = "skill".into();
 
-        // Persist the request and track the session mapping.
-        self.store.append_tool_activity(
-            session_id,
-            ToolActivityRecord {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                outcome: ToolActivityOutcome::Requested {
-                    arguments: call.arguments.clone(),
-                },
-            },
-        )?;
+        // Track the session mapping first so the published request +
+        // result both attribute to this session via
+        // `session_id_for_event`.
         self.pending_tool_sessions
             .insert(call_id.clone(), session_id.into());
+        self.pending_tool_names
+            .insert(call_id.clone(), tool_name.clone());
+        self.publish_event(
+            None,
+            Event::ToolRequest(ToolRequest {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                arguments: call.arguments.clone(),
+            }),
+        );
 
         // Extract the skill name from arguments.
         let skill_name = cbor_map_text(&call.arguments, "name");
@@ -2423,16 +2406,11 @@ impl Harness {
             }),
         };
 
-        // Publish before persisting the completion: `persist_tool_result` /
-        // `persist_tool_error` remove the pending call -> session mapping that
-        // `publish_event` needs to put the completion in the durable session
-        // event log for replay.
-        self.publish_event(None, result_event.clone());
-        match &result_event {
-            Event::ToolResult(r) => self.persist_tool_result(r)?,
-            Event::ToolError(e) => self.persist_tool_error(e)?,
-            _ => {}
-        }
+        // Publish, then drop the in-flight tracking — order matters:
+        // `session_id_for_event` reads `pending_tool_sessions` to
+        // attribute the persisted record before we clear it.
+        self.publish_event(None, result_event);
+        self.clear_tool_call_tracking(call_id.as_str());
         self.on_tool_call_complete(&call.id);
 
         Ok(())

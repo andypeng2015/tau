@@ -8,7 +8,7 @@ use tau_core::{SessionEntry, ToolActivityOutcome, ToolActivityRecord};
 use tau_proto::{
     AgentResponseFinished, AgentToolCall, CborValue, Event, EventReader, EventSelector,
     EventWriter, LifecycleDisconnect, LifecycleSubscribe, SessionPromptCreated, SessionPromptId,
-    ToolCallId, ToolName, ToolResult,
+    ToolCallId, ToolName, ToolResult, UiPromptSubmitted,
 };
 use tempfile::TempDir;
 
@@ -30,6 +30,21 @@ use crate::turn::{PromptSubmission, TurnState};
 
 fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
     tau_agent::run_echo(r, w).map_err(|e| e.to_string())
+}
+
+/// Test-only helper that pushes a `UiPromptSubmitted` through the
+/// harness's normal publish path, which writes the durable per-session
+/// event and folds it into the SessionTree. Production code reaches
+/// the same place via `dispatch_user_prompt`; tests use this when
+/// they want a tree node without driving the full agent turn.
+fn append_user_message_via_event(h: &mut Harness, session_id: &str, text: &str) {
+    h.publish_event(
+        None,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: session_id.into(),
+            text: text.to_owned(),
+        }),
+    );
 }
 
 fn echo_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, HarnessError> {
@@ -1272,9 +1287,7 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = "test/model".into();
 
-    h.store
-        .append_user_message("s1", "hello".to_owned())
-        .expect("append first user");
+    append_user_message_via_event(&mut h, "s1", "hello");
 
     let spid1 = h.send_prompt_to_agent("s1");
     let prompt1 = read_prompt_created(&h, &spid1);
@@ -1289,9 +1302,7 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
     })
     .expect("persist first agent response");
 
-    h.store
-        .append_user_message("s1", "again".to_owned())
-        .expect("append second user");
+    append_user_message_via_event(&mut h, "s1", "again");
 
     let spid2 = h.send_prompt_to_agent("s1");
     let prompt2 = read_prompt_created(&h, &spid2);
@@ -1326,9 +1337,7 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = "test/model".into();
 
-    h.store
-        .append_user_message("s1", "first".to_owned())
-        .expect("append user");
+    append_user_message_via_event(&mut h, "s1", "first");
 
     let spid1 = h.send_prompt_to_agent("s1");
     h.handle_agent_response_finished(AgentResponseFinished {
@@ -1357,9 +1366,7 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
 
     // The next prompt's replayed messages must NOT contain the
     // thinking text.
-    h.store
-        .append_user_message("s1", "second".to_owned())
-        .expect("append second user");
+    append_user_message_via_event(&mut h, "s1", "second");
     let spid2 = h.send_prompt_to_agent("s1");
     let prompt2 = read_prompt_created(&h, &spid2);
     let serialized = serde_json::to_string(&prompt2.messages).expect("json");
@@ -1399,9 +1406,7 @@ fn skill_tool_reads_file_content() {
     );
 
     // Directly invoke the skill tool handler.
-    h.store
-        .append_user_message("s1", "load skill".to_owned())
-        .expect("append");
+    append_user_message_via_event(&mut h, "s1", "load skill");
     h.turn_state = TurnState::ToolsRunning {
         session_id: "s1".into(),
         remaining_calls: vec!["call-skill".into()],
@@ -1444,9 +1449,7 @@ fn skill_tool_returns_error_for_unknown_skill() {
     let sp = td.path().join("state");
 
     let mut h = echo_harness(&sp).expect("start");
-    h.store
-        .append_user_message("s1", "load skill".to_owned())
-        .expect("append");
+    append_user_message_via_event(&mut h, "s1", "load skill");
     h.turn_state = TurnState::ToolsRunning {
         session_id: "s1".into(),
         remaining_calls: vec!["call-missing".into()],
@@ -1543,9 +1546,7 @@ fn dump_initial_prompt_to_tmp() {
     .expect("start harness");
     h.selected_model = "test/model".into();
 
-    h.store
-        .append_user_message("s1", "hello".to_owned())
-        .expect("append user");
+    append_user_message_via_event(&mut h, "s1", "hello");
 
     let spid = h.send_prompt_to_agent("s1");
     let prompt = read_prompt_created(&h, &spid);

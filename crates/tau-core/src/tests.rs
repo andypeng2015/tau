@@ -8,7 +8,7 @@ use std::thread;
 use tau_proto::{
     AgentResponseFinished, CborValue, ClientKind, ConnectionId, Event, EventName, EventReader,
     EventSelector, EventWriter, LifecycleSubscribe, SessionPromptCreated, ToolRegister,
-    ToolRequest, ToolSideEffects, ToolSpec, UiPromptSubmitted,
+    ToolRequest, ToolResult, ToolSideEffects, ToolSpec, UiNavigateTree, UiPromptSubmitted,
 };
 use tempfile::TempDir;
 
@@ -23,6 +23,49 @@ use crate::policy::{DefaultSubscriptionPolicy, PolicyStore, SubscriptionApproval
 use crate::session::{NodeId, SessionEntry, ToolActivityOutcome, ToolActivityRecord};
 use crate::session_store::SessionStore;
 use crate::tool_registry::{ToolRegistry, ToolRegistryWarning};
+
+/// Helper used by the SessionStore-focused unit tests below: append
+/// one `UiPromptSubmitted` event and return the resulting head.
+/// Production code never calls anything like this — it goes through
+/// the harness, which publishes events. Tests get the same effect by
+/// driving `append_session_event` directly.
+fn store_user_message(store: &mut SessionStore, session_id: &str, text: &str) -> NodeId {
+    store
+        .append_session_event(
+            session_id,
+            None,
+            Event::UiPromptSubmitted(UiPromptSubmitted {
+                session_id: session_id.into(),
+                text: text.to_owned(),
+            }),
+        )
+        .expect("append session event");
+    store
+        .session(session_id)
+        .and_then(|t| t.head())
+        .expect("head after append")
+}
+
+fn store_agent_message(store: &mut SessionStore, session_id: &str, text: &str) -> NodeId {
+    store
+        .append_session_event(
+            session_id,
+            None,
+            Event::AgentResponseFinished(AgentResponseFinished {
+                session_prompt_id: format!("sp-{session_id}-{text}").into(),
+                text: Some(text.to_owned()),
+                tool_calls: Vec::new(),
+                input_tokens: None,
+                cached_tokens: None,
+                thinking: None,
+            }),
+        )
+        .expect("append session event");
+    store
+        .session(session_id)
+        .and_then(|t| t.head())
+        .expect("head after append")
+}
 
 struct StreamSink {
     writer: Rc<RefCell<EventWriter<BufWriter<UnixStream>>>>,
@@ -380,12 +423,8 @@ fn session_tree_persists_across_reopen() {
     let store_path = tempdir.path().join("state");
 
     let mut store = SessionStore::open(&store_path).expect("store should open");
-    let id0 = store
-        .append_user_message("session-1", "hello")
-        .expect("user message should persist");
-    let id1 = store
-        .append_agent_message("session-1", "hi there")
-        .expect("agent message should persist");
+    let id0 = store_user_message(&mut store, "session-1", "hello");
+    let id1 = store_agent_message(&mut store, "session-1", "hi there");
 
     assert_eq!(id0, NodeId(0));
     assert_eq!(id1, NodeId(1));
@@ -421,13 +460,22 @@ fn session_tree_supports_branching() {
     let store_path = tempdir.path().join("state");
 
     let mut store = SessionStore::open(&store_path).expect("store should open");
-    let _ = store.append_user_message("s1", "hello").expect("ok");
-    let _ = store.append_agent_message("s1", "hi").expect("ok");
-    // Branch: go back to node 0 and append a different message.
+    let _ = store_user_message(&mut store, "s1", "hello");
+    let _ = store_agent_message(&mut store, "s1", "hi");
+    // Branch: navigate back to node 0, then append a different
+    // message. Both happen via persisted events; the SessionTree
+    // re-derives identically on reopen.
     store
-        .set_head("s1", NodeId(0))
-        .expect("set_head should work");
-    let _ = store.append_user_message("s1", "goodbye").expect("ok");
+        .append_session_event(
+            "s1",
+            None,
+            Event::UiNavigateTree(UiNavigateTree {
+                session_id: "s1".into(),
+                node_id: 0,
+            }),
+        )
+        .expect("navigate event");
+    let _ = store_user_message(&mut store, "s1", "goodbye");
 
     let tree = store.session("s1").expect("session should exist");
     assert_eq!(tree.head(), Some(NodeId(2)));
@@ -461,21 +509,18 @@ fn session_tree_associates_tool_activity() {
     let store_path = tempdir.path().join("state");
 
     let mut store = SessionStore::open(&store_path).expect("store should open");
+    let _ = store_user_message(&mut store, "session-1", "read a file");
     store
-        .append_user_message("session-1", "read a file")
-        .expect("user message should persist");
-    store
-        .append_tool_activity(
+        .append_session_event(
             "session-1",
-            ToolActivityRecord {
+            None,
+            Event::ToolResult(ToolResult {
                 call_id: "call-1".into(),
                 tool_name: "read".into(),
-                outcome: ToolActivityOutcome::Result {
-                    result: CborValue::Text("README".to_owned()),
-                },
-            },
+                result: CborValue::Text("README".to_owned()),
+            }),
         )
-        .expect("tool activity should persist");
+        .expect("tool result event should persist");
 
     let reopened = SessionStore::open(&store_path).expect("store should reopen");
     let tree = reopened
