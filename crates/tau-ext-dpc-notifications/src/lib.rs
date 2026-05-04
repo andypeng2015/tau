@@ -8,8 +8,11 @@
 //! - final `agent.response_finished` (only when `tool_calls` is empty) →
 //!   `user-notification = protoss-upgrade-complete`
 //! - After `idle_seconds` (default 60) of inactivity following a final response
-//!   → `user-text-notification = {"urgency": "...", "title": "...", "body":
-//!   "..."}`. The idle timer resets on every `ui.prompt_submitted` /
+//!   → an `ExtAgentQuery` side-prompt to the agent asking for a one-sentence
+//!   summary; when the matching `ExtAgentQueryResult` arrives (or a 10s
+//!   fallback timer expires) → `user-text-notification = {"urgency": "normal",
+//!   "title": "Agent idle: <host>:<cwd>", "body": "<summary or fallback>"}`.
+//!   The idle timer resets on every user-originated `ui.prompt_submitted` /
 //!   `agent.prompt_submitted`. Tunable via the extension's
 //!   `config.idle_seconds` field in `harness.json5`.
 //!
@@ -69,8 +72,48 @@ under 100 characters. Output only the summary, nothing else.";
 
 /// Static fallback body used when the summary request errors out,
 /// returns empty text, or doesn't arrive within
-/// [`SUMMARY_TIMEOUT_SECONDS`].
-const FALLBACK_BODY: &str = "Agent is waiting for input";
+/// [`SUMMARY_TIMEOUT_SECONDS`]. Matches Pi's
+/// `idle-notification.ts` so downstream `user-text-notification.sh`
+/// consumers see the same wording across the two implementations.
+const FALLBACK_BODY: &str = "Waiting for user input";
+
+/// Returns the system hostname via `gethostname(2)`. Falls back to
+/// `"host"` if the syscall fails or the bytes aren't UTF-8.
+fn hostname() -> String {
+    // Safety: `gethostname` writes at most `buf.len()` bytes into
+    // `buf` and POSIX guarantees NUL termination on success when
+    // the result fits.
+    let mut buf = [0_u8; 256];
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<libc::c_char>(), buf.len()) };
+    if rc != 0 {
+        return "host".to_owned();
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..len])
+        .ok()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "host".to_owned())
+}
+
+/// Build the notification title: `Agent idle: <host>:<basename(cwd)>`.
+/// Mirrors Pi's `idle-notification.ts` so the wording matches across
+/// both implementations of the extension.
+fn build_title() -> String {
+    let host = hostname();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd_short = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
+    let cwd_short = if cwd_short.is_empty() {
+        cwd.to_string_lossy().into_owned()
+    } else {
+        cwd_short
+    };
+    format!("Agent idle: {host}:{cwd_short}")
+}
 
 /// Phase of the idle-watch state machine. `WaitingIdle` is the base
 /// "agent finished, count down to nudge" state. When it elapses we
@@ -457,7 +500,7 @@ fn sound_event(value: &str) -> Event {
 fn summary_text_event(body: &str) -> Event {
     let payload = serde_json::json!({
         "urgency": "normal",
-        "title": "Tau",
+        "title": build_title(),
         "body": body,
     })
     .to_string();
@@ -612,8 +655,7 @@ mod tests {
     /// Idle window elapsing must trigger an `ExtAgentQuery` to the
     /// agent for a one-sentence summary. When no result arrives
     /// within the summary timeout, the extension falls back to the
-    /// static "Agent is waiting for input" body so the user still
-    /// gets nudged.
+    /// static [`FALLBACK_BODY`] so the user still gets nudged.
     #[test]
     fn idle_timeout_requests_summary_then_falls_back() {
         let mut input = Vec::new();
@@ -673,8 +715,16 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&osc.value).expect("fallback payload is JSON");
         assert_eq!(payload["urgency"], "normal");
-        assert_eq!(payload["title"], "Tau");
-        assert_eq!(payload["body"], "Agent is waiting for input");
+        assert_eq!(
+            payload["title"]
+                .as_str()
+                .expect("title is a string")
+                .starts_with("Agent idle: "),
+            true,
+            "title should start with `Agent idle: `, got {:?}",
+            payload["title"],
+        );
+        assert_eq!(payload["body"], FALLBACK_BODY);
     }
 
     /// When a matching `ExtAgentQueryResult` arrives before the
