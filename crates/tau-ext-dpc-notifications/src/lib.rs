@@ -143,20 +143,37 @@ impl IdleState {
     }
 }
 
-/// User-supplied configuration for this extension. Mirrors the
-/// schema documented next to `DEFAULT_IDLE_SECONDS`.
-#[derive(serde::Deserialize, Debug)]
+/// User-supplied configuration for this extension. See the crate's
+/// `README.md` for the full schema and worked examples.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 #[serde(default, deny_unknown_fields)]
 struct ExtConfig {
-    /// Idle window, in seconds.
-    idle_seconds: u64,
+    /// Idle window, in seconds, before the extension nudges the
+    /// user. `None` keeps the [`DEFAULT_IDLE_SECONDS`] default. The
+    /// wire format is integer seconds; for sub-second test windows
+    /// the test entry points take a `Duration` directly.
+    idle_seconds: Option<u64>,
+    /// Optional argv to invoke whenever the extension would normally
+    /// emit the OSC text notification (idle-summary or fallback). The
+    /// command runs *in addition to* the OSC, never instead of it,
+    /// so existing terminal-side consumers keep working.
+    ///
+    /// Calling convention mirrors `user-text-notification.sh`:
+    /// - `argv[0]` is the program; the title is appended as the next argument
+    ///   (`argv[1]` if no extra args, otherwise the first trailing arg).
+    /// - The body is piped to the command's stdin.
+    /// - `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau` are set in the
+    ///   child's environment.
+    ///
+    /// Spawned detached: we don't wait for it, and stdout/stderr are
+    /// silently discarded. A failing command logs at `warn` and is
+    /// otherwise ignored.
+    idle_command: Option<Vec<String>>,
 }
 
-impl Default for ExtConfig {
-    fn default() -> Self {
-        Self {
-            idle_seconds: DEFAULT_IDLE_SECONDS,
-        }
+impl ExtConfig {
+    fn idle_duration(&self) -> Duration {
+        Duration::from_secs(self.idle_seconds.unwrap_or(DEFAULT_IDLE_SECONDS))
     }
 }
 
@@ -218,6 +235,13 @@ where
     W: Write,
 {
     let mut writer = EventWriter::new(BufWriter::new(writer));
+    // Live config — only `idle_command` actually rides on it past
+    // the parse: `idle_seconds` is reflected into the local
+    // `idle_duration` Duration so we keep sub-second test precision
+    // (the wire schema is integer seconds, which is fine for users
+    // but rounds out millisecond test windows). `LifecycleConfigure`
+    // from the harness overwrites both on receipt.
+    let mut config = ExtConfig::default();
 
     writer.write_event(&Event::LifecycleHello(LifecycleHello {
         protocol_version: PROTOCOL_VERSION,
@@ -312,12 +336,14 @@ where
                     Event::LifecycleConfigure(msg) => {
                         match tau_extension::parse_config::<ExtConfig>(&msg.config) {
                             Ok(cfg) => {
-                                idle_duration = Duration::from_secs(cfg.idle_seconds);
+                                idle_duration = cfg.idle_duration();
                                 tracing::info!(
                                     target: LOG_TARGET,
-                                    idle_seconds = cfg.idle_seconds,
+                                    idle_seconds = idle_duration.as_secs(),
+                                    has_idle_command = cfg.idle_command.is_some(),
                                     "applied config",
                                 );
+                                config = cfg;
                             }
                             Err(message) => {
                                 tracing::warn!(
@@ -452,8 +478,10 @@ where
                             } else {
                                 body
                             };
-                            writer.write_event(&summary_text_event(&body))?;
+                            let title = build_title();
+                            writer.write_event(&summary_text_event_with(&title, &body))?;
                             writer.flush()?;
+                            spawn_idle_command(&config, &title, &body);
                             idle = None;
                             if input_closed {
                                 break;
@@ -501,8 +529,10 @@ where
                         target: LOG_TARGET,
                         "summary timed out, falling back to static text",
                     );
-                    writer.write_event(&summary_text_event(FALLBACK_BODY))?;
+                    let title = build_title();
+                    writer.write_event(&summary_text_event_with(&title, FALLBACK_BODY))?;
                     writer.flush()?;
+                    spawn_idle_command(&config, &title, FALLBACK_BODY);
                     if input_closed {
                         break;
                     }
@@ -530,14 +560,14 @@ fn sound_event(value: &str) -> Event {
     })
 }
 
-fn summary_text_event(body: &str) -> Event {
-    // `app_name` matches the schema `user-text-notification.sh`
-    // emits — downstream consumers use it as the desktop
-    // notification's source-app indicator (libnotify's app_name),
-    // so we don't need to re-state "tau" inside the title text.
+/// Build the OSC `SetUserVar` event whose payload is the JSON
+/// schema `user-text-notification.sh` emits. The `app_name` field
+/// gives downstream consumers a stable source-app indicator, so we
+/// don't need to repeat "tau" inside the title text.
+fn summary_text_event_with(title: &str, body: &str) -> Event {
     let payload = serde_json::json!({
         "urgency": "normal",
-        "title": build_title(),
+        "title": title,
         "body": body,
         "app_name": NOTIFY_APP_NAME,
     })
@@ -546,6 +576,81 @@ fn summary_text_event(body: &str) -> Event {
         name: TEXT_VAR_NAME.to_owned(),
         value: payload,
     })
+}
+
+/// If the user configured `idle_command`, spawn it detached. Mirrors
+/// `user-text-notification.sh`'s calling convention so the script
+/// itself (or anything that follows the same shape) can be plugged
+/// in directly:
+/// - `argv[0]` is the program; the *title* is appended as the next argument.
+/// - The body is piped to the command's stdin.
+/// - `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau` are set in the child's
+///   environment.
+///
+/// Spawned in a worker thread that handles wait/reap; failures log
+/// at `warn` and never propagate to the main loop.
+fn spawn_idle_command(config: &ExtConfig, title: &str, body: &str) {
+    let Some(argv) = config.idle_command.clone() else {
+        return;
+    };
+    if argv.is_empty() {
+        tracing::warn!(
+            target: LOG_TARGET,
+            "idle_command is set but empty; ignoring",
+        );
+        return;
+    }
+    let title = title.to_owned();
+    let body = body.to_owned();
+    std::thread::spawn(move || {
+        let program = &argv[0];
+        let mut command = std::process::Command::new(program);
+        command
+            .args(&argv[1..])
+            .arg(&title)
+            .env("NOTIFY_URGENCY", "normal")
+            .env("NOTIFY_APP_NAME", NOTIFY_APP_NAME)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    program = %program,
+                    error = %e,
+                    "idle_command failed to spawn",
+                );
+                return;
+            }
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(body.as_bytes());
+            // Dropping `stdin` here closes the pipe so the command
+            // sees EOF and exits.
+        }
+        match child.wait() {
+            Ok(status) if !status.success() => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    program = %program,
+                    status = ?status,
+                    "idle_command exited non-zero",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    program = %program,
+                    error = %e,
+                    "idle_command failed to wait",
+                );
+            }
+            _ => {}
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1032,6 +1137,118 @@ mod tests {
         };
         let payload: serde_json::Value = serde_json::from_str(&osc.value).expect("payload is JSON");
         assert_eq!(payload["body"], "the model's summary");
+
+        writer
+            .write_event(&Event::LifecycleDisconnect(LifecycleDisconnect {
+                reason: None,
+            }))
+            .expect("write");
+        writer.flush().expect("flush");
+        drop(writer);
+        drop(reader);
+        handle.join().expect("ext thread");
+    }
+
+    /// When `idle_command` is configured, it must run alongside the
+    /// OSC notification, receive the title as `argv[1]`, the body
+    /// on stdin, and the `NOTIFY_*` env vars set. Uses a tiny shell
+    /// command that writes its argv + env + stdin into a temp file
+    /// the test reads back.
+    #[test]
+    fn idle_command_runs_with_title_body_and_env() {
+        use std::os::unix::net::UnixStream;
+
+        use tau_proto::LifecycleConfigure;
+        use tempfile::TempDir;
+
+        let td = TempDir::new().expect("tempdir");
+        let out_path = td.path().join("out.txt");
+
+        // bash one-liner: writes title (arg 1) + env vars + stdin
+        // into the output file, separated by `|||` so the test can
+        // assert each piece.
+        let cmd = format!(
+            "printf '%s|||%s|||%s|||' \"$1\" \"$NOTIFY_URGENCY\" \"$NOTIFY_APP_NAME\" >> {dest}; \
+             cat >> {dest}",
+            dest = out_path.display(),
+        );
+
+        let (test_side, ext_side) = UnixStream::pair().expect("pair");
+        let ext_reader = ext_side.try_clone().expect("clone");
+        let ext_writer = ext_side;
+        let handle = thread::spawn(move || {
+            run_with_idle_and_summary_timeout(
+                ext_reader,
+                ext_writer,
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            )
+            .expect("run");
+        });
+
+        let test_writer_stream = test_side.try_clone().expect("clone");
+        let mut writer = EventWriter::new(test_writer_stream);
+        let mut reader = EventReader::new(test_side);
+
+        for _ in 0..3 {
+            reader.read_event().expect("read").expect("lifecycle");
+        }
+
+        // Configure the extension with the test command.
+        let cfg = tau_proto::json_to_cbor(&serde_json::json!({
+            "idle_seconds": 0,
+            "idle_command": ["bash", "-c", cmd, "_marker"],
+        }));
+        writer
+            .write_event(&Event::LifecycleConfigure(LifecycleConfigure {
+                config: cfg,
+            }))
+            .expect("write");
+        writer
+            .write_event(&Event::AgentResponseFinished(AgentResponseFinished {
+                session_prompt_id: "sp-0".into(),
+                text: Some("done".into()),
+                tool_calls: Vec::new(),
+                input_tokens: None,
+                cached_tokens: None,
+                thinking: None,
+                originator: tau_proto::PromptOriginator::User,
+            }))
+            .expect("write");
+        writer.flush().expect("flush");
+
+        // Drain: end-sound, ExtAgentQuery, fallback OSC. We don't
+        // care about the exact contents — what we want is the
+        // command to run as a side effect.
+        let _ = reader.read_event().expect("read").expect("end");
+        let _ = reader.read_event().expect("read").expect("query");
+        let _ = reader.read_event().expect("read").expect("fallback");
+
+        // The command runs in a detached thread; poll the output
+        // file briefly until it appears (max 2s).
+        let started = Instant::now();
+        loop {
+            if out_path.exists()
+                && let Ok(contents) = std::fs::read_to_string(&out_path)
+                && contents.contains("|||")
+            {
+                let mut parts = contents.splitn(4, "|||");
+                let title = parts.next().expect("title field");
+                let urgency = parts.next().expect("urgency field");
+                let app_name = parts.next().expect("app_name field");
+                let body = parts.next().expect("body field");
+                assert!(title.starts_with("Agent idle: "), "title arg {title:?}",);
+                assert_eq!(urgency, "normal");
+                assert_eq!(app_name, NOTIFY_APP_NAME);
+                assert_eq!(body, FALLBACK_BODY);
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "idle_command never produced output",
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
 
         writer
             .write_event(&Event::LifecycleDisconnect(LifecycleDisconnect {

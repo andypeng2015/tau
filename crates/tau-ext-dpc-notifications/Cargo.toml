@@ -15,3 +15,6 @@ serde_json.workspace = true
 tau-extension.workspace = true
 tau-proto.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

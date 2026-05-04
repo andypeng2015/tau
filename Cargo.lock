@@ -1455,6 +1455,7 @@ dependencies = [
  "serde_json",
  "tau-extension",
  "tau-proto",
+ "tempfile",
  "tracing",
 ]
 
