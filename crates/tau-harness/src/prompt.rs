@@ -225,6 +225,17 @@ pub(crate) fn cbor_map_text<'a>(map: &'a CborValue, key: &str) -> Option<&'a str
     }
 }
 
+/// Extract a boolean value from a CBOR map by key.
+pub(crate) fn cbor_map_bool(map: &CborValue, key: &str) -> Option<bool> {
+    match map {
+        CborValue::Map(entries) => entries.iter().find_map(|(k, v)| match (k, v) {
+            (CborValue::Text(k), CborValue::Bool(b)) if k == key => Some(*b),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
 /// Converts a CBOR value to human-readable text for tool results.
 pub(crate) fn cbor_to_text(v: &tau_proto::CborValue) -> String {
     use tau_proto::CborValue;

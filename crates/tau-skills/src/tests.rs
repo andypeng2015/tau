@@ -28,13 +28,9 @@ fn parse_frontmatter_quoted_values() {
 
 #[test]
 fn parse_frontmatter_boolean_field() {
-    let content =
-        "---\nname: hidden\ndescription: A hidden skill\ndisable-model-invocation: true\n---\n";
+    let content = "---\nname: shown\ndescription: An advertised skill\nadvertise: true\n---\n";
     let (fm, _body) = parse_frontmatter(content);
-    assert_eq!(
-        fm.get("disable-model-invocation").map(String::as_str),
-        Some("true")
-    );
+    assert_eq!(fm.get("advertise").map(String::as_str), Some("true"));
 }
 
 #[test]
@@ -72,15 +68,27 @@ fn parse_frontmatter_comments_and_blanks() {
 // -- Skill loading from content -----------------------------------------
 
 #[test]
-fn load_skill_valid() {
+fn load_skill_valid_defaults_to_not_advertised() {
     let content = "---\nname: my-skill\ndescription: Does useful things\n---\n# Instructions";
     let path = Path::new("/skills/my-skill/SKILL.md");
     let (skill, diags) = load_skill_from_content(content, path);
     let skill = skill.expect("should load");
     assert_eq!(skill.name, "my-skill");
     assert_eq!(skill.description, "Does useful things");
-    assert!(skill.add_to_prompt);
+    assert!(
+        !skill.add_to_prompt,
+        "skills must opt into auto-advertising via `advertise: true`"
+    );
     assert!(diags.is_empty());
+}
+
+#[test]
+fn load_skill_advertise_true_opts_into_prompt() {
+    let content = "---\nname: shown\ndescription: visible\nadvertise: true\n---\nBody";
+    let path = Path::new("/skills/shown/SKILL.md");
+    let (skill, _diags) = load_skill_from_content(content, path);
+    let skill = skill.expect("should load");
+    assert!(skill.add_to_prompt);
 }
 
 #[test]
@@ -102,9 +110,8 @@ fn load_skill_empty_description() {
 }
 
 #[test]
-fn load_skill_disable_model_invocation() {
-    let content =
-        "---\nname: hidden\ndescription: A hidden skill\ndisable-model-invocation: true\n---\n";
+fn load_skill_advertise_false_or_missing_keeps_default() {
+    let content = "---\nname: hidden\ndescription: A hidden skill\nadvertise: false\n---\n";
     let path = Path::new("/skills/hidden/SKILL.md");
     let (skill, _diags) = load_skill_from_content(content, path);
     let skill = skill.expect("should load");

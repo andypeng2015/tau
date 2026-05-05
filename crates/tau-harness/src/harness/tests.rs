@@ -1591,10 +1591,16 @@ fn skill_tool_reads_file_content() {
     let call = AgentToolCall {
         id: "call-skill".into(),
         name: "skill".into(),
-        arguments: CborValue::Map(vec![(
-            CborValue::Text("name".to_owned()),
-            CborValue::Text("my-skill".to_owned()),
-        )]),
+        arguments: CborValue::Map(vec![
+            (
+                CborValue::Text("action".to_owned()),
+                CborValue::Text("load".to_owned()),
+            ),
+            (
+                CborValue::Text("name".to_owned()),
+                CborValue::Text("my-skill".to_owned()),
+            ),
+        ]),
     };
     let cid = h.default_conversation_id.clone();
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
@@ -1637,10 +1643,16 @@ fn skill_tool_returns_error_for_unknown_skill() {
     let call = AgentToolCall {
         id: "call-missing".into(),
         name: "skill".into(),
-        arguments: CborValue::Map(vec![(
-            CborValue::Text("name".to_owned()),
-            CborValue::Text("nonexistent".to_owned()),
-        )]),
+        arguments: CborValue::Map(vec![
+            (
+                CborValue::Text("action".to_owned()),
+                CborValue::Text("load".to_owned()),
+            ),
+            (
+                CborValue::Text("name".to_owned()),
+                CborValue::Text("nonexistent".to_owned()),
+            ),
+        ]),
     };
     let cid = h.default_conversation_id.clone();
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
@@ -1664,6 +1676,217 @@ fn skill_tool_returns_error_for_unknown_skill() {
             Event::ToolError(error) if error.call_id.as_str() == "call-missing"
         )),
         "expected skill tool error in durable session event log"
+    );
+}
+
+#[test]
+fn skill_tool_search_matches_name_description_and_optional_content() {
+    // The search action backs progressive skill discovery: when most
+    // skills are not advertised at session start, the agent must be
+    // able to find them by keyword. Default scope is name +
+    // description; `search_content: true` opts into grepping bodies.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+
+    // Use unique tokens that won't collide with the user's real
+    // `~/.agents/skills` library that `echo_harness` discovers during
+    // eager init.
+    const KW: &str = "zqxtoken";
+    const BODY_KW: &str = "zqxbody";
+
+    let alpha_dir = td.path().join("zqx-alpha");
+    std::fs::create_dir_all(&alpha_dir).expect("mkdir");
+    let alpha_file = alpha_dir.join("SKILL.md");
+    std::fs::write(
+        &alpha_file,
+        format!(
+            "---\nname: zqx-alpha\ndescription: {KW} helpers\n---\nalpha body, mentions {BODY_KW}"
+        ),
+    )
+    .expect("write alpha");
+
+    let beta_dir = td.path().join("zqx-beta");
+    std::fs::create_dir_all(&beta_dir).expect("mkdir");
+    let beta_file = beta_dir.join("SKILL.md");
+    std::fs::write(
+        &beta_file,
+        format!(
+            "---\nname: zqx-beta\ndescription: unrelated thing\n---\nbeta body, mentions {BODY_KW} too"
+        ),
+    )
+    .expect("write beta");
+
+    let gamma_dir = td.path().join("zqx-gamma");
+    std::fs::create_dir_all(&gamma_dir).expect("mkdir");
+    let gamma_file = gamma_dir.join("SKILL.md");
+    std::fs::write(
+        &gamma_file,
+        "---\nname: zqx-gamma\ndescription: a different topic\n---\nno keyword references here",
+    )
+    .expect("write gamma");
+
+    let mut h = echo_harness(&sp).expect("start");
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-alpha"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: format!("{KW} helpers"),
+            file_path: alpha_file,
+            add_to_prompt: false,
+        },
+    );
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-beta"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: "unrelated thing".to_owned(),
+            file_path: beta_file,
+            add_to_prompt: false,
+        },
+    );
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-gamma"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: "a different topic".to_owned(),
+            file_path: gamma_file,
+            add_to_prompt: false,
+        },
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_search = |query: &str, search_content: bool, id: &str| AgentToolCall {
+        id: id.into(),
+        name: "skill".into(),
+        arguments: CborValue::Map(vec![
+            (
+                CborValue::Text("action".to_owned()),
+                CborValue::Text("search".to_owned()),
+            ),
+            (
+                CborValue::Text("query".to_owned()),
+                CborValue::Text(query.to_owned()),
+            ),
+            (
+                CborValue::Text("search_content".to_owned()),
+                CborValue::Bool(search_content),
+            ),
+        ]),
+    };
+
+    let read_matches = |h: &Harness, call_id: &str| -> Vec<String> {
+        let events = h.store.session_events("s1").expect("events");
+        let result = events
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                Event::ToolResult(r) if r.call_id.as_str() == call_id => Some(r.result.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        let CborValue::Map(top) = result else {
+            panic!("result must be a map")
+        };
+        let matches = top
+            .iter()
+            .find_map(|(k, v)| match (k, v) {
+                (CborValue::Text(k), CborValue::Array(arr)) if k == "matches" => Some(arr.clone()),
+                _ => None,
+            })
+            .expect("matches array");
+        matches
+            .into_iter()
+            .map(|m| {
+                let CborValue::Map(entries) = m else {
+                    panic!("match must be a map")
+                };
+                entries
+                    .into_iter()
+                    .find_map(|(k, v)| match (k, v) {
+                        (CborValue::Text(k), CborValue::Text(v)) if k == "name" => Some(v),
+                        _ => None,
+                    })
+                    .expect("name in match")
+            })
+            .collect()
+    };
+
+    // Description match: KW only appears in zqx-alpha's description.
+    h.turn_state = TurnState::ToolsRunning {
+        session_id: "s1".into(),
+        conversation_id: cid.clone(),
+        remaining_calls: vec!["call-1".into()],
+    };
+    h.handle_skill_tool_call(&cid, &call_search(KW, false, "call-1"))
+        .expect("search 1");
+    assert_eq!(read_matches(&h, "call-1"), vec!["zqx-alpha"]);
+
+    // Default scope must NOT search content: BODY_KW appears only in
+    // alpha and beta bodies. With search_content=false → no hits.
+    h.turn_state = TurnState::ToolsRunning {
+        session_id: "s1".into(),
+        conversation_id: cid.clone(),
+        remaining_calls: vec!["call-2".into()],
+    };
+    h.handle_skill_tool_call(&cid, &call_search(BODY_KW, false, "call-2"))
+        .expect("search 2");
+    let empty: Vec<String> = Vec::new();
+    assert_eq!(read_matches(&h, "call-2"), empty);
+
+    // Opt into content search: now alpha and beta both match,
+    // sorted alphabetically.
+    h.turn_state = TurnState::ToolsRunning {
+        session_id: "s1".into(),
+        conversation_id: cid.clone(),
+        remaining_calls: vec!["call-3".into()],
+    };
+    h.handle_skill_tool_call(&cid, &call_search(BODY_KW, true, "call-3"))
+        .expect("search 3");
+    assert_eq!(read_matches(&h, "call-3"), vec!["zqx-alpha", "zqx-beta"]);
+
+    // Name match works case-insensitively.
+    h.turn_state = TurnState::ToolsRunning {
+        session_id: "s1".into(),
+        conversation_id: cid.clone(),
+        remaining_calls: vec!["call-4".into()],
+    };
+    h.handle_skill_tool_call(&cid, &call_search("ZQX-ALPHA", false, "call-4"))
+        .expect("search 4");
+    assert_eq!(read_matches(&h, "call-4"), vec!["zqx-alpha"]);
+}
+
+#[test]
+fn skill_tool_unknown_action_returns_error() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let cid = h.default_conversation_id.clone();
+    h.turn_state = TurnState::ToolsRunning {
+        session_id: "s1".into(),
+        conversation_id: cid.clone(),
+        remaining_calls: vec!["call-bogus".into()],
+    };
+    let call = AgentToolCall {
+        id: "call-bogus".into(),
+        name: "skill".into(),
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("action".to_owned()),
+            CborValue::Text("invoke".to_owned()),
+        )]),
+    };
+    h.handle_skill_tool_call(&cid, &call).expect("dispatch");
+    let events = h.store.session_events("s1").expect("events");
+    let err = events
+        .iter()
+        .find_map(|entry| match &entry.event {
+            Event::ToolError(e) if e.call_id.as_str() == "call-bogus" => Some(e.message.clone()),
+            _ => None,
+        })
+        .expect("tool error");
+    assert!(
+        err.contains("unknown skill action"),
+        "unexpected error message: {err}"
     );
 }
 

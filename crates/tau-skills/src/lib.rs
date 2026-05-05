@@ -13,8 +13,12 @@ pub struct Skill {
     pub description: String,
     pub file_path: PathBuf,
     pub base_dir: PathBuf,
-    /// When true, the skill is listed in the system prompt for model-initiated
-    /// invocation.  Corresponds to `!disable-model-invocation` in frontmatter.
+    /// When true, the skill is listed in the system prompt at session
+    /// start so the agent sees its name + description without having
+    /// to search. Opt-in via `advertise: true` in frontmatter; the
+    /// default is false so a large skill library doesn't bloat every
+    /// prompt — agents discover the rest through `skill { action:
+    /// "search", query: "…" }`.
     pub add_to_prompt: bool,
 }
 
@@ -254,17 +258,17 @@ pub fn load_skill_from_content(
         }
     }
 
-    let disable_model_invocation = fm
-        .get("disable-model-invocation")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    // `advertise: true` opts a skill into the system-prompt listing
+    // at session start. Default is off — skills not opted in are
+    // discoverable via `skill { action: "search" }` instead.
+    let advertise = fm.get("advertise").map(|v| v == "true").unwrap_or(false);
 
     let skill = Skill {
         name,
         description: description.unwrap_or_default(),
         file_path: file_path.to_owned(),
         base_dir: skill_dir.to_owned(),
-        add_to_prompt: !disable_model_invocation,
+        add_to_prompt: advertise,
     };
 
     (Some(skill), diagnostics)

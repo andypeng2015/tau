@@ -38,7 +38,8 @@ use crate::model::{
     save_harness_state, selected_effort_for_model,
 };
 use crate::prompt::{
-    assemble_conversation, build_system_prompt, cbor_map_text, render_agents_context_message,
+    assemble_conversation, build_system_prompt, cbor_map_bool, cbor_map_text,
+    render_agents_context_message,
 };
 use crate::settings::load_harness_settings_or_warn;
 use crate::turn::{PromptSubmission, TurnState};
@@ -2695,19 +2696,42 @@ impl Harness {
             tau_proto::ToolSpec {
                 name: "skill".into(),
                 description: Some(
-                    "Load a skill's full content by name. Use this when a task \
-                     matches an available skill's description."
+                    "Discover and load skills — short, focused playbooks for \
+                     specific tasks. Two actions:\n\
+                     - `load`: fetch a skill's full content by exact name. Use \
+                     this when you already know the skill name, e.g. one shown \
+                     in <available_skills> or returned by `search`.\n\
+                     - `search`: find skills whose name or description contain \
+                     a keyword/phrase. Returns a list of {name, description} \
+                     matches. Most skills are NOT pre-advertised, so use \
+                     `search` whenever a task hints at a tool/workflow you \
+                     might have a playbook for (e.g. \"git\", \"jujutsu\", \
+                     \"changelog\"). Set `search_content: true` to also grep \
+                     skill bodies."
                         .to_owned(),
                 ),
                 parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["load", "search"],
+                            "description": "Which subcommand to run."
+                        },
                         "name": {
                             "type": "string",
-                            "description": "Name of the skill to load"
+                            "description": "(action=load) Exact skill name to load."
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "(action=search) Keyword or phrase to match against skill names and descriptions (case-insensitive substring)."
+                        },
+                        "search_content": {
+                            "type": "boolean",
+                            "description": "(action=search) When true, also search the skill body. Default false."
                         }
                     },
-                    "required": ["name"]
+                    "required": ["action"]
                 })),
                 side_effects: tau_proto::ToolSideEffects::Pure,
             },
@@ -2715,6 +2739,12 @@ impl Harness {
     }
 
     /// Handle the harness-owned `skill` tool call inline.
+    ///
+    /// Dispatches on the required `action` argument:
+    /// - `load`: read skill body by exact name (returns name + content).
+    /// - `search`: case-insensitive substring match across skill names and
+    ///   descriptions; with `search_content: true`, also greps skill bodies.
+    ///   Returns a list of `{name, description}` hits.
     fn handle_skill_tool_call(
         &mut self,
         cid: &ConversationId,
@@ -2738,47 +2768,22 @@ impl Harness {
             }),
         );
 
-        // Extract the skill name from arguments.
-        let skill_name = cbor_map_text(&call.arguments, "name");
-
-        let result_event = match skill_name {
-            Some(name) => match self.discovered_skills.get(name) {
-                Some(skill) => match std::fs::read_to_string(&skill.file_path) {
-                    Ok(content) => {
-                        let body = tau_skills::strip_frontmatter(&content);
-                        Event::ToolResult(tau_proto::ToolResult {
-                            call_id: call_id.clone(),
-                            tool_name: tool_name.clone(),
-                            result: CborValue::Map(vec![
-                                (
-                                    CborValue::Text("name".to_owned()),
-                                    CborValue::Text(name.to_owned()),
-                                ),
-                                (
-                                    CborValue::Text("content".to_owned()),
-                                    CborValue::Text(body.to_owned()),
-                                ),
-                            ]),
-                        })
-                    }
-                    Err(e) => Event::ToolError(tau_proto::ToolError {
-                        call_id: call_id.clone(),
-                        tool_name: tool_name.clone(),
-                        message: format!("failed to read skill file: {e}"),
-                        details: None,
-                    }),
-                },
-                None => Event::ToolError(tau_proto::ToolError {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    message: format!("unknown skill: {name}"),
-                    details: None,
-                }),
-            },
+        let action = cbor_map_text(&call.arguments, "action");
+        let result_event = match action {
+            Some("load") => self.handle_skill_load(&call_id, &tool_name, &call.arguments),
+            Some("search") => self.handle_skill_search(&call_id, &tool_name, &call.arguments),
+            Some(other) => Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: format!(
+                    "unknown skill action: {other:?} (expected \"load\" or \"search\")"
+                ),
+                details: None,
+            }),
             None => Event::ToolError(tau_proto::ToolError {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
-                message: "missing required argument: name".to_owned(),
+                message: "missing required argument: action (\"load\" or \"search\")".to_owned(),
                 details: None,
             }),
         };
@@ -2791,6 +2796,132 @@ impl Harness {
         self.on_tool_call_complete(&call.id);
 
         Ok(())
+    }
+
+    fn handle_skill_load(
+        &self,
+        call_id: &ToolCallId,
+        tool_name: &ToolName,
+        arguments: &CborValue,
+    ) -> Event {
+        let Some(name) = cbor_map_text(arguments, "name") else {
+            return Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: "missing required argument: name (action=load)".to_owned(),
+                details: None,
+            });
+        };
+        let Some(skill) = self.discovered_skills.get(name) else {
+            return Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: format!("unknown skill: {name}"),
+                details: None,
+            });
+        };
+        match std::fs::read_to_string(&skill.file_path) {
+            Ok(content) => {
+                let body = tau_skills::strip_frontmatter(&content);
+                Event::ToolResult(tau_proto::ToolResult {
+                    call_id: call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    result: CborValue::Map(vec![
+                        (
+                            CborValue::Text("name".to_owned()),
+                            CborValue::Text(name.to_owned()),
+                        ),
+                        (
+                            CborValue::Text("content".to_owned()),
+                            CborValue::Text(body.to_owned()),
+                        ),
+                    ]),
+                })
+            }
+            Err(e) => Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: format!("failed to read skill file: {e}"),
+                details: None,
+            }),
+        }
+    }
+
+    fn handle_skill_search(
+        &self,
+        call_id: &ToolCallId,
+        tool_name: &ToolName,
+        arguments: &CborValue,
+    ) -> Event {
+        let Some(query) = cbor_map_text(arguments, "query") else {
+            return Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: "missing required argument: query (action=search)".to_owned(),
+                details: None,
+            });
+        };
+        let search_content = cbor_map_bool(arguments, "search_content").unwrap_or(false);
+        let needle = query.to_lowercase();
+        if needle.is_empty() {
+            return Event::ToolError(tau_proto::ToolError {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                message: "query must not be empty".to_owned(),
+                details: None,
+            });
+        }
+
+        let mut hits: Vec<(&tau_proto::SkillName, &DiscoveredSkill)> = self
+            .discovered_skills
+            .iter()
+            .filter(|(name, skill)| {
+                if name.as_str().to_lowercase().contains(&needle)
+                    || skill.description.to_lowercase().contains(&needle)
+                {
+                    return true;
+                }
+                if search_content {
+                    if let Ok(content) = std::fs::read_to_string(&skill.file_path) {
+                        return content.to_lowercase().contains(&needle);
+                    }
+                }
+                false
+            })
+            .collect();
+        hits.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+
+        let matches = CborValue::Array(
+            hits.into_iter()
+                .map(|(name, skill)| {
+                    CborValue::Map(vec![
+                        (
+                            CborValue::Text("name".to_owned()),
+                            CborValue::Text(name.as_str().to_owned()),
+                        ),
+                        (
+                            CborValue::Text("description".to_owned()),
+                            CborValue::Text(skill.description.clone()),
+                        ),
+                    ])
+                })
+                .collect(),
+        );
+        Event::ToolResult(tau_proto::ToolResult {
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            result: CborValue::Map(vec![
+                (
+                    CborValue::Text("query".to_owned()),
+                    CborValue::Text(query.to_owned()),
+                ),
+                (
+                    CborValue::Text("search_content".to_owned()),
+                    CborValue::Bool(search_content),
+                ),
+                (CborValue::Text("matches".to_owned()), matches),
+            ]),
+        })
     }
 
     // -----------------------------------------------------------------------
