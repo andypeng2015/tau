@@ -973,6 +973,7 @@ impl Harness {
                     }
                     Err(ToolRouteError::NoProvider { tool_name }) => {
                         let call_id = request.call_id.to_string();
+                        let owning_cid = self.tool_conversations.get(&request.call_id).cloned();
                         let error = ToolError {
                             call_id: request.call_id,
                             tool_name,
@@ -980,15 +981,19 @@ impl Harness {
                             details: None,
                         };
                         self.publish_event(None, Event::ToolError(error));
+                        if let Some(cid) = owning_cid {
+                            self.sync_conversation_head(&cid);
+                        }
                         self.clear_tool_call_tracking(&call_id);
                     }
                     Err(error) => return Err(HarnessError::ToolRoute(error)),
                 }
             }
             Event::ToolResult(result) => {
-                if self.tool_conversations.contains_key(&result.call_id) {
+                if let Some(cid) = self.tool_conversations.get(&result.call_id).cloned() {
                     let call_id = result.call_id.to_string();
                     self.publish_event(Some(source_id), Event::ToolResult(result));
+                    self.sync_conversation_head(&cid);
                     self.clear_tool_call_tracking(&call_id);
                     self.on_tool_call_complete(&call_id);
                 } else {
@@ -999,9 +1004,10 @@ impl Harness {
                 }
             }
             Event::ToolError(error) => {
-                if self.tool_conversations.contains_key(&error.call_id) {
+                if let Some(cid) = self.tool_conversations.get(&error.call_id).cloned() {
                     let call_id = error.call_id.to_string();
                     self.publish_event(Some(source_id), Event::ToolError(error));
+                    self.sync_conversation_head(&cid);
                     self.clear_tool_call_tracking(&call_id);
                     self.on_tool_call_complete(&call_id);
                 } else {
@@ -1684,14 +1690,25 @@ impl Harness {
 
     fn sync_default_conversation_head(&mut self) {
         let cid = self.default_conversation_id.clone();
-        let Some(session_id) = self.conversations.get(&cid).map(|c| c.session_id.clone()) else {
+        self.sync_conversation_head(&cid);
+    }
+
+    /// Refresh a conversation's local head from the session tree's
+    /// current head. Used after publishing an event that grew the tree
+    /// on this conversation's behalf via `publish_event` (which, unlike
+    /// `publish_for_conversation`, doesn't update `c.head`). Without
+    /// this, the next `publish_for_conversation` call would see a stale
+    /// `want_head` and emit a `UiNavigateTree` that bounces the tree
+    /// head backward, orphaning the just-published node.
+    fn sync_conversation_head(&mut self, cid: &ConversationId) {
+        let Some(session_id) = self.conversations.get(cid).map(|c| c.session_id.clone()) else {
             return;
         };
         let head = self
             .store
             .session(session_id.as_str())
             .and_then(|tree| tree.head());
-        if let Some(conv) = self.conversations.get_mut(&cid) {
+        if let Some(conv) = self.conversations.get_mut(cid) {
             conv.head = head;
         }
     }
@@ -2199,8 +2216,11 @@ impl Harness {
         // `publish_event` flows the AgentResponseFinished into the
         // durable per-session log; the SessionTree fold appends an
         // `AgentMessage` carrying both `text` and `thinking` (when
-        // text is present).
+        // text is present). Sync the owning conversation's head so
+        // a subsequent tool dispatch via `publish_for_conversation`
+        // doesn't navigate the tree backward to the pre-response head.
         self.publish_event(None, Event::AgentResponseFinished(response.clone()));
+        self.sync_conversation_head(&cid);
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
         if let Some(conv) = self.conversations.get_mut(&cid) {

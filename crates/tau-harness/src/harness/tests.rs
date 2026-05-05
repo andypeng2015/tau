@@ -1053,6 +1053,109 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
     h.shutdown().expect("shutdown");
 }
 
+#[test]
+fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
+    // Regression: when several tool calls complete in sequence, every
+    // ToolResult must end up on the current branch so the follow-up
+    // prompt sees a balanced tool_use ↔ tool_result set. A previous
+    // bug let `publish_event` (used by the ToolResult/ToolError path)
+    // leave the conversation's local head stale, so the next
+    // ToolRequest's `publish_for_conversation` emitted a
+    // `UiNavigateTree` that bounced the tree head backward — orphaning
+    // the just-published ToolResult onto a dead branch and triggering
+    // OpenAI's "No tool output found for function call ..." 400.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = "test/model".into();
+
+    append_user_message_via_event(&mut h, "s1", "go");
+    let cid = h.default_conversation_id.clone();
+    h.turn_state = TurnState::AgentThinking {
+        _session_id: "s1".into(),
+        conversation_id: cid.clone(),
+    };
+    h.prompt_conversations.insert("sp-x".into(), cid);
+
+    let write_args = |name: &str| {
+        CborValue::Map(vec![
+            (
+                CborValue::Text("path".to_owned()),
+                CborValue::Text(td.path().join(name).display().to_string()),
+            ),
+            (
+                CborValue::Text("content".to_owned()),
+                CborValue::Text(name.to_owned()),
+            ),
+        ])
+    };
+    let response = AgentResponseFinished {
+        session_prompt_id: "sp-x".into(),
+        text: None,
+        tool_calls: vec![
+            AgentToolCall {
+                id: "c1".into(),
+                name: "write".into(),
+                arguments: write_args("a.txt"),
+            },
+            AgentToolCall {
+                id: "c2".into(),
+                name: "write".into(),
+                arguments: write_args("b.txt"),
+            },
+            AgentToolCall {
+                id: "c3".into(),
+                name: "write".into(),
+                arguments: write_args("c.txt"),
+            },
+        ],
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        originator: tau_proto::PromptOriginator::User,
+    };
+    h.handle_agent_response_finished(response)
+        .expect("finished");
+
+    drive_harness_until_call_completes(&mut h, "c1");
+    drive_harness_until_call_completes(&mut h, "c2");
+    drive_harness_until_call_completes(&mut h, "c3");
+
+    // After all three tools complete, the harness has auto-dispatched
+    // a follow-up prompt. Read its messages and check that every
+    // tool_use has a matching tool_result on the same branch.
+    let spid: SessionPromptId = "sp-0".into();
+    let prompt = read_prompt_created(&h, &spid);
+    let mut tool_use_ids: Vec<String> = Vec::new();
+    let mut tool_result_ids: Vec<String> = Vec::new();
+    for msg in &prompt.messages {
+        for block in &msg.content {
+            match block {
+                tau_proto::ContentBlock::ToolUse { id, .. } => {
+                    tool_use_ids.push(id.to_string());
+                }
+                tau_proto::ContentBlock::ToolResult { tool_use_id, .. } => {
+                    tool_result_ids.push(tool_use_id.to_string());
+                }
+                tau_proto::ContentBlock::Text { .. } => {}
+            }
+        }
+    }
+    assert_eq!(
+        tool_use_ids,
+        vec!["c1".to_owned(), "c2".to_owned(), "c3".to_owned()],
+        "follow-up prompt must keep every tool_use; got {tool_use_ids:?}"
+    );
+    assert_eq!(
+        tool_result_ids,
+        vec!["c1".to_owned(), "c2".to_owned(), "c3".to_owned()],
+        "every tool_use must be paired with a tool_result on the current branch; \
+         got {tool_result_ids:?}"
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
 /// Pumps the harness event loop until the named tool call's result
 /// or error is received and handled. Panics on timeout.
 fn drive_harness_until_call_completes(h: &mut Harness, target_call_id: &str) {
