@@ -23,8 +23,10 @@ pub(crate) fn build_system_prompt(
 ) -> String {
     let mut prompt = String::from(
         "You are an expert coding assistant operating inside Tau, \
-         a coding agent harness. You help users by reading files, \
-         executing commands, editing code, and writing new files.\n\n",
+         a coding agent harness. TAU_VERSION contains Tau's release \
+         version, and TAU_BUILD contains Tau's git revision for this \
+         build. You help users by reading files, executing commands, \
+         editing code, and writing new files.\n\n",
     );
 
     // Available tools section.
@@ -68,6 +70,19 @@ pub(crate) fn build_system_prompt(
     prompt.push_str(&format!("\nCurrent working directory: {cwd}\n"));
 
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_system_prompt_mentions_tau_version_and_build() {
+        let skills = std::collections::HashMap::new();
+        let prompt = build_system_prompt(&[], &skills, "/tmp/work");
+        assert!(prompt.contains("TAU_VERSION contains Tau's release version"));
+        assert!(prompt.contains("TAU_BUILD contains Tau's git revision"));
+    }
 }
 
 pub(crate) fn render_agents_context_message<'a>(
