@@ -788,7 +788,15 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
         _session_id: "s1".into(),
         conversation_id: cid.clone(),
     };
-    h.prompt_conversations.insert("sp-x".into(), cid);
+    h.prompt_conversations.insert("sp-x".into(), cid.clone());
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "do it".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+        }),
+    );
 
     let response = AgentResponseFinished {
         session_prompt_id: "sp-x".into(),
@@ -865,7 +873,15 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
         _session_id: "s1".into(),
         conversation_id: cid.clone(),
     };
-    h.prompt_conversations.insert("sp-x".into(), cid);
+    h.prompt_conversations.insert("sp-x".into(), cid.clone());
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "do it".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+        }),
+    );
 
     let response = AgentResponseFinished {
         session_prompt_id: "sp-x".into(),
@@ -1609,6 +1625,58 @@ fn dump_initial_prompt_to_tmp() {
     std::fs::create_dir_all(dest.parent().unwrap()).expect("create tmp/");
     std::fs::write(&dest, &out).expect("write dump");
     eprintln!("wrote {}", dest.display());
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn queued_prompt_extends_completed_first_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = "test/model".into();
+
+    let first = h
+        .submit_user_prompt("s1".into(), "first".to_owned())
+        .expect("submit first");
+    assert_eq!(first, PromptSubmission::Dispatched);
+    let spid1: SessionPromptId = "sp-0".into();
+    let prompt1 = read_prompt_created(&h, &spid1);
+
+    let second = h
+        .submit_user_prompt("s1".into(), "second".to_owned())
+        .expect("submit second");
+    assert_eq!(second, PromptSubmission::Queued);
+
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1,
+        text: Some("first answer".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        originator: tau_proto::PromptOriginator::User,
+    })
+    .expect("finish first");
+
+    let spid2: SessionPromptId = "sp-1".into();
+    let prompt2 = read_prompt_created(&h, &spid2);
+    assert!(
+        prompt1.messages.len() < prompt2.messages.len(),
+        "queued follow-up should extend the first prompt"
+    );
+    assert_eq!(
+        &prompt2.messages[..prompt1.messages.len()],
+        prompt1.messages.as_slice()
+    );
+    let last = prompt2.messages.last().expect("last message");
+    assert_eq!(last.role, tau_proto::ConversationRole::User);
+    assert_eq!(
+        last.content,
+        vec![tau_proto::ContentBlock::Text {
+            text: "second".to_owned()
+        }]
+    );
 
     h.shutdown().expect("shutdown");
 }

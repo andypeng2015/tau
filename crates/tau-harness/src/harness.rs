@@ -309,6 +309,7 @@ impl Harness {
         );
 
         let default_conversation_id = ConversationId::new("default");
+        let default_head = store.session(eager_session_id).and_then(|tree| tree.head());
         let mut conversations = std::collections::HashMap::new();
         conversations.insert(
             default_conversation_id.clone(),
@@ -316,7 +317,7 @@ impl Harness {
                 default_conversation_id.clone(),
                 eager_session_id.into(),
                 tau_proto::PromptOriginator::User,
-                None,
+                default_head,
                 None,
             ),
         );
@@ -475,6 +476,7 @@ impl Harness {
         );
 
         let default_conversation_id = ConversationId::new("default");
+        let default_head = store.session(eager_session_id).and_then(|tree| tree.head());
         let mut conversations = std::collections::HashMap::new();
         conversations.insert(
             default_conversation_id.clone(),
@@ -482,7 +484,7 @@ impl Harness {
                 default_conversation_id.clone(),
                 eager_session_id.into(),
                 tau_proto::PromptOriginator::User,
-                None,
+                default_head,
                 None,
             ),
         );
@@ -610,16 +612,23 @@ impl Harness {
             .store
             .session(session_id.as_str())
             .and_then(|t| t.head());
-        if want_head != have_head
-            && let Some(target) = want_head
-        {
-            self.publish_event(
-                None,
-                Event::UiNavigateTree(tau_proto::UiNavigateTree {
-                    session_id: session_id.clone(),
-                    node_id: target.0,
-                }),
-            );
+        if want_head != have_head {
+            match want_head {
+                Some(target) => self.publish_event(
+                    None,
+                    Event::UiNavigateTree(tau_proto::UiNavigateTree {
+                        session_id: session_id.clone(),
+                        node_id: target.0,
+                    }),
+                ),
+                None => {
+                    self.emit_info(&format!(
+                        "conversation `{cid}` has no stored head but session `{}` is non-empty; \
+                         appending at current tree head",
+                        session_id.as_str()
+                    ));
+                }
+            }
         }
         self.publish_event(None, event);
         let new_head = self
@@ -1673,6 +1682,20 @@ impl Harness {
         Ok(())
     }
 
+    fn sync_default_conversation_head(&mut self) {
+        let cid = self.default_conversation_id.clone();
+        let Some(session_id) = self.conversations.get(&cid).map(|c| c.session_id.clone()) else {
+            return;
+        };
+        let head = self
+            .store
+            .session(session_id.as_str())
+            .and_then(|tree| tree.head());
+        if let Some(conv) = self.conversations.get_mut(&cid) {
+            conv.head = head;
+        }
+    }
+
     fn session_initialized(&self, session_id: &SessionId) -> bool {
         self.initialized_sessions.contains(session_id)
     }
@@ -2002,6 +2025,9 @@ impl Harness {
 
     fn complete_session_init(&mut self, session_id: SessionId) -> Result<(), HarnessError> {
         self.ensure_agents_context_inserted(session_id.as_str())?;
+        if session_id == self.current_session_id {
+            self.sync_default_conversation_head();
+        }
         self.initialized_sessions.insert(session_id);
         self.turn_state = TurnState::Idle;
         self.try_advance_queue();
@@ -2558,7 +2584,7 @@ impl Harness {
             tool_name: tool_name.clone(),
             arguments: call.arguments.clone(),
         };
-        self.publish_event(None, Event::ToolRequest(request.clone()));
+        self.publish_for_conversation(cid, Event::ToolRequest(request.clone()));
 
         match self
             .registry
@@ -2575,7 +2601,7 @@ impl Harness {
                     message: "no live provider available".to_owned(),
                     details: None,
                 };
-                self.publish_event(None, Event::ToolError(error));
+                self.publish_for_conversation(cid, Event::ToolError(error));
                 self.clear_tool_call_tracking(call_id.as_str());
                 self.on_tool_call_complete(&call.id);
             }
@@ -2622,16 +2648,16 @@ impl Harness {
             .insert(call_id_owned.clone(), cid.clone());
         self.pending_tool_names
             .insert(call_id_owned.clone(), placeholder.clone());
-        self.publish_event(
-            None,
+        self.publish_for_conversation(
+            cid,
             Event::ToolRequest(ToolRequest {
                 call_id: call_id_owned.clone(),
                 tool_name: placeholder.clone(),
                 arguments: arguments.clone(),
             }),
         );
-        self.publish_event(
-            None,
+        self.publish_for_conversation(
+            cid,
             Event::ToolError(ToolError {
                 call_id: call_id_owned,
                 tool_name: placeholder,
@@ -2685,8 +2711,8 @@ impl Harness {
         self.tool_conversations.insert(call_id.clone(), cid.clone());
         self.pending_tool_names
             .insert(call_id.clone(), tool_name.clone());
-        self.publish_event(
-            None,
+        self.publish_for_conversation(
+            cid,
             Event::ToolRequest(ToolRequest {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
@@ -2740,9 +2766,9 @@ impl Harness {
         };
 
         // Publish, then drop the in-flight tracking — order matters:
-        // `session_id_for_event` reads `pending_tool_sessions` to
+        // `session_id_for_event` reads `tool_conversations` to
         // attribute the persisted record before we clear it.
-        self.publish_event(None, result_event);
+        self.publish_for_conversation(cid, result_event);
         self.clear_tool_call_tracking(call_id.as_str());
         self.on_tool_call_complete(&call.id);
 
