@@ -43,6 +43,38 @@
           paths = buildPaths;
         };
 
+        tauBuildPlaceholder = "01234569abcdef7afa1d2683a099c7af48a523c1";
+        tauBuildRevision =
+          if (self ? rev) && (builtins.stringLength self.rev == 40) then
+            self.rev
+          else if (self ? dirtyRev) && (builtins.stringLength self.dirtyRev == 46) then
+            "${builtins.substring 0 16 self.dirtyRev}00000000${builtins.substring 24 16 self.dirtyRev}"
+          else if (self ? dirtyRev) && (builtins.stringLength self.dirtyRev == 40) then
+            self.dirtyRev
+          else
+            tauBuildPlaceholder;
+
+        replaceTauBuildRevision =
+          package:
+          pkgs.stdenv.mkDerivation {
+            pname = projectName;
+            version = package.version;
+
+            dontUnpack = true;
+            dontStrip = true;
+
+            nativeBuildInputs = [ pkgs.bbe ];
+
+            installPhase = ''
+              cp -a ${package} $out
+              chmod -R u+w $out
+              for path in $(${pkgs.findutils}/bin/find $out -type f -executable); do
+                ${pkgs.bbe}/bin/bbe -e 's/${tauBuildPlaceholder}/${tauBuildRevision}/' "$path" -o ./tmp
+                cat ./tmp > "$path"
+              done
+            '';
+          };
+
         multiBuild = (flakeboxLib.craneMultiBuild { }) (
           craneLib':
           let
@@ -50,6 +82,8 @@
               pname = projectName;
               src = buildSrc;
               nativeBuildInputs = [ ];
+              BUILT_OVERRIDE_tau-cli_GIT_COMMIT_HASH = tauBuildPlaceholder;
+              BUILT_OVERRIDE_tau-cli_GIT_COMMIT_HASH_SHORT = builtins.substring 0 7 tauBuildPlaceholder;
             };
           in
           rec {
@@ -68,10 +102,12 @@
               cargoArtifacts = workspaceDeps;
             };
 
-            tau = craneLib.buildPackage {
-              cargoArtifacts = workspaceDeps;
-              cargoExtraArgs = "-p tau";
-            };
+            tau = replaceTauBuildRevision (
+              craneLib.buildPackage {
+                cargoArtifacts = workspaceDeps;
+                cargoExtraArgs = "-p tau";
+              }
+            );
           }
         );
 
