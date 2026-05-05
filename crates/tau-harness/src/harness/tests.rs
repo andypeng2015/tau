@@ -71,15 +71,42 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         call_id: "call_HC8dStLuLeEjHCxFZsBx6jfV".into(),
         tool_name: "skill".into(),
         outcome: ToolActivityOutcome::Requested {
-            arguments: CborValue::Map(vec![(
-                CborValue::Text("name".to_owned()),
-                CborValue::Text("jujutsu".to_owned()),
-            )]),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("action".to_owned()),
+                    CborValue::Text("load".to_owned()),
+                ),
+                (
+                    CborValue::Text("name".to_owned()),
+                    CborValue::Text("jujutsu".to_owned()),
+                ),
+            ]),
         },
     });
     assert_eq!(
         format_session_entry(&skill_request),
         "tool.request skill jujutsu"
+    );
+
+    let skill_search = SessionEntry::ToolActivity(ToolActivityRecord {
+        call_id: "call_search".into(),
+        tool_name: "skill".into(),
+        outcome: ToolActivityOutcome::Requested {
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("action".to_owned()),
+                    CborValue::Text("search".to_owned()),
+                ),
+                (
+                    CborValue::Text("query".to_owned()),
+                    CborValue::Text("commit".to_owned()),
+                ),
+            ]),
+        },
+    });
+    assert_eq!(
+        format_session_entry(&skill_search),
+        "tool.request skill search commit"
     );
 
     let read_request = SessionEntry::ToolActivity(ToolActivityRecord {

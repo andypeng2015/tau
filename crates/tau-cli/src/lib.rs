@@ -980,6 +980,32 @@ fn cbor_text_field(value: &CborValue, key: &str) -> Option<String> {
     None
 }
 
+fn cbor_bool_field(value: &CborValue, key: &str) -> Option<bool> {
+    if let CborValue::Map(entries) = value {
+        for (k, v) in entries {
+            if let (CborValue::Text(k), CborValue::Bool(b)) = (k, v) {
+                if k == key {
+                    return Some(*b);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cbor_array_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a [CborValue]> {
+    if let CborValue::Map(entries) = value {
+        for (k, v) in entries {
+            if let (CborValue::Text(k), CborValue::Array(arr)) = (k, v) {
+                if k == key {
+                    return Some(arr.as_slice());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn cbor_int_field(value: &CborValue, key: &str) -> Option<i128> {
     if let CborValue::Map(entries) = value {
         for (k, v) in entries {
@@ -1108,7 +1134,20 @@ fn format_tool_call(tool_name: &str, arguments: &CborValue) -> ToolCallDisplay {
             args
         }
         "ls" => cbor_text_field(arguments, "path").unwrap_or_else(|| ".".to_owned()),
-        "skill" => cbor_text_field(arguments, "name").unwrap_or_default(),
+        "skill" => match cbor_text_field(arguments, "action").as_deref() {
+            Some("search") => {
+                let query = cbor_text_field(arguments, "query").unwrap_or_default();
+                let scope = if cbor_bool_field(arguments, "search_content").unwrap_or(false) {
+                    " [content]"
+                } else {
+                    ""
+                };
+                format!("search: {query}{scope}")
+            }
+            // Default to load semantics for `action: "load"` and for
+            // legacy / malformed calls without an action.
+            _ => cbor_text_field(arguments, "name").unwrap_or_default(),
+        },
         _ => String::new(),
     };
     let suffix = running_suffix_after(&args);
@@ -1295,14 +1334,38 @@ fn format_tool_completion(
             }
         }
         "skill" => {
-            let name = cbor_text_field(details, "name").unwrap_or_default();
-            if let Some(msg) = error_message {
-                format_tool_error("skill", name, msg)
+            // Distinguish search vs load by the result shape: search
+            // results carry `query` + `matches`, load results carry
+            // `name` + `content`.
+            if let Some(query) = cbor_text_field(details, "query") {
+                let scope = if cbor_bool_field(details, "search_content").unwrap_or(false) {
+                    " [content]"
+                } else {
+                    ""
+                };
+                let args = format!("search: {query}{scope}");
+                if let Some(msg) = error_message {
+                    format_tool_error("skill", args, msg)
+                } else {
+                    let count = cbor_array_field(details, "matches")
+                        .map(<[CborValue]>::len)
+                        .unwrap_or(0);
+                    ToolCallDisplay {
+                        tool_name: "skill".into(),
+                        args,
+                        suffixes: vec![info_suffix(format!("({count} matches)")), ok_suffix()],
+                    }
+                }
             } else {
-                ToolCallDisplay {
-                    tool_name: "skill".into(),
-                    args: name,
-                    suffixes: vec![info_suffix("loaded".to_owned()), ok_suffix()],
+                let name = cbor_text_field(details, "name").unwrap_or_default();
+                if let Some(msg) = error_message {
+                    format_tool_error("skill", name, msg)
+                } else {
+                    ToolCallDisplay {
+                        tool_name: "skill".into(),
+                        args: name,
+                        suffixes: vec![info_suffix("loaded".to_owned()), ok_suffix()],
+                    }
                 }
             }
         }
