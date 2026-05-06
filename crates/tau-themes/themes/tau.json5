@@ -23,6 +23,7 @@
     "tool.status.error":    { fg: "red" },
     "tool.status.info":     { fg: "blue" },
     "tool.progress":        { fg: "dark_yellow" },
+    "progress.indicator":   { bold: true },
 
     // -- Extensions --
     "extension.lifecycle":  { fg: "dark_grey" },

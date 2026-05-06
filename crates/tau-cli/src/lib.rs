@@ -1138,6 +1138,7 @@ enum ToolStatus {
     Success,
     Error,
     Info,
+    Progress,
     DiffAdded,
     DiffRemoved,
 }
@@ -1330,7 +1331,7 @@ fn running_suffix_after(args: &str) -> ToolSuffixSegment {
     let no_leading_space = args.chars().next_back().is_some_and(char::is_whitespace);
     ToolSuffixSegment {
         text: "…".to_owned(),
-        status: ToolStatus::Info,
+        status: ToolStatus::Progress,
         no_leading_space,
     }
 }
@@ -1346,16 +1347,51 @@ fn err_suffix(message: Option<&str>) -> ToolSuffixSegment {
     }
 }
 
-/// Append the streaming-progress indicator (`…`) to `text`, prefixing
-/// a space only when needed so the indicator doesn't double up
-/// whitespace or get stranded one column off the left margin on a
-/// fresh line. The space is skipped when `text` is empty or its last
-/// character is whitespace (which includes newlines).
-fn append_streaming_indicator(text: &mut String) {
-    if text.chars().next_back().is_some_and(|c| !c.is_whitespace()) {
-        text.push(' ');
+/// Build a streaming block whose body uses `body_name` styling and
+/// whose trailing `…` indicator uses [`names::PROGRESS_INDICATOR`], so
+/// the indicator can be themed independently. The leading space before
+/// the indicator is skipped when the body is empty or already ends in
+/// whitespace, so the `…` doesn't double up whitespace or land one
+/// column off the left margin on a fresh line.
+fn streaming_block(
+    theme: &tau_themes::Theme,
+    body_name: &str,
+    body_text: impl Into<String>,
+) -> tau_cli_term::StyledBlock {
+    use tau_cli_term::resolve::{convert_color, resolve};
+    use tau_cli_term::{Span, Style, StyledBlock, StyledText};
+    use tau_themes::{StyleName, names};
+
+    let body_text = body_text.into();
+    let needs_space = body_text
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace());
+
+    let body_ts = theme.resolve_style(&StyleName::new(body_name));
+    let body_span_style = Style {
+        fg: body_ts.fg.map(convert_color),
+        bg: None,
+        bold: body_ts.bold,
+        underline: body_ts.underline,
+        italic: body_ts.italic,
+    };
+    let progress_style = resolve(theme, names::PROGRESS_INDICATOR);
+
+    let mut spans = Vec::with_capacity(3);
+    if !body_text.is_empty() {
+        spans.push(Span::new(body_text, body_span_style));
     }
-    text.push('…');
+    if needs_space {
+        spans.push(Span::new(" ", body_span_style));
+    }
+    spans.push(Span::new("…".to_owned(), progress_style));
+
+    let mut block = StyledBlock::new(StyledText::from(spans));
+    if let Some(bg) = body_ts.bg {
+        block = block.bg(convert_color(bg));
+    }
+    block
 }
 
 fn output_stats_suffix(text: &str) -> ToolSuffixSegment {
@@ -1624,6 +1660,7 @@ fn render_tool_block(
             ToolStatus::Success => names::TOOL_STATUS_SUCCESS,
             ToolStatus::Error => names::TOOL_STATUS_ERROR,
             ToolStatus::Info => names::TOOL_STATUS_INFO,
+            ToolStatus::Progress => names::PROGRESS_INDICATOR,
             ToolStatus::DiffAdded => names::DIFF_ADDED,
             ToolStatus::DiffRemoved => names::DIFF_REMOVED,
         };
@@ -2243,9 +2280,7 @@ impl EventRenderer {
                     ));
                 }
 
-                let mut pending = String::new();
-                append_streaming_indicator(&mut pending);
-                let block = themed_block(&self.theme, names::AGENT_PENDING, pending);
+                let block = streaming_block(&self.theme, names::AGENT_PENDING, "");
                 let id = self.handle.new_block(block);
                 self.handle.push_above_active(id);
                 self.handle.redraw();
@@ -2271,9 +2306,8 @@ impl EventRenderer {
                     self.thinking_text
                         .insert(spid.to_owned(), thinking.to_owned());
                     if self.show_thinking {
-                        let mut shown = thinking.to_owned();
-                        append_streaming_indicator(&mut shown);
-                        let block = themed_block(&self.theme, names::AGENT_THINKING, shown);
+                        let block =
+                            streaming_block(&self.theme, names::AGENT_THINKING, thinking);
                         if let Some(&tbid) = self.thinking_blocks.get(spid) {
                             self.handle.set_block(tbid, block);
                         } else {
@@ -2301,9 +2335,8 @@ impl EventRenderer {
                 }
 
                 if let Some(&bid) = self.prompt_blocks.get(spid) {
-                    let mut text = update.text.clone();
-                    append_streaming_indicator(&mut text);
-                    let block = themed_block(&self.theme, names::AGENT_RESPONSE, text);
+                    let block =
+                        streaming_block(&self.theme, names::AGENT_RESPONSE, update.text.clone());
                     self.handle.set_block(bid, block);
                     self.handle.redraw();
                 }

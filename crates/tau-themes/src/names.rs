@@ -25,6 +25,11 @@ pub const TOOL_STATUS_ERROR: &str = "tool.status.error";
 pub const TOOL_STATUS_INFO: &str = "tool.status.info";
 pub const TOOL_PROGRESS: &str = "tool.progress";
 
+/// Streaming-`…` indicator appended to in-progress agent responses,
+/// thinking blocks, and running tool-call lines. Painted independently
+/// from the surrounding body so themes can make it stand out.
+pub const PROGRESS_INDICATOR: &str = "progress.indicator";
+
 // -- Extensions --
 pub const EXTENSION_LIFECYCLE: &str = "extension.lifecycle";
 

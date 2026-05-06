@@ -1047,7 +1047,8 @@ fn cache_hit_percent_clamps_to_input_tokens() {
 }
 
 #[test]
-fn append_streaming_indicator_handles_each_trailing_case() {
+fn streaming_block_handles_each_trailing_case() {
+    let theme = tau_themes::Theme::builtin();
     let cases = [
         ("", "…"),
         ("Hello", "Hello …"),
@@ -1057,9 +1058,14 @@ fn append_streaming_indicator_handles_each_trailing_case() {
         ("line\n  ", "line\n  …"),
     ];
     for (input, expected) in cases {
-        let mut s = input.to_owned();
-        super::append_streaming_indicator(&mut s);
-        assert_eq!(s, expected, "input was {input:?}");
+        let block = super::streaming_block(&theme, tau_themes::names::AGENT_RESPONSE, input);
+        let actual: String = block
+            .content
+            .spans()
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(actual, expected, "input was {input:?}");
     }
 }
 
