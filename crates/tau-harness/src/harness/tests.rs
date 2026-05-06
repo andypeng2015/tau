@@ -2101,6 +2101,192 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
 }
 
 #[test]
+fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
+    // Multi-term search: the agent fires several plausible terms at
+    // once, the harness scores each skill by how many terms matched
+    // it, and returns hits sorted by score descending. Ties break on
+    // name to keep the output deterministic.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+
+    const T1: &str = "zqxalpha";
+    const T2: &str = "zqxbeta";
+
+    let alpha_dir = td.path().join("zqx-alpha");
+    std::fs::create_dir_all(&alpha_dir).expect("mkdir");
+    let alpha_file = alpha_dir.join("SKILL.md");
+    std::fs::write(
+        &alpha_file,
+        format!("---\nname: zqx-alpha\ndescription: matches {T1} and {T2}\n---\nbody"),
+    )
+    .expect("write alpha");
+
+    let beta_dir = td.path().join("zqx-beta");
+    std::fs::create_dir_all(&beta_dir).expect("mkdir");
+    let beta_file = beta_dir.join("SKILL.md");
+    std::fs::write(
+        &beta_file,
+        format!("---\nname: zqx-beta\ndescription: matches only {T1}\n---\nbody"),
+    )
+    .expect("write beta");
+
+    let gamma_dir = td.path().join("zqx-gamma");
+    std::fs::create_dir_all(&gamma_dir).expect("mkdir");
+    let gamma_file = gamma_dir.join("SKILL.md");
+    std::fs::write(
+        &gamma_file,
+        "---\nname: zqx-gamma\ndescription: unrelated\n---\nbody",
+    )
+    .expect("write gamma");
+
+    let mut h = echo_harness(&sp).expect("start");
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-alpha"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: format!("matches {T1} and {T2}"),
+            file_path: alpha_file,
+            add_to_prompt: false,
+        },
+    );
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-beta"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: format!("matches only {T1}"),
+            file_path: beta_file,
+            add_to_prompt: false,
+        },
+    );
+    h.discovered_skills.insert(
+        tau_proto::SkillName::from("zqx-gamma"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: "unrelated".to_owned(),
+            file_path: gamma_file,
+            add_to_prompt: false,
+        },
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_search_array = |terms: &[&str], id: &str| AgentToolCall {
+        id: id.into(),
+        name: "skill".into(),
+        arguments: CborValue::Map(vec![
+            (
+                CborValue::Text("action".to_owned()),
+                CborValue::Text("search".to_owned()),
+            ),
+            (
+                CborValue::Text("query".to_owned()),
+                CborValue::Array(
+                    terms
+                        .iter()
+                        .map(|t| CborValue::Text((*t).to_owned()))
+                        .collect(),
+                ),
+            ),
+        ]),
+    };
+
+    let read_match_records = |h: &Harness, call_id: &str| -> Vec<(String, u64)> {
+        let events = h.store.session_events("s1").expect("events");
+        let result = events
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                Event::ToolResult(r) if r.call_id.as_str() == call_id => Some(r.result.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        let CborValue::Map(top) = result else {
+            panic!("result must be a map")
+        };
+        let matches = top
+            .iter()
+            .find_map(|(k, v)| match (k, v) {
+                (CborValue::Text(k), CborValue::Array(arr)) if k == "matches" => Some(arr.clone()),
+                _ => None,
+            })
+            .expect("matches array");
+        matches
+            .into_iter()
+            .map(|m| {
+                let CborValue::Map(entries) = m else {
+                    panic!("match must be a map")
+                };
+                let mut name = None;
+                let mut hits: Option<u64> = None;
+                for (k, v) in entries {
+                    match (&k, &v) {
+                        (CborValue::Text(k), CborValue::Text(v)) if k == "name" => {
+                            name = Some(v.clone());
+                        }
+                        (CborValue::Text(k), CborValue::Integer(i)) if k == "hit_count" => {
+                            let n: i128 = (*i).into();
+                            hits = Some(n as u64);
+                        }
+                        _ => {}
+                    }
+                }
+                (name.expect("name"), hits.expect("hit_count"))
+            })
+            .collect()
+    };
+
+    seed_tools_running(&mut h, &cid, vec!["call-multi".into()]);
+    h.handle_skill_tool_call(&cid, &call_search_array(&[T1, T2], "call-multi"))
+        .expect("multi search");
+    let records = read_match_records(&h, "call-multi");
+    assert_eq!(
+        records,
+        vec![("zqx-alpha".to_owned(), 2), ("zqx-beta".to_owned(), 1),],
+        "alpha matches both terms (rank 2), beta matches one (rank 1), \
+         gamma matches none and must be filtered out",
+    );
+
+    // A single-element array must behave the same as a single string —
+    // the per-term matcher is unchanged.
+    seed_tools_running(&mut h, &cid, vec!["call-single".into()]);
+    h.handle_skill_tool_call(&cid, &call_search_array(&[T2], "call-single"))
+        .expect("single in array");
+    assert_eq!(
+        read_match_records(&h, "call-single"),
+        vec![("zqx-alpha".to_owned(), 1)],
+    );
+
+    // Empty array should error rather than silently returning every
+    // skill — the agent passing `[]` is almost always a bug.
+    seed_tools_running(&mut h, &cid, vec!["call-empty".into()]);
+    h.handle_skill_tool_call(
+        &cid,
+        &AgentToolCall {
+            id: "call-empty".into(),
+            name: "skill".into(),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("action".to_owned()),
+                    CborValue::Text("search".to_owned()),
+                ),
+                (
+                    CborValue::Text("query".to_owned()),
+                    CborValue::Array(Vec::new()),
+                ),
+            ]),
+        },
+    )
+    .expect("call");
+    let events = h.store.session_events("s1").expect("events");
+    let saw_error = events.iter().rev().any(|entry| {
+        matches!(
+            &entry.event,
+            Event::ToolError(e) if e.call_id.as_str() == "call-empty"
+        )
+    });
+    assert!(saw_error, "empty query array must produce a ToolError");
+}
+
+#[test]
 fn skill_tool_unknown_action_returns_error() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");

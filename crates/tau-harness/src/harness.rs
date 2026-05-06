@@ -2993,17 +2993,28 @@ impl Harness {
                 name: "skill".into(),
                 description: Some(
                     "Discover and load skills — short, focused playbooks for \
-                     specific tasks. Two actions:\n\
-                     - `load`: fetch a skill's full content by exact name. Use \
-                     this when you already know the skill name, e.g. one shown \
-                     in <available_skills> or returned by `search`.\n\
-                     - `search`: find skills whose name or description contain \
-                     a keyword/phrase. Returns a list of {name, description} \
-                     matches. Most skills are NOT pre-advertised, so use \
-                     `search` whenever a task hints at a tool/workflow you \
-                     might have a playbook for (e.g. \"git\", \"jujutsu\", \
-                     \"changelog\"). Set `search_content: true` to also grep \
-                     skill bodies."
+                     specific tasks. The user has likely curated skills for \
+                     workflows they care about, so reach for this tool early: \
+                     before tackling any request that touches a tool, command, \
+                     framework, or domain you are not deeply familiar with — or \
+                     anything the user might have an opinionated way of doing — \
+                     run `search` first. A 1-second search beats a guess that \
+                     the user has to correct. Two actions:\n\
+                     - `search`: find skills whose name or description match \
+                     one or more keywords. `query` accepts a single string or \
+                     an array of strings; with an array, each term is searched \
+                     independently and results are merged and ranked by how \
+                     many terms hit. When a task could plausibly map to \
+                     several names (\"commit\", \"git commit\", \"version \
+                     control\"), pass them all as an array — the top-ranked \
+                     hit is usually the right skill. Returns a list of \
+                     {name, description, hit_count}. Set \
+                     `search_content: true` to also grep skill bodies. Most \
+                     skills are NOT pre-advertised in <available_skills>, so \
+                     a missing entry there is no reason to skip the search.\n\
+                     - `load`: fetch a skill's full content by exact name. \
+                     Use this once `search` (or <available_skills>) gives you \
+                     a name."
                         .to_owned(),
                 ),
                 parameters: Some(serde_json::json!({
@@ -3019,8 +3030,9 @@ impl Harness {
                             "description": "(action=load) Exact skill name to load."
                         },
                         "query": {
-                            "type": "string",
-                            "description": "(action=search) Keyword or phrase to match against skill names and descriptions (case-insensitive substring)."
+                            "type": ["string", "array"],
+                            "items": {"type": "string"},
+                            "description": "(action=search) One or more keywords/phrases to match (case-insensitive substring) against skill names and descriptions. Pass a single string for one term, or an array of strings to search several terms at once — hits are merged and ranked by how many terms matched."
                         },
                         "search_content": {
                             "type": "boolean",
@@ -3150,47 +3162,64 @@ impl Harness {
         tool_name: &ToolName,
         arguments: &CborValue,
     ) -> Event {
-        let Some(query) = cbor_map_text(arguments, "query") else {
-            return Event::ToolError(tau_proto::ToolError {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                message: "missing required argument: query (action=search)".to_owned(),
-                details: None,
-            });
+        let needles = match extract_skill_search_queries(arguments) {
+            Ok(needles) => needles,
+            Err(message) => {
+                return Event::ToolError(tau_proto::ToolError {
+                    call_id: call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    message,
+                    details: None,
+                });
+            }
         };
         let search_content = cbor_map_bool(arguments, "search_content").unwrap_or(false);
-        let needle = query.to_lowercase();
-        if needle.is_empty() {
-            return Event::ToolError(tau_proto::ToolError {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                message: "query must not be empty".to_owned(),
-                details: None,
-            });
-        }
 
-        let mut hits: Vec<(&tau_proto::SkillName, &DiscoveredSkill)> = self
+        // Score each skill by how many of the needles match it. A skill
+        // that matches more terms is more likely the right answer when
+        // the agent fired several plausible spellings at the same time
+        // ("commit", "git commit", "version control").
+        let mut hits: Vec<(usize, &tau_proto::SkillName, &DiscoveredSkill)> = self
             .discovered_skills
             .iter()
-            .filter(|(name, skill)| {
-                if name.as_str().to_lowercase().contains(&needle)
-                    || skill.description.to_lowercase().contains(&needle)
-                {
-                    return true;
-                }
-                if search_content {
-                    if let Ok(content) = std::fs::read_to_string(&skill.file_path) {
-                        return content.to_lowercase().contains(&needle);
-                    }
-                }
-                false
+            .filter_map(|(name, skill)| {
+                let lower_name = name.as_str().to_lowercase();
+                let lower_desc = skill.description.to_lowercase();
+                // Read the body at most once across all needles, and
+                // only when at least one needle didn't match in the
+                // name or description and the caller opted in.
+                let mut body: Option<String> = None;
+                let hit_count = needles
+                    .iter()
+                    .filter(|needle| {
+                        if lower_name.contains(needle.as_str())
+                            || lower_desc.contains(needle.as_str())
+                        {
+                            return true;
+                        }
+                        if !search_content {
+                            return false;
+                        }
+                        let body = body.get_or_insert_with(|| {
+                            std::fs::read_to_string(&skill.file_path)
+                                .map(|s| s.to_lowercase())
+                                .unwrap_or_default()
+                        });
+                        body.contains(needle.as_str())
+                    })
+                    .count();
+                (hit_count > 0).then_some((hit_count, name, skill))
             })
             .collect();
-        hits.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+        // Higher hit_count first; tie-break on name for deterministic
+        // output across runs.
+        hits.sort_by(|(ac, an, _), (bc, bn, _)| {
+            bc.cmp(ac).then_with(|| an.as_str().cmp(bn.as_str()))
+        });
 
         let matches = CborValue::Array(
             hits.into_iter()
-                .map(|(name, skill)| {
+                .map(|(hit_count, name, skill)| {
                     CborValue::Map(vec![
                         (
                             CborValue::Text("name".to_owned()),
@@ -3200,18 +3229,21 @@ impl Harness {
                             CborValue::Text("description".to_owned()),
                             CborValue::Text(skill.description.clone()),
                         ),
+                        (
+                            CborValue::Text("hit_count".to_owned()),
+                            CborValue::Integer((hit_count as u64).into()),
+                        ),
                     ])
                 })
                 .collect(),
         );
+        let queries_echo =
+            CborValue::Array(needles.iter().map(|n| CborValue::Text(n.clone())).collect());
         Event::ToolResult(tau_proto::ToolResult {
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
             result: CborValue::Map(vec![
-                (
-                    CborValue::Text("query".to_owned()),
-                    CborValue::Text(query.to_owned()),
-                ),
+                (CborValue::Text("queries".to_owned()), queries_echo),
                 (
                     CborValue::Text("search_content".to_owned()),
                     CborValue::Bool(search_content),
@@ -3220,7 +3252,50 @@ impl Harness {
             ]),
         })
     }
+}
 
+/// Parse the `query` argument of a `skill` tool call's `search` action
+/// into one-or-more lowercased search needles. Accepts either a single
+/// string (one needle) or an array of strings (multiple needles whose
+/// hits are merged and ranked by hit-count). Returns a user-facing
+/// error message string on missing/empty/malformed input.
+fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, String> {
+    let CborValue::Map(entries) = arguments else {
+        return Err("missing required argument: query (action=search)".to_owned());
+    };
+    let raw = entries
+        .iter()
+        .find_map(|(k, v)| match k {
+            CborValue::Text(k) if k == "query" => Some(v),
+            _ => None,
+        })
+        .ok_or_else(|| "missing required argument: query (action=search)".to_owned())?;
+
+    let needles: Vec<String> = match raw {
+        CborValue::Text(s) => vec![s.to_lowercase()],
+        CborValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    CborValue::Text(s) => out.push(s.to_lowercase()),
+                    _ => return Err("query array entries must all be strings".to_owned()),
+                }
+            }
+            out
+        }
+        _ => {
+            return Err("query must be a string or an array of strings (action=search)".to_owned());
+        }
+    };
+
+    let needles: Vec<String> = needles.into_iter().filter(|n| !n.is_empty()).collect();
+    if needles.is_empty() {
+        return Err("query must include at least one non-empty term".to_owned());
+    }
+    Ok(needles)
+}
+
+impl Harness {
     // -----------------------------------------------------------------------
     // Test helpers
     // -----------------------------------------------------------------------
