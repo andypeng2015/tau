@@ -456,7 +456,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
     let theme = tau_themes::Theme::builtin();
     let settings = tau_config::settings::load_cli_settings().unwrap_or_default();
     let prompt_style = tau_cli_term::resolve::resolve(&theme, tau_themes::names::PROMPT_MARKER);
-    let prompt = tau_cli_term::Span::new("> ", prompt_style);
+    let prompt = tau_cli_term::Span::new(format!("{} ", settings.prompt_symbol), prompt_style);
     let cursor_shape = if settings.bar_cursor {
         tau_cli_term::CursorShape::Bar
     } else {
@@ -499,6 +499,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         theme.clone(),
         cli_state,
         dirs,
+        settings.submitted_prompt_symbol,
     );
     let effort_state = renderer.effort_state();
     let _renderer = std::thread::spawn(move || {
@@ -1849,6 +1850,8 @@ struct EventRenderer {
     last_turn_latency: Option<Duration>,
     /// Shared effort mirror for the input thread.
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Symbol shown before submitted prompts in the transcript.
+    submitted_prompt_symbol: String,
 }
 
 /// One completed file-mutation tool block. Held so `/diff` can
@@ -1897,6 +1900,7 @@ impl EventRenderer {
                 config_dir: None,
                 state_dir: None,
             },
+            ">".to_string(),
         )
     }
 
@@ -1906,6 +1910,7 @@ impl EventRenderer {
         theme: tau_themes::Theme,
         state: tau_config::settings::CliState,
         state_dirs: tau_config::settings::TauDirs,
+        submitted_prompt_symbol: String,
     ) -> Self {
         Self {
             handle,
@@ -1940,6 +1945,7 @@ impl EventRenderer {
             effort_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(effort_to_u8(
                 tau_proto::Effort::Off,
             ))),
+            submitted_prompt_symbol,
         }
     }
 
@@ -2105,6 +2111,10 @@ impl EventRenderer {
         self.handle.redraw();
     }
 
+    fn submitted_prompt_prefix(&self) -> String {
+        format!("{} ", self.submitted_prompt_symbol)
+    }
+
     fn handle(&mut self, event: &Event) {
         use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
@@ -2143,7 +2153,7 @@ impl EventRenderer {
                 let block = themed_block(
                     &self.theme,
                     names::USER_PROMPT,
-                    format!("> {}", prompt.text),
+                    format!("{}{}", self.submitted_prompt_prefix(), prompt.text),
                 );
                 let id = self.handle.print_output(block);
                 self.last_user_block = Some(id);
@@ -2154,7 +2164,7 @@ impl EventRenderer {
                     let block = themed_block(
                         &self.theme,
                         names::USER_PROMPT_QUEUED,
-                        format!("> {} (queued)", queued.text),
+                        format!("{}{} (queued)", self.submitted_prompt_prefix(), queued.text),
                     );
                     let queued_id = self.handle.new_block(block);
                     self.handle.push_above_sticky(queued_id);
@@ -2174,7 +2184,7 @@ impl EventRenderer {
                     self.handle.print_output(themed_block(
                         &self.theme,
                         names::USER_PROMPT,
-                        format!("> {text}"),
+                        format!("{}{text}", self.submitted_prompt_prefix()),
                     ));
                     self.handle.redraw();
                 } else {
@@ -2184,7 +2194,7 @@ impl EventRenderer {
                     self.handle.print_output(themed_block(
                         &self.theme,
                         names::USER_PROMPT,
-                        format!("> {}", steered.text),
+                        format!("{}{}", self.submitted_prompt_prefix(), steered.text),
                     ));
                     self.handle.redraw();
                 }
@@ -2197,7 +2207,7 @@ impl EventRenderer {
                     self.handle.print_output(themed_block(
                         &self.theme,
                         names::USER_PROMPT,
-                        format!("> {text}"),
+                        format!("{}{text}", self.submitted_prompt_prefix()),
                     ));
                 }
 

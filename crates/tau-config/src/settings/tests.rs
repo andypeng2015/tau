@@ -8,6 +8,8 @@ fn default_cli_settings_have_logo_enabled() {
     assert!(s.greeting);
     assert!(s.show_logo);
     assert!(s.bar_cursor);
+    assert_eq!(s.prompt_symbol, "◯");
+    assert_eq!(s.submitted_prompt_symbol, "⬤");
 }
 
 #[test]
@@ -27,6 +29,8 @@ fn cli_settings_load_from_json5_file() {
     assert!(!s.greeting);
     assert!(s.show_logo); // default
     assert!(s.bar_cursor); // default
+    assert_eq!(s.prompt_symbol, "◯"); // default
+    assert_eq!(s.submitted_prompt_symbol, "⬤"); // default
 }
 
 #[test]
@@ -71,6 +75,23 @@ fn cli_settings_can_disable_bar_cursor() {
     assert!(!s.bar_cursor);
     assert!(s.greeting); // default
     assert!(s.show_logo); // default
+    assert_eq!(s.prompt_symbol, "◯"); // default
+    assert_eq!(s.submitted_prompt_symbol, "⬤"); // default
+}
+
+#[test]
+fn cli_settings_can_customize_prompt_symbols() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("cli.json5"),
+        r#"{ prompt_symbol: "λ", submitted_prompt_symbol: "✓" }"#,
+    )
+    .expect("write");
+
+    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
+    assert_eq!(s.prompt_symbol, "λ");
+    assert_eq!(s.submitted_prompt_symbol, "✓");
 }
 
 #[test]

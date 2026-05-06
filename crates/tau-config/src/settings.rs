@@ -28,6 +28,10 @@ pub struct CliSettings {
     /// Use a bar-shaped cursor in the CLI. When false, use a steady
     /// block cursor instead.
     pub bar_cursor: bool,
+    /// Symbol shown before the input prompt.
+    pub prompt_symbol: String,
+    /// Symbol shown before submitted prompts in the transcript.
+    pub submitted_prompt_symbol: String,
 }
 
 impl Default for CliSettings {
@@ -36,6 +40,8 @@ impl Default for CliSettings {
             greeting: true,
             show_logo: true,
             bar_cursor: true,
+            prompt_symbol: "◯".to_string(),
+            submitted_prompt_symbol: "⬤".to_string(),
         }
     }
 }
