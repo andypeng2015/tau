@@ -900,3 +900,60 @@ fn live_block_growth_scrolls_updated_lines_into_scrollback() {
         "updated line 1 should be in scrollback, got: {sb_rows:?}"
     );
 }
+
+/// Shift+Enter and Alt+Enter both insert a `\n` at the cursor
+/// without submitting the line, while plain Enter still submits.
+/// Mirrors the affordance users expect from chat UIs. Shift+Enter
+/// covers terminals that speak the kitty keyboard protocol;
+/// Alt+Enter (the `\e\r` byte sequence) is the universal fallback
+/// for terminals that don't.
+#[test]
+fn shift_or_alt_enter_inserts_newline_without_submitting() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) =
+        Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("line one".to_owned(), "line one".len());
+
+    // Shift+Enter: stay on the line, surface BufferChanged.
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT,
+        )))
+        .expect("send shift+enter");
+    assert!(matches!(
+        term.get_next_event().expect("event"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_buffer(), "line one\n");
+
+    // Alt+Enter: same behavior as shift, exercises the universal
+    // fallback path.
+    handle.set_buffer("line one\n".to_owned(), "line one\n".len());
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::ALT,
+        )))
+        .expect("send alt+enter");
+    assert!(matches!(
+        term.get_next_event().expect("event"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_buffer(), "line one\n\n");
+
+    // Type more, then plain Enter to submit the whole multi-line
+    // buffer as one Line event.
+    handle.set_buffer("line one\nline two".to_owned(), "line one\nline two".len());
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("send enter");
+    assert!(matches!(
+        term.get_next_event().expect("event"),
+        Event::Line(line) if line == "line one\nline two"
+    ));
+}

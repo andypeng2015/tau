@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 use crossterm::cursor::{MoveToColumn, MoveUp};
-use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::style::Print;
 use crossterm::{QueueableCommand, terminal};
 use screen::{Screen, emit_styled_cells, layout_block, layout_lines};
@@ -617,9 +620,17 @@ impl Term {
         // `CtEvent::Paste(String)` instead of a stream of individual
         // KeyEvents (which, without bracketed paste, leaked literal
         // escape-sequence bytes into the input buffer).
+        //
+        // Also push the kitty keyboard protocol's
+        // `DISAMBIGUATE_ESCAPE_CODES` flag so the terminal sends
+        // distinct sequences for combos like `Shift+Enter` /
+        // `Ctrl+Enter` that vanilla terminals collapse into a bare
+        // `\r`. Terminals that don't implement the protocol silently
+        // ignore the escape and we keep the legacy behavior.
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::event::EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
             cursor_shape.crossterm_style()
         );
 
@@ -809,7 +820,17 @@ impl Term {
             return rx.recv().ok();
         }
         match event::read().ok()? {
-            CtEvent::Key(key) => Some(RawEvent::Key(key)),
+            CtEvent::Key(key) => {
+                // The kitty protocol surfaces Press/Repeat/Release
+                // events; drop Release here so each keystroke fires
+                // exactly once downstream. (On terminals that don't
+                // support the protocol, only Press is ever emitted —
+                // this branch is a no-op there.)
+                if key.kind == KeyEventKind::Release {
+                    return self.next_raw();
+                }
+                Some(RawEvent::Key(key))
+            }
             CtEvent::Resize(w, h) => Some(RawEvent::Resize(w, h)),
             CtEvent::Paste(text) => Some(RawEvent::Paste(text)),
             // Mouse / focus events: skip and recurse so the caller
@@ -876,7 +897,11 @@ impl Term {
         if !self.owns_raw_mode {
             return Ok(());
         }
-        let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            io::stdout(),
+            PopKeyboardEnhancementFlags,
+            crossterm::event::DisableBracketedPaste,
+        );
         terminal::disable_raw_mode()?;
         let _ = crossterm::execute!(
             io::stdout(),
@@ -900,6 +925,7 @@ impl Term {
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::event::EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
             self.cursor_shape.crossterm_style()
         );
         let _ = crossterm::execute!(
@@ -929,8 +955,33 @@ impl Term {
 
     fn handle_key(&self, key: KeyEvent) -> io::Result<Option<Event>> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         match key.code {
+            KeyCode::Enter if shift || alt => {
+                // Shift+Enter / Alt+Enter both insert a newline into
+                // the buffer rather than submitting — same affordance
+                // Slack/Discord/ChatGPT use. Shift+Enter only reaches
+                // us on terminals where the kitty keyboard protocol
+                // survives the push (kitty, foot, alacritty, recent
+                // iTerm2/WezTerm/Windows Terminal); Alt+Enter is the
+                // universal fallback because every terminal sends
+                // `\e\r` for it regardless of protocol negotiation.
+                // Legacy terminals without kitty support collapse
+                // Shift+Enter into a bare Enter and fall through to
+                // the submit arm below.
+                {
+                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    st.completion = None;
+                    let cursor = st.cursor;
+                    st.buffer.insert(cursor, '\n');
+                    st.cursor = cursor + 1;
+                    st.sync_buffer_to_history_nav();
+                }
+                self.refresh_completion();
+                return Ok(Some(Event::BufferChanged));
+            }
             KeyCode::Enter => {
                 // If a candidate is previewed, accept it but stay on
                 // the line — the buffer already reflects the
@@ -1192,10 +1243,16 @@ impl Drop for Term {
     fn drop(&mut self) {
         self.shutdown();
         if self.owns_raw_mode {
-            // Pair the `EnableBracketedPaste` we issued in `new`; the
-            // terminal would keep bracketing subsequent pastes in
-            // other programs until it's explicitly turned off.
-            let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableBracketedPaste);
+            // Pair the `EnableBracketedPaste` and the keyboard-protocol
+            // push we issued in `new`; the terminal would keep
+            // bracketing subsequent pastes and emitting CSI-u
+            // sequences in other programs until they're explicitly
+            // turned off.
+            let _ = crossterm::execute!(
+                io::stdout(),
+                PopKeyboardEnhancementFlags,
+                crossterm::event::DisableBracketedPaste,
+            );
             let _ = terminal::disable_raw_mode();
         }
     }
