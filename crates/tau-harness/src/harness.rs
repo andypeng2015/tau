@@ -419,11 +419,15 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", eager_session_id, "constructing harness from config");
         let state_dir = state_dir.into();
         let (tx, rx) = mpsc::channel();
-        let mut bus =
-            EventBus::with_subscription_policy(Box::new(DefaultSubscriptionPolicy::with_store(
-                PolicyStore::open(policy_store_path_from(&state_dir))?,
-            )));
-        let store = SessionStore::open(&state_dir)?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening policy store");
+        let policy_store = PolicyStore::open(policy_store_path_from(&state_dir))?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "policy store opened");
+        let mut bus = EventBus::with_subscription_policy(Box::new(
+            DefaultSubscriptionPolicy::with_store(policy_store),
+        ));
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening session store");
+        let store = SessionStore::open_lazy(&state_dir)?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session store opened");
 
         let mut extensions = Vec::new();
         let mut _next_instance_counter: u64 = 0;

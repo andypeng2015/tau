@@ -139,9 +139,11 @@ impl Error for SessionStoreError {
 ///   lock          # exclusively flock'd while this store has the session loaded for write
 /// ```
 ///
-/// Existing session dirs are eagerly loaded into memory at `open()`;
-/// their flocks are taken lazily on first write so read-only consumers
-/// (e.g. inspection commands) don't contend with a running daemon.
+/// Existing session dirs are loaded lazily. Startup constructs an
+/// empty store and loads individual session trees on first access.
+/// Flocks are still taken lazily on first write so read-only
+/// consumers (e.g. inspection commands) don't contend with a running
+/// daemon.
 #[derive(Debug)]
 pub struct SessionStore {
     state_dir: PathBuf,
@@ -157,14 +159,7 @@ impl SessionStore {
     /// every session subdirectory found there.
     pub fn open(state_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
         let state_dir = state_dir.into();
-        fs::create_dir_all(&state_dir).map_err(|source| {
-            SessionStoreError::CreateParentDirectory {
-                path: state_dir.clone(),
-                source,
-            }
-        })?;
-
-        let mut sessions = HashMap::new();
+        let mut store = Self::open_lazy(state_dir.clone())?;
         for entry in fs::read_dir(&state_dir).map_err(|source| SessionStoreError::Read {
             path: state_dir.clone(),
             source,
@@ -185,17 +180,43 @@ impl SessionStore {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| SessionStoreError::InvalidSessionDir { path: path.clone() })?;
-            let sid: SessionId = session_id_str.into();
-            let events = load_session_events(&events_path)?;
-            let tree = SessionTree::from_events(sid.clone(), &events);
-            sessions.insert(sid, tree);
+            store.load_session_if_needed(session_id_str)?;
         }
+        Ok(store)
+    }
+
+    /// Opens the session store rooted at `state_dir` without loading
+    /// session event logs. Individual sessions are loaded on write;
+    /// callers that need a pre-existing tree should use [`Self::open`].
+    pub fn open_lazy(state_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
+        let state_dir = state_dir.into();
+        fs::create_dir_all(&state_dir).map_err(|source| {
+            SessionStoreError::CreateParentDirectory {
+                path: state_dir.clone(),
+                source,
+            }
+        })?;
 
         Ok(Self {
             state_dir,
-            sessions,
+            sessions: HashMap::new(),
             locks: HashMap::new(),
         })
+    }
+
+    fn load_session_if_needed(&mut self, session_id: &str) -> Result<(), SessionStoreError> {
+        let sid: SessionId = session_id.into();
+        if self.sessions.contains_key(&sid) {
+            return Ok(());
+        }
+        let events_path = self.session_dir(session_id).join("events.cbor");
+        if !events_path.exists() {
+            return Ok(());
+        }
+        let events = load_session_events(&events_path)?;
+        let tree = SessionTree::from_events(sid.clone(), &events);
+        self.sessions.insert(sid, tree);
+        Ok(())
     }
 
     /// Returns the path to one session's directory (created lazily on
@@ -271,6 +292,7 @@ impl SessionStore {
         event: Event,
     ) -> Result<LogEventId, SessionStoreError> {
         self.ensure_locked(session_id)?;
+        self.load_session_if_needed(session_id)?;
         let session_dir = self.session_dir(session_id);
         fs::create_dir_all(&session_dir).map_err(|source| {
             SessionStoreError::CreateParentDirectory {
