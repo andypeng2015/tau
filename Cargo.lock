@@ -1653,6 +1653,8 @@ dependencies = [
  "tau-themes",
  "tempfile",
  "time",
+ "tracing",
+ "tracing-subscriber",
  "vt100",
 ]
 

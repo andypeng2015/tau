@@ -3,6 +3,8 @@
 
 pub mod cli;
 
+mod ui_logging;
+
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufReader, BufWriter};
@@ -391,6 +393,18 @@ fn start_daemon(session_id: &str) -> Result<DaemonHandle, CliError> {
 fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
     use tau_cli_term::{HighTerm, SlashCommand};
 
+    let state_dir = tau_harness::default_state_dir();
+    let ui_logging = ui_logging::init(&state_dir)?;
+    tracing::info!(
+        target: "tau_cli::ui",
+        ui_id = ui_logging.ui_id(),
+        ui_dir = %ui_logging.dir().display(),
+        log_path = %ui_logging.log_path().display(),
+        session_id,
+        attach,
+        "terminal UI starting"
+    );
+
     let daemon = resolve_daemon(attach, session_id)?;
     let socket_path = daemon.socket_path();
 
@@ -612,6 +626,8 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         InputLoopExit::Detach => daemon.leak(),
     }
 
+    tracing::info!(target: "tau_cli::ui", reason, "terminal UI exiting");
+
     Ok(())
 }
 
@@ -813,7 +829,9 @@ fn terminal_input_loop(
                 }
             }
             TermEvent::Eof => return Ok(InputLoopExit::Quit),
-            TermEvent::Resize { .. } => {}
+            TermEvent::Resize { .. } => {
+                tracing::debug!(target: "tau_cli::ui", "terminal resized");
+            }
             TermEvent::BufferChanged => {
                 // Trailing-edge debounce: stash the latest buffer
                 // contents and wake the debounce thread; it will
@@ -826,6 +844,7 @@ fn terminal_input_loop(
                         session_id: session_id.as_str().into(),
                         text,
                     });
+                    tracing::trace!(target: "tau_cli::ui", "prompt draft updated");
                     cv.notify_one();
                 }
             }
