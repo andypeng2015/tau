@@ -9,6 +9,24 @@ use tracing_subscriber::fmt::MakeWriter;
 const UI_LOG_ENV: &str = "TAU_CLI_LOG";
 const DEFAULT_FILTER: &str = "tau_cli=info";
 
+/// Initialize stderr tracing for component subcommands that do not
+/// have their own logging setup. Uses `TAU_CLI_LOG` so startup can be
+/// traced across the parent CLI and harness child with one knob.
+pub fn init_stderr_from_env(default_filter: &str) {
+    let filter = EnvFilter::try_from_env(UI_LOG_ENV)
+        .or_else(|_| EnvFilter::try_new(default_filter))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_target(true)
+        .with_level(true)
+        .with_timer(tracing_subscriber::fmt::time::SystemTime)
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
 /// File-backed tracing writer for one terminal UI instance.
 #[derive(Clone)]
 struct UiLogWriter {

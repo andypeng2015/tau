@@ -415,6 +415,8 @@ impl Harness {
         dirs: tau_config::settings::TauDirs,
         eager_session_id: &str,
     ) -> Result<Self, HarnessError> {
+        let startup_started_at = Instant::now();
+        tracing::debug!(target: "tau_harness::startup", eager_session_id, "constructing harness from config");
         let state_dir = state_dir.into();
         let (tx, rx) = mpsc::channel();
         let mut bus =
@@ -428,6 +430,7 @@ impl Harness {
         let mut agent_connection_id = None;
 
         for ext_config in &config.extensions {
+            tracing::debug!(target: "tau_harness::startup", extension = %ext_config.name, elapsed_ms = startup_started_at.elapsed().as_millis(), "spawning extension");
             let kind = match ext_config.role.as_deref() {
                 Some("agent") => ClientKind::Agent,
                 _ => ClientKind::Tool,
@@ -437,6 +440,7 @@ impl Harness {
                 extension_stderr_log_path(&state_dir, eager_session_id, &ext_config.name);
             let (conn_id, child_pid) =
                 spawn_supervised(ext_config, kind.clone(), Some(log_path), &mut bus, &tx)?;
+            tracing::debug!(target: "tau_harness::startup", extension = %ext_config.name, pid = child_pid, elapsed_ms = startup_started_at.elapsed().as_millis(), "extension spawned");
 
             if kind == ClientKind::Agent {
                 agent_connection_id = Some(conn_id.clone());
@@ -459,8 +463,10 @@ impl Harness {
 
         let agent_connection_id = agent_connection_id.ok_or(HarnessError::NoAgentConfigured)?;
 
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "loading model list");
         let (available_models, selected_model, model_registry, harness_settings) =
             load_model_list(&dirs);
+        tracing::debug!(target: "tau_harness::startup", selected_model = %selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "model list loaded");
         let selected_effort = selected_effort_for_model(
             &dirs,
             &harness_settings,
@@ -524,27 +530,34 @@ impl Harness {
         };
 
         let _ = harness.enable_debug_log(&state_dir.join(eager_session_id))?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "debug event log enabled");
         // Record cwd in meta.json so `-r` (resume most recent for this
         // cwd) can find this session even before it has any log entries.
         // Also acquires the flock on `<state_dir>/<eager_session_id>/lock`.
         harness
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session metadata recorded");
 
         for i in 0..harness.extensions.len() {
             let name = harness.extensions[i].name.clone();
             harness.emit_extension_starting(&name);
         }
         harness.wait_for_extensions_ready()?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "extensions ready");
         harness.register_harness_tools();
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness tools registered");
         harness.check_config_exists();
         harness.check_config_parses();
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "config checks complete");
 
         harness.start_session_init(
             eager_session_id.into(),
             tau_proto::SessionStartReason::Initial,
         );
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session init started");
         harness.wait_for_session_init()?;
+        tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session init complete");
         Ok(harness)
     }
 
@@ -3194,10 +3207,7 @@ impl Harness {
             hits.into_iter()
                 .map(|(hit_count, name, description)| {
                     CborValue::Map(vec![
-                        (
-                            CborValue::Text("name".to_owned()),
-                            CborValue::Text(name),
-                        ),
+                        (CborValue::Text("name".to_owned()), CborValue::Text(name)),
                         (
                             CborValue::Text("description".to_owned()),
                             CborValue::Text(description),
@@ -3277,7 +3287,11 @@ impl Harness {
         });
         hits.into_iter()
             .map(|(hit_count, name, skill)| {
-                (hit_count, name.as_str().to_owned(), skill.description.clone())
+                (
+                    hit_count,
+                    name.as_str().to_owned(),
+                    skill.description.clone(),
+                )
             })
             .collect()
     }

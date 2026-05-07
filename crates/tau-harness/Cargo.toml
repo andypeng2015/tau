@@ -20,6 +20,7 @@ tau-proto.workspace = true
 tau-skills.workspace = true
 tau-socket.workspace = true
 tau-supervisor.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -293,21 +293,29 @@ pub fn run_harness_daemon(
     eager_session_id: &str,
     options: ServeOptions,
 ) -> Result<(), HarnessError> {
+    let startup_started_at = Instant::now();
+    tracing::debug!(target: "tau_harness::startup", project_root = %project_root.display(), eager_session_id, "starting harness daemon");
     let daemon_dir = runtime_dir::prepare_daemon_dir(project_root)?;
+    tracing::debug!(target: "tau_harness::startup", daemon_dir = %daemon_dir.path().display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "prepared daemon dir");
     let listener = bind_listener(&daemon_dir.socket_path())?;
+    tracing::debug!(target: "tau_harness::startup", socket_path = %daemon_dir.socket_path().display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "bound daemon socket");
 
     let state_dir = crate::dirs::default_state_dir();
     let dirs = options.dirs.clone().unwrap_or_default();
+    tracing::debug!(target: "tau_harness::startup", state_dir = %state_dir.display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "constructing harness");
     let mut harness = Harness::from_config(config, &state_dir, dirs, eager_session_id)?;
+    tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness constructed");
     harness.emit_info(&format!(
         "session dir: {}/",
         state_dir.join(eager_session_id).display()
     ));
 
     // Write marker AFTER extensions are ready.
+    tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "writing daemon ready markers");
     daemon_dir.write_marker()?;
     daemon_dir.write_pid()?;
     daemon_dir.write_session_id(eager_session_id)?;
+    tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "daemon ready markers written");
 
     let tx = harness.tx.clone();
     thread::spawn(move || {
@@ -326,8 +334,12 @@ pub fn run_harness_daemon(
 
 /// Entrypoint for `tau ext harness`.
 pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
+    let startup_started_at = Instant::now();
+    tracing::debug!(target: "tau_harness::startup", "harness component starting");
     let project_root = std::env::current_dir()?;
+    tracing::debug!(target: "tau_harness::startup", project_root = %project_root.display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "resolved project root");
     let config = resolve_config(None)?;
+    tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "resolved config");
     // The CLI passes the minted/resumed session id via the harness's
     // SESSION_ID env var when spawning a daemon. Fallback to
     // `default_session_id()` covers a bare `tau ext harness`

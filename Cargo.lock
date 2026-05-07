@@ -1793,6 +1793,7 @@ dependencies = [
  "tau-socket",
  "tau-supervisor",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

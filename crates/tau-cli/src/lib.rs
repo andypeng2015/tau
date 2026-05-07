@@ -7,6 +7,7 @@ mod ui_logging;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::fs::OpenOptions;
 use std::io::{self, BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -298,14 +299,24 @@ fn find_most_recent_session(cwd: &Path) -> Option<String> {
         .map(|(sid, _)| sid.as_str().to_owned())
 }
 
-fn resolve_daemon(attach: bool, session_id: &str) -> Result<DaemonHandle, CliError> {
+fn resolve_daemon(
+    attach: bool,
+    session_id: &str,
+    daemon_stderr: Option<Stdio>,
+) -> Result<DaemonHandle, CliError> {
+    tracing::debug!(target: "tau_cli::startup", attach, session_id, "resolving harness daemon");
     let project_root = std::env::current_dir()?;
     if attach {
+        tracing::debug!(target: "tau_cli::startup", project_root = %project_root.display(), "looking for existing harness daemon");
         let daemon_dir =
             runtime_dir::find_harness_for_dir(&project_root).ok_or(CliError::NoRunningDaemon)?;
+        tracing::debug!(target: "tau_cli::startup", daemon_dir = %daemon_dir.display(), "attached harness daemon resolved");
         return Ok(DaemonHandle::Attached { daemon_dir });
     }
-    start_daemon(session_id)
+    start_daemon(
+        session_id,
+        daemon_stderr.expect("daemon stderr for spawned harness"),
+    )
 }
 
 fn build_revision() -> String {
@@ -348,8 +359,9 @@ fn build_label() -> String {
 }
 
 /// Spawns a new harness daemon and waits for its socket to be ready.
-fn start_daemon(session_id: &str) -> Result<DaemonHandle, CliError> {
+fn start_daemon(session_id: &str, stderr: Stdio) -> Result<DaemonHandle, CliError> {
     let tau_binary = std::env::current_exe()?;
+    tracing::debug!(target: "tau_cli::startup", tau_binary = %tau_binary.display(), session_id, "spawning harness daemon");
 
     let mut child = Command::new(&tau_binary)
         .arg("ext")
@@ -358,26 +370,38 @@ fn start_daemon(session_id: &str) -> Result<DaemonHandle, CliError> {
         .env("TAU_VERSION", env!("CARGO_PKG_VERSION"))
         .env("TAU_BUILD", build_revision())
         .envs(build_last_modified().map(|date| ("TAU_LAST_MODIFIED", date)))
+        // Default-enable harness startup debug in the child process so
+        // `tau run` captures timing without requiring an env var. Users
+        // can still override/filter with `TAU_CLI_LOG`.
+        .env(
+            "TAU_CLI_LOG",
+            std::env::var("TAU_CLI_LOG")
+                .unwrap_or_else(|_| "tau_harness::startup=debug,tau_cli=info".to_owned()),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .spawn()?;
 
+    tracing::debug!(target: "tau_cli::startup", pid = child.id(), "harness daemon spawned");
     let daemon_dir = runtime_dir::root_runtime_dir().join(child.id().to_string());
     let dir_marker = daemon_dir.join("tau.dir");
     let started_at = Instant::now();
 
     loop {
         if dir_marker.exists() {
+            tracing::debug!(target: "tau_cli::startup", pid = child.id(), daemon_dir = %daemon_dir.display(), elapsed_ms = started_at.elapsed().as_millis(), "harness daemon marker observed");
             return Ok(DaemonHandle::Owned {
                 child: Some(child),
                 daemon_dir,
             });
         }
         if let Some(status) = child.try_wait()? {
+            tracing::debug!(target: "tau_cli::startup", pid = child.id(), %status, elapsed_ms = started_at.elapsed().as_millis(), "harness daemon exited before marker");
             return Err(CliError::DaemonExited(format!("exit status: {status}")));
         }
         if DAEMON_START_TIMEOUT <= started_at.elapsed() {
+            tracing::debug!(target: "tau_cli::startup", pid = child.id(), elapsed_ms = started_at.elapsed().as_millis(), "harness daemon start timed out");
             let _ = child.kill();
             let _ = child.wait();
             return Err(CliError::DaemonStartTimeout);
@@ -405,12 +429,27 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         "terminal UI starting"
     );
 
-    let daemon = resolve_daemon(attach, session_id)?;
+    let startup_started_at = Instant::now();
+    let daemon_stderr = if attach {
+        None
+    } else {
+        Some(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(ui_logging.log_path())
+                .map(Stdio::from)?,
+        )
+    };
+    let daemon = resolve_daemon(attach, session_id, daemon_stderr)?;
+    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness daemon resolved");
     let socket_path = daemon.socket_path();
 
     // Connect and split into independent reader/writer — no mutex
     // needed since they operate on cloned halves of the same stream.
+    tracing::debug!(target: "tau_cli::startup", socket_path = %socket_path.display(), "connecting to harness daemon socket");
     let stream = UnixStream::connect(&socket_path)?;
+    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "connected to harness daemon socket");
     let read_stream = stream.try_clone()?;
     let writer: WriterHandle = Arc::new(Mutex::new(EventWriter::new(BufWriter::new(stream))));
 
@@ -424,6 +463,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         }),
     )
     .map_err(CliError::Io)?;
+    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "sent lifecycle hello");
     send_event(
         &writer,
         &Event::LifecycleSubscribe(LifecycleSubscribe {
@@ -440,6 +480,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         }),
     )
     .map_err(CliError::Io)?;
+    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "sent lifecycle subscribe");
 
     // Background socket reader — decodes events and sends them to
     // a channel as `RendererCmd::Remote`. The input thread pushes
@@ -2374,8 +2415,7 @@ impl EventRenderer {
                     self.thinking_text
                         .insert(spid.to_owned(), thinking.to_owned());
                     if self.show_thinking {
-                        let block =
-                            streaming_block(&self.theme, names::AGENT_THINKING, thinking);
+                        let block = streaming_block(&self.theme, names::AGENT_THINKING, thinking);
                         if let Some(&tbid) = self.thinking_blocks.get(spid) {
                             self.handle.set_block(tbid, block);
                         } else {
@@ -2887,6 +2927,7 @@ pub fn main_with_args() -> std::process::ExitCode {
             }
 
             cli::Command::Ext { name } => {
+                ui_logging::init_stderr_from_env("tau_harness=info,tau_cli=info");
                 let runner: fn() -> Result<(), Box<dyn std::error::Error>> = match name.as_str() {
                     "agent" => tau_agent::run_stdio,
                     "ext-shell" => tau_ext_shell::run_stdio,
