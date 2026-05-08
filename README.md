@@ -3,7 +3,7 @@
 </p>
 
 
-# Tau coding agent
+# ([dpc's](#other-agents-named-tau)) Tau coding agent
 
 > Tau is like [Pi][pi], but twice as much.
 
@@ -80,6 +80,22 @@ To explore other entry points, run `tau run -h`.
 ## License
 
 [Mozilla Public License 2.0](LICENSE)
+
+## Other agents named Tau
+
+Because the author is not very original and forgot to do prior research,
+and Tau is just such a good name, there are other coding harnesses called "Tau", like:
+
+* https://github.com/tau-agent/tau - CLI, in Rust, probably quite similar
+* https://taulepton.com/
+* https://github.com/AbdoKnbGit/tau
+* https://alexledger.substack.com/p/tau-the-self-modifying-browser-based
+
+Get used to it, I guess. Now that we can all be so productive,
+we'll have forks and personal re-implementations of everything,
+with conflicting names.
+
+When you want to be specific, you can call this one "dpc's Tau coding agent".
 
 
 ## AI usage disclosure
