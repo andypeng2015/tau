@@ -105,7 +105,10 @@ pub fn default_config() -> Config {
         core: CoreConfig {
             mode: CoreMode::Embedded,
         },
-        extensions,
+        extensions: extensions
+            .into_iter()
+            .map(|extension| (extension.name.clone(), extension))
+            .collect(),
     }
 }
 
@@ -126,6 +129,9 @@ pub(crate) fn resolve_config(
         core: CoreConfig {
             mode: CoreMode::Embedded,
         },
-        extensions,
+        extensions: extensions
+            .into_iter()
+            .map(|extension| (extension.name.clone(), extension))
+            .collect(),
     })
 }

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -113,7 +114,7 @@ impl CliState {
 // ---------------------------------------------------------------------------
 
 /// Harness/agent settings loaded from `harness.json5`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct HarnessSettings {
     /// Default model provider/model to use (e.g.
@@ -122,6 +123,10 @@ pub struct HarnessSettings {
 
     /// Default effort per model (`provider/model` -> level).
     pub default_efforts: HashMap<String, tau_proto::Effort>,
+
+    /// Number of days to keep inactive session state directories.
+    /// Set to `0` to disable session cleanup.
+    pub session_retention_days: u64,
 
     /// Extension table, keyed by name. Built-in entries (`core-agent`,
     /// `core-shell`) come pre-baked at the harness level; anything the
@@ -142,6 +147,29 @@ pub struct HarnessSettings {
     /// }
     /// ```
     pub extensions: HashMap<String, ExtensionEntry>,
+}
+
+impl Default for HarnessSettings {
+    fn default() -> Self {
+        Self {
+            default_model: None,
+            default_efforts: HashMap::new(),
+            session_retention_days: 60,
+            extensions: HashMap::new(),
+        }
+    }
+}
+
+impl HarnessSettings {
+    #[must_use]
+    pub fn session_retention(&self) -> Option<Duration> {
+        if self.session_retention_days == 0 {
+            return None;
+        }
+        Some(Duration::from_secs(
+            self.session_retention_days.saturating_mul(24 * 60 * 60),
+        ))
+    }
 }
 
 /// One entry in the harness's `extensions` map.

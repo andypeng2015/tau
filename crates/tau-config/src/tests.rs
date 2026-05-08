@@ -76,8 +76,8 @@ fn load_with_paths_automatically_loads_user_config_from_default_path() {
 
     assert_eq!(config.core.mode, CoreMode::Embedded);
     assert_eq!(config.extensions.len(), 2);
-    assert_eq!(config.extensions[0].name, "agent");
-    assert_eq!(config.extensions[1].name, "shell");
+    assert_eq!(config.extensions["agent"].name, "agent");
+    assert_eq!(config.extensions["shell"].name, "shell");
 }
 
 #[test]
@@ -103,9 +103,9 @@ fn project_config_is_appended_on_top_of_user_extensions() {
 
     assert_eq!(config.core.mode, CoreMode::Daemon);
     assert_eq!(config.extensions.len(), 3);
-    assert_eq!(config.extensions[0].name, "agent");
-    assert_eq!(config.extensions[1].name, "shell");
-    assert_eq!(config.extensions[2].name, "extra_tools");
+    assert_eq!(config.extensions["agent"].name, "agent");
+    assert_eq!(config.extensions["shell"].name, "shell");
+    assert_eq!(config.extensions["extra_tools"].name, "extra_tools");
 }
 
 #[test]
@@ -131,6 +131,6 @@ fn project_config_is_ignored_when_not_enabled() {
 
     assert_eq!(config.core.mode, CoreMode::Embedded);
     assert_eq!(config.extensions.len(), 2);
-    assert_eq!(config.extensions[0].name, "agent");
-    assert_eq!(config.extensions[1].name, "shell");
+    assert_eq!(config.extensions["agent"].name, "agent");
+    assert_eq!(config.extensions["shell"].name, "shell");
 }

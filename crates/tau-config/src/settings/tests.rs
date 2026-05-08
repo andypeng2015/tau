@@ -17,6 +17,17 @@ fn default_harness_settings_have_no_model() {
     let s = HarnessSettings::default();
     assert!(s.default_model.is_none());
     assert!(s.default_efforts.is_empty());
+    assert_eq!(s.session_retention_days, 60);
+}
+
+#[test]
+fn zero_session_retention_disables_cleanup() {
+    let settings = HarnessSettings {
+        session_retention_days: 0,
+        ..HarnessSettings::default()
+    };
+
+    assert_eq!(settings.session_retention(), None);
 }
 
 #[test]
@@ -120,6 +131,7 @@ fn harness_settings_load_from_json5_file() {
             .copied(),
         Some(tau_proto::Effort::High)
     );
+    assert_eq!(s.session_retention_days, 60);
 }
 
 fn builtins() -> Vec<BuiltinExtension> {

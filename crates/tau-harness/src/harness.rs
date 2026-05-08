@@ -513,6 +513,10 @@ impl Harness {
 
         let (available_models, selected_model, model_registry, harness_settings) =
             load_model_list(&dirs);
+        crate::session_cleanup::spawn_session_cleanup(
+            state_dir.clone(),
+            harness_settings.session_retention(),
+        );
         let selected_effort = selected_effort_for_model(
             &dirs,
             &harness_settings,
@@ -655,7 +659,7 @@ impl Harness {
         let mut _next_instance_counter: u64 = 0;
         let mut agent_connection_id = None;
 
-        for ext_config in &config.extensions {
+        for ext_config in config.extensions.values() {
             tracing::debug!(target: "tau_harness::startup", extension = %ext_config.name, elapsed_ms = startup_started_at.elapsed().as_millis(), "spawning extension");
             let kind = match ext_config.role.as_deref() {
                 Some("agent") => ClientKind::Agent,
@@ -693,6 +697,10 @@ impl Harness {
         let (available_models, selected_model, model_registry, harness_settings) =
             load_model_list(&dirs);
         tracing::debug!(target: "tau_harness::startup", selected_model = %selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "model list loaded");
+        crate::session_cleanup::spawn_session_cleanup(
+            state_dir.clone(),
+            harness_settings.session_retention(),
+        );
         let selected_effort = selected_effort_for_model(
             &dirs,
             &harness_settings,

@@ -11,6 +11,7 @@
 
 pub mod settings;
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, io};
@@ -21,14 +22,16 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
     pub core: CoreConfig,
-    pub extensions: Vec<ExtensionConfig>,
+    pub extensions: BTreeMap<String, ExtensionConfig>,
 }
 
 impl Config {
     /// Applies one parsed config file on top of the current resolved config.
     pub fn merge_file(&mut self, file: ConfigFile) {
         self.core.merge(file.core);
-        self.extensions.extend(file.extensions);
+        for extension in file.extensions {
+            self.extensions.insert(extension.name.clone(), extension);
+        }
     }
 }
 

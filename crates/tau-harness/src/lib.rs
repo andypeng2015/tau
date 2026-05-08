@@ -23,6 +23,7 @@ mod format;
 mod harness;
 mod model;
 mod prompt;
+mod session_cleanup;
 mod settings;
 mod turn;
 
