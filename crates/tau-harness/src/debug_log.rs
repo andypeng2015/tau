@@ -35,7 +35,7 @@ impl DebugEventLog {
                 frame,
             } => {
                 let frame_json = serde_json::to_value(frame).unwrap_or_default();
-                let name = match frame {
+                let name = match frame.as_ref() {
                     tau_proto::Frame::Event(event) => event.name().to_string(),
                     tau_proto::Frame::Message(_) => "<message>".to_owned(),
                 };

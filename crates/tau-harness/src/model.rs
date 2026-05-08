@@ -93,10 +93,10 @@ pub(crate) fn clamp_effort(
     requested: tau_proto::Effort,
     allowed: &[tau_proto::Effort],
 ) -> tau_proto::Effort {
-    if allowed.iter().any(|level| *level == requested) {
+    if allowed.contains(&requested) {
         return requested;
     }
-    if allowed.iter().any(|level| *level == tau_proto::Effort::Off) {
+    if allowed.contains(&tau_proto::Effort::Off) {
         return tau_proto::Effort::Off;
     }
     allowed.first().copied().unwrap_or(tau_proto::Effort::Off)

@@ -72,19 +72,6 @@ pub(crate) fn build_system_prompt(
     prompt
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_system_prompt_mentions_tau_version_and_build() {
-        let skills = std::collections::HashMap::new();
-        let prompt = build_system_prompt(&[], &skills, "/tmp/work");
-        assert!(prompt.contains("TAU_VERSION contains Tau's release version"));
-        assert!(prompt.contains("TAU_BUILD contains Tau's git revision"));
-    }
-}
-
 pub(crate) fn render_agents_context_message<'a>(
     files: impl IntoIterator<Item = &'a DiscoveredAgentsFile>,
 ) -> String {
@@ -292,5 +279,18 @@ pub(crate) fn cbor_to_text(v: &tau_proto::CborValue) -> String {
         }
         CborValue::Tag(_, inner) => cbor_to_text(inner),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_system_prompt_mentions_tau_version_and_build() {
+        let skills = std::collections::HashMap::new();
+        let prompt = build_system_prompt(&[], &skills, "/tmp/work");
+        assert!(prompt.contains("TAU_VERSION contains Tau's release version"));
+        assert!(prompt.contains("TAU_BUILD contains Tau's git revision"));
     }
 }

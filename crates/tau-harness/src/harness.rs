@@ -1303,7 +1303,7 @@ impl Harness {
                     connection_id,
                     frame,
                 } => {
-                    self.handle_extension_event(&connection_id, frame)?;
+                    self.handle_extension_event(&connection_id, *frame)?;
                 }
                 HarnessEvent::Disconnected { connection_id } => {
                     self.handle_disconnect(&connection_id);
@@ -1337,7 +1337,7 @@ impl Harness {
                     connection_id,
                     frame,
                 } => {
-                    self.handle_extension_event(&connection_id, frame)?;
+                    self.handle_extension_event(&connection_id, *frame)?;
                 }
                 HarnessEvent::Disconnected { connection_id } => {
                     let name = self
@@ -1397,16 +1397,16 @@ impl Harness {
                             // `/detach` → stay alive even after this
                             // UI leaves; a later `tau run --attach`
                             // can pick up right here.
-                            if matches!(&frame, Frame::Event(Event::UiDetachRequest(_))) {
+                            if matches!(frame.as_ref(), Frame::Event(Event::UiDetachRequest(_))) {
                                 exit_on_disconnect = false;
                             }
-                            let keep = self.handle_client_event(&connection_id, frame)?;
+                            let keep = self.handle_client_event(&connection_id, *frame)?;
                             if !keep {
                                 let _ = self.bus.disconnect(&connection_id);
                                 served_clients += 1;
                             }
                         }
-                        Some(_) => self.handle_extension_event(&connection_id, frame)?,
+                        Some(_) => self.handle_extension_event(&connection_id, *frame)?,
                         None => {} // already disconnected
                     }
                 }
@@ -2831,7 +2831,7 @@ impl Harness {
         // hook syncs `c.head` automatically — replaces the old
         // `sync_default_conversation_head()` call site that raced
         // when SessionUserMessageInjected was intercepted.
-        if SessionId::from(session_id) == self.current_session_id {
+        if self.current_session_id == session_id {
             let cid = self.default_conversation_id.clone();
             self.publish_event_for_conversation(&cid, None, event);
         } else {
@@ -3400,7 +3400,7 @@ impl Harness {
                 .pending_tool_invocations
                 .remove(idx)
                 .expect("index just located");
-            let call_id: ToolCallId = call.id.clone().into();
+            let call_id: ToolCallId = call.id.clone();
             self.in_flight_tool_kinds.insert(call_id.clone(), kind);
             // If dispatch fails synchronously, roll back the in-flight
             // entry so a retry or clean-up is not wedged on a phantom
@@ -3555,7 +3555,7 @@ impl Harness {
             return self.handle_skill_tool_call(cid, call);
         }
 
-        let call_id: ToolCallId = call.id.clone().into();
+        let call_id: ToolCallId = call.id.clone();
 
         // Track conversation attribution before publishing — the
         // publish path persists the `ToolRequest` into the session
@@ -3728,7 +3728,7 @@ impl Harness {
         cid: &ConversationId,
         call: &AgentToolCall,
     ) -> Result<(), HarnessError> {
-        let call_id: ToolCallId = call.id.clone().into();
+        let call_id: ToolCallId = call.id.clone();
         let tool_name: ToolName = "skill".into();
 
         // Track the conversation mapping first so the published
@@ -4099,21 +4099,21 @@ impl Harness {
                     connection_id,
                     frame,
                 } => {
-                    if let Frame::Event(Event::ToolProgress(ref progress)) = frame {
+                    if let Frame::Event(Event::ToolProgress(progress)) = frame.as_ref() {
                         progress_messages.push(format_tool_progress(progress));
                     }
                     let is_final = matches!(
-                        &frame,
+                        frame.as_ref(),
                         Frame::Event(Event::AgentResponseFinished(r))
                             if r.tool_calls.is_empty() && r.originator.is_user()
                     );
                     let final_text =
-                        if let Frame::Event(Event::AgentResponseFinished(ref r)) = frame {
+                        if let Frame::Event(Event::AgentResponseFinished(r)) = frame.as_ref() {
                             r.text.clone()
                         } else {
                             None
                         };
-                    self.handle_extension_event(&connection_id, frame)?;
+                    self.handle_extension_event(&connection_id, *frame)?;
                     if is_final {
                         return Ok(InteractionOutcome {
                             lifecycle_messages: Vec::new(),

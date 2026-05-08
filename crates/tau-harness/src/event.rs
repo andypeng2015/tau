@@ -18,7 +18,7 @@ pub(crate) enum HarnessEvent {
     /// Decoded frame from any connection (extension or client).
     FromConnection {
         connection_id: tau_proto::ConnectionId,
-        frame: Frame,
+        frame: Box<Frame>,
     },
     /// A connection's reader hit EOF or decode error.
     Disconnected {
@@ -55,7 +55,7 @@ pub(crate) fn spawn_reader_thread(
                     if tx
                         .send(HarnessEvent::FromConnection {
                             connection_id: connection_id.clone(),
-                            frame,
+                            frame: Box::new(frame),
                         })
                         .is_err()
                     {

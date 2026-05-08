@@ -387,7 +387,7 @@ fn disconnected_tool_is_removed_cleanly() {
                 connection_id,
                 frame,
             } => {
-                let _ = h.handle_extension_event(&connection_id, frame);
+                let _ = h.handle_extension_event(&connection_id, *frame);
             }
             _ => {}
         }
@@ -516,7 +516,7 @@ fn session_and_policy_lines_are_printable() {
     assert!(sl.iter().any(|l| l.contains("tool.request echo")));
     let sll = session_list_lines(&sp).expect("list");
     assert!(sll.iter().any(|l| l.contains("s1 (4 entries)")));
-    let pl = policy_lines(&sp.join("policy.cbor")).expect("policy");
+    let pl = policy_lines(sp.join("policy.cbor")).expect("policy");
     assert!(pl.iter().any(|l| l.contains("socket-ui")));
 }
 
@@ -527,7 +527,7 @@ fn empty_session_and_policy_views() {
     std::fs::create_dir_all(&sp).expect("mkdir");
     assert_eq!(session_list_lines(&sp).expect("ok"), vec!["no sessions"]);
     assert_eq!(
-        policy_lines(&sp.join("policy.cbor")).expect("ok"),
+        policy_lines(sp.join("policy.cbor")).expect("ok"),
         vec!["no policy approvals"]
     );
     assert_eq!(
@@ -1485,12 +1485,12 @@ fn drive_harness_until_call_completes(h: &mut Harness, target_call_id: &str) {
                 connection_id,
                 frame,
             } => {
-                let is_target = match &frame {
+                let is_target = match frame.as_ref() {
                     Frame::Event(Event::ToolResult(r)) => r.call_id.as_str() == target_call_id,
                     Frame::Event(Event::ToolError(e)) => e.call_id.as_str() == target_call_id,
                     _ => false,
                 };
-                h.handle_extension_event(&connection_id, frame)
+                h.handle_extension_event(&connection_id, *frame)
                     .expect("handle");
                 if is_target {
                     return;
@@ -2556,12 +2556,12 @@ fn dump_initial_prompt_to_tmp() {
 
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .expect("crate dir has workspace parent")
         .parent()
-        .unwrap()
+        .expect("workspace crates dir has repo parent")
         .to_path_buf();
     let dest = repo_root.join("tmp").join("initial_prompt.txt");
-    std::fs::create_dir_all(dest.parent().unwrap()).expect("create tmp/");
+    std::fs::create_dir_all(dest.parent().expect("dump path has parent")).expect("create tmp/");
     std::fs::write(&dest, &out).expect("write dump");
     eprintln!("wrote {}", dest.display());
 
