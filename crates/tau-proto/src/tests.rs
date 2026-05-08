@@ -159,15 +159,16 @@ fn representative_messages() -> Vec<Message> {
                 payload: CborValue::Text("working".to_owned()),
             })),
             transient: true,
-            interception: None,
         }),
-        Message::Intercepted(Intercepted {
+        Message::InterceptRequest(InterceptRequest {
             event: Box::new(Event::SessionStarted(SessionStarted {
                 session_id: "s1".into(),
                 reason: SessionStartReason::Initial,
             })),
             transient: false,
-            interception: None,
+        }),
+        Message::InterceptReply(InterceptReply {
+            action: InterceptAction::Pass(None),
         }),
         Message::LogEvent(LogEvent {
             id: LogEventId::new(42),

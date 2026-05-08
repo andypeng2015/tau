@@ -132,27 +132,50 @@ pub struct LogEvent {
 /// The inner `event` is the fact that subscribers see. `transient`
 /// controls whether the harness writes it to durable per-session
 /// event history; it is not part of the emitted fact itself.
+///
+/// `Emit` is strictly for emitting fresh events. Interceptor replies
+/// — including the optionally-mutated event — go through
+/// [`InterceptReply`], not `Emit`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Emit {
     pub event: Box<Event>,
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub transient: bool,
-    /// Redelivery cursor. `None` starts interception from the beginning.
-    /// When set by an interceptor, the harness resumes after that priority
-    /// and the sending component at that priority.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interception: Option<InterceptionPriority>,
 }
 
 /// Directed harness → interceptor message carrying an event emission that has
-/// not reached the event log yet.
+/// not reached the event log yet. The interceptor must reply with an
+/// [`InterceptReply`]; until it does, the harness suspends draining of any
+/// further publishes that would themselves be subject to interception.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Intercepted {
+pub struct InterceptRequest {
     pub event: Box<Event>,
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub transient: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interception: Option<InterceptionPriority>,
+}
+
+/// What an interceptor wants the harness to do with the event it was given.
+///
+/// `Pass(None)` republishes the original event unchanged (the common
+/// no-op case). `Pass(Some(event))` substitutes a possibly-mutated
+/// version that flows on through any remaining interceptors and then to
+/// subscribers. `Drop` discards the event entirely — but the harness
+/// may override `Drop` for events the publisher marked `must_pass`,
+/// `tracing::warn!`-ing and falling back to the original.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum InterceptAction {
+    Pass(Option<Box<Event>>),
+    Drop,
+}
+
+/// Interceptor → harness response to an [`InterceptRequest`]. Exactly
+/// one reply per request; out-of-order or duplicate replies are a
+/// programming error and the harness logs + falls back to the original
+/// event.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InterceptReply {
+    pub action: InterceptAction,
 }
 
 /// Receiver → sender acknowledgement that all log events with id
@@ -184,7 +207,8 @@ pub enum Message {
     Configure(Configure),
     ConfigError(ConfigError),
     Emit(Emit),
-    Intercepted(Intercepted),
+    InterceptRequest(InterceptRequest),
+    InterceptReply(InterceptReply),
     LogEvent(LogEvent),
     Ack(Ack),
 }

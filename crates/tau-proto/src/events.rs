@@ -349,6 +349,28 @@ pub enum EventSelector {
 #[serde(transparent)]
 pub struct InterceptionPriority(pub i64);
 
+/// Identifier of a node in the per-session tree. Lives on the wire
+/// because tree-folding events stamp their `parent_node_id` so the
+/// fold doesn't have to consult a shared write cursor.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct NodeId(pub u64);
+
+impl NodeId {
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness informational messages
 // ---------------------------------------------------------------------------

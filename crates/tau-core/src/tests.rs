@@ -401,6 +401,63 @@ fn register_events_map_cleanly_to_registry_state() {
 }
 
 #[test]
+fn explicit_parent_preserved_across_replay() {
+    // Phase 4 of the interception refactor: when a publish goes
+    // through `append_session_event_at`, the explicit parent must
+    // round-trip through the durable log so a fresh replay rebuilds
+    // exactly the same branching topology — even when sibling
+    // nodes were appended without intervening `UiNavigateTree`
+    // events to bounce the write cursor.
+    let tempdir = TempDir::new().expect("tempdir");
+    let store_path = tempdir.path().join("state");
+
+    let session_id = "branching-session";
+    let user_event = |text: &str| {
+        Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
+            session_id: session_id.into(),
+            text: text.to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+        })
+    };
+
+    {
+        let mut store = SessionStore::open(&store_path).expect("open");
+        // Three siblings: each one parents off the root (NodeId(0))
+        // by passing the parent explicitly. There are no
+        // `UiNavigateTree` events in between.
+        store
+            .append_session_event_at(session_id, None, None, user_event("root"))
+            .expect("root");
+        store
+            .append_session_event_at(session_id, None, Some(NodeId(0)), user_event("branch-a"))
+            .expect("branch-a");
+        store
+            .append_session_event_at(session_id, None, Some(NodeId(0)), user_event("branch-b"))
+            .expect("branch-b");
+    }
+
+    let reopened = SessionStore::open(&store_path).expect("reopen");
+    let tree = reopened.session(session_id).expect("session reload");
+
+    // Three nodes, all parented off NodeId(0).
+    assert_eq!(tree.nodes().len(), 3);
+    assert_eq!(tree.node(NodeId(0)).expect("root node").parent_id, None,);
+    assert_eq!(
+        tree.node(NodeId(1)).expect("branch-a node").parent_id,
+        Some(NodeId(0)),
+    );
+    assert_eq!(
+        tree.node(NodeId(2)).expect("branch-b node").parent_id,
+        Some(NodeId(0)),
+    );
+
+    // The branching is preserved: NodeId(0) has two children.
+    let mut children: Vec<_> = tree.children(NodeId(0));
+    children.sort_by_key(|n| n.0);
+    assert_eq!(children, vec![NodeId(1), NodeId(2)]);
+}
+
+#[test]
 fn session_tree_persists_across_reopen() {
     let tempdir = TempDir::new().expect("tempdir should exist");
     let store_path = tempdir.path().join("state");

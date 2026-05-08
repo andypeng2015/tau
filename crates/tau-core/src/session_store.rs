@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tau_proto::{ConnectionId, Event, LogEventId, SessionId};
+use tau_proto::{ConnectionId, Event, LogEventId, NodeId, SessionId};
 
 use crate::session::{PersistedSessionEvent, SessionMeta, SessionTree};
 
@@ -285,10 +285,31 @@ impl SessionStore {
     /// The persisted event is the single source of truth — both the
     /// on-disk log and the derived [`SessionTree`] are populated from
     /// it here, so they cannot drift.
+    ///
+    /// Convenience wrapper around
+    /// [`SessionStore::append_session_event_at`] that uses the
+    /// session tree's current head as the fold parent — the legacy
+    /// behaviour from before per-conversation parent stamping.
     pub fn append_session_event(
         &mut self,
         session_id: &str,
         source: Option<ConnectionId>,
+        event: Event,
+    ) -> Result<LogEventId, SessionStoreError> {
+        self.append_session_event_at(session_id, source, None, event)
+    }
+
+    /// Like [`SessionStore::append_session_event`] but folds the
+    /// event onto the explicit `parent_node_id` instead of the
+    /// session tree's current write cursor. The harness uses this
+    /// when publishing on a conversation's behalf, so cross-
+    /// conversation events don't have to bounce a shared `head`
+    /// cursor through `UiNavigateTree`.
+    pub fn append_session_event_at(
+        &mut self,
+        session_id: &str,
+        source: Option<ConnectionId>,
+        parent_node_id: Option<NodeId>,
         event: Event,
     ) -> Result<LogEventId, SessionStoreError> {
         self.ensure_locked(session_id)?;
@@ -306,6 +327,7 @@ impl SessionStore {
             id: next_id,
             source,
             event: event.clone(),
+            parent_node_id,
         };
         append_cbor_record(&events_path, &record)?;
         touch_meta(&session_dir.join("meta.json"))?;
@@ -315,7 +337,7 @@ impl SessionStore {
             .sessions
             .entry(sid.clone())
             .or_insert_with(|| SessionTree::from_events(sid, &[]));
-        tree.apply_event(&event);
+        tree.apply_event_at(parent_node_id, &event);
 
         Ok(next_id)
     }

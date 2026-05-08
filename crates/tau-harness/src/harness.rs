@@ -15,11 +15,12 @@ use tau_core::{
     ToolRegistry, ToolRouteError,
 };
 use tau_proto::{
-    AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Disconnect, Event, EventSelector,
-    ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected, HarnessModelsAvailable,
-    Intercepted, InterceptionPriority, Message, ModelId, SessionId, SessionPromptCreated,
-    SessionPromptId, SessionPromptQueued, ToolCallId, ToolDefinition, ToolError, ToolName,
-    ToolRegister, ToolRequest,
+    AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Disconnect, Event, EventName,
+    EventSelector, ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected,
+    HarnessModelsAvailable, InterceptAction, InterceptReply, InterceptRequest,
+    InterceptionPriority, Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId,
+    SessionPromptQueued, ToolCallId, ToolDefinition, ToolError, ToolName, ToolRegister,
+    ToolRequest,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
@@ -156,6 +157,23 @@ pub(crate) struct Harness {
     pub(crate) debug_log: Option<DebugEventLog>,
     /// Event emission interceptors, exact name first and prefix fallback.
     pub(crate) interceptors: InterceptorRegistry,
+    /// Currently in-flight interception. While `Some(_)`, no new
+    /// publishes commit — they queue onto `deferred_publishes` until
+    /// the awaited [`InterceptReply`] arrives (or the awaited
+    /// connection disconnects, treated as `Pass(None)`).
+    pub(crate) pending_intercept: Option<PendingIntercept>,
+    /// Publishes that arrived while `pending_intercept` was active.
+    /// Drained in FIFO order once the pending intercept resolves.
+    pub(crate) deferred_publishes: VecDeque<DeferredPublish>,
+    /// Conversations whose just-published `UiPromptSubmitted` (or
+    /// equivalent user-message event) has not yet committed because
+    /// it is parked in the interception chain. Each entry triggers
+    /// a `send_prompt_to_agent_for` call once the next
+    /// user-message-bearing event commits — that's when the
+    /// `SessionTree` reflects the prompt and the assembled message
+    /// list will actually contain it. Without this, the agent
+    /// receives a stale message list (the "Ready" loop bug).
+    pub(crate) pending_user_prompt_dispatches: VecDeque<ConversationId>,
     /// All available models as `"provider/model_id"` strings.
     pub(crate) available_models: Vec<ModelId>,
     /// Currently selected model as `"provider/model_id"`.
@@ -210,6 +228,88 @@ pub(crate) struct Harness {
 }
 
 pub(crate) type AgentRunner = fn(UnixStream, UnixStream) -> Result<(), String>;
+
+/// Snapshot of a publish that's currently waiting on an interceptor's
+/// reply. The harness stops draining further publishes while one of
+/// these is alive so the persisted log order matches publish order.
+pub(crate) struct PendingIntercept {
+    /// Connection that owes us an [`InterceptReply`].
+    pub(crate) conn_id: String,
+    /// Event sent in the [`InterceptRequest`]. Returned to the chain
+    /// if the reply is `Pass(None)`, replaced if `Pass(Some(_))`.
+    pub(crate) event: Event,
+    /// Whether the original publisher requested transient delivery.
+    /// Carried so the eventual commit honours the call site's intent.
+    pub(crate) transient: bool,
+    /// Original source connection id from the publish call (for log
+    /// persistence + bus broadcast).
+    pub(crate) source: Option<String>,
+    /// If `true`, an interceptor returning `Drop` is overridden:
+    /// `tracing::warn!` and continue with the original event.
+    pub(crate) must_pass: bool,
+    /// Conversation that originated this publish, if any. When the
+    /// event eventually commits, the harness syncs this
+    /// conversation's `head` to the post-fold `tree.head()`. Set
+    /// only by `publish_for_conversation*`; `publish_event` leaves
+    /// it `None`.
+    pub(crate) sync_head_for: Option<ConversationHeadSync>,
+    /// Cursor for the next interceptor lookup *after* this reply
+    /// resolves. Set to the registration we just dispatched to, so
+    /// the chain advances strictly past it.
+    pub(crate) cursor: (InterceptionPriority, String),
+}
+
+/// A publish that arrived while another publish was in interception
+/// limbo. Replayed through the normal entry point once the in-flight
+/// interception resolves.
+pub(crate) struct DeferredPublish {
+    pub(crate) source: Option<String>,
+    pub(crate) event: Event,
+    pub(crate) transient: bool,
+    pub(crate) must_pass: bool,
+    pub(crate) sync_head_for: Option<ConversationHeadSync>,
+}
+
+/// Carried on a publish so that, once the event commits and the
+/// `SessionTree` fold advances `tree.head()`, the harness can sync
+/// the originating conversation's cached `head` to the new node.
+/// Replaces the old "publish then read `tree.head()`" idiom which
+/// breaks when an interceptor parks the publish.
+#[derive(Clone)]
+pub(crate) struct ConversationHeadSync {
+    pub(crate) cid: ConversationId,
+    pub(crate) session_id: SessionId,
+}
+
+/// Event types where a `Drop` reply from an interceptor is
+/// overridden into `Pass(None)` with a `tracing::warn!`.
+///
+/// These events carry state changes the harness can't reasonably
+/// continue without — silently dropping a `UiPromptSubmitted`, for
+/// example, would leave the UI staring at a half-typed prompt while
+/// the harness believes nothing happened. Interceptors that try to
+/// drop one of these are almost certainly buggy.
+const MUST_PASS_BY_DEFAULT: &[EventName] = &[
+    // User-message-bearing events: dropping any of these would
+    // make the user's input vanish silently while the harness
+    // believes the prompt was delivered.
+    EventName::UI_PROMPT_SUBMITTED,
+    EventName::SESSION_USER_MESSAGE_INJECTED,
+    EventName::SESSION_PROMPT_STEERED,
+    // Agent prompt life-cycle: the agent extension consumes
+    // `SessionPromptCreated` to know when to talk to the LLM.
+    // Dropping it wedges the conversation.
+    EventName::SESSION_PROMPT_CREATED,
+    // Agent response: dropping this would wedge `c.head` /
+    // `prompt_conversations` bookkeeping and the conversation
+    // would never advance.
+    EventName::AGENT_RESPONSE_FINISHED,
+    // Tool round-trip closure: a missing `tool.result`/`tool.error`
+    // for a tool that was actually invoked leaves the agent waiting
+    // forever.
+    EventName::TOOL_RESULT,
+    EventName::TOOL_ERROR,
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InterceptorRegistration {
@@ -459,6 +559,9 @@ impl Harness {
             turn_state: TurnState::Idle,
             debug_log: None,
             interceptors: InterceptorRegistry::default(),
+            pending_intercept: None,
+            deferred_publishes: VecDeque::new(),
+            pending_user_prompt_dispatches: VecDeque::new(),
             available_models,
             selected_model,
             selected_effort,
@@ -636,6 +739,9 @@ impl Harness {
             turn_state: TurnState::Idle,
             debug_log: None,
             interceptors: InterceptorRegistry::default(),
+            pending_intercept: None,
+            deferred_publishes: VecDeque::new(),
+            pending_user_prompt_dispatches: VecDeque::new(),
             available_models,
             selected_model,
             selected_effort,
@@ -716,15 +822,11 @@ impl Harness {
         self.prompt_conversations.get(spid).cloned()
     }
 
-    /// Publishes an event for a specific conversation, ensuring the
-    /// session tree's head is positioned at that conversation's local
-    /// cursor first. If the tree head currently belongs to another
-    /// conversation, an explicit `UiNavigateTree` is emitted to bounce
-    /// it back so the new event parents on the right node.
-    ///
-    /// After publishing, the conversation's local head is refreshed
-    /// from the tree's new head — wherever the just-published event
-    /// landed becomes the conversation's next-parent slot.
+    /// Publishes an event for a specific conversation. The fold uses
+    /// the conversation's `head` as the explicit parent — no more
+    /// `UiNavigateTree` head-bouncing — and the post-commit hook in
+    /// [`Harness::commit_event`] keeps `c.head` in sync with the
+    /// freshly-folded node.
     ///
     /// This helper is what makes branching prompts work: the default
     /// (user) conversation can keep advancing while a side conversation
@@ -747,62 +849,121 @@ impl Harness {
         source: Option<&str>,
         event: Event,
     ) {
-        let session_id = self
-            .conversations
-            .get(cid)
-            .map(|c| c.session_id.clone())
-            .expect("publish_for_conversation: unknown conversation id");
-        let want_head = self.conversations.get(cid).and_then(|c| c.head);
-        let have_head = self
-            .store
-            .session(session_id.as_str())
-            .and_then(|t| t.head());
-        if want_head != have_head {
-            match want_head {
-                Some(target) => self.publish_event(
-                    None,
-                    Event::UiNavigateTree(tau_proto::UiNavigateTree {
-                        session_id: session_id.clone(),
-                        node_id: target.0,
-                    }),
-                ),
-                None => {
-                    self.emit_info(&format!(
-                        "conversation `{cid}` has no stored head but session `{}` is non-empty; \
-                         appending at current tree head",
-                        session_id.as_str()
-                    ));
-                }
-            }
-        }
-        let source_owned = source.map(str::to_owned);
-        self.publish_event(source_owned.as_deref(), event);
-        let new_head = self
-            .store
-            .session(session_id.as_str())
-            .and_then(|t| t.head());
-        if let Some(c) = self.conversations.get_mut(cid) {
-            c.head = new_head;
-        }
+        // Stamp the publish with `cid`. The fold reads the
+        // conversation's `head` as the explicit parent node in
+        // `commit_event`, so cross-conversation publishes no longer
+        // need a `UiNavigateTree` round-trip to bounce the global
+        // write cursor. After the commit, the post-commit hook
+        // also syncs `c.head` automatically — the trailing
+        // read-tree-and-update idiom is gone entirely.
+        self.publish_event_for_conversation(cid, source, event);
     }
 
     /// Publishes an event to both the event bus and the event log.
+    /// Convenience wrapper that uses the event's default transience
+    /// and never marks the publish as `must_pass`.
     fn publish_event(&mut self, source: Option<&str>, event: Event) {
         let transient = event.defaults_to_transient();
-        self.publish_event_with_interception(source, event, transient, None);
+        self.enqueue_publish(source, event, transient, false, None);
     }
 
-    fn publish_event_with_interception(
+    /// Like [`Harness::publish_event`] but the publish is marked
+    /// `must_pass`: an interceptor that returns
+    /// [`InterceptAction::Drop`] for this event is overridden — the
+    /// harness `tracing::warn!`s and continues with the original.
+    /// Reserved for events whose silent disappearance would corrupt
+    /// the harness's own bookkeeping (e.g. session-prompt life-cycle).
+    #[allow(dead_code)] // wired up at must-pass call sites in a later phase
+    fn publish_event_must_pass(&mut self, source: Option<&str>, event: Event) {
+        let transient = event.defaults_to_transient();
+        self.enqueue_publish(source, event, transient, true, None);
+    }
+
+    /// Like [`Harness::publish_event`] but tags the publish with the
+    /// originating conversation. After the event commits, the
+    /// harness syncs that conversation's cached `head` to the
+    /// freshly-folded `tree.head()` — so callers don't need to read
+    /// the tree themselves (which would race the interception chain
+    /// when a publish parks).
+    fn publish_event_for_conversation(
+        &mut self,
+        cid: &ConversationId,
+        source: Option<&str>,
+        event: Event,
+    ) {
+        let Some(session_id) = self.conversations.get(cid).map(|c| c.session_id.clone()) else {
+            // The conversation was torn down between when the
+            // caller looked it up and now (e.g. side conv that
+            // raced its own teardown with a late tool result).
+            // Fall back to a plain publish so the event still
+            // reaches the bus / log; we just can't stamp a parent
+            // for it.
+            tracing::warn!(
+                target: "tau_harness",
+                event = %event.name(),
+                cid = %cid,
+                "publish_event_for_conversation called with unknown cid; \
+                 publishing without parent stamp",
+            );
+            self.publish_event(source, event);
+            return;
+        };
+        let transient = event.defaults_to_transient();
+        let sync = Some(ConversationHeadSync {
+            cid: cid.clone(),
+            session_id,
+        });
+        self.enqueue_publish(source, event, transient, false, sync);
+    }
+
+    /// Entry point for any publish call. Defers if interception is
+    /// in flight; otherwise drives the publish through the
+    /// interception chain and into the bus.
+    fn enqueue_publish(
         &mut self,
         source: Option<&str>,
         event: Event,
         transient: bool,
-        interception: Option<InterceptionPriority>,
+        must_pass: bool,
+        sync_head_for: Option<ConversationHeadSync>,
     ) {
-        let cursor = match interception {
-            Some(priority) => Some((priority, source.unwrap_or(""))),
-            None => None,
-        };
+        if self.pending_intercept.is_some() {
+            self.deferred_publishes.push_back(DeferredPublish {
+                source: source.map(str::to_owned),
+                event,
+                transient,
+                must_pass,
+                sync_head_for,
+            });
+            return;
+        }
+        self.dispatch_publish_step(
+            source.map(str::to_owned),
+            event,
+            transient,
+            must_pass,
+            sync_head_for,
+            None,
+        );
+    }
+
+    /// One step through the interception chain for a single publish.
+    ///
+    /// `cursor` is `None` on the first dispatch and `Some((priority,
+    /// connection_id))` on subsequent steps so the lookup advances
+    /// strictly past the interceptor that just replied. If a matching
+    /// interceptor is found, an [`InterceptRequest`] is sent and the
+    /// publish parks in `pending_intercept` waiting for its reply.
+    /// If no further interceptor matches, the event commits.
+    fn dispatch_publish_step(
+        &mut self,
+        source: Option<String>,
+        event: Event,
+        transient: bool,
+        must_pass: bool,
+        sync_head_for: Option<ConversationHeadSync>,
+        cursor: Option<(InterceptionPriority, &str)>,
+    ) {
         if let Some(interceptor) = self.interceptors.next_for(&event, cursor) {
             tracing::debug!(
                 target: "tau_harness::interception",
@@ -812,18 +973,62 @@ impl Harness {
                 connection_id = %interceptor.connection_id,
                 "intercepting event emission"
             );
+            let conn_id = interceptor.connection_id.as_str().to_owned();
             let _ = self.bus.send_to(
-                interceptor.connection_id.as_str(),
+                &conn_id,
                 None,
-                Frame::Message(Message::Intercepted(Intercepted {
-                    event: Box::new(event),
+                Frame::Message(Message::InterceptRequest(InterceptRequest {
+                    event: Box::new(event.clone()),
                     transient,
-                    interception: Some(interceptor.priority),
                 })),
             );
+            self.pending_intercept = Some(PendingIntercept {
+                conn_id: conn_id.clone(),
+                event,
+                transient,
+                source,
+                must_pass,
+                sync_head_for,
+                cursor: (interceptor.priority, conn_id),
+            });
             return;
         }
-        self.persist_session_event(source, &event, transient);
+        self.commit_event(source.as_deref(), event, transient, sync_head_for);
+    }
+
+    /// Final commit: persist (when applicable), append to the event
+    /// log, and broadcast on the bus. Does not consult interception
+    /// state — the caller is responsible for getting here only when
+    /// the chain has resolved. Triggers any post-commit reactions
+    /// (currently: deferred agent dispatches that were waiting on
+    /// this user-message-bearing event to land in the tree, plus
+    /// per-publish conversation `head` syncs).
+    fn commit_event(
+        &mut self,
+        source: Option<&str>,
+        event: Event,
+        transient: bool,
+        sync_head_for: Option<ConversationHeadSync>,
+    ) {
+        // When this publish was stamped with a conversation, fold
+        // the event onto that conversation's branch directly. This
+        // skips the `UiNavigateTree` head-bouncing dance that
+        // `publish_for_conversation_from` used to do — the explicit
+        // parent in `apply_event_at` does the same job without
+        // touching the global cursor.
+        let parent_for_fold = sync_head_for
+            .as_ref()
+            .and_then(|s| self.conversations.get(&s.cid).and_then(|c| c.head));
+        self.persist_session_event(source, &event, transient, parent_for_fold);
+        if let Some(sync) = sync_head_for {
+            let new_head = self
+                .store
+                .session(sync.session_id.as_str())
+                .and_then(|t| t.head());
+            if let Some(c) = self.conversations.get_mut(&sync.cid) {
+                c.head = new_head;
+            }
+        }
         let seq = self
             .event_log
             .append(source.map(tau_proto::ConnectionId::from), event.clone());
@@ -832,12 +1037,180 @@ impl Harness {
         // (UIs) call `Frame::peel_log()` and discard the id.
         let log_frame = Frame::Message(Message::LogEvent(tau_proto::LogEvent {
             id: tau_proto::LogEventId::new(seq),
-            event: Box::new(event),
+            event: Box::new(event.clone()),
         }));
         let _ = self.bus.publish_from(source, log_frame);
+        self.react_to_committed_event(&event);
     }
 
-    fn persist_session_event(&mut self, source: Option<&str>, event: &Event, transient: bool) {
+    /// Post-commit reactions. Drains the deferred-agent-dispatch
+    /// queue when a user-message-bearing event commits, so the
+    /// agent prompt assembled in `send_prompt_to_agent_for` sees
+    /// the just-folded user message. The `c.head` sync that this
+    /// dispatch depends on is handled inside `commit_event` for any
+    /// publish stamped via `publish_event_for_conversation`.
+    fn react_to_committed_event(&mut self, event: &Event) {
+        let folds_user_message = matches!(
+            event,
+            Event::UiPromptSubmitted(_)
+                | Event::SessionUserMessageInjected(_)
+                | Event::SessionPromptSteered(_)
+        );
+        if !folds_user_message {
+            return;
+        }
+        let Some(cid) = self.pending_user_prompt_dispatches.pop_front() else {
+            return;
+        };
+        if !self.conversations.contains_key(&cid) {
+            // Conversation was torn down while the prompt was in
+            // limbo (e.g. side query that timed out).
+            return;
+        }
+        self.send_prompt_to_agent_for(&cid);
+    }
+
+    /// Resolve a parked interception with the extension's reply.
+    /// Advances the chain (next interceptor, or commit), then drains
+    /// any publishes that arrived while we were waiting.
+    fn handle_intercept_reply(&mut self, conn_id: &str, reply: InterceptReply) {
+        let Some(pending) = self.pending_intercept.take() else {
+            tracing::warn!(
+                target: "tau_harness::interception",
+                connection_id = conn_id,
+                "InterceptReply received without a pending intercept; ignoring",
+            );
+            return;
+        };
+        if pending.conn_id != conn_id {
+            tracing::warn!(
+                target: "tau_harness::interception",
+                connection_id = conn_id,
+                expected = %pending.conn_id,
+                "InterceptReply from unexpected connection; ignoring and \
+                 continuing to wait",
+            );
+            // Restore — we're still waiting on the original responder.
+            self.pending_intercept = Some(pending);
+            return;
+        }
+        self.advance_pending_intercept(pending, reply.action);
+        self.drain_deferred_publishes();
+    }
+
+    /// Resolve a pending intercept whose responder disconnected.
+    /// Defaults to `Pass(None)` so the original event still flows —
+    /// extensions cannot wedge the harness by going away mid-reply.
+    fn fail_pending_intercept_for_disconnect(&mut self, conn_id: &str) {
+        let Some(pending) = self.pending_intercept.take() else {
+            return;
+        };
+        if pending.conn_id != conn_id {
+            self.pending_intercept = Some(pending);
+            return;
+        }
+        tracing::warn!(
+            target: "tau_harness::interception",
+            connection_id = conn_id,
+            "interceptor disconnected mid-reply; treating as Pass(None)",
+        );
+        self.advance_pending_intercept(pending, InterceptAction::Pass(None));
+        self.drain_deferred_publishes();
+    }
+
+    /// Apply an [`InterceptAction`] to a pending intercept and drive
+    /// the next chain step (or commit, or drop).
+    fn advance_pending_intercept(&mut self, pending: PendingIntercept, action: InterceptAction) {
+        let PendingIntercept {
+            conn_id: _,
+            event: original_event,
+            transient,
+            source,
+            must_pass,
+            sync_head_for,
+            cursor,
+        } = pending;
+
+        let event_name = original_event.name();
+        let next_event = match action {
+            InterceptAction::Pass(None) => Some(original_event),
+            InterceptAction::Pass(Some(boxed)) => {
+                let new_event = *boxed;
+                if new_event.name() != event_name {
+                    tracing::warn!(
+                        target: "tau_harness::interception",
+                        original = %event_name,
+                        replacement = %new_event.name(),
+                        "interceptor returned a different event type; \
+                         falling back to the original",
+                    );
+                    Some(original_event)
+                } else {
+                    Some(new_event)
+                }
+            }
+            InterceptAction::Drop => {
+                let must_pass_default = MUST_PASS_BY_DEFAULT.contains(&event_name);
+                if must_pass || must_pass_default {
+                    tracing::warn!(
+                        target: "tau_harness::interception",
+                        event = %event_name,
+                        must_pass_caller = must_pass,
+                        must_pass_default = must_pass_default,
+                        "interceptor tried to Drop a must-pass event; \
+                         publishing original instead",
+                    );
+                    Some(original_event)
+                } else {
+                    tracing::debug!(
+                        target: "tau_harness::interception",
+                        event = %event_name,
+                        "interceptor dropped event",
+                    );
+                    None
+                }
+            }
+        };
+
+        let Some(event) = next_event else {
+            return;
+        };
+
+        self.dispatch_publish_step(
+            source,
+            event,
+            transient,
+            must_pass,
+            sync_head_for,
+            Some((cursor.0, cursor.1.as_str())),
+        );
+    }
+
+    /// Drain `deferred_publishes` until either it's empty or one of
+    /// them parks a new intercept.
+    fn drain_deferred_publishes(&mut self) {
+        while self.pending_intercept.is_none() {
+            let Some(deferred) = self.deferred_publishes.pop_front() else {
+                break;
+            };
+            self.dispatch_publish_step(
+                deferred.source,
+                deferred.event,
+                deferred.transient,
+                deferred.must_pass,
+                deferred.sync_head_for,
+                None,
+            );
+        }
+    }
+
+    fn persist_session_event(
+        &mut self,
+        source: Option<&str>,
+        event: &Event,
+        transient: bool,
+        parent_node_id: Option<tau_proto::NodeId>,
+    ) {
         if transient || event.is_transient() {
             return;
         }
@@ -845,9 +1218,12 @@ impl Harness {
             return;
         };
         let source = source.map(tau_proto::ConnectionId::from);
-        let _ = self
-            .store
-            .append_session_event(session_id.as_str(), source, event.clone());
+        let _ = self.store.append_session_event_at(
+            session_id.as_str(),
+            source,
+            parent_node_id,
+            event.clone(),
+        );
     }
 
     fn session_id_for_event(&self, event: &Event) -> Option<SessionId> {
@@ -1145,18 +1521,17 @@ impl Harness {
                 self.try_advance_queue();
             }
             Message::Emit(emit) => {
-                self.publish_event_with_interception(
-                    Some(source_id),
-                    *emit.event,
-                    emit.transient,
-                    emit.interception,
-                );
+                let transient = emit.transient || emit.event.is_transient();
+                self.enqueue_publish(Some(source_id), *emit.event, transient, false, None);
+            }
+            Message::InterceptReply(reply) => {
+                self.handle_intercept_reply(source_id, reply);
             }
             // Messages sent by the harness only — extensions shouldn't
             // round-trip these. Ignore silently.
             Message::Configure(_)
             | Message::Disconnect(_)
-            | Message::Intercepted(_)
+            | Message::InterceptRequest(_)
             | Message::LogEvent(_) => {}
         }
         Ok(())
@@ -1177,7 +1552,19 @@ impl Harness {
                 // `pending_tool_sessions` to attach the persisted
                 // record to the right session.
                 self.track_tool_request_session(&request);
-                self.publish_event(Some(source_id), Event::ToolRequest(request.clone()));
+                // Stamp the publish with the owning conversation so
+                // the fold lands on its branch. Without this, after
+                // Phase 4 of the interception refactor (no global
+                // head-bouncing), a sibling conversation that
+                // recently appended would leave `tree.head` on its
+                // own tip, and the tool-request node would fold
+                // there instead.
+                let owning_cid = self.tool_conversations.get(&request.call_id).cloned();
+                let event = Event::ToolRequest(request.clone());
+                match owning_cid {
+                    Some(cid) => self.publish_event_for_conversation(&cid, Some(source_id), event),
+                    None => self.publish_event(Some(source_id), event),
+                }
                 match self
                     .registry
                     .route_tool_request(&mut self.bus, source_id, request.clone())
@@ -1195,9 +1582,13 @@ impl Harness {
                             message: "no live provider available".to_owned(),
                             details: None,
                         };
-                        self.publish_event(None, Event::ToolError(error));
-                        if let Some(cid) = owning_cid {
-                            self.sync_conversation_head(&cid);
+                        match owning_cid {
+                            Some(cid) => self.publish_event_for_conversation(
+                                &cid,
+                                None,
+                                Event::ToolError(error),
+                            ),
+                            None => self.publish_event(None, Event::ToolError(error)),
                         }
                         self.clear_tool_call_tracking(&call_id);
                     }
@@ -1351,12 +1742,14 @@ impl Harness {
             }
             Message::Disconnect(_) => Ok(false),
             // Other messages from clients are ignored (Configure, Ack,
-            // LogEvent, Intercepted, Emit, ConfigError, Intercept).
+            // LogEvent, InterceptRequest, InterceptReply, Emit,
+            // ConfigError, Intercept).
             Message::Ack(_)
             | Message::Configure(_)
             | Message::ConfigError(_)
             | Message::Intercept(_)
-            | Message::Intercepted(_)
+            | Message::InterceptRequest(_)
+            | Message::InterceptReply(_)
             | Message::Ready(_)
             | Message::LogEvent(_)
             | Message::Emit(_) => Ok(true),
@@ -1501,6 +1894,7 @@ impl Harness {
     fn handle_disconnect(&mut self, connection_id: &str) {
         self.remove_discovered_context(connection_id);
         self.interceptors.remove_connection(connection_id);
+        self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
         self.fail_pending_tool_calls_for_connection(connection_id);
         self.set_extension_state(connection_id, ExtensionState::Disconnected);
@@ -1957,33 +2351,20 @@ impl Harness {
                 originator,
             }),
         );
-        self.send_prompt_to_agent_for(cid);
-        Ok(())
-    }
-
-    fn sync_default_conversation_head(&mut self) {
-        let cid = self.default_conversation_id.clone();
-        self.sync_conversation_head(&cid);
-    }
-
-    /// Refresh a conversation's local head from the session tree's
-    /// current head. Used after publishing an event that grew the tree
-    /// on this conversation's behalf via `publish_event` (which, unlike
-    /// `publish_for_conversation`, doesn't update `c.head`). Without
-    /// this, the next `publish_for_conversation` call would see a stale
-    /// `want_head` and emit a `UiNavigateTree` that bounces the tree
-    /// head backward, orphaning the just-published node.
-    fn sync_conversation_head(&mut self, cid: &ConversationId) {
-        let Some(session_id) = self.conversations.get(cid).map(|c| c.session_id.clone()) else {
-            return;
-        };
-        let head = self
-            .store
-            .session(session_id.as_str())
-            .and_then(|tree| tree.head());
-        if let Some(conv) = self.conversations.get_mut(cid) {
-            conv.head = head;
+        if self.pending_intercept.is_some() || !self.deferred_publishes.is_empty() {
+            // Publish parked in interception (or queued behind one
+            // that is). Defer the agent dispatch until the user-
+            // prompt event actually commits — see
+            // `react_to_committed_event` for the drain.
+            self.pending_user_prompt_dispatches.push_back(cid.clone());
+        } else {
+            // Publish committed inline. Safe to dispatch the agent
+            // prompt now: the SessionTree already reflects the new
+            // user message, so the message list assembled inside
+            // `send_prompt_to_agent_for` will include it.
+            self.send_prompt_to_agent_for(cid);
         }
+        Ok(())
     }
 
     fn session_initialized(&self, session_id: &SessionId) -> bool {
@@ -2106,10 +2487,15 @@ impl Harness {
         self.publish_event(None, Event::ToolDelegateProgress(progress));
     }
 
-    /// Resync the session tree's head to the default conversation's
-    /// local head via a `UiNavigateTree` event. Called after a side
-    /// conversation finishes so the user's next interactive prompt
-    /// parents off the main branch instead of the side branch tip.
+    /// Emit a `UiNavigateTree` to move the *UI's* view cursor back
+    /// to the default conversation's tip after a side conversation
+    /// finishes. Purely a UI affordance now — fold parentage no
+    /// longer depends on `tree.head()` (Phase 4 of the interception
+    /// refactor: each publish carries its explicit parent), so
+    /// nothing in the harness's append path needs the bounce. UIs
+    /// that subscribe to `ui.navigate_tree` rely on this to render
+    /// the user back on their main branch when a delegated query
+    /// completes.
     fn snap_to_default_conversation(&mut self) {
         let session_id = self
             .conversations
@@ -2405,9 +2791,11 @@ impl Harness {
 
     fn complete_session_init(&mut self, session_id: SessionId) -> Result<(), HarnessError> {
         self.ensure_agents_context_inserted(session_id.as_str())?;
-        if session_id == self.current_session_id {
-            self.sync_default_conversation_head();
-        }
+        // No explicit head sync needed: when the AGENTS.md
+        // injection is for `current_session_id` it's stamped with
+        // `default_conversation_id` and the post-commit hook keeps
+        // `c.head` aligned. For other sessions there's no
+        // matching live conversation anyway.
         self.initialized_sessions.insert(session_id);
         self.turn_state = TurnState::Idle;
         self.try_advance_queue();
@@ -2424,17 +2812,23 @@ impl Harness {
         }
 
         let text = render_agents_context_message(self.discovered_agents_files.iter());
+        let event = Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
+            session_id: session_id.into(),
+            text,
+        });
         // Publish the injection as an event so it reaches the durable
         // session log and folds into the SessionTree the same way
-        // every other entry does. No direct store mutation — the
-        // event is the source of truth.
-        self.publish_event(
-            None,
-            Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
-                session_id: session_id.into(),
-                text,
-            }),
-        );
+        // every other entry does. Stamp it with the default
+        // conversation when the session matches, so the post-commit
+        // hook syncs `c.head` automatically — replaces the old
+        // `sync_default_conversation_head()` call site that raced
+        // when SessionUserMessageInjected was intercepted.
+        if SessionId::from(session_id) == self.current_session_id {
+            let cid = self.default_conversation_id.clone();
+            self.publish_event_for_conversation(&cid, None, event);
+        } else {
+            self.publish_event(None, event);
+        }
         Ok(())
     }
 
@@ -2454,13 +2848,22 @@ impl Harness {
             "<user_shell command={:?} exit_code={:?}>\n{}\n</user_shell>",
             finished.command, exit, finished.output,
         );
-        self.publish_event(
-            None,
-            Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
-                session_id: finished.session_id.clone(),
-                text,
-            }),
-        );
+        let event = Event::SessionUserMessageInjected(tau_proto::SessionUserMessageInjected {
+            session_id: finished.session_id.clone(),
+            text,
+        });
+        // When the shell output belongs to the bound session, stamp
+        // the publish with the default conversation so the fold
+        // lands on the user's main branch (and the post-commit hook
+        // syncs `c.head`). Other sessions: best-effort plain
+        // publish; nothing on this harness instance is reading
+        // their tree.
+        if finished.session_id == self.current_session_id {
+            let cid = self.default_conversation_id.clone();
+            self.publish_event_for_conversation(&cid, None, event);
+        } else {
+            self.publish_event(None, event);
+        }
     }
 
     /// Convenience wrapper that dispatches a prompt for the harness's
@@ -3063,7 +3466,20 @@ impl Harness {
         };
         if should_send {
             self.fold_pending_prompts_as_steered(&cid);
-            self.send_prompt_to_agent_for(&cid);
+            // If folding the steered prompts parked any of them in
+            // interception (e.g. an extension intercepting
+            // `session.prompt_steered`), defer the agent dispatch
+            // until they commit — same pattern as
+            // `dispatch_prompt_for_conversation`. Without this, the
+            // next-round `SessionPromptCreated` would assemble its
+            // message list from a stale `c.head`. When no
+            // interceptor matched, the publishes committed inline
+            // and we can dispatch immediately.
+            if self.pending_intercept.is_some() || !self.deferred_publishes.is_empty() {
+                self.pending_user_prompt_dispatches.push_back(cid.clone());
+            } else {
+                self.send_prompt_to_agent_for(&cid);
+            }
         }
     }
 

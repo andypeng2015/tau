@@ -54,9 +54,11 @@ pub enum ToolActivityOutcome {
     },
 }
 
-/// Unique identifier for a node in the session tree.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct NodeId(pub u64);
+// `NodeId` lives on the wire (tree-folding events carry their own
+// `parent_node_id`), so the canonical definition moved to
+// `tau-proto`. Re-exported here for ergonomic backward compatibility
+// with existing `tau_core::NodeId` consumers.
+pub use tau_proto::NodeId;
 
 /// One node in the session tree.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -171,11 +173,11 @@ impl SessionTree {
             .collect()
     }
 
-    fn append_node(&mut self, entry: SessionEntry) -> NodeId {
+    fn append_node_at(&mut self, parent: Option<NodeId>, entry: SessionEntry) -> NodeId {
         let id = NodeId(self.nodes.len() as u64);
         self.nodes.push(SessionNode {
             id,
-            parent_id: self.head,
+            parent_id: parent,
             entry,
         });
         self.head = Some(id);
@@ -196,65 +198,100 @@ impl SessionTree {
             head: None,
         };
         for entry in events {
-            tree.apply_event(&entry.event);
+            tree.apply_event_at(entry.parent_node_id, &entry.event);
         }
         tree
     }
 
     /// Incrementally apply one durable event to the tree. Mirrors the
-    /// fold rules of [`SessionTree::from_events`].
+    /// fold rules of [`SessionTree::from_events`]. Tree-folding events
+    /// are parented at the current `head`; for callers that need to
+    /// fold an event onto a *specific* branch (without first emitting
+    /// a `UiNavigateTree` to bounce `head` there), use
+    /// [`SessionTree::apply_event_at`].
     pub fn apply_event(&mut self, event: &Event) {
+        self.apply_event_at(None, event);
+    }
+
+    /// Like [`SessionTree::apply_event`] but parents the produced
+    /// node under `parent` when the event is one that produces a
+    /// node. `parent = None` means "use the current head" (today's
+    /// behaviour). Non-node-producing events (e.g.
+    /// [`Event::UiNavigateTree`]) ignore `parent`.
+    pub fn apply_event_at(&mut self, parent: Option<NodeId>, event: &Event) {
+        let parent = parent.or(self.head);
         match event {
             Event::UiPromptSubmitted(prompt) => {
-                self.append_node(SessionEntry::UserMessage {
-                    text: prompt.text.clone(),
-                });
+                self.append_node_at(
+                    parent,
+                    SessionEntry::UserMessage {
+                        text: prompt.text.clone(),
+                    },
+                );
             }
             Event::SessionUserMessageInjected(injected) => {
-                self.append_node(SessionEntry::UserMessage {
-                    text: injected.text.clone(),
-                });
+                self.append_node_at(
+                    parent,
+                    SessionEntry::UserMessage {
+                        text: injected.text.clone(),
+                    },
+                );
             }
             Event::SessionPromptSteered(steered) => {
-                self.append_node(SessionEntry::UserMessage {
-                    text: steered.text.clone(),
-                });
+                self.append_node_at(
+                    parent,
+                    SessionEntry::UserMessage {
+                        text: steered.text.clone(),
+                    },
+                );
             }
             Event::AgentResponseFinished(response) => {
                 if let Some(text) = response.text.as_ref() {
-                    self.append_node(SessionEntry::AgentMessage {
-                        text: text.clone(),
-                        thinking: response.thinking.clone(),
-                    });
+                    self.append_node_at(
+                        parent,
+                        SessionEntry::AgentMessage {
+                            text: text.clone(),
+                            thinking: response.thinking.clone(),
+                        },
+                    );
                 }
             }
             Event::ToolRequest(request) => {
-                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
-                    call_id: request.call_id.clone(),
-                    tool_name: request.tool_name.clone(),
-                    outcome: ToolActivityOutcome::Requested {
-                        arguments: request.arguments.clone(),
-                    },
-                }));
+                self.append_node_at(
+                    parent,
+                    SessionEntry::ToolActivity(ToolActivityRecord {
+                        call_id: request.call_id.clone(),
+                        tool_name: request.tool_name.clone(),
+                        outcome: ToolActivityOutcome::Requested {
+                            arguments: request.arguments.clone(),
+                        },
+                    }),
+                );
             }
             Event::ToolResult(result) => {
-                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
-                    call_id: result.call_id.clone(),
-                    tool_name: result.tool_name.clone(),
-                    outcome: ToolActivityOutcome::Result {
-                        result: result.result.clone(),
-                    },
-                }));
+                self.append_node_at(
+                    parent,
+                    SessionEntry::ToolActivity(ToolActivityRecord {
+                        call_id: result.call_id.clone(),
+                        tool_name: result.tool_name.clone(),
+                        outcome: ToolActivityOutcome::Result {
+                            result: result.result.clone(),
+                        },
+                    }),
+                );
             }
             Event::ToolError(error) => {
-                self.append_node(SessionEntry::ToolActivity(ToolActivityRecord {
-                    call_id: error.call_id.clone(),
-                    tool_name: error.tool_name.clone(),
-                    outcome: ToolActivityOutcome::Error {
-                        message: error.message.clone(),
-                        details: error.details.clone(),
-                    },
-                }));
+                self.append_node_at(
+                    parent,
+                    SessionEntry::ToolActivity(ToolActivityRecord {
+                        call_id: error.call_id.clone(),
+                        tool_name: error.tool_name.clone(),
+                        outcome: ToolActivityOutcome::Error {
+                            message: error.message.clone(),
+                            details: error.details.clone(),
+                        },
+                    }),
+                );
             }
             Event::UiNavigateTree(req) => {
                 let target = NodeId(req.node_id);
@@ -268,11 +305,22 @@ impl SessionTree {
 }
 
 /// One durable session-scoped protocol event.
+///
+/// `parent_node_id` is the explicit fold parent that was passed to
+/// [`SessionStore::append_session_event_at`] at write time. Carrying
+/// it on the persisted record (rather than on the wire) preserves
+/// cross-conversation branching across replay without requiring the
+/// publisher-side `UiNavigateTree` head-bouncing dance the harness
+/// used to do. Older records without this field deserialize as
+/// `None` and replay against the live `tree.head()` — matching the
+/// legacy single-cursor fold and so back-compatible.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PersistedSessionEvent {
     pub id: LogEventId,
     pub source: Option<ConnectionId>,
     pub event: Event,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node_id: Option<NodeId>,
 }
 
 /// Per-session sidecar metadata at `<state_dir>/<session_id>/meta.json`.
