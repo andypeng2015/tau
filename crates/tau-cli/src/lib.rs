@@ -2771,7 +2771,11 @@ impl EventRenderer {
                 self.handle.print_output(themed_block(
                     &self.theme,
                     names::SYSTEM_INFO,
-                    format!("loaded: {}", agents.file_path.display()),
+                    format!(
+                        "loaded: {} {}",
+                        agents.file_path.display(),
+                        output_stats_suffix(&agents.content).text
+                    ),
                 ));
             }
             Event::ExtensionContextReady(_) => {

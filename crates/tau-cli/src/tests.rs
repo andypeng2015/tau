@@ -4,9 +4,9 @@ use std::time::Duration;
 use tau_cli_term::TermHandle;
 use tau_cli_term_raw::Term;
 use tau_proto::{
-    AgentResponseFinished, AgentResponseUpdated, CborValue, Event, HarnessModelSelected,
-    SessionPromptCreated, SessionPromptQueued, SessionStartReason, SessionStarted, ToolResult,
-    UiPromptSubmitted,
+    AgentResponseFinished, AgentResponseUpdated, CborValue, Event, ExtAgentsMdAvailable,
+    HarnessModelSelected, SessionPromptCreated, SessionPromptQueued, SessionStartReason,
+    SessionStarted, ToolResult, UiPromptSubmitted,
 };
 
 use super::EventRenderer;
@@ -867,6 +867,29 @@ fn streaming_block_does_not_duplicate_on_finish() {
         1,
         "response should appear exactly once, got {count}: {:?}",
         vt.screen_text(80)
+    );
+}
+
+#[test]
+fn agents_md_loaded_event_shows_output_stats() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::ExtAgentsMdAvailable(ExtAgentsMdAvailable {
+        file_path: "/tmp/AGENTS.md".into(),
+        content: "alpha\nbeta\n".into(),
+    }));
+    sync(&handle);
+
+    let rows = vt.screen_text(80);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("loaded: /tmp/AGENTS.md (2L, 11B)")),
+        "loaded event should include output stats: {rows:?}"
     );
 }
 
