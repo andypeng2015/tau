@@ -187,6 +187,23 @@ free-form prompts. Standard fzf-style fuzzy-search bindings are also available
 inside the completion menu. Slash-command arguments use the same menu but are
 populated dynamically by the harness (model list, effort levels, …).
 
+### Bang shell commands
+
+A prompt line starting with `!` runs a shell command from the UI. `!<cmd>`
+renders live stdout/stderr in the transcript and injects the finished output
+back into the session context as a `<user_shell>` block, so the agent can see
+what you ran and use the result.
+
+Use `!!<cmd>` for UI-only commands: output is rendered the same way, but is
+marked `[no context]` and is not replayed to the agent.
+
+Examples:
+
+```text
+!ls
+!!git status
+```
+
 ### Customizable key bindings
 
 `cli.json5` exposes a `bind:` table that maps key chords to prompt-local
