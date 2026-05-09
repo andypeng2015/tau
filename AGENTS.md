@@ -13,8 +13,8 @@
 
 ## Design docs
 
-- `DESIGN.md` — living design notes and architectural direction
 - `ARCHITECTURE.md` — single binary design and crate layout
+- `FEATURES.md` — update after editing any new major features
 - `doc/ORIGINAL_DESIGN.md` — pre-implementation design exploration
 
 ## Getting started
