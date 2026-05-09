@@ -97,6 +97,10 @@ fn load_cli_settings_merges_builtin_bindings_with_user_overrides() {
         })
     );
     assert_eq!(
+        s.bind.get("C-r").map(|binding| binding.action.as_str()),
+        Some("shell-prompt-insert")
+    );
+    assert_eq!(
         s.bind.get("C-o").map(|binding| binding.action.as_str()),
         Some("shell-prompt-edit")
     );

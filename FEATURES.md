@@ -230,7 +230,12 @@ Default bindings:
 bind: {
   "C-f": {
     action: "shell-prompt-insert",
-    command: "rg --files --hidden --glob '!.git' | fzf",
+    command: "rg --files --hidden --glob '!.git' | fzf --height=100%",
+    trim: true,
+  },
+  "C-r": {
+    action: "shell-prompt-insert",
+    command: "RG_PREFIX='rg --line-number --column --no-heading --color=always --smart-case'; fzf --height=100% --ansi --disabled --bind \"change:reload:$RG_PREFIX {q} || true\" --delimiter : --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1} 2>/dev/null || awk -v line={2} '\\''line - 4 <= NR && NR <= line + 4 { printf \"%6d  %s\\n\", NR, $0 }'\\'' -- {1}' --preview-window '+{2}/2' | cut -d: -f1",
     trim: true,
   },
   "C-o": {
@@ -277,19 +282,21 @@ into the prompt is straightforward:
 bind: {
   "C-f": {
     action: "shell-prompt-insert",
-    command: "rg --files --hidden --glob '!.git' | fzf",
+    command: "rg --files --hidden --glob '!.git' | fzf --height=100%",
     trim: true,
   },
   "C-r": {
     action: "shell-prompt-insert",
-    command: "rg --files | fzf --query=\"$(cat $TAU_PROMPT_PATH)\"",
+    command: "RG_PREFIX='rg --line-number --column --no-heading --color=always --smart-case'; fzf --height=100% --ansi --disabled --bind \"change:reload:$RG_PREFIX {q} || true\" --delimiter : --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1} 2>/dev/null || awk -v line={2} '\\''line - 4 <= NR && NR <= line + 4 { printf \"%6d  %s\\n\", NR, $0 }'\\'' -- {1}' --preview-window '+{2}/2' | cut -d: -f1",
     trim: true,
   },
 },
 ```
 
-Replace `rg --files | fzf` with `git ls-files | fzf`, a custom script, or
-whatever fits your workflow.
+`C-r` starts with an empty result list; type a query to search file contents
+with `rg`, preview the matching context, and insert the selected file path.
+Replace `rg --files | fzf` or the content-search command with `git ls-files`,
+a custom script, or whatever fits your workflow.
 
 ### Thinking / reasoning rendering
 

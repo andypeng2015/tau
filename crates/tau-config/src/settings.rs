@@ -119,7 +119,15 @@ fn default_cli_bindings() -> HashMap<String, CliBindingAction> {
             "C-f".to_owned(),
             CliBindingAction {
                 action: "shell-prompt-insert".to_owned(),
-                command: "rg --files --hidden --glob '!.git' | fzf".to_owned(),
+                command: "rg --files --hidden --glob '!.git' | fzf --height=100%".to_owned(),
+                trim: true,
+            },
+        ),
+        (
+            "C-r".to_owned(),
+            CliBindingAction {
+                action: "shell-prompt-insert".to_owned(),
+                command: r#"RG_PREFIX='rg --line-number --column --no-heading --color=always --smart-case'; fzf --height=100% --ansi --disabled --bind "change:reload:$RG_PREFIX {q} || true" --delimiter : --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1} 2>/dev/null || awk -v line={2} '\''line - 4 <= NR && NR <= line + 4 { printf "%6d  %s\n", NR, $0 }'\'' -- {1}' --preview-window '+{2}/2' | cut -d: -f1"#.to_owned(),
                 trim: true,
             },
         ),
