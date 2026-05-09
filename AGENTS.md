@@ -22,3 +22,11 @@
 - `cargo check`
 - `nix develop`
 - `selfci check`
+
+
+## Definition of done
+
+- Code is formatted.
+- Relevant tests pass.
+- Run `selfci check` after every major change.
+- Update `FEATURES.md` after editing any new major features.
