@@ -183,8 +183,9 @@ Toggle state is persisted to `<state_dir>/cli.json`.
 
 When the prompt buffer starts with `./` or `../`, Tab triggers filesystem path
 completion against the current working directory — handy for naming files in
-free-form prompts. Slash-command arguments use the same menu but are populated
-dynamically by the harness (model list, effort levels, …).
+free-form prompts. Standard fzf-style fuzzy-search bindings are also available
+inside the completion menu. Slash-command arguments use the same menu but are
+populated dynamically by the harness (model list, effort levels, …).
 
 ### Customizable key bindings
 
