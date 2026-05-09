@@ -1142,11 +1142,11 @@ fn edit_completion_uses_diff_chip() {
     ));
 }
 
-/// A successful skill load shows the skill name and a `loaded`
-/// confirmation; a missed load shows the requested name, the count
-/// of split-name suggestions returned in `details`, and the error
-/// message — so the user can see at a glance whether the agent has
-/// useful follow-ups available.
+/// A successful skill load shows the skill name and output stats;
+/// a missed load shows the requested name, the count of split-name
+/// suggestions returned in `details`, and the error message — so the
+/// user can see at a glance whether the agent has useful follow-ups
+/// available.
 #[test]
 fn skill_completion_renders_load_paths() {
     // Successful load.
@@ -1163,7 +1163,7 @@ fn skill_completion_renders_load_paths() {
     let ok = super::format_tool_completion("skill", &load_ok, None);
     assert_eq!(ok.args, "my-skill");
     assert_eq!(ok.suffixes.len(), 2);
-    assert_eq!(ok.suffixes[0].text, "loaded");
+    assert_eq!(ok.suffixes[0].text, "(1L, 4B)");
     assert!(matches!(ok.suffixes[0].status, super::ToolStatus::Info));
     assert_eq!(ok.suffixes[1].text, "ok");
 

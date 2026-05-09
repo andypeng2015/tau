@@ -1723,10 +1723,11 @@ fn format_tool_completion(
                     if let Some(msg) = error_message {
                         format_tool_error("skill", name, msg)
                     } else {
+                        let content = cbor_text_field(details, "content").unwrap_or_default();
                         ToolCallDisplay {
                             tool_name: "skill".into(),
                             args: name,
-                            suffixes: vec![info_suffix("loaded".to_owned()), ok_suffix()],
+                            suffixes: vec![output_stats_suffix(&content), ok_suffix()],
                         }
                     }
                 }
