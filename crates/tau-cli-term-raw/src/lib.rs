@@ -219,38 +219,69 @@ impl SharedState {
         col
     }
 
+    /// Sets the cursor as part of a horizontal motion or edit and
+    /// invalidates the sticky vertical column. All cursor mutations
+    /// outside of vertical motion must go through this — the sticky
+    /// column only stays valid as long as the cursor is moving
+    /// purely up/down.
+    fn write_cursor(&mut self, new_cursor: usize) {
+        self.cursor = new_cursor;
+        self.sticky_col = None;
+    }
+
+    /// Sets the cursor as part of a vertical motion. Preserves the
+    /// sticky column so consecutive vertical moves can replay the
+    /// original column over short or empty rows.
+    fn write_cursor_keep_sticky(&mut self, new_cursor: usize) {
+        self.cursor = new_cursor;
+    }
+
+    /// Pushes `line` onto the input history and resets to a fresh
+    /// empty prompt. No-op when `line` is empty (and returns `false`).
+    /// Clears the sticky column via `write_cursor`.
+    fn push_buffer_as_history_entry(&mut self, line: String) -> bool {
+        if line.is_empty() {
+            return false;
+        }
+        self.input_history.push(line);
+        self.buffer.clear();
+        self.write_cursor(0);
+        true
+    }
+
     /// Cycles the completion menu selection by `delta` (+1 forward,
     /// -1 backward) and updates the buffer to preview the new
     /// selection (or restore `original_buffer` when wrapping past the
     /// ends to `selected = None`). Returns `true` if a menu was open.
     fn cycle_completion(&mut self, delta: isize) -> bool {
-        let Some(menu) = self.completion.as_mut() else {
-            return false;
-        };
-        let len = menu.candidates.len();
-        if len == 0 {
-            return false;
-        }
-        let new_selected = match menu.selected {
-            None => Some(if delta > 0 { 0 } else { len - 1 }),
-            // Up at the first match drops back to "no preview" so
-            // the user sees their original buffer; pressing Up again
-            // wraps to the last match.
-            Some(0) if delta < 0 => None,
-            Some(i) => Some((i as isize + delta).rem_euclid(len as isize) as usize),
-        };
-        menu.selected = new_selected;
-        match new_selected {
-            None => {
-                self.buffer = menu.original_buffer.clone();
-                self.cursor = menu.original_cursor;
+        let (new_buffer, new_cursor) = {
+            let Some(menu) = self.completion.as_mut() else {
+                return false;
+            };
+            let len = menu.candidates.len();
+            if len == 0 {
+                return false;
             }
-            Some(idx) => {
-                self.buffer = menu.candidates[idx].replacement.clone();
-                self.cursor = self.buffer.len();
+            let new_selected = match menu.selected {
+                None => Some(if delta > 0 { 0 } else { len - 1 }),
+                // Up at the first match drops back to "no preview" so
+                // the user sees their original buffer; pressing Up
+                // again wraps to the last match.
+                Some(0) if delta < 0 => None,
+                Some(i) => Some((i as isize + delta).rem_euclid(len as isize) as usize),
+            };
+            menu.selected = new_selected;
+            match new_selected {
+                None => (menu.original_buffer.clone(), menu.original_cursor),
+                Some(idx) => {
+                    let buf = menu.candidates[idx].replacement.clone();
+                    let cursor = buf.len();
+                    (buf, cursor)
+                }
             }
-        }
-        self.sticky_col = None;
+        };
+        self.buffer = new_buffer;
+        self.write_cursor(new_cursor);
         true
     }
 
@@ -263,8 +294,7 @@ impl SharedState {
         };
         if menu.selected.is_some() {
             self.buffer = menu.original_buffer;
-            self.cursor = menu.original_cursor;
-            self.sticky_col = None;
+            self.write_cursor(menu.original_cursor);
         }
         true
     }
@@ -298,55 +328,56 @@ impl SharedState {
     /// both at (or clamped to) the column the cursor was on.
     fn step_history(&mut self, delta: isize) -> bool {
         let target_col = self.vertical_target_col();
-
         if self.history_nav.is_none() {
             if 0 < delta {
-                if self.buffer.is_empty() {
-                    return false;
-                }
-                self.input_history.push(std::mem::take(&mut self.buffer));
-                self.cursor = 0;
-                self.sticky_col = None;
-                return true;
+                let line = std::mem::take(&mut self.buffer);
+                return self.push_buffer_as_history_entry(line);
             }
-            if self.input_history.is_empty() {
-                return false;
-            }
-            let mut entries = self.input_history.clone();
-            entries.push(self.buffer.clone());
-            // Step into the previous entry (one before the WIP slot).
-            let index = entries.len() - 2;
-            self.buffer = entries[index].clone();
-            self.cursor = self.cursor_byte_at(self.last_visual_row(), target_col);
-            self.history_nav = Some(HistoryNav { entries, index });
-            return true;
+            return self.enter_history_nav(target_col);
         }
+        self.advance_history_nav(delta, target_col)
+    }
 
-        let nav = self.history_nav.as_mut().expect("checked above");
+    /// Switches from `Editing` into history-navigation mode at the
+    /// most recent entry, with the cursor placed at the previous
+    /// entry's last visual row at `target_col`.
+    fn enter_history_nav(&mut self, target_col: usize) -> bool {
+        if self.input_history.is_empty() {
+            return false;
+        }
+        let mut entries = self.input_history.clone();
+        entries.push(self.buffer.clone());
+        // The WIP buffer sits at `entries.last()`; the previous
+        // history entry is one slot before it.
+        let index = entries.len() - 2;
+        self.buffer = entries[index].clone();
+        let new_cursor = self.cursor_byte_at(self.last_visual_row(), target_col);
+        self.write_cursor_keep_sticky(new_cursor);
+        self.history_nav = Some(HistoryNav { entries, index });
+        true
+    }
+
+    /// Steps within an already-active history navigation. Going past
+    /// the WIP slot (Down at the latest entry) pushes the WIP buffer
+    /// onto history and returns to a fresh prompt, mirroring Down
+    /// from `Editing`.
+    fn advance_history_nav(&mut self, delta: isize, target_col: usize) -> bool {
+        let nav = self.history_nav.as_mut().expect("caller checked Some");
         let new_index = nav.index as isize + delta;
         if new_index < 0 {
             return false;
         }
         if new_index >= nav.entries.len() as isize {
-            // Past the WIP slot: leave nav mode. If the WIP buffer
-            // has content, push it to history and open a fresh
-            // empty prompt — same behaviour as Down from `Editing`.
             let wip = nav.entries.last().cloned().unwrap_or_default();
             self.history_nav = None;
-            if wip.is_empty() {
-                return false;
-            }
-            self.input_history.push(wip);
-            self.buffer.clear();
-            self.cursor = 0;
-            self.sticky_col = None;
-            return true;
+            return self.push_buffer_as_history_entry(wip);
         }
         nav.index = new_index as usize;
         let new_buffer = nav.entries[nav.index].clone();
         self.buffer = new_buffer;
         let target_row = if delta < 0 { self.last_visual_row() } else { 0 };
-        self.cursor = self.cursor_byte_at(target_row, target_col);
+        let new_cursor = self.cursor_byte_at(target_row, target_col);
+        self.write_cursor_keep_sticky(new_cursor);
         true
     }
 }
@@ -627,11 +658,11 @@ impl TermHandle {
     /// external buffer set is treated as a fresh starting point.
     pub fn set_buffer(&self, text: String, cursor: usize) {
         let mut st = self.lock();
-        st.cursor = cursor.min(text.len());
+        let new_cursor = cursor.min(text.len());
         st.buffer = text;
         st.history_nav = None;
-        st.sticky_col = None;
         st.completion = None;
+        st.write_cursor(new_cursor);
     }
 
     /// Snapshot of the open completion menu, if any. Returns `None`
@@ -930,8 +961,7 @@ impl Term {
                         let mut st = self.state.lock().expect("term state mutex poisoned");
                         let cursor = st.cursor;
                         st.buffer.insert_str(cursor, &text);
-                        st.cursor = cursor + text.len();
-                        st.sticky_col = None;
+                        st.write_cursor(cursor + text.len());
                         st.sync_buffer_to_history_nav();
                     }
                     self.refresh_completion();
@@ -1111,14 +1141,18 @@ impl Term {
         Ok(id)
     }
 
-    pub fn step_history(&self, delta: isize) {
+    /// Programmatically triggers a history step (the same operation
+    /// `Up`/`Down` and `Ctrl-K`/`Ctrl-J` perform). Closes any open
+    /// completion menu first so callers don't have to coordinate with
+    /// the input loop.
+    pub fn trigger_history_step(&self, delta: isize) {
         let mut st = self.state.lock().expect("term state mutex poisoned");
         st.completion = None;
         st.step_history(delta);
     }
 
     fn step_history_event(&self, delta: isize) -> io::Result<Option<Event>> {
-        self.step_history(delta);
+        self.trigger_history_step(delta);
         Ok(Some(Event::BufferChanged))
     }
 
@@ -1159,8 +1193,7 @@ impl Term {
                     st.completion = None;
                     let cursor = st.cursor;
                     st.buffer.insert(cursor, '\n');
-                    st.cursor = cursor + 1;
-                    st.sticky_col = None;
+                    st.write_cursor(cursor + 1);
                     st.sync_buffer_to_history_nav();
                 }
                 self.refresh_completion();
@@ -1181,10 +1214,8 @@ impl Term {
                     let mut st = self.state.lock().expect("term state mutex poisoned");
                     st.completion = None;
                     st.history_nav = None;
-                    st.sticky_col = None;
-                    st.cursor = st.buffer.len();
                     let line = std::mem::take(&mut st.buffer);
-                    st.cursor = 0;
+                    st.write_cursor(0);
                     st.input_history.push(line.clone());
                     line
                 };
@@ -1209,10 +1240,9 @@ impl Term {
                     return Ok(Some(Event::Eof));
                 }
                 st.buffer.clear();
-                st.cursor = 0;
                 st.history_nav = None;
-                st.sticky_col = None;
                 st.completion = None;
+                st.write_cursor(0);
                 drop(st);
                 return Ok(Some(Event::BufferChanged));
             }
@@ -1222,8 +1252,7 @@ impl Term {
                     let mut st = self.state.lock().expect("term state mutex poisoned");
                     let cursor = st.cursor;
                     st.buffer.drain(..cursor);
-                    st.cursor = 0;
-                    st.sticky_col = None;
+                    st.write_cursor(0);
                     st.sync_buffer_to_history_nav();
                 }
                 self.refresh_completion();
@@ -1241,8 +1270,7 @@ impl Term {
                             .unwrap_or(0);
                         let cursor = st.cursor;
                         st.buffer.drain(new_end..cursor);
-                        st.cursor = new_end;
-                        st.sticky_col = None;
+                        st.write_cursor(new_end);
                         st.sync_buffer_to_history_nav();
                         true
                     } else {
@@ -1257,14 +1285,13 @@ impl Term {
 
             KeyCode::Char('a') if ctrl => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
-                st.cursor = 0;
-                st.sticky_col = None;
+                st.write_cursor(0);
             }
 
             KeyCode::Char('e') if ctrl => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
-                st.cursor = st.buffer.len();
-                st.sticky_col = None;
+                let len = st.buffer.len();
+                st.write_cursor(len);
             }
 
             KeyCode::Char(_ch)
@@ -1300,8 +1327,7 @@ impl Term {
                     let mut st = self.state.lock().expect("term state mutex poisoned");
                     let cursor = st.cursor;
                     st.buffer.insert(cursor, ch);
-                    st.cursor += ch.len_utf8();
-                    st.sticky_col = None;
+                    st.write_cursor(cursor + ch.len_utf8());
                     st.sync_buffer_to_history_nav();
                 }
                 self.refresh_completion();
@@ -1315,8 +1341,7 @@ impl Term {
                         let prev = prev_char_boundary(&st.buffer, st.cursor);
                         let cursor = st.cursor;
                         st.buffer.drain(prev..cursor);
-                        st.cursor = prev;
-                        st.sticky_col = None;
+                        st.write_cursor(prev);
                         st.sync_buffer_to_history_nav();
                         true
                     } else {
@@ -1333,10 +1358,14 @@ impl Term {
                 let changed = {
                     let mut st = self.state.lock().expect("term state mutex poisoned");
                     if st.cursor < st.buffer.len() {
-                        let next = next_char_boundary(&st.buffer, st.cursor);
                         let cursor = st.cursor;
+                        let next = next_char_boundary(&st.buffer, cursor);
                         st.buffer.drain(cursor..next);
-                        st.sticky_col = None;
+                        // Buffer changed but cursor stays put. Re-write
+                        // the cursor at the same offset to invalidate
+                        // sticky col through the same code path as any
+                        // other non-vertical edit.
+                        st.write_cursor(cursor);
                         st.sync_buffer_to_history_nav();
                         true
                     } else {
@@ -1352,16 +1381,16 @@ impl Term {
             KeyCode::Left => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
                 if st.cursor > 0 {
-                    st.cursor = prev_char_boundary(&st.buffer, st.cursor);
-                    st.sticky_col = None;
+                    let prev = prev_char_boundary(&st.buffer, st.cursor);
+                    st.write_cursor(prev);
                 }
             }
 
             KeyCode::Right => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
                 if st.cursor < st.buffer.len() {
-                    st.cursor = next_char_boundary(&st.buffer, st.cursor);
-                    st.sticky_col = None;
+                    let next = next_char_boundary(&st.buffer, st.cursor);
+                    st.write_cursor(next);
                 }
             }
 
@@ -1377,7 +1406,7 @@ impl Term {
                 }
                 let target_col = st.vertical_target_col();
                 if let Some(new_cursor) = move_cursor_vertical(&st, -1, target_col) {
-                    st.cursor = new_cursor;
+                    st.write_cursor_keep_sticky(new_cursor);
                     return Ok(Some(Event::BufferChanged));
                 }
                 if st.step_history(-1) {
@@ -1395,7 +1424,7 @@ impl Term {
                 }
                 let target_col = st.vertical_target_col();
                 if let Some(new_cursor) = move_cursor_vertical(&st, 1, target_col) {
-                    st.cursor = new_cursor;
+                    st.write_cursor_keep_sticky(new_cursor);
                     return Ok(Some(Event::BufferChanged));
                 }
                 if st.step_history(1) {
@@ -1406,14 +1435,13 @@ impl Term {
 
             KeyCode::Home => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
-                st.cursor = 0;
-                st.sticky_col = None;
+                st.write_cursor(0);
             }
 
             KeyCode::End => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
-                st.cursor = st.buffer.len();
-                st.sticky_col = None;
+                let len = st.buffer.len();
+                st.write_cursor(len);
             }
 
             KeyCode::Tab => {

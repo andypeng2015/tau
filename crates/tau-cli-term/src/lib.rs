@@ -283,7 +283,7 @@ impl HighTerm {
                 self.handle.set_buffer(buffer, cursor + text.len());
             }
             Ok(Some(PromptShellResult::History(delta))) => {
-                self.term.step_history(delta);
+                self.term.trigger_history_step(delta);
             }
             Ok(None) => {}
             Err(msg) => self.print_local(&format!("binding: {msg}")),
