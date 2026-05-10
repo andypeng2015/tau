@@ -198,7 +198,14 @@ impl SessionTree {
             head: None,
         };
         for entry in events {
-            tree.apply_event_at(entry.parent_node_id, &entry.event);
+            // Persisted records store the inner `Option<NodeId>` only
+            // (serde collapses `Some(None)` to `None`), so `None` in
+            // the durable record always means "inherit head" on
+            // replay. Sessions that branch via explicit-root publishes
+            // (e.g. fresh sub-agent contexts) lose that distinction
+            // across daemon restarts — acceptable today since side
+            // conversations are not resumed across restarts.
+            tree.apply_event_at(entry.parent_node_id.map(Some), &entry.event);
         }
         tree
     }
@@ -214,12 +221,23 @@ impl SessionTree {
     }
 
     /// Like [`SessionTree::apply_event`] but parents the produced
-    /// node under `parent` when the event is one that produces a
-    /// node. `parent = None` means "use the current head" (today's
-    /// behaviour). Non-node-producing events (e.g.
-    /// [`Event::UiNavigateTree`]) ignore `parent`.
-    pub fn apply_event_at(&mut self, parent: Option<NodeId>, event: &Event) {
-        let parent = parent.or(self.head);
+    /// node under an explicit fold parent. The `Option<Option<NodeId>>`
+    /// tri-state distinguishes:
+    /// * `None` — no caller-supplied parent; inherit the tree's current `head`
+    ///   (legacy behaviour, used by transient publishes and by replay of older
+    ///   persisted records).
+    /// * `Some(None)` — fold the produced node at the *root* (no parent). Used
+    ///   to start a fresh branch (e.g. a sub-agent's first turn) without
+    ///   inheriting the tree's current cursor.
+    /// * `Some(Some(id))` — fold under the given node.
+    ///
+    /// Non-node-producing events (e.g. [`Event::UiNavigateTree`])
+    /// ignore the parent.
+    pub fn apply_event_at(&mut self, parent: Option<Option<NodeId>>, event: &Event) {
+        let parent = match parent {
+            None => self.head,
+            Some(explicit) => explicit,
+        };
         match event {
             Event::UiPromptSubmitted(prompt) => {
                 self.append_node_at(

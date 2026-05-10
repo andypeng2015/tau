@@ -300,16 +300,21 @@ impl SessionStore {
     }
 
     /// Like [`SessionStore::append_session_event`] but folds the
-    /// event onto the explicit `parent_node_id` instead of the
-    /// session tree's current write cursor. The harness uses this
-    /// when publishing on a conversation's behalf, so cross-
-    /// conversation events don't have to bounce a shared `head`
-    /// cursor through `UiNavigateTree`.
+    /// event onto an explicit fold parent instead of the session
+    /// tree's current write cursor. The harness uses this when
+    /// publishing on a conversation's behalf, so cross-conversation
+    /// events don't have to bounce a shared `head` cursor through
+    /// `UiNavigateTree`.
+    ///
+    /// `parent_node_id` is a tri-state matching
+    /// [`SessionTree::apply_event_at`]: `None` inherits the tree's
+    /// head (legacy), `Some(None)` folds at root, `Some(Some(id))`
+    /// folds under `id`.
     pub fn append_session_event_at(
         &mut self,
         session_id: &str,
         source: Option<ConnectionId>,
-        parent_node_id: Option<NodeId>,
+        parent_node_id: Option<Option<NodeId>>,
         event: Event,
     ) -> Result<LogEventId, SessionStoreError> {
         self.ensure_locked(session_id)?;
@@ -327,7 +332,10 @@ impl SessionStore {
             id: next_id,
             source,
             event: event.clone(),
-            parent_node_id,
+            // Persistence stores only the inner Option<NodeId>;
+            // explicit-root (`Some(None)`) and inherit-head (`None`)
+            // collapse to `None` on the wire. See `from_events`.
+            parent_node_id: parent_node_id.flatten(),
         };
         append_cbor_record(&events_path, &record)?;
         touch_meta(&session_dir.join("meta.json"))?;

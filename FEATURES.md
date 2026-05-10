@@ -144,10 +144,16 @@ when a long task finishes while you're in another window.
 
 ### `core-delegate` — sub-task delegation
 
-Exposes a `delegate` tool that spawns a side conversation off the current
-node, runs to completion against the same model and tool set, and returns its
-result to the caller. Recursion is allowed. Live progress (turns, current
-tool) is shown in the parent UI alongside the delegate's task name.
+Exposes a `delegate` tool that spawns a side conversation, runs it to
+completion against the same model and tool set, and returns its result to the
+caller. The sub-agent starts with a *fresh* context — only the parent's
+`prompt`, the system prompt, and tools — with no visibility into the parent
+conversation's prior turns, tool results, or in-flight state. The same
+isolation applies at every nesting depth, so sub-sub-agents don't see
+ancestor task framing and can't be tricked into re-delegating it. Parent
+agents are responsible for putting everything the sub-agent needs into the
+`prompt`. Live progress (turns, current tool) is shown in the parent UI
+alongside the delegate's task name.
 
 ### `std-websearch-exa` — opt-in web search
 

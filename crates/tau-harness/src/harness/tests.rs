@@ -2866,12 +2866,11 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         .expect("side prompt id");
     let prompt = read_prompt_created(&h, &side_spid);
 
-    // The parent agent's `delegate` tool_use is still unresolved
-    // (no matching tool_result yet), so replaying it into the
-    // sub-agent's prompt would produce an orphan ToolUse — which
-    // OpenAI rejects with `No tool output found for function call …`.
-    // The harness must rewind to the most recent UserMessage on the
-    // parent's branch and graft the side conversation there.
+    // The sub-agent gets a fresh context regardless of whether its
+    // parent is mid-tool-call: it sees only its own `query.instruction`,
+    // never the parent's unresolved `delegate` tool_use (which would
+    // be an orphan ToolUse the provider rejects), and never the
+    // user's task framing (which would invite recursive re-delegation).
     let saw_orphan_tool_use = prompt.messages.iter().any(|message| {
         message.content.iter().any(|block| {
             matches!(
@@ -2893,8 +2892,19 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
             })
     });
     assert!(
-        saw_user_framing,
-        "side prompt should still inherit the user's task framing"
+        !saw_user_framing,
+        "side prompt must NOT inherit the user's task framing — sub-agents start with a fresh context"
+    );
+
+    let saw_own_instruction = prompt.messages.iter().any(|message| {
+        matches!(message.role, tau_proto::ConversationRole::User)
+            && message.content.iter().any(|block| {
+                matches!(block, tau_proto::ContentBlock::Text { text } if text == "side task")
+            })
+    });
+    assert!(
+        saw_own_instruction,
+        "side prompt should contain the delegated instruction"
     );
 
     h.shutdown().expect("shutdown");

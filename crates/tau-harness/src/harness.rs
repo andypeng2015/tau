@@ -11,16 +11,15 @@ use std::time::{Duration, Instant};
 use tau_config::Config;
 use tau_core::{
     Connection, ConnectionMetadata, ConnectionOrigin, DefaultSubscriptionPolicy, EventBus,
-    EventLog, NodeId, PolicyStore, RouteError, SessionEntry, SessionStore, SessionTree,
-    ToolRegistry, ToolRouteError,
+    EventLog, PolicyStore, RouteError, SessionStore, ToolRegistry, ToolRouteError,
 };
 use tau_proto::{
-    AgentResponseFinished, AgentToolCall, CborValue, ClientKind, ContentBlock, ConversationMessage,
-    ConversationRole, Disconnect, Event, EventName, EventSelector, ExtensionName, Frame,
-    HarnessContextUsageChanged, HarnessModelSelected, HarnessModelsAvailable, InterceptAction,
-    InterceptReply, InterceptRequest, InterceptionPriority, Message, ModelId, SessionId,
-    SessionPromptCreated, SessionPromptId, SessionPromptQueued, ToolCallId, ToolDefinition,
-    ToolError, ToolName, ToolRegister, ToolRequest,
+    AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Disconnect, Event, EventName,
+    EventSelector, ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected,
+    HarnessModelsAvailable, InterceptAction, InterceptReply, InterceptRequest,
+    InterceptionPriority, Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId,
+    SessionPromptQueued, ToolCallId, ToolDefinition, ToolError, ToolName, ToolRegister,
+    ToolRequest,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
@@ -1240,17 +1239,12 @@ impl Harness {
             return;
         };
         let source = source.map(tau_proto::ConnectionId::from);
-        let _ = match parent_node_id {
-            Some(parent_node_id) => self.store.append_session_event_at(
-                session_id.as_str(),
-                source,
-                parent_node_id,
-                event.clone(),
-            ),
-            None => self
-                .store
-                .append_session_event(session_id.as_str(), source, event.clone()),
-        };
+        let _ = self.store.append_session_event_at(
+            session_id.as_str(),
+            source,
+            parent_node_id,
+            event.clone(),
+        );
     }
 
     fn session_id_for_event(&self, event: &Event) -> Option<SessionId> {
@@ -2455,10 +2449,16 @@ impl Harness {
     /// [`tau_proto::ExtAgentQuery`] and dispatch it. The harness has no
     /// global agent slot — the side conversation publishes its own
     /// `SessionPromptCreated` immediately, and the agent extension
-    /// serializes consumption from the event log. The conversation
-    /// branches off the user's *default* conversation's current head,
-    /// so the side prompt + response land as a real branch in the
-    /// session tree; the user's main head stays put.
+    /// serializes consumption from the event log.
+    ///
+    /// Every sub-agent starts with a *fresh* context: only its
+    /// delegated instruction, no inherited messages from the parent
+    /// (no user framing, no completed prior turns, no in-flight tool
+    /// blocks). The parent agent is responsible for putting everything
+    /// the sub-agent needs into the `prompt`. This applies uniformly
+    /// at any nesting depth — a top-level delegate and a recursive
+    /// delegate get the same isolation, so deeper sub-agents can't
+    /// see (and restage) ancestor task framing.
     fn handle_ext_agent_query(
         &mut self,
         source_id: &str,
@@ -2485,11 +2485,13 @@ impl Harness {
             return Ok(());
         }
 
-        // Branch from the conversation that issued the tool call, not
-        // blindly from the default conversation. Nested delegate calls
-        // are emitted by side conversations; rooting them at the
-        // default head can replay unrelated in-flight ToolUse nodes
-        // from the user's main branch into the nested sub-agent prompt.
+        // Resolve the session id from the conversation that issued
+        // the tool call, so the side branch lands in the right
+        // session. We deliberately do NOT inherit the parent's
+        // tree head: `branch_root = None` means the side conversation
+        // starts at the tree root and `send_prompt_to_agent_for`
+        // assembles a message list containing only the new
+        // `UiPromptSubmitted` we publish below.
         let parent_cid = query
             .tool_call_id
             .as_ref()
@@ -2501,42 +2503,18 @@ impl Harness {
             .get(&parent_cid)
             .map(|c| c.session_id.clone())
             .expect("parent conversation always present");
-        // Walk back from the parent's head to a clean branch point.
-        // The parent may be mid-tool-call (e.g. the delegate tool_use
-        // that just triggered this query), and grafting the side
-        // conversation onto that node would replay an unresolved
-        // `ToolUse` into the sub-agent's prompt — OpenAI rejects that
-        // with `No tool output found for function call`. Top-level
-        // delegates keep the user's task framing; recursive delegates
-        // start from an empty branch so they receive only their own
-        // task, not ancestor instructions to spawn more delegates.
-        let parent_head = self.conversations.get(&parent_cid).and_then(|c| c.head);
-        let parent_is_extension = self
-            .conversations
-            .get(&parent_cid)
-            .is_some_and(|c| matches!(c.originator, tau_proto::PromptOriginator::Extension { .. }));
-        let branch_root = if parent_is_extension {
-            None
-        } else {
-            parent_head.and_then(|head| {
-                self.store
-                    .session(session_id.as_str())
-                    .and_then(|tree| last_user_message_ancestor(tree, head))
-            })
-        };
 
         let originator = tau_proto::PromptOriginator::Extension {
             name: extension_name.clone().into(),
             query_id: query.query_id.clone(),
         };
-        let conv = Conversation::new(
+        let mut conv = Conversation::new(
             cid.clone(),
             session_id.clone(),
             originator,
-            branch_root,
+            None,
             Some(source_id.into()),
         );
-        let mut conv = conv;
         // For tool-backed extensions (currently just `delegate`)
         // record the parent call id and task name so subsequent
         // sub-agent state changes can be surfaced to the user under
@@ -2551,84 +2529,25 @@ impl Harness {
         // without waiting for the sub-agent's first event.
         self.emit_delegate_progress(&cid);
 
-        // Queue the instruction on its own conversation; if the
-        // harness is globally ready (model selected, extensions ready,
-        // not mid-init) `try_advance_queue` dispatches it on the spot.
-        // The default conversation being mid-tool does not block this
-        // side conversation, since dispatch is per-conversation.
-        if parent_is_extension {
-            self.publish_for_conversation(
-                &cid,
-                Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
-                    session_id: session_id.clone(),
-                    text: query.instruction.clone(),
-                    originator: tau_proto::PromptOriginator::Extension {
-                        name: extension_name.clone().into(),
-                        query_id: query.query_id.clone(),
-                    },
-                    ctx_id: None,
-                }),
-            );
-            let instruction_content = query.instruction.clone();
-            let tools = self.gather_tool_definitions();
-            let cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "(unknown)".to_owned());
-            let session_prompt_id: SessionPromptId =
-                format!("sp-{}", self.next_session_prompt_id).into();
-            self.next_session_prompt_id += 1;
-            self.prompt_conversations
-                .insert(session_prompt_id.clone(), cid.clone());
-            if let Some(conv) = self.conversations.get_mut(&cid) {
-                conv.in_flight_prompt = Some(session_prompt_id.clone());
-                conv.turn_state = ConversationTurnState::AgentThinking {
-                    session_prompt_id: session_prompt_id.clone(),
-                };
-                conv.head = None;
-            }
-            let model = if self.selected_model.is_empty() {
-                None
-            } else {
-                Some(self.selected_model.clone())
-            };
-            self.publish_event(
-                None,
-                Event::SessionPromptCreated(SessionPromptCreated {
-                    session_prompt_id,
-                    session_id,
-                    system_prompt: build_system_prompt(&tools, &self.discovered_skills, &cwd),
-                    messages: vec![ConversationMessage {
-                        role: ConversationRole::User,
-                        content: vec![ContentBlock::Text {
-                            text: instruction_content,
-                        }],
-                    }],
-                    tools,
-                    model,
-                    effort: self.selected_effort,
-                    thinking_summary: self.selected_thinking_summary,
-                    originator: tau_proto::PromptOriginator::Extension {
-                        name: extension_name.into(),
-                        query_id: query.query_id,
-                    },
-                    ctx_id: None,
-                }),
-            );
-        } else {
-            self.publish_for_conversation(
-                &cid,
-                Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
-                    session_id,
-                    text: query.instruction,
-                    originator: tau_proto::PromptOriginator::Extension {
-                        name: extension_name.into(),
-                        query_id: query.query_id,
-                    },
-                    ctx_id: None,
-                }),
-            );
-            self.send_prompt_to_agent_for(&cid);
-        }
+        // Publish the UiPromptSubmitted on the side conversation's
+        // branch (head=None → folds at root) and dispatch the agent.
+        // `send_prompt_to_agent_for` reads `conv.head`, which after
+        // the commit above points at the just-folded UserMessage,
+        // so the assembled message list is exactly the one user
+        // turn carrying `query.instruction`.
+        self.publish_for_conversation(
+            &cid,
+            Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
+                session_id,
+                text: query.instruction,
+                originator: tau_proto::PromptOriginator::Extension {
+                    name: extension_name.into(),
+                    query_id: query.query_id,
+                },
+                ctx_id: None,
+            }),
+        );
+        self.send_prompt_to_agent_for(&cid);
         Ok(())
     }
 
@@ -4344,22 +4263,6 @@ impl Harness {
             .find(|e| e.name == name)
             .map(|e| e.connection_id.as_str())
     }
-}
-
-/// Walk parent pointers from `start` and return the id of the most
-/// recent `SessionEntry::UserMessage` ancestor (inclusive). Used for
-/// top-level side conversations so the delegate still inherits the
-/// user's task framing while dropping unresolved assistant/tool nodes.
-fn last_user_message_ancestor(tree: &SessionTree, start: NodeId) -> Option<NodeId> {
-    let mut current = Some(start);
-    while let Some(id) = current {
-        let node = tree.node(id)?;
-        if matches!(node.entry, SessionEntry::UserMessage { .. }) {
-            return Some(id);
-        }
-        current = node.parent_id;
-    }
-    None
 }
 
 fn selector_matches_event(selectors: &[EventSelector], event: &Event) -> bool {

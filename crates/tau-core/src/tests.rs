@@ -432,10 +432,20 @@ fn explicit_parent_preserved_across_replay() {
             .append_session_event_at(session_id, None, None, user_event("root"))
             .expect("root");
         store
-            .append_session_event_at(session_id, None, Some(NodeId(0)), user_event("branch-a"))
+            .append_session_event_at(
+                session_id,
+                None,
+                Some(Some(NodeId(0))),
+                user_event("branch-a"),
+            )
             .expect("branch-a");
         store
-            .append_session_event_at(session_id, None, Some(NodeId(0)), user_event("branch-b"))
+            .append_session_event_at(
+                session_id,
+                None,
+                Some(Some(NodeId(0))),
+                user_event("branch-b"),
+            )
             .expect("branch-b");
     }
 
