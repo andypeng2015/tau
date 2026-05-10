@@ -1599,6 +1599,7 @@ dependencies = [
  "tau-proto",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,8 +1,45 @@
 use std::io::Cursor;
+use std::sync::Once;
 
 use tau_proto::{AgentResponseFinished, Event, FrameReader, FrameWriter, UiPromptSubmitted};
+use tracing_subscriber::EnvFilter;
 
 use super::*;
+
+fn message_variant(msg: &Message) -> &'static str {
+    match msg {
+        Message::Hello(_) => "Hello",
+        Message::Subscribe(_) => "Subscribe",
+        Message::Intercept(_) => "Intercept",
+        Message::Ready(_) => "Ready",
+        Message::Disconnect(_) => "Disconnect",
+        Message::Configure(_) => "Configure",
+        Message::ConfigError(_) => "ConfigError",
+        Message::Emit(_) => "Emit",
+        Message::InterceptRequest(_) => "InterceptRequest",
+        Message::InterceptReply(_) => "InterceptReply",
+        Message::LogEvent(_) => "LogEvent",
+        Message::Ack(_) => "Ack",
+    }
+}
+
+/// Install a `tracing` subscriber for tests. Pick up `TAU_LOG` (same
+/// env var the extension uses in production); default to off so a
+/// plain `cargo test` is silent. Run a hanging test like
+/// `TAU_LOG=trace cargo test -p tau-ext-std-notifications $name -- --nocapture`
+/// to see every frame the extension received and every event the
+/// test side read or skipped.
+fn init_test_tracing() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let filter = EnvFilter::try_from_env("TAU_LOG").unwrap_or_else(|_| EnvFilter::new("off"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .with_target(true)
+            .try_init();
+    });
+}
 
 /// Test-side wrapper around [`FrameReader`] that exposes an `Event`-flavoured
 /// API (peels `LogEvent`, drops other messages).
@@ -12,6 +49,7 @@ struct EventReader<R> {
 
 impl<R: std::io::Read> EventReader<R> {
     fn new(inner: R) -> Self {
+        init_test_tracing();
         Self {
             inner: FrameReader::new(inner),
         }
@@ -20,10 +58,19 @@ impl<R: std::io::Read> EventReader<R> {
     fn read_event(&mut self) -> Result<Option<Event>, tau_proto::DecodeError> {
         loop {
             match self.inner.read_frame()? {
-                None => return Ok(None),
+                None => {
+                    tracing::trace!(target: "tau::test", "EventReader: end of stream");
+                    return Ok(None);
+                }
                 Some(frame) => match frame.peel_log().1 {
-                    Frame::Event(event) => return Ok(Some(event)),
-                    Frame::Message(_) => continue,
+                    Frame::Event(event) => {
+                        tracing::trace!(target: "tau::test", name = %event.name(), "EventReader: event");
+                        return Ok(Some(event));
+                    }
+                    Frame::Message(msg) => {
+                        tracing::trace!(target: "tau::test", kind = message_variant(&msg), "EventReader: skipping message");
+                        continue;
+                    }
                 },
             }
         }
@@ -71,11 +118,15 @@ fn configure_frame(config: tau_proto::CborValue) -> Frame {
     Frame::Message(Message::Configure(tau_proto::Configure { config }))
 }
 
-fn drain_lifecycle<R: std::io::Read>(_reader: &mut EventReader<R>) {
-    // The hello/subscribe/ready messages are now point-to-point messages
-    // rather than events; the `EventReader` wrapper filters them, so
-    // `drain_lifecycle` becomes a no-op.
-}
+/// Test marker for "we're past the lifecycle handshake". The hello /
+/// subscribe / ready messages are point-to-point `Frame::Message`s
+/// (filtered out by `EventReader`), so reading from `EventReader`
+/// after this returns will block until the extension emits an
+/// actual `Event`. Calling this is therefore a no-op — but if a
+/// test ever blocks here suspiciously, set `TAU_LOG=trace` and run
+/// with `--nocapture` to see what `EventReader` is skipping vs.
+/// surfacing.
+fn drain_lifecycle<R: std::io::Read>(_reader: &mut EventReader<R>) {}
 
 #[test]
 fn emits_start_and_end_user_var_in_order() {
@@ -301,10 +352,7 @@ fn summary_result_populates_notification_body() {
     let mut writer = EventWriter::new(test_writer_stream);
     let mut reader = EventReader::new(test_side);
 
-    // Drain the lifecycle handshake.
-    for _ in 0..3 {
-        reader.read_event().expect("read").expect("lifecycle");
-    }
+    drain_lifecycle(&mut reader);
 
     writer
         .write_event(&Event::AgentResponseFinished(AgentResponseFinished {
@@ -383,9 +431,7 @@ fn prompt_draft_extends_idle_deadline() {
     let mut writer = EventWriter::new(test_writer_stream);
     let mut reader = EventReader::new(test_side);
 
-    for _ in 0..3 {
-        reader.read_event().expect("read").expect("lifecycle");
-    }
+    drain_lifecycle(&mut reader);
 
     // Arm the idle deadline.
     writer
@@ -477,9 +523,7 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
     let mut writer = EventWriter::new(test_writer_stream);
     let mut reader = EventReader::new(test_side);
 
-    for _ in 0..3 {
-        reader.read_event().expect("read").expect("lifecycle");
-    }
+    drain_lifecycle(&mut reader);
 
     writer
         .write_event(&Event::AgentResponseFinished(AgentResponseFinished {
@@ -577,9 +621,7 @@ fn idle_command_runs_with_title_body_and_env() {
     let mut writer = EventWriter::new(test_writer_stream);
     let mut reader = EventReader::new(test_side);
 
-    for _ in 0..3 {
-        reader.read_event().expect("read").expect("lifecycle");
-    }
+    drain_lifecycle(&mut reader);
 
     // Configure the extension with the test command.
     let cfg = tau_proto::json_to_cbor(&serde_json::json!({
