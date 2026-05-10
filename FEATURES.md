@@ -273,6 +273,17 @@ The default `C-o` binding suspends the UI, opens the prompt in `$EDITOR`, and
 replaces the buffer with whatever you save. Redraws are paused while the
 editor owns the terminal.
 
+The editor file also includes a Markdown trailer after:
+
+```md
+<!-- TAU trailer: everything after this line will be ignored -->
+```
+
+Everything after the marker is ignored when Tau reads the file back. The
+trailer quotes useful context for composing the next prompt: the current
+in-flight prompt, the last agent response, and the previous submitted prompt.
+Leading and trailing blank lines around the editable prompt are trimmed.
+
 ### `Ctrl+F` — fzf (or anything else) into the prompt
 
 Because bindings are arbitrary shell commands, wiring fzf or another picker

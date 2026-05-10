@@ -686,6 +686,8 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         settings.submitted_prompt_symbol,
     );
     let effort_state = renderer.effort_state();
+    let editor_context = renderer.editor_context();
+    term.set_editor_context_handle(editor_context.clone());
     let _renderer = std::thread::spawn(move || {
         let mut renderer = renderer;
         while let Ok(cmd) = renderer_rx.recv() {
@@ -724,6 +726,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
         effort_state,
         theme,
         event_tx,
+        editor_context,
         &draft_handle,
     )?;
 
@@ -810,6 +813,7 @@ fn terminal_input_loop(
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     theme: tau_themes::Theme,
     renderer_tx: std::sync::mpsc::Sender<RendererCmd>,
+    editor_context: std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>>,
     draft_handle: &DraftHandle,
 ) -> Result<InputLoopExit, CliError> {
     // Cloned `TermHandle` so we can `print_output` for client-side
@@ -830,6 +834,10 @@ fn terminal_input_loop(
                 let text = line.trim();
                 if text.is_empty() {
                     continue;
+                }
+                if let Ok(mut context) = editor_context.lock() {
+                    context.previous_prompt = Some(text.to_owned());
+                    context.active_prompt = Some(text.to_owned());
                 }
                 if text == "/quit" {
                     return Ok(InputLoopExit::Quit);
@@ -1014,6 +1022,19 @@ fn terminal_input_loop(
             }
         }
     }
+}
+
+fn conversation_text(message: &tau_proto::ConversationMessage) -> Option<String> {
+    let mut text = String::new();
+    for block in &message.content {
+        if let tau_proto::ContentBlock::Text { text: block_text } = block {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(block_text);
+        }
+    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn effort_to_u8(level: tau_proto::Effort) -> u8 {
@@ -2233,6 +2254,8 @@ struct EventRenderer {
     last_turn_latency: Option<Duration>,
     /// Shared effort mirror for the input thread.
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Context appended to files opened by the external prompt editor.
+    editor_context: std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>>,
     /// Symbol shown before submitted prompts in the transcript.
     submitted_prompt_symbol: String,
 }
@@ -2329,6 +2352,9 @@ impl EventRenderer {
             effort_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(effort_to_u8(
                 tau_proto::Effort::Off,
             ))),
+            editor_context: std::sync::Arc::new(std::sync::Mutex::new(
+                tau_cli_term::EditorContext::default(),
+            )),
             submitted_prompt_symbol,
         }
     }
@@ -2340,6 +2366,10 @@ impl EventRenderer {
             show_cache_stats: self.show_cache_stats,
         }
         .save(&self.state_dirs);
+    }
+
+    fn editor_context(&self) -> std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>> {
+        self.editor_context.clone()
     }
 
     /// Returns a clone of the shared effort mirror, used by the
@@ -2623,6 +2653,17 @@ impl EventRenderer {
                 }
             }
             Event::SessionPromptCreated(prompt) => {
+                if prompt.originator.is_user()
+                    && let Ok(mut context) = self.editor_context.lock()
+                    && let Some(current) = prompt
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| matches!(message.role, tau_proto::ConversationRole::User))
+                        .and_then(conversation_text)
+                {
+                    context.active_prompt = Some(current);
+                }
                 self.prompt_started_at
                     .insert(prompt.session_prompt_id.to_string(), Instant::now());
                 if let Some((queued_id, text)) = self.queued_user_blocks.pop_front() {
@@ -2731,6 +2772,12 @@ impl EventRenderer {
 
                     let text = finished.text.as_deref().unwrap_or("");
                     if !text.is_empty() {
+                        if finished.originator.is_user()
+                            && let Ok(mut context) = self.editor_context.lock()
+                        {
+                            context.last_agent_response = Some(text.to_owned());
+                            context.active_prompt = None;
+                        }
                         self.handle.print_output(themed_block(
                             &self.theme,
                             names::AGENT_RESPONSE,

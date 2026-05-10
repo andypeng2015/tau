@@ -14,7 +14,7 @@ pub mod resolve;
 mod tests;
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use completion::{CommandName, CompletionData, CompletionItem, SlashCommand};
 #[cfg(test)]
@@ -24,6 +24,9 @@ pub use tau_cli_term_raw::{
 };
 use tau_cli_term_raw::{Candidate, Event as RawEvent};
 use tau_themes::Theme;
+
+const PROMPT_TRAILER_MARKER: &str =
+    "<!-- TAU trailer: everything after this line will be ignored -->";
 
 /// High-level events surfaced to the caller.
 pub enum Event {
@@ -47,6 +50,7 @@ pub struct HighTerm {
     term: tau_cli_term_raw::Term,
     handle: TermHandle,
     theme: Theme,
+    editor_context: Arc<Mutex<EditorContext>>,
     /// Block id for the completion menu, allocated lazily on first
     /// open. Reused across opens; content swapped to empty when the
     /// menu is hidden.
@@ -77,6 +81,7 @@ impl HighTerm {
                 term,
                 handle,
                 theme,
+                editor_context: Arc::new(Mutex::new(EditorContext::default())),
                 menu_block_id: None,
             },
             handle_clone,
@@ -101,6 +106,7 @@ impl HighTerm {
                 term,
                 handle,
                 theme,
+                editor_context: Arc::new(Mutex::new(EditorContext::default())),
                 menu_block_id: None,
             },
             data_clone,
@@ -110,6 +116,26 @@ impl HighTerm {
     /// Returns a reference to the [`TermHandle`].
     pub fn handle(&self) -> &TermHandle {
         &self.handle
+    }
+
+    /// Updates the context appended to external-editor prompt files.
+    pub fn set_editor_context(
+        &self,
+        last_agent_response: Option<String>,
+        previous_prompt: Option<String>,
+    ) {
+        *self
+            .editor_context
+            .lock()
+            .expect("editor context mutex poisoned") = EditorContext {
+            active_prompt: None,
+            last_agent_response,
+            previous_prompt,
+        };
+    }
+
+    pub fn set_editor_context_handle(&mut self, editor_context: Arc<Mutex<EditorContext>>) {
+        self.editor_context = editor_context;
     }
 
     /// Triggers a redraw.
@@ -217,6 +243,7 @@ impl HighTerm {
         match run_prompt_shell_action(
             &self.term,
             &self.handle,
+            self.editor_context.clone(),
             PromptShellAction::Edit(PromptShellCommand {
                 command: "${VISUAL:-${EDITOR:-}} \"$TAU_PROMPT_PATH\"".to_owned(),
                 trim: false,
@@ -239,7 +266,12 @@ impl HighTerm {
             self.print_local(&format!("binding: unknown action `{action}`"));
             return;
         };
-        match run_prompt_shell_action(&self.term, &self.handle, action) {
+        match run_prompt_shell_action(
+            &self.term,
+            &self.handle,
+            self.editor_context.clone(),
+            action,
+        ) {
             Ok(Some(PromptShellResult::Replace(new_text))) => {
                 let cursor = new_text.len();
                 self.handle.set_buffer(new_text, cursor);
@@ -290,6 +322,13 @@ enum PromptShellAction {
     PromptPrevious,
 }
 
+#[derive(Clone, Default)]
+pub struct EditorContext {
+    pub active_prompt: Option<String>,
+    pub last_agent_response: Option<String>,
+    pub previous_prompt: Option<String>,
+}
+
 enum PromptShellResult {
     Insert(String),
     Replace(String),
@@ -322,6 +361,7 @@ impl PromptShellAction {
 fn run_prompt_shell_action(
     term: &tau_cli_term_raw::Term,
     handle: &TermHandle,
+    editor_context: Arc<Mutex<EditorContext>>,
     action: PromptShellAction,
 ) -> Result<Option<PromptShellResult>, String> {
     let shell = match &action {
@@ -329,14 +369,19 @@ fn run_prompt_shell_action(
         PromptShellAction::PromptPrevious => return Ok(Some(PromptShellResult::History(-1))),
         PromptShellAction::Insert(shell) | PromptShellAction::Edit(shell) => shell,
     };
-    let current = handle.get_buffer();
+    let current = trim_prompt_newlines(&handle.get_buffer()).to_owned();
     let cursor = handle.get_cursor();
     let tmp = tempfile::Builder::new()
         .prefix("tau-prompt-")
         .suffix(".tau.md")
         .tempfile()
         .map_err(|e| format!("could not create tempfile: {e}"))?;
-    std::fs::write(tmp.path(), current.as_bytes())
+    let file_text = match action {
+        PromptShellAction::Edit(_) => append_prompt_trailer(&current, &editor_context),
+        PromptShellAction::Insert(_) => current.clone(),
+        PromptShellAction::PromptNext | PromptShellAction::PromptPrevious => unreachable!(),
+    };
+    std::fs::write(tmp.path(), file_text.as_bytes())
         .map_err(|e| format!("could not write tempfile: {e}"))?;
 
     let command = shell.command.as_str();
@@ -388,9 +433,67 @@ fn run_prompt_shell_action(
         PromptShellAction::Edit(_) => {
             let new_text = std::fs::read_to_string(tmp.path())
                 .map_err(|e| format!("could not read tempfile: {e}"))?;
-            let new_text = new_text.strip_suffix('\n').unwrap_or(&new_text).to_owned();
+            let new_text = strip_prompt_trailer(&new_text);
+            let new_text = trim_prompt_newlines(new_text).to_owned();
             Ok(Some(PromptShellResult::Replace(new_text)))
         }
         PromptShellAction::PromptNext | PromptShellAction::PromptPrevious => unreachable!(),
+    }
+}
+
+fn append_prompt_trailer(current: &str, editor_context: &Arc<Mutex<EditorContext>>) -> String {
+    let context = editor_context
+        .lock()
+        .expect("editor context mutex poisoned")
+        .clone();
+    if context.active_prompt.is_none()
+        && context.last_agent_response.is_none()
+        && context.previous_prompt.is_none()
+    {
+        return current.to_owned();
+    }
+
+    let mut out = trim_prompt_newlines(current).to_owned();
+    out.push_str("\n\n");
+    out.push_str(PROMPT_TRAILER_MARKER);
+    out.push('\n');
+    if let Some(text) = context.active_prompt.as_deref().filter(|t| !t.is_empty()) {
+        out.push_str("\n## Current prompt in progress\n\n");
+        push_markdown_quote(&mut out, text);
+    }
+    if let Some(text) = context
+        .last_agent_response
+        .as_deref()
+        .filter(|t| !t.is_empty())
+    {
+        out.push_str("\n## Last agent response\n\n");
+        push_markdown_quote(&mut out, text);
+    }
+    if let Some(text) = context.previous_prompt.as_deref().filter(|t| !t.is_empty()) {
+        out.push_str("\n## Previous prompt\n\n");
+        push_markdown_quote(&mut out, text);
+    }
+    out
+}
+
+fn trim_prompt_newlines(text: &str) -> &str {
+    text.trim_matches(['\n', '\r'])
+}
+
+fn strip_prompt_trailer(text: &str) -> &str {
+    let Some((before, _)) = text.split_once(PROMPT_TRAILER_MARKER) else {
+        return text;
+    };
+    before
+        .strip_suffix("\n\n")
+        .or_else(|| before.strip_suffix('\n'))
+        .unwrap_or(before)
+}
+
+fn push_markdown_quote(out: &mut String, text: &str) {
+    for line in text.lines() {
+        out.push_str("> ");
+        out.push_str(line);
+        out.push('\n');
     }
 }
