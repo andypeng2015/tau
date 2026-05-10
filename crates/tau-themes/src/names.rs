@@ -33,6 +33,10 @@ pub const PROGRESS_INDICATOR: &str = "progress.indicator";
 
 // -- Extensions --
 pub const EXTENSION_LIFECYCLE: &str = "extension.lifecycle";
+pub const EXTENSION_STATUS: &str = "extension.status";
+
+// -- Sessions --
+pub const SESSION_STATUS: &str = "session.status";
 
 // -- System --
 pub const SYSTEM_INFO: &str = "system.info";

@@ -29,6 +29,10 @@
 
     // -- Extensions --
     "extension.lifecycle":  { fg: "dark_grey" },
+    "extension.status":     { },
+
+    // -- Sessions --
+    "session.status":       { },
 
     // -- System --
     "system.info":          { fg: "dark_grey" },
