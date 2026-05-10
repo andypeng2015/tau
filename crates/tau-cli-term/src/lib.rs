@@ -458,7 +458,7 @@ fn append_prompt_trailer(current: &str, editor_context: &Arc<Mutex<EditorContext
     out.push_str(PROMPT_TRAILER_MARKER);
     out.push('\n');
     if let Some(text) = context.active_prompt.as_deref().filter(|t| !t.is_empty()) {
-        out.push_str("\n## Current prompt in progress\n\n");
+        out.push_str("\n## Current response in progress\n\n");
         push_markdown_quote(&mut out, text);
     }
     if let Some(text) = context

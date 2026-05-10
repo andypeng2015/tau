@@ -837,7 +837,6 @@ fn terminal_input_loop(
                 }
                 if let Ok(mut context) = editor_context.lock() {
                     context.previous_prompt = Some(text.to_owned());
-                    context.active_prompt = Some(text.to_owned());
                 }
                 if text == "/quit" {
                     return Ok(InputLoopExit::Quit);
@@ -1022,19 +1021,6 @@ fn terminal_input_loop(
             }
         }
     }
-}
-
-fn conversation_text(message: &tau_proto::ConversationMessage) -> Option<String> {
-    let mut text = String::new();
-    for block in &message.content {
-        if let tau_proto::ContentBlock::Text { text: block_text } = block {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(block_text);
-        }
-    }
-    if text.is_empty() { None } else { Some(text) }
 }
 
 fn effort_to_u8(level: tau_proto::Effort) -> u8 {
@@ -2655,14 +2641,8 @@ impl EventRenderer {
             Event::SessionPromptCreated(prompt) => {
                 if prompt.originator.is_user()
                     && let Ok(mut context) = self.editor_context.lock()
-                    && let Some(current) = prompt
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|message| matches!(message.role, tau_proto::ConversationRole::User))
-                        .and_then(conversation_text)
                 {
-                    context.active_prompt = Some(current);
+                    context.active_prompt = None;
                 }
                 self.prompt_started_at
                     .insert(prompt.session_prompt_id.to_string(), Instant::now());
@@ -2688,6 +2668,16 @@ impl EventRenderer {
             }
             Event::AgentResponseUpdated(update) => {
                 let spid = update.session_prompt_id.as_str();
+
+                if update.originator.is_user()
+                    && let Ok(mut context) = self.editor_context.lock()
+                {
+                    context.active_prompt = if update.text.is_empty() {
+                        None
+                    } else {
+                        Some(update.text.clone())
+                    };
+                }
 
                 // Thinking is its own block, lazy-created the first
                 // time non-empty summary content arrives. Rendered

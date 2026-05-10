@@ -281,7 +281,7 @@ The editor file also includes a Markdown trailer after:
 
 Everything after the marker is ignored when Tau reads the file back. The
 trailer quotes useful context for composing the next prompt: the current
-in-flight prompt, the last agent response, and the previous submitted prompt.
+in-flight response, the last agent response, and the previous submitted prompt.
 Leading and trailing blank lines around the editable prompt are trimmed.
 
 ### `Ctrl+F` — fzf (or anything else) into the prompt
