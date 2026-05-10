@@ -3895,6 +3895,137 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
     h.shutdown().expect("shutdown");
 }
 
+/// Regression: when an interceptor is registered on
+/// `ui.prompt_submitted` (e.g. `tau-ext-test-dummy`'s tao→tau
+/// corrector), the side conversation's `UiPromptSubmitted` parks in
+/// `pending_intercept` and `conv.head` stays `None`. If the harness
+/// dispatched the agent prompt synchronously after the publish, the
+/// assembled message list would be empty and the LLM provider 400s.
+/// The dispatch must defer onto `pending_user_prompt_dispatches` and
+/// run only after the user message commits.
+#[test]
+fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
+    use tau_proto::{ExtensionName, ToolNameMaybe};
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    h.selected_model = "test/model".into();
+    let _ = connect_test_tool(&mut h, "conn-delegate");
+    h.registry.register(
+        "conn-delegate",
+        ToolSpec {
+            name: "delegate".into(),
+            description: None,
+            parameters: None,
+            side_effects: ToolSideEffects::Mutating,
+        },
+    );
+    // Register a no-op interceptor on `ui.prompt_submitted` so any
+    // such publish parks in `pending_intercept` instead of committing
+    // inline — same shape as `tau-ext-test-dummy`.
+    let _interceptor_events = connect_test_tool(&mut h, "conn-interceptor");
+    h.interceptors.replace_for_connection(
+        "conn-interceptor",
+        ExtensionName::from("test-interceptor"),
+        vec![EventSelector::Exact(
+            tau_proto::EventName::UI_PROMPT_SUBMITTED,
+        )],
+        InterceptionPriority(0),
+    );
+
+    // Drive the main agent into a delegate tool call. Reply Pass to
+    // the main UserMessage's intercept first so the rest of the
+    // setup proceeds normally.
+    let cid = h.default_conversation_id.clone();
+    let main_spid: SessionPromptId = "sp-main".into();
+    seed_agent_thinking(&mut h, &cid, "sp-main");
+    h.prompt_conversations
+        .insert(main_spid.clone(), cid.clone());
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "go".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    h.handle_intercept_reply(
+        "conn-interceptor",
+        InterceptReply {
+            action: InterceptAction::Pass(None),
+        },
+    );
+
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: main_spid,
+        text: None,
+        tool_calls: vec![AgentToolCall {
+            id: "main-call".into(),
+            name: ToolNameMaybe::from_raw("delegate"),
+            arguments: CborValue::Map(Vec::new()),
+        }],
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        originator: tau_proto::PromptOriginator::User,
+    })
+    .expect("main response");
+
+    h.handle_ext_agent_query(
+        "conn-delegate",
+        ExtAgentQuery {
+            query_id: "q-side".to_owned(),
+            instruction: "side instruction".to_owned(),
+            tool_call_id: Some("main-call".into()),
+            task_name: Some("side".to_owned()),
+        },
+    )
+    .expect("ext query");
+
+    // The side conv's UserMessage is parked for interception.
+    // No SPC should have been emitted for it yet.
+    let pre_reply_side_spid = h
+        .prompt_conversations
+        .iter()
+        .find(|(_, prompt_cid)| prompt_cid.as_str() != "default");
+    assert!(
+        pre_reply_side_spid.is_none(),
+        "side prompt must not dispatch before the intercepted UserMessage commits, got {pre_reply_side_spid:?}",
+    );
+
+    h.handle_intercept_reply(
+        "conn-interceptor",
+        InterceptReply {
+            action: InterceptAction::Pass(None),
+        },
+    );
+
+    let side_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
+        .expect("side prompt must dispatch after intercept resolves");
+    let prompt = read_prompt_created(&h, &side_spid);
+    assert!(
+        !prompt.messages.is_empty(),
+        "side prompt must contain the delegated user instruction; got empty messages",
+    );
+    let saw_instruction = prompt.messages.iter().any(|message| {
+        message.content.iter().any(|block| {
+            matches!(block, tau_proto::ContentBlock::Text { text } if text == "side instruction")
+        })
+    });
+    assert!(
+        saw_instruction,
+        "side prompt must contain `side instruction`; got {:?}",
+        prompt.messages,
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
 /// Tool-event originator should reflect the conversation that owns
 /// the call, not a fixed `User`. Main-agent tool calls show
 /// `PromptOriginator::User`; sub-agent tool calls show

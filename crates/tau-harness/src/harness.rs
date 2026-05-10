@@ -2547,9 +2547,20 @@ impl Harness {
         // Publish the UiPromptSubmitted on the side conversation's
         // branch (head=None → folds at root) and dispatch the agent.
         // `send_prompt_to_agent_for` reads `conv.head`, which after
-        // the commit above points at the just-folded UserMessage,
-        // so the assembled message list is exactly the one user
-        // turn carrying `query.instruction`.
+        // the commit points at the just-folded UserMessage, so the
+        // assembled message list is exactly the one user turn
+        // carrying `query.instruction`.
+        //
+        // If an interceptor is registered on `ui.prompt_submitted`
+        // (e.g. `tau-ext-test-dummy`'s tao→tau corrector) the publish
+        // parks in `pending_intercept` and won't commit until the
+        // interceptor replies — running `send_prompt_to_agent_for`
+        // synchronously then would assemble messages from a still-`None`
+        // `conv.head` and the agent would call the provider with an
+        // empty `input`. Mirror `dispatch_prompt_for_conversation`'s
+        // pattern: when the publish defers, queue the side conversation
+        // on `pending_user_prompt_dispatches` so `react_to_committed_event`
+        // dispatches it after the UserMessage actually folds.
         self.publish_for_conversation(
             &cid,
             Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
@@ -2562,7 +2573,11 @@ impl Harness {
                 ctx_id: None,
             }),
         );
-        self.send_prompt_to_agent_for(&cid);
+        if self.pending_intercept.is_some() || !self.deferred_publishes.is_empty() {
+            self.pending_user_prompt_dispatches.push_back(cid);
+        } else {
+            self.send_prompt_to_agent_for(&cid);
+        }
         Ok(())
     }
 
