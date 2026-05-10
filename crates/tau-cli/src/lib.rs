@@ -2815,21 +2815,21 @@ impl EventRenderer {
 
                 if let Some(bid) = self.prompt_blocks.remove(spid) {
                     self.handle.remove_block(bid);
+                }
 
-                    let text = finished.text.as_deref().unwrap_or("");
-                    if !text.is_empty() {
-                        if finished.originator.is_user()
-                            && let Ok(mut context) = self.editor_context.lock()
-                        {
-                            context.last_agent_response = Some(text.to_owned());
-                            context.active_prompt = None;
-                        }
-                        self.handle.print_output(themed_block(
-                            &self.theme,
-                            names::AGENT_RESPONSE,
-                            text,
-                        ));
+                let text = finished.text.as_deref().unwrap_or("");
+                if !text.is_empty() {
+                    if finished.originator.is_user()
+                        && let Ok(mut context) = self.editor_context.lock()
+                    {
+                        context.last_agent_response = Some(text.to_owned());
+                        context.active_prompt = None;
                     }
+                    self.handle.print_output(themed_block(
+                        &self.theme,
+                        names::AGENT_RESPONSE,
+                        text,
+                    ));
                 }
 
                 // Only the main agent's tool calls land in the UI as

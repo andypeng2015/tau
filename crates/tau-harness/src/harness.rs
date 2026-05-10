@@ -4448,6 +4448,11 @@ fn selector_matches_event(selectors: &[EventSelector], event: &Event) -> bool {
 }
 
 fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
+    // Replay final, durable transcript facts, not progress. In
+    // particular, skip `AgentResponseUpdated` streaming chunks and
+    // `SessionPromptCreated` pending markers, but keep
+    // `UiPromptSubmitted` and `AgentResponseFinished` so a resumed UI
+    // can reconstruct completed turns.
     match event {
         Event::UiPromptSubmitted(_)
         | Event::SessionPromptSteered(_)
