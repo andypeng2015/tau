@@ -173,6 +173,32 @@ impl SharedState {
         }
     }
 
+    /// Visual `(row, col)` of the cursor against the current buffer.
+    /// Row 0 starts after the left prompt, so `col` on row 0 is offset
+    /// by the prompt width.
+    fn visual_cursor_position(&self) -> (usize, usize) {
+        let width = self.width.max(1);
+        let left_cols = self.left_prompt.char_count();
+        buffer_position_for_byte(&self.buffer, self.cursor, width, left_cols)
+    }
+
+    /// Last visual row index of the current buffer.
+    fn last_visual_row(&self) -> usize {
+        let width = self.width.max(1);
+        let left_cols = self.left_prompt.char_count();
+        let (max_row, _) = buffer_end_position(&self.buffer, width, left_cols);
+        max_row
+    }
+
+    /// Byte offset within the current buffer that lands the cursor at
+    /// the given visual `(row, col)`. Clamps to the nearest reachable
+    /// position.
+    fn cursor_byte_at(&self, target_row: usize, target_col: usize) -> usize {
+        let width = self.width.max(1);
+        let left_cols = self.left_prompt.char_count();
+        byte_offset_for_buffer_position(&self.buffer, target_row, target_col, width, left_cols)
+    }
+
     /// Cycles the completion menu selection by `delta` (+1 forward,
     /// -1 backward) and updates the buffer to preview the new
     /// selection (or restore `original_buffer` when wrapping past the
@@ -242,7 +268,15 @@ impl SharedState {
     /// forward from a non-empty editing buffer stores it as history
     /// and opens a fresh empty prompt. Returns `true` if the buffer
     /// changed.
+    ///
+    /// Cursor placement preserves the visual column so that
+    /// `Up`/`Down` across prompts feels like one continuous text:
+    /// stepping back lands on the previous entry's last visual row,
+    /// stepping forward lands on the next entry's first visual row,
+    /// both at (or clamped to) the column the cursor was on.
     fn step_history(&mut self, delta: isize) -> bool {
+        let (_, target_col) = self.visual_cursor_position();
+
         if self.history_nav.is_none() {
             if 0 < delta {
                 if self.buffer.is_empty() {
@@ -260,7 +294,7 @@ impl SharedState {
             // Step into the previous entry (one before the WIP slot).
             let index = entries.len() - 2;
             self.buffer = entries[index].clone();
-            self.cursor = self.buffer.len();
+            self.cursor = self.cursor_byte_at(self.last_visual_row(), target_col);
             self.history_nav = Some(HistoryNav { entries, index });
             return true;
         }
@@ -285,8 +319,10 @@ impl SharedState {
             return true;
         }
         nav.index = new_index as usize;
-        self.buffer = nav.entries[nav.index].clone();
-        self.cursor = self.buffer.len();
+        let new_buffer = nav.entries[nav.index].clone();
+        self.buffer = new_buffer;
+        let target_row = if delta < 0 { self.last_visual_row() } else { 0 };
+        self.cursor = self.cursor_byte_at(target_row, target_col);
         true
     }
 }

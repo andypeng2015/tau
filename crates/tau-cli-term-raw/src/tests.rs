@@ -329,7 +329,103 @@ fn down_from_non_empty_draft_creates_fresh_prompt_and_history_entry() {
         Event::BufferChanged
     ));
     assert_eq!(handle.get_buffer(), "draft");
-    assert_eq!(handle.get_cursor(), 5);
+    // Column-preserving: empty buffer cursor sat at the prompt
+    // edge (visual col 2), so Up lands at byte 0 of "draft" — also
+    // the prompt edge of the previous entry's last (and only) row.
+    assert_eq!(handle.get_cursor(), 0);
+}
+
+#[test]
+fn up_lands_at_last_row_same_col_in_previous_entry() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("alphabet".to_owned(), 8);
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("enter");
+    let _ = term.get_next_event().expect("event");
+
+    // Cursor on row 0 visual col 4 (byte 2 = "be|ta\nworld").
+    handle.set_buffer("beta\nworld".to_owned(), 2);
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )))
+        .expect("up");
+    assert!(matches!(
+        term.get_next_event().expect("event"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_buffer(), "alphabet");
+    // Visual col 4 with left prompt "> " (2 cols) → byte 2 of "alphabet".
+    assert_eq!(handle.get_cursor(), 2);
+}
+
+#[test]
+fn down_lands_at_first_row_same_col_in_next_entry() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("first\nlonger".to_owned(), "first\nlonger".len());
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("enter");
+    let _ = term.get_next_event().expect("event");
+
+    handle.set_buffer("second".to_owned(), 6);
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("enter");
+    let _ = term.get_next_event().expect("event");
+
+    // Draft "abc" with cursor at byte 1 (visual col 3 = "a|bc").
+    handle.set_buffer("abc".to_owned(), 1);
+
+    // Up → "second", visual col 3 → byte 1 ("s|econd").
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )))
+        .expect("up");
+    let _ = term.get_next_event().expect("event");
+    assert_eq!(handle.get_buffer(), "second");
+    assert_eq!(handle.get_cursor(), 1);
+
+    // Up → "first\nlonger", last row at visual col 3 → byte 9
+    // ("first\nlon|ger").
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )))
+        .expect("up");
+    let _ = term.get_next_event().expect("event");
+    assert_eq!(handle.get_buffer(), "first\nlonger");
+    assert_eq!(handle.get_cursor(), 9);
+
+    // Down → "second", first row at visual col 3 → byte 1.
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )))
+        .expect("down");
+    let _ = term.get_next_event().expect("event");
+    assert_eq!(handle.get_buffer(), "second");
+    assert_eq!(handle.get_cursor(), 1);
 }
 
 #[test]
