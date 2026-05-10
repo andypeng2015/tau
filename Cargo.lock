@@ -1643,8 +1643,8 @@ dependencies = [
  "tau-cli-term-raw",
  "tau-config",
  "tau-ext-core-delegate",
- "tau-ext-core-notifications",
  "tau-ext-shell",
+ "tau-ext-std-notifications",
  "tau-ext-test-dummy",
  "tau-ext-websearch-exa",
  "tau-harness",
@@ -1719,19 +1719,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tau-ext-core-notifications"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tau-extension",
- "tau-proto",
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "tau-ext-shell"
 version = "0.1.0"
 dependencies = [
@@ -1747,6 +1734,19 @@ dependencies = [
  "tau-proto",
  "tau-skills",
  "tempfile",
+]
+
+[[package]]
+name = "tau-ext-std-notifications"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tau-extension",
+ "tau-proto",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

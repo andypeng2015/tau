@@ -38,8 +38,8 @@ use tau_proto::{
 
 /// `tracing` target for events emitted from this extension. Matches
 /// the convention described in [`tau_extension`]: a short identifier
-/// the user can name in `TAU_LOG=core-notifications=trace`.
-pub const LOG_TARGET: &str = "core-notifications";
+/// the user can name in `TAU_LOG=std-notifications=trace`.
+pub const LOG_TARGET: &str = "std-notifications";
 
 /// User-var name for sound notifications (matches `user-notification.sh`).
 pub const SOUND_VAR_NAME: &str = "user-notification";
@@ -244,7 +244,7 @@ where
 
     writer.write_frame(&Frame::Message(Message::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
-        client_name: "tau-ext-core-notifications".into(),
+        client_name: "tau-ext-std-notifications".into(),
         client_kind: ClientKind::Tool,
     })))?;
     writer.write_frame(&Frame::Message(Message::Subscribe(Subscribe {
@@ -263,7 +263,7 @@ where
         ],
     })))?;
     writer.write_frame(&Frame::Message(Message::Ready(Ready {
-        message: Some("core-notifications ready".to_owned()),
+        message: Some("std-notifications ready".to_owned()),
     })))?;
     writer.flush()?;
 

@@ -944,7 +944,7 @@ fn grep_completion_uses_output_stats_and_status_chip() {
     ]);
     let grep = super::format_tool_completion("grep", &grep_details, None);
     assert_eq!(grep.suffixes.len(), 2);
-    assert_eq!(grep.suffixes[0].text, "(0L, 2L, 4B)");
+    assert_eq!(grep.suffixes[0].text, "(0M, 2L, 4B)");
     assert!(matches!(grep.suffixes[0].status, super::ToolStatus::Info));
     assert_eq!(grep.suffixes[1].text, "ok: no matches");
     assert!(matches!(

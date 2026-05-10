@@ -110,7 +110,7 @@ startup as a `LifecycleConfigure` message.
 extensions: {
   "core-shell":         { enable: false },               // disable
   "core-agent":         { prefix: ["ssh", "user@host"] },// run remotely
-  "core-notifications": { config: { idle_seconds: 30 } },// reconfigure
+  "std-notifications": { config: { idle_seconds: 30 } },// reconfigure
 },
 ```
 
@@ -135,7 +135,7 @@ tool invocations, emits reasoning blocks, and respects the effort knob. Talks
 to OpenAI-compatible Responses-API and Chat-Completions-API providers; manage
 credentials with `tau provider add` / `tau provider login`.
 
-### `core-notifications` — idle and turn notifications
+### `std-notifications` — idle and turn notifications
 
 Plays a sound on prompt submit and on the final response of a turn. After
 `idle_seconds` of inactivity following a final response (default 60s) it asks
@@ -149,10 +149,10 @@ node, runs to completion against the same model and tool set, and returns its
 result to the caller. Recursion is allowed. Live progress (turns, current
 tool) is shown in the parent UI alongside the delegate's task name.
 
-### `websearch-exa` — opt-in web search
+### `std-websearch-exa` — opt-in web search
 
 Proxies a single `websearch_exa` tool to Exa's hosted `web_search_exa` MCP
-endpoint. Off by default; enable in `harness.json5` and supply an API key via
+endpoint. Disable in `harness.json5` when not needed; supply an API key via
 config.
 
 

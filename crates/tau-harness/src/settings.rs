@@ -73,18 +73,18 @@ pub fn builtin_extensions() -> Vec<tau_config::settings::BuiltinExtension> {
             config: serde_json::json!({}),
         },
         BuiltinExtension {
-            name: "core-notifications",
+            name: "std-notifications",
             command: vec![
                 tau_binary.clone(),
                 "ext".to_owned(),
-                "ext-core-notifications".to_owned(),
+                "ext-std-notifications".to_owned(),
             ],
             role: Some("tool"),
             enable: true,
             config: serde_json::json!({ "idle_seconds": 60 }),
         },
         BuiltinExtension {
-            name: "core-websearch-exa",
+            name: "std-websearch-exa",
             command: vec![tau_binary, "ext".to_owned(), "ext-websearch-exa".to_owned()],
             role: Some("tool"),
             enable: true,

@@ -9,7 +9,7 @@
 - `crates/tau-config` — user and project configuration loading
 - `crates/tau-core` — event bus, routing, state, sessions, policy, and tool registry
 - `crates/tau-ext-core-delegate` — built-in delegate/sub-agent extension
-- `crates/tau-ext-core-notifications` — built-in notification extension
+- `crates/tau-ext-std-notifications` — built-in notification extension
 - `crates/tau-ext-shell` — shell- and filesystem-oriented extension
 - `crates/tau-ext-test-dummy` — test-only dummy extension
 - `crates/tau-ext-websearch-exa` — opt-in Exa web search extension

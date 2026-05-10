@@ -27,7 +27,7 @@ tracing-subscriber.workspace = true
 # Still needed for component dispatch
 tau-agent.workspace = true
 tau-ext-core-delegate.workspace = true
-tau-ext-core-notifications.workspace = true
+tau-ext-std-notifications.workspace = true
 tau-ext-shell.workspace = true
 tau-ext-test-dummy.workspace = true
 tau-ext-websearch-exa.workspace = true

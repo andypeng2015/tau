@@ -64,7 +64,7 @@ fn send_event(writer: &WriterHandle, event: &Event) -> io::Result<()> {
 
 /// Debounce period for `UiPromptDraft` emission while the user is
 /// typing. Kept generous on purpose: the only consumer today
-/// (core-notifications) only cares about second-or-better resolution
+/// (std-notifications) only cares about second-or-better resolution
 /// to bump its idle deadline.
 const DRAFT_DEBOUNCE: Duration = Duration::from_secs(1);
 
@@ -1673,7 +1673,7 @@ fn format_tool_completion(
                 let output = cbor_text_field(details, "output").unwrap_or_default();
                 let status = cbor_int_field(details, "status");
                 let match_count = cbor_int_field(details, "matches").unwrap_or(0);
-                let mut suffixes = vec![stats_suffix(Some(format!("{match_count}L")), &output)];
+                let mut suffixes = vec![stats_suffix(Some(format!("{match_count}M")), &output)];
                 suffixes.push(match status {
                     Some(0) => ok_suffix(),
                     Some(1) => tool_suffix("ok: no matches".to_owned(), ToolStatus::Success),
@@ -2521,7 +2521,7 @@ impl EventRenderer {
         }
 
         // Skip events that belong to a side conversation spawned by an
-        // extension (e.g. the core-notifications idle-summarizer). They
+        // extension (e.g. the std-notifications idle-summarizer). They
         // travel on the same bus as the user's interactive turn but
         // must not paint into the user's chat window or perturb its
         // pending-block bookkeeping.
@@ -3133,12 +3133,12 @@ pub fn main_with_args() -> std::process::ExitCode {
                     "ext-shell" => tau_ext_shell::run_stdio,
                     "ext-test-dummy" => tau_ext_test_dummy::run_stdio,
                     "ext-core-delegate" => tau_ext_core_delegate::run_stdio,
-                    "ext-core-notifications" => tau_ext_core_notifications::run_stdio,
+                    "ext-std-notifications" => tau_ext_std_notifications::run_stdio,
                     "ext-websearch-exa" => tau_ext_websearch_exa::run_stdio,
                     "harness" => tau_harness::run_component,
                     _ => {
                         return Err(CliError::Participant(format!(
-                            "unknown extension: {name}\navailable: agent, ext-shell, ext-test-dummy, ext-core-delegate, ext-core-notifications, ext-websearch-exa, harness"
+                            "unknown extension: {name}\navailable: agent, ext-shell, ext-test-dummy, ext-core-delegate, ext-std-notifications, ext-websearch-exa, harness"
                         )));
                     }
                 };

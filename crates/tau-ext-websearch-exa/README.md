@@ -57,7 +57,7 @@ make outbound HTTP calls:
 ```json5
 {
   extensions: {
-    "core-websearch-exa": { enable: false },
+    "std-websearch-exa": { enable: false },
   },
 }
 ```
