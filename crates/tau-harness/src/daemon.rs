@@ -177,6 +177,40 @@ pub fn run_daemon(
     result
 }
 
+/// Like [`run_daemon`] but uses the echo agent for testing. Also enables
+/// the shell extension's `echo` tool so echo-agent–driven tool calls
+/// resolve.
+pub fn run_daemon_with_echo(
+    socket_path: impl Into<PathBuf>,
+    state_dir: impl Into<PathBuf>,
+    eager_session_id: &str,
+    options: ServeOptions,
+) -> Result<(), HarnessError> {
+    fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
+        tau_agent::run_echo(r, w).map_err(|e| e.to_string())
+    }
+    let socket_path = socket_path.into();
+    let state_dir = state_dir.into();
+    let listener = bind_listener(&socket_path)?;
+    let dirs = options.dirs.clone().unwrap_or_default();
+    let mut harness =
+        Harness::new_with_agent(state_dir, dirs, echo_runner, true, eager_session_id)?;
+
+    let tx = harness.tx.clone();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            if tx.send(HarnessEvent::NewClient(stream)).is_err() {
+                return;
+            }
+        }
+    });
+
+    let result = harness.run_event_loop(options.max_clients, options.exit_on_disconnect);
+    let _ = harness.shutdown();
+    let _ = std::fs::remove_file(&socket_path);
+    result
+}
+
 /// Runs a foreground daemon using extensions from configuration.
 pub fn run_daemon_with_config(
     config: &Config,

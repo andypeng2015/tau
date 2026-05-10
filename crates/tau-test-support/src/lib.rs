@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tau_config::settings::TauDirs;
 use tau_core::{PolicyStore, SessionStore};
 use tau_harness::{
-    EmbeddedOptions, HarnessError, ServeOptions, open_policy_store, open_session_store, run_daemon,
-    run_embedded_message_with_options, send_daemon_message,
+    EmbeddedOptions, HarnessError, ServeOptions, open_policy_store, open_session_store,
+    run_daemon_with_echo, run_embedded_message_with_options, send_daemon_message,
 };
 use tempfile::TempDir;
 
@@ -76,7 +76,7 @@ impl TestRuntime {
         let join_handle = thread::spawn(move || {
             let mut options = ServeOptions::builder().dirs(dirs).build();
             options.max_clients = max_clients;
-            run_daemon(socket_path, state_dir, &eager_session_id, options)
+            run_daemon_with_echo(socket_path, state_dir, &eager_session_id, options)
         });
         DaemonHandle { join_handle }
     }

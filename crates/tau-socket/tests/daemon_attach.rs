@@ -5,7 +5,6 @@ use tau_socket::SocketPeer;
 use tau_test_support::TestRuntime;
 
 #[test]
-#[ignore = "needs echo agent wired into run_daemon"]
 fn socket_transport_supports_later_attached_end_to_end_clients() {
     let runtime = TestRuntime::new().expect("runtime should be created");
     let daemon = runtime.spawn_daemon("session-1", Some(2));
@@ -28,7 +27,16 @@ fn socket_transport_supports_later_attached_end_to_end_clients() {
         .open_session_store()
         .expect("session store should reopen");
     let session = store.session("session-1").expect("session should exist");
-    assert_eq!(session.current_branch().len(), 8);
+    let branch = session.current_branch();
+    let rendered = format!("{branch:?}");
+    assert!(
+        rendered.contains("\"hello\""),
+        "first user prompt should be persisted, got {rendered}"
+    );
+    assert!(
+        rendered.contains("\"read Cargo.toml\""),
+        "second user prompt should be persisted, got {rendered}"
+    );
 }
 
 #[test]

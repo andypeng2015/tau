@@ -1029,10 +1029,11 @@ impl Harness {
         // `publish_for_conversation_from` used to do — the explicit
         // parent in `apply_event_at` does the same job without
         // touching the global cursor.
-        let parent_for_fold = if sync_head_for
-            .as_ref()
-            .is_some_and(|s| self.conversations.get(&s.cid).is_some_and(|c| c.head.is_none()))
-        {
+        let parent_for_fold = if sync_head_for.as_ref().is_some_and(|s| {
+            self.conversations
+                .get(&s.cid)
+                .is_some_and(|c| c.head.is_none())
+        }) {
             Some(None)
         } else {
             sync_head_for
