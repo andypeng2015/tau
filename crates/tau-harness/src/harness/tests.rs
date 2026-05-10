@@ -10,10 +10,11 @@ use tau_core::{
     RoutedFrame, SessionEntry, ToolActivityOutcome, ToolActivityRecord,
 };
 use tau_proto::{
-    AgentResponseFinished, AgentToolCall, CborValue, Disconnect, Event, EventSelector,
-    ExtAgentQuery, Frame, FrameReader, FrameWriter, Intercept, InterceptAction, InterceptReply,
-    InterceptionPriority, Message, SessionPromptCreated, SessionPromptId, Subscribe, ToolCallId,
-    ToolName, ToolResult, ToolSideEffects, ToolSpec, UiPromptDraft, UiPromptSubmitted,
+    AgentResponseFinished, AgentResponseUpdated, AgentToolCall, CborValue, Disconnect, Event,
+    EventSelector, ExtAgentQuery, Frame, FrameReader, FrameWriter, Intercept, InterceptAction,
+    InterceptReply, InterceptionPriority, Message, SessionPromptCreated, SessionPromptId,
+    SessionPromptQueued, Subscribe, ToolCallId, ToolName, ToolResult, ToolSideEffects, ToolSpec,
+    UiPromptDraft, UiPromptSubmitted,
 };
 use tempfile::TempDir;
 
@@ -773,6 +774,101 @@ fn late_joining_ui_client_receives_replayed_session_events() {
 
     assert!(got_prompt, "late UI should replay prior user prompt");
     assert!(got_response, "late UI should replay prior agent response");
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn late_joining_ui_client_replays_only_final_session_events() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let spid: SessionPromptId = "sp-replay".into();
+    h.prompt_conversations
+        .insert(spid.clone(), h.default_conversation_id.clone());
+    h.publish_event(
+        None,
+        Event::SessionPromptQueued(SessionPromptQueued {
+            session_id: "s1".into(),
+            text: "queued but not durable-final".to_owned(),
+        }),
+    );
+    h.publish_event(
+        None,
+        Event::SessionPromptCreated(SessionPromptCreated {
+            session_prompt_id: spid.clone(),
+            session_id: "s1".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            model: None,
+            effort: Default::default(),
+            thinking_summary: Default::default(),
+            originator: Default::default(),
+            ctx_id: None,
+        }),
+    );
+    h.publish_event(
+        None,
+        Event::AgentResponseUpdated(AgentResponseUpdated {
+            session_prompt_id: spid.clone(),
+            text: "partial".to_owned(),
+            thinking: None,
+            originator: Default::default(),
+        }),
+    );
+    h.publish_event(
+        None,
+        Event::AgentResponseFinished(AgentResponseFinished {
+            session_prompt_id: spid,
+            text: Some("final".to_owned()),
+            tool_calls: Vec::new(),
+            originator: Default::default(),
+            input_tokens: None,
+            cached_tokens: None,
+            thinking: None,
+        }),
+    );
+
+    let (server_end, client_end) = UnixStream::pair().expect("pair");
+    client_end
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("read timeout");
+    h.accept_client(server_end).expect("accept");
+    let ui_conn = h
+        .bus
+        .connections()
+        .into_iter()
+        .find(|c| c.name == "socket-ui")
+        .expect("ui connection")
+        .id
+        .to_string();
+
+    h.handle_client_event(
+        &ui_conn,
+        Frame::Message(Message::Subscribe(Subscribe {
+            selectors: vec![
+                EventSelector::Prefix("session.".to_owned()),
+                EventSelector::Prefix("agent.".to_owned()),
+            ],
+        })),
+    )
+    .expect("subscribe");
+
+    let mut reader = FrameReader::new(BufReader::new(client_end));
+    let mut replayed = Vec::new();
+    while let Ok(Some(frame)) = reader.read_frame() {
+        let (_log_id, inner) = frame.peel_log();
+        if let Frame::Event(event) = inner {
+            replayed.push(event.name());
+        }
+    }
+
+    assert!(replayed.contains(&tau_proto::EventName::AGENT_RESPONSE_FINISHED));
+    assert!(!replayed.contains(&tau_proto::EventName::SESSION_PROMPT_QUEUED));
+    assert!(!replayed.contains(&tau_proto::EventName::SESSION_PROMPT_CREATED));
+    assert!(!replayed.contains(&tau_proto::EventName::AGENT_RESPONSE_UPDATED));
 
     h.shutdown().expect("shutdown");
 }

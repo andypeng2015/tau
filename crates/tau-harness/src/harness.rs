@@ -2297,7 +2297,9 @@ impl Harness {
             return;
         };
         for entry in events {
-            if selector_matches_event(selectors, &entry.event) {
+            if selector_matches_event(selectors, &entry.event)
+                && should_replay_session_event_to_late_subscriber(&entry.event)
+            {
                 let frame = Frame::Message(Message::LogEvent(tau_proto::LogEvent {
                     id: entry.id,
                     event: Box::new(entry.event),
@@ -4427,4 +4429,23 @@ fn selector_matches_event(selectors: &[EventSelector], event: &Event) -> bool {
         EventSelector::Exact(expected) => *expected == target_name,
         EventSelector::Prefix(prefix) => target_name.matches_prefix(prefix),
     })
+}
+
+fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
+    match event {
+        Event::UiPromptSubmitted(_)
+        | Event::SessionPromptSteered(_)
+        | Event::SessionUserMessageInjected(_)
+        | Event::ToolRequest(_)
+        | Event::ToolResult(_)
+        | Event::ToolError(_)
+        | Event::ShellCommandFinished(_)
+        | Event::SessionStarted(_)
+        | Event::SessionShutdown(_)
+        | Event::ExtAgentsMdAvailable(_)
+        | Event::ExtensionContextReady(_)
+        | Event::ExtensionEvent(_) => true,
+        Event::AgentResponseFinished(response) => response.text.is_some(),
+        _ => false,
+    }
 }
