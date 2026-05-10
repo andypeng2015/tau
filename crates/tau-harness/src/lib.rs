@@ -37,8 +37,8 @@ pub fn dump_initial_prompt(
 pub use tau_core::{SessionMeta, list_session_metas};
 
 pub use crate::daemon::{
-    EmbeddedOptions, InteractionOutcome, ServeOptions, run_component, run_daemon,
-    run_daemon_with_config, run_daemon_with_echo, run_embedded_message,
+    EmbeddedOptions, InteractionOutcome, ServeOptions, SessionLaunchStatus, run_component,
+    run_daemon, run_daemon_with_config, run_daemon_with_echo, run_embedded_message,
     run_embedded_message_with_echo, run_embedded_message_with_options,
     run_embedded_message_with_trace, run_harness_daemon, send_daemon_message,
     send_daemon_message_with_trace,

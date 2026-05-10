@@ -2850,12 +2850,11 @@ impl Harness {
         let _ = self.enable_debug_log(&self.dirs_state_dir().join(new_session_id.as_str()));
         self.start_session_init(new_session_id.clone(), reason);
         let session_status = match reason {
-            tau_proto::SessionStartReason::Initial => "initial",
-            tau_proto::SessionStartReason::New => "new",
+            tau_proto::SessionStartReason::Initial | tau_proto::SessionStartReason::New => "new",
             tau_proto::SessionStartReason::Resume => "resumed",
         };
         self.emit_info(&format!(
-            "session {session_status}: {}/",
+            "session dir: {}/ {session_status}",
             self.dirs_state_dir()
                 .join(new_session_id.as_str())
                 .display()

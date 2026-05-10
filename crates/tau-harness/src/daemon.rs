@@ -22,8 +22,23 @@ use crate::settings::resolve_config;
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionLaunchStatus {
+    New,
+    Resumed,
+}
+
+impl SessionLaunchStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Resumed => "resumed",
+        }
+    }
+}
+
 /// Serve-loop options for daemon mode.
-#[derive(Clone, Debug, Default, Eq, PartialEq, bon::Builder)]
+#[derive(Clone, Debug, Eq, PartialEq, bon::Builder)]
 pub struct ServeOptions {
     /// Hard cap on total served clients before the serve loop exits.
     /// Used mainly in tests to bound a run. `None` = unbounded.
@@ -37,9 +52,24 @@ pub struct ServeOptions {
     /// otherwise.
     #[builder(default)]
     pub exit_on_disconnect: bool,
+    /// Session lifecycle status announced to UI clients for the eager
+    /// session.
+    #[builder(default = SessionLaunchStatus::New)]
+    pub session_status: SessionLaunchStatus,
     /// Directory layout (config + state) the harness reads. Defaults to
     /// [`tau_config::settings::TauDirs::default()`] on the call site.
     pub dirs: Option<tau_config::settings::TauDirs>,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            max_clients: None,
+            exit_on_disconnect: false,
+            session_status: SessionLaunchStatus::New,
+            dirs: None,
+        }
+    }
 }
 
 /// One completed user interaction with optional progress updates.
@@ -391,8 +421,9 @@ pub fn run_harness_daemon(
     let mut harness = Harness::from_config(config, &state_dir, dirs, eager_session_id)?;
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness constructed");
     harness.emit_info(&format!(
-        "session dir: {}/",
-        state_dir.join(eager_session_id).display()
+        "session dir: {}/ {}",
+        state_dir.join(eager_session_id).display(),
+        options.session_status.as_str(),
     ));
 
     // Write marker AFTER extensions are ready.
@@ -431,6 +462,10 @@ pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
     // launched without a CLI in front of it.
     let eager_session_id = std::env::var("TAU_SESSION_ID")
         .unwrap_or_else(|_| crate::dirs::default_session_id().to_owned());
+    let session_status = match std::env::var("TAU_SESSION_STATUS").as_deref() {
+        Ok("resumed") => crate::daemon::SessionLaunchStatus::Resumed,
+        _ => crate::daemon::SessionLaunchStatus::New,
+    };
     run_harness_daemon(
         &project_root,
         &config,
@@ -440,6 +475,7 @@ pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
         // flips this to `false` at runtime.
         ServeOptions {
             exit_on_disconnect: true,
+            session_status,
             ..Default::default()
         },
     )

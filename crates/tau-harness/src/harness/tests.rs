@@ -2738,7 +2738,8 @@ fn switch_session_rebinds_default_conversation() {
         cursor = entry.seq + 1;
         if let Event::HarnessInfo(info) = &entry.event
             && info.message.contains("/s2/")
-            && info.message.starts_with("session new: ")
+            && info.message.starts_with("session dir: ")
+            && info.message.ends_with(" new")
         {
             saw_session_dir = true;
         }
@@ -4090,8 +4091,8 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         })
         .expect("conv B");
 
-    let head_a_after_init = h.conversations.get(&cid_a).unwrap().head;
-    let head_b_after_init = h.conversations.get(&cid_b).unwrap().head;
+    let head_a_after_init = h.conversations.get(&cid_a).expect("conv A after init").head;
+    let head_b_after_init = h.conversations.get(&cid_b).expect("conv B after init").head;
     assert!(head_a_after_init.is_some());
     assert!(head_b_after_init.is_some());
     assert_ne!(

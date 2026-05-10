@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tau_config::settings::CliBindingAction;
-use tau_harness::runtime_dir;
+use tau_harness::{SessionLaunchStatus, runtime_dir};
 
 fn encode_binding_action(action: &CliBindingAction) -> String {
     if action.command.is_empty() {
@@ -288,12 +288,15 @@ impl Drop for DaemonHandle {
 /// - `Some("")` (bare `-r`) → resume the most recent session whose
 ///   `meta.json.cwd` matches cwd; if none, mint fresh.
 /// - `Some(id)` → resume that explicit id.
-fn resolve_run_session_id(resume: Option<&str>) -> Result<String, CliError> {
+fn resolve_run_session_id(resume: Option<&str>) -> Result<(String, SessionLaunchStatus), CliError> {
     let cwd = std::env::current_dir()?;
     match resume {
-        None => Ok(mint_session_id(&cwd)),
-        Some("") => Ok(find_most_recent_session(&cwd).unwrap_or_else(|| mint_session_id(&cwd))),
-        Some(id) => Ok(id.to_owned()),
+        None => Ok((mint_session_id(&cwd), SessionLaunchStatus::New)),
+        Some("") => match find_most_recent_session(&cwd) {
+            Some(id) => Ok((id, SessionLaunchStatus::Resumed)),
+            None => Ok((mint_session_id(&cwd), SessionLaunchStatus::New)),
+        },
+        Some(id) => Ok((id.to_owned(), SessionLaunchStatus::Resumed)),
     }
 }
 
@@ -336,6 +339,7 @@ struct DaemonOutput {
 fn resolve_daemon(
     attach: bool,
     session_id: &str,
+    session_status: SessionLaunchStatus,
     daemon_output: Option<DaemonOutput>,
 ) -> Result<DaemonHandle, CliError> {
     tracing::debug!(target: "tau_cli::startup", attach, session_id, "resolving harness daemon");
@@ -349,6 +353,7 @@ fn resolve_daemon(
     }
     start_daemon(
         session_id,
+        session_status,
         daemon_output.expect("daemon output for spawned harness"),
     )
 }
@@ -421,7 +426,11 @@ fn read_daemon_output_since(path: &Path, start_offset: u64) -> io::Result<String
 }
 
 /// Spawns a new harness daemon and waits for its socket to be ready.
-fn start_daemon(session_id: &str, output: DaemonOutput) -> Result<DaemonHandle, CliError> {
+fn start_daemon(
+    session_id: &str,
+    session_status: SessionLaunchStatus,
+    output: DaemonOutput,
+) -> Result<DaemonHandle, CliError> {
     let tau_binary = std::env::current_exe()?;
     tracing::debug!(target: "tau_cli::startup", tau_binary = %tau_binary.display(), session_id, "spawning harness daemon");
 
@@ -429,6 +438,7 @@ fn start_daemon(session_id: &str, output: DaemonOutput) -> Result<DaemonHandle, 
         .arg("ext")
         .arg("harness")
         .env("TAU_SESSION_ID", session_id)
+        .env("TAU_SESSION_STATUS", session_status.as_str())
         .env("TAU_VERSION", env!("CARGO_PKG_VERSION"))
         .env("TAU_BUILD", build_revision())
         .envs(build_last_modified().map(|date| ("TAU_LAST_MODIFIED", date)))
@@ -482,7 +492,11 @@ fn start_daemon(session_id: &str, output: DaemonOutput) -> Result<DaemonHandle, 
 // Chat as socket client
 // ---------------------------------------------------------------------------
 
-fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
+fn run_chat(
+    session_id: &str,
+    attach: bool,
+    session_status: SessionLaunchStatus,
+) -> Result<(), CliError> {
     use tau_cli_term::{HighTerm, SlashCommand};
 
     let state_dir = tau_harness::default_state_dir();
@@ -524,7 +538,7 @@ fn run_chat(session_id: &str, attach: bool) -> Result<(), CliError> {
             start_offset,
         })
     };
-    let daemon = resolve_daemon(attach, session_id, daemon_output)?;
+    let daemon = resolve_daemon(attach, session_id, session_status, daemon_output)?;
     tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness daemon resolved");
     let socket_path = daemon.socket_path();
 
@@ -2080,14 +2094,14 @@ fn render_harness_info(
     use tau_themes::names;
 
     if info.level == tau_proto::HarnessInfoLevel::Normal {
-        if let Some((status, path)) = info
+        if let Some((path, status)) = info
             .message
-            .strip_prefix("session ")
-            .and_then(|rest| rest.split_once(": "))
-            .and_then(|(status, path)| path.strip_suffix('/').map(|path| (status, path)))
-            && matches!(status, "initial" | "new" | "resumed")
+            .strip_prefix("session dir: ")
+            .and_then(|rest| rest.strip_suffix('/'))
+            .and_then(|rest| rest.rsplit_once(' '))
+            && matches!(status, "new" | "resumed")
         {
-            return session_status_block(theme, status, Path::new(path), "/");
+            return session_status_block(theme, Path::new(path), "/", status);
         }
         if let Some(path) = info
             .message
@@ -2107,9 +2121,9 @@ fn render_harness_info(
 
 fn session_status_block(
     theme: &tau_themes::Theme,
-    status: &str,
     path: &Path,
     suffix: &str,
+    status: &str,
 ) -> tau_cli_term::StyledBlock {
     use tau_themes::{ThemedText, names};
 
@@ -2117,10 +2131,10 @@ fn session_status_block(
     let lifecycle = text.add_style(names::EXTENSION_LIFECYCLE);
     let status_style = text.add_style(names::SYSTEM_STATUS);
     let path_style = text.add_style(names::SYSTEM_PATH);
-    text.push(lifecycle, "session ");
-    text.push(status_style, status);
-    text.push(lifecycle, ": ");
+    text.push(lifecycle, "session dir: ");
     text.push(path_style, format!("{}{}", display_path(path), suffix));
+    text.push(lifecycle, " ");
+    text.push(status_style, status);
     tau_cli_term::StyledBlock::new(tau_cli_term::resolve::themed_text(theme, &text))
 }
 
@@ -3197,7 +3211,7 @@ pub fn main_with_args() -> std::process::ExitCode {
                 config: _config,
                 attach,
             } => {
-                let session_id = if attach {
+                let (session_id, session_status) = if attach {
                     let cwd = std::env::current_dir()?;
                     let daemon_dir =
                         runtime_dir::find_harness_for_dir(&cwd).ok_or(CliError::NoRunningDaemon)?;
@@ -3215,11 +3229,11 @@ pub fn main_with_args() -> std::process::ExitCode {
                             )));
                         }
                     }
-                    daemon_session_id
+                    (daemon_session_id, SessionLaunchStatus::Resumed)
                 } else {
                     resolve_run_session_id(resume.as_deref())?
                 };
-                run_chat(&session_id, attach)
+                run_chat(&session_id, attach, session_status)
             }
 
             cli::Command::SessionList { state_dir } => {
