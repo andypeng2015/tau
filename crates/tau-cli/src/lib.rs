@@ -19,6 +19,9 @@ use tau_config::settings::CliBindingAction;
 use tau_harness::runtime_dir;
 
 fn encode_binding_action(action: &CliBindingAction) -> String {
+    if action.command.is_empty() {
+        return action.action.clone();
+    }
     format!(
         "{}:{}:{}",
         action.action,

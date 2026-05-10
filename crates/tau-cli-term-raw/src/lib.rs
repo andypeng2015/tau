@@ -272,6 +272,7 @@ impl SharedState {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum KeyBinding {
     Ctrl(char),
+    CtrlKey(KeyCode),
 }
 
 fn parse_key_binding(input: &str) -> Option<KeyBinding> {
@@ -279,6 +280,11 @@ fn parse_key_binding(input: &str) -> Option<KeyBinding> {
     let rest = input
         .strip_prefix("C-")
         .or_else(|| input.strip_prefix("c-"))?;
+    match rest.to_ascii_lowercase().as_str() {
+        "up" => return Some(KeyBinding::CtrlKey(KeyCode::Up)),
+        "down" => return Some(KeyBinding::CtrlKey(KeyCode::Down)),
+        _ => {}
+    }
     let mut chars = rest.chars();
     let ch = chars.next()?;
     if chars.next().is_some() {
@@ -294,6 +300,7 @@ fn key_binding_for_event(key: KeyEvent, ctrl: bool) -> Option<KeyBinding> {
             let letter = (b'a' + ch as u8 - 1) as char;
             Some(KeyBinding::Ctrl(letter))
         }
+        KeyCode::Up | KeyCode::Down if ctrl => Some(KeyBinding::CtrlKey(key.code)),
         _ => None,
     }
 }
@@ -1018,6 +1025,17 @@ impl Term {
         Ok(id)
     }
 
+    pub fn step_history(&self, delta: isize) {
+        let mut st = self.state.lock().expect("term state mutex poisoned");
+        st.completion = None;
+        st.step_history(delta);
+    }
+
+    fn step_history_event(&self, delta: isize) -> io::Result<Option<Event>> {
+        self.step_history(delta);
+        Ok(Some(Event::BufferChanged))
+    }
+
     fn handle_key(&self, key: KeyEvent) -> io::Result<Option<Event>> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -1176,6 +1194,11 @@ impl Term {
                 if matches!(ch, 'o' | 'g') {
                     return Ok(Some(Event::ExternalEditor));
                 }
+                match ch {
+                    'j' => return self.step_history_event(1),
+                    'k' => return self.step_history_event(-1),
+                    _ => {}
+                }
             }
 
             KeyCode::Char(ch) => {
@@ -1243,6 +1266,8 @@ impl Term {
                 }
             }
 
+            KeyCode::Up if ctrl => return self.step_history_event(-1),
+
             KeyCode::Up => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");
                 // Priority: completion menu, then in-buffer cursor
@@ -1260,6 +1285,8 @@ impl Term {
                 }
                 return Ok(Some(Event::BufferChanged));
             }
+
+            KeyCode::Down if ctrl => return self.step_history_event(1),
 
             KeyCode::Down => {
                 let mut st = self.state.lock().expect("term state mutex poisoned");

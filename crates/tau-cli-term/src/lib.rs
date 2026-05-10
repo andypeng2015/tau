@@ -227,6 +227,7 @@ impl HighTerm {
                 self.handle.set_buffer(new_text, cursor);
             }
             Ok(Some(PromptShellResult::Insert(_))) => {}
+            Ok(Some(PromptShellResult::History(_))) => {}
             Ok(None) => {} // editor exited non-zero or text unchanged.
             Err(msg) => self.print_local(&format!("external editor: {msg}")),
         }
@@ -248,6 +249,9 @@ impl HighTerm {
                 let cursor = self.handle.get_cursor();
                 buffer.insert_str(cursor, &text);
                 self.handle.set_buffer(buffer, cursor + text.len());
+            }
+            Ok(Some(PromptShellResult::History(delta))) => {
+                self.term.step_history(delta);
             }
             Ok(None) => {}
             Err(msg) => self.print_local(&format!("binding: {msg}")),
@@ -282,15 +286,23 @@ struct PromptShellCommand {
 enum PromptShellAction {
     Insert(PromptShellCommand),
     Edit(PromptShellCommand),
+    PromptNext,
+    PromptPrevious,
 }
 
 enum PromptShellResult {
     Insert(String),
     Replace(String),
+    History(isize),
 }
 
 impl PromptShellAction {
     fn parse(action: &str) -> Option<Self> {
+        match action {
+            "prompt-next" => return Some(Self::PromptNext),
+            "prompt-previous" => return Some(Self::PromptPrevious),
+            _ => {}
+        }
         let mut parts = action.splitn(3, ':');
         let name = parts.next()?;
         let mode = parts.next()?;
@@ -312,6 +324,11 @@ fn run_prompt_shell_action(
     handle: &TermHandle,
     action: PromptShellAction,
 ) -> Result<Option<PromptShellResult>, String> {
+    let shell = match &action {
+        PromptShellAction::PromptNext => return Ok(Some(PromptShellResult::History(1))),
+        PromptShellAction::PromptPrevious => return Ok(Some(PromptShellResult::History(-1))),
+        PromptShellAction::Insert(shell) | PromptShellAction::Edit(shell) => shell,
+    };
     let current = handle.get_buffer();
     let cursor = handle.get_cursor();
     let tmp = tempfile::Builder::new()
@@ -322,9 +339,6 @@ fn run_prompt_shell_action(
     std::fs::write(tmp.path(), current.as_bytes())
         .map_err(|e| format!("could not write tempfile: {e}"))?;
 
-    let shell = match &action {
-        PromptShellAction::Insert(shell) | PromptShellAction::Edit(shell) => shell,
-    };
     let command = shell.command.as_str();
     tracing::trace!(
         target: "tau_cli::input",
@@ -377,5 +391,6 @@ fn run_prompt_shell_action(
             let new_text = new_text.strip_suffix('\n').unwrap_or(&new_text).to_owned();
             Ok(Some(PromptShellResult::Replace(new_text)))
         }
+        PromptShellAction::PromptNext | PromptShellAction::PromptPrevious => unreachable!(),
     }
 }

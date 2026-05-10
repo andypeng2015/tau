@@ -132,6 +132,38 @@ fn default_cli_bindings() -> HashMap<String, CliBindingAction> {
             },
         ),
         (
+            "C-k".to_owned(),
+            CliBindingAction {
+                action: "prompt-previous".to_owned(),
+                command: String::new(),
+                trim: false,
+            },
+        ),
+        (
+            "C-Up".to_owned(),
+            CliBindingAction {
+                action: "prompt-previous".to_owned(),
+                command: String::new(),
+                trim: false,
+            },
+        ),
+        (
+            "C-j".to_owned(),
+            CliBindingAction {
+                action: "prompt-next".to_owned(),
+                command: String::new(),
+                trim: false,
+            },
+        ),
+        (
+            "C-Down".to_owned(),
+            CliBindingAction {
+                action: "prompt-next".to_owned(),
+                command: String::new(),
+                trim: false,
+            },
+        ),
+        (
             "C-o".to_owned(),
             CliBindingAction {
                 action: "shell-prompt-edit".to_owned(),
