@@ -1518,7 +1518,17 @@ fn streaming_block(
 }
 
 fn output_stats_suffix(text: &str) -> ToolSuffixSegment {
-    info_suffix(format!("({}L, {}B)", text.lines().count(), text.len()))
+    stats_suffix(None, text)
+}
+
+fn stats_suffix(prefix: Option<String>, text: &str) -> ToolSuffixSegment {
+    let mut parts = Vec::new();
+    if let Some(prefix) = prefix {
+        parts.push(prefix);
+    }
+    parts.push(format!("{}L", text.lines().count()));
+    parts.push(format!("{}B", text.len()));
+    info_suffix(format!("({})", parts.join(", ")))
 }
 
 fn websearch_stats_suffix(text: &str) -> ToolSuffixSegment {
@@ -1631,11 +1641,11 @@ fn format_tool_completion(
             if let Some(msg) = error_message {
                 format_tool_error("find", args, msg)
             } else {
-                let count = cbor_int_field(details, "matches").unwrap_or(0);
+                let output = cbor_text_field(details, "output").unwrap_or_default();
                 ToolCallDisplay {
                     tool_name: "find".into(),
                     args,
-                    suffixes: vec![info_suffix(format!("({count} matches)")), ok_suffix()],
+                    suffixes: vec![stats_suffix(None, &output), ok_suffix()],
                 }
             }
         }
@@ -1652,7 +1662,8 @@ fn format_tool_completion(
             } else {
                 let output = cbor_text_field(details, "output").unwrap_or_default();
                 let status = cbor_int_field(details, "status");
-                let mut suffixes = vec![output_stats_suffix(&output)];
+                let match_count = cbor_int_field(details, "matches").unwrap_or(0);
+                let mut suffixes = vec![stats_suffix(Some(format!("{match_count}L")), &output)];
                 suffixes.push(match status {
                     Some(0) => ok_suffix(),
                     Some(1) => tool_suffix("ok: no matches".to_owned(), ToolStatus::Success),
@@ -1739,10 +1750,7 @@ fn format_tool_completion(
                         ToolCallDisplay {
                             tool_name: "skill".into(),
                             args,
-                            suffixes: vec![
-                                info_suffix(format!("({match_count} matches)")),
-                                ok_suffix(),
-                            ],
+                            suffixes: vec![info_suffix(format!("({match_count}L)")), ok_suffix()],
                         }
                     }
                 }
