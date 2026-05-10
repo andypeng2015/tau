@@ -455,6 +455,9 @@ fn build_provider_entry(kind: &ProviderKind) -> serde_json::Value {
             "baseUrl": "http://localhost:11434/v1",
             "auth": "none",
             "api": "openai-completions",
+            "compat": {
+                "supportsLlamaCppCache": true,
+            },
             "models": [{ "id": "llama3:70b", "contextWindow": 8192 }],
         }),
         ProviderKind::Openai => serde_json::json!({
