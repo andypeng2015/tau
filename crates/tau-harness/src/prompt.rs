@@ -319,6 +319,7 @@ mod tests {
             call_id: "call-1".into(),
             tool_name: "shell".into(),
             arguments: CborValue::Null,
+            originator: tau_proto::PromptOriginator::User,
         }));
         let details = CborValue::Map(vec![
             (
@@ -339,6 +340,7 @@ mod tests {
             tool_name: "shell".into(),
             message: "command exited with status 1".to_owned(),
             details: Some(details),
+            originator: tau_proto::PromptOriginator::User,
         }));
 
         let messages = assemble_conversation_from(&tree, tree.head());

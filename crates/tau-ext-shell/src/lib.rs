@@ -674,6 +674,7 @@ fn execute_tool(
             call_id: invoke.call_id,
             tool_name: invoke.tool_name,
             result: invoke.arguments,
+            originator: tau_proto::PromptOriginator::User,
         })];
     }
 
@@ -683,12 +684,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -699,12 +702,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -715,12 +720,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -731,12 +738,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -747,12 +756,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -763,12 +774,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })],
             Err(error) => vec![Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message: error,
                 details: error_details.clone(),
+                originator: tau_proto::PromptOriginator::User,
             })],
         };
     }
@@ -785,12 +798,14 @@ fn execute_tool(
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 result,
+                originator: tau_proto::PromptOriginator::User,
             })),
             Err((message, details)) => events.push(Event::ToolError(ToolError {
                 call_id: invoke.call_id,
                 tool_name: invoke.tool_name,
                 message,
                 details,
+                originator: tau_proto::PromptOriginator::User,
             })),
         }
         return events;
@@ -801,6 +816,7 @@ fn execute_tool(
         tool_name: invoke.tool_name,
         message: "unknown tool".to_owned(),
         details: None,
+        originator: tau_proto::PromptOriginator::User,
     })]
 }
 

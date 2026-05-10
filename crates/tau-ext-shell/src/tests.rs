@@ -242,6 +242,7 @@ fn extension_reads_file() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(file_path.display().to_string()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -275,6 +276,7 @@ fn extension_read_missing_file_reports_error() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text("/definitely/missing/file.txt".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -314,6 +316,7 @@ fn extension_writes_file() {
                     CborValue::Text("written content".to_owned()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -358,6 +361,7 @@ fn extension_write_missing_parent_reports_short_error() {
                     CborValue::Text("x".to_owned()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -396,6 +400,7 @@ fn extension_write_directory_reports_short_error() {
                     CborValue::Text("x".to_owned()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -436,6 +441,7 @@ fn extension_writes_file_creates_directories() {
                     CborValue::Text("deep content".to_owned()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -481,6 +487,7 @@ fn edit_read_failure_reports_short_reason() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -531,6 +538,7 @@ fn edit_errors_use_short_reasons() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -580,6 +588,7 @@ fn edit_errors_include_path_details() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -636,6 +645,7 @@ fn edit_can_replace_expected_multiple_matches() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -685,6 +695,7 @@ fn edit_reports_actual_match_count_without_writing() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -742,6 +753,7 @@ fn edit_reports_zero_applied_for_expected_zero_matches() {
                     ])]),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -791,6 +803,7 @@ fn extension_finds_files() {
                     CborValue::Text(tempdir.path().display().to_string()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -830,6 +843,7 @@ fn extension_lists_directory_contents() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(tempdir.path().display().to_string()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -864,6 +878,7 @@ fn shell_tool_reports_progress_and_success() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf hello".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -920,6 +935,7 @@ fn shell_tool_applies_configured_prefix_and_command() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf %s \"$TAU_SHELL_PREFIX_TEST\"".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");
@@ -985,6 +1001,7 @@ fn shell_tool_reports_failures_with_details() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("exit 7".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
     writer.flush().expect("flush");

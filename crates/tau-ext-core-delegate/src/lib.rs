@@ -71,12 +71,14 @@ where
                             tool_name,
                             message: error,
                             details: None,
+                            originator: tau_proto::PromptOriginator::User,
                         })))?;
                     } else {
                         writer.write_frame(&Frame::Event(Event::ToolResult(ToolResult {
                             call_id,
                             tool_name,
                             result: CborValue::Text(result.text),
+                            originator: tau_proto::PromptOriginator::User,
                         })))?;
                     }
                     writer.flush()?;
@@ -104,6 +106,7 @@ fn handle_tool_invoke<W: Write>(
             tool_name: invoke.tool_name,
             message: "unknown tool".to_owned(),
             details: None,
+            originator: tau_proto::PromptOriginator::User,
         })))?;
         writer.flush()?;
         return Ok(());
@@ -117,6 +120,7 @@ fn handle_tool_invoke<W: Write>(
                 tool_name: invoke.tool_name,
                 message,
                 details: Some(invoke.arguments),
+                originator: tau_proto::PromptOriginator::User,
             })))?;
             writer.flush()?;
             return Ok(());

@@ -130,6 +130,7 @@ fn forwards_query_and_num_results_to_searcher_and_returns_text() {
                     CborValue::Integer(3.into()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -165,6 +166,7 @@ fn defaults_num_results_when_omitted() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("hello world".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -188,6 +190,7 @@ fn missing_query_returns_tool_error() {
             call_id: "call-3".into(),
             tool_name: TOOL_NAME.into(),
             arguments: CborValue::Map(Vec::new()),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -213,6 +216,7 @@ fn searcher_error_surfaces_as_tool_error() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("anything".to_owned()),
             )]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -244,6 +248,7 @@ fn rejects_num_results_out_of_range() {
                     CborValue::Integer(0.into()),
                 ),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
     writer.flush().expect("flush");

@@ -92,6 +92,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             arguments: CborValue::Text("hello".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         })))
         .expect("tool invoke should be sent");
     let result = child
@@ -104,6 +105,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             result: CborValue::Text("hello".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         }))
     );
 

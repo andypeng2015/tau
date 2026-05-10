@@ -868,6 +868,19 @@ impl Harness {
         // write cursor. After the commit, the post-commit hook
         // also syncs `c.head` automatically — the trailing
         // read-tree-and-update idiom is gone entirely.
+        //
+        // Re-stamp tool events with the owning conversation's
+        // originator so subscribers can tell main-agent tool
+        // activity from sub-agent tool activity without having to
+        // map `call_id` back to a conversation themselves. Construction
+        // sites can leave `originator` as the default — this is the
+        // single point of truth.
+        let event =
+            if let Some(originator) = self.conversations.get(cid).map(|c| c.originator.clone()) {
+                stamp_tool_event_originator(event, originator)
+            } else {
+                event
+            };
         self.publish_event_for_conversation(cid, source, event);
     }
 
@@ -1603,6 +1616,7 @@ impl Harness {
                             tool_name,
                             message: "no live provider available".to_owned(),
                             details: None,
+                            originator: tau_proto::PromptOriginator::User,
                         };
                         match owning_cid {
                             Some(cid) => self.publish_event_for_conversation(
@@ -2015,6 +2029,7 @@ impl Harness {
                 tool_name,
                 message: "tool provider disconnected".to_owned(),
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             };
             // Publish on the owning conversation's branch so the
             // synthesized failure folds onto the right node. Without
@@ -3664,6 +3679,7 @@ impl Harness {
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
             arguments: call.arguments.clone(),
+            originator: tau_proto::PromptOriginator::User,
         };
         self.publish_for_conversation(cid, Event::ToolRequest(request.clone()));
 
@@ -3681,6 +3697,7 @@ impl Harness {
                     tool_name,
                     message: "no live provider available".to_owned(),
                     details: None,
+                    originator: tau_proto::PromptOriginator::User,
                 };
                 self.publish_for_conversation(cid, Event::ToolError(error));
                 self.on_tool_call_complete(&call.id);
@@ -3735,6 +3752,7 @@ impl Harness {
                 call_id: call_id_owned.clone(),
                 tool_name: placeholder.clone(),
                 arguments: arguments.clone(),
+                originator: tau_proto::PromptOriginator::User,
             }),
         );
         self.publish_for_conversation(
@@ -3744,6 +3762,7 @@ impl Harness {
                 tool_name: placeholder,
                 message,
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             }),
         );
         self.on_tool_call_complete(call_id);
@@ -3840,6 +3859,7 @@ impl Harness {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
                 arguments: call.arguments.clone(),
+                originator: tau_proto::PromptOriginator::User,
             }),
         );
 
@@ -3854,12 +3874,14 @@ impl Harness {
                     "unknown skill action: {other:?} (expected \"load\" or \"search\")"
                 ),
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             }),
             None => Event::ToolError(tau_proto::ToolError {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
                 message: "missing required argument: action (\"load\" or \"search\")".to_owned(),
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             }),
         };
 
@@ -3885,6 +3907,7 @@ impl Harness {
                 tool_name: tool_name.clone(),
                 message: "missing required argument: name (action=load)".to_owned(),
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             });
         };
         let Some(skill) = self.discovered_skills.get(name) else {
@@ -3907,6 +3930,7 @@ impl Harness {
                 tool_name: tool_name.clone(),
                 message: format!("unknown skill: {name}"),
                 details: Some(skill_load_not_found_details(name, &needles, &matches)),
+                originator: tau_proto::PromptOriginator::User,
             });
         };
         match std::fs::read_to_string(&skill.file_path) {
@@ -3925,6 +3949,7 @@ impl Harness {
                             CborValue::Text(body.to_owned()),
                         ),
                     ]),
+                    originator: tau_proto::PromptOriginator::User,
                 })
             }
             Err(e) => Event::ToolError(tau_proto::ToolError {
@@ -3932,6 +3957,7 @@ impl Harness {
                 tool_name: tool_name.clone(),
                 message: format!("failed to read skill file: {e}"),
                 details: None,
+                originator: tau_proto::PromptOriginator::User,
             }),
         }
     }
@@ -3950,6 +3976,7 @@ impl Harness {
                     tool_name: tool_name.clone(),
                     message,
                     details: None,
+                    originator: tau_proto::PromptOriginator::User,
                 });
             }
         };
@@ -3986,6 +4013,7 @@ impl Harness {
                 ),
                 (CborValue::Text("matches".to_owned()), matches),
             ]),
+            originator: tau_proto::PromptOriginator::User,
         })
     }
 
@@ -4262,6 +4290,26 @@ impl Harness {
             .iter()
             .find(|e| e.name == name)
             .map(|e| e.connection_id.as_str())
+    }
+}
+
+/// Replace the `originator` on a tool-related event with the owning
+/// conversation's originator. Non-tool events pass through unchanged.
+fn stamp_tool_event_originator(event: Event, originator: tau_proto::PromptOriginator) -> Event {
+    match event {
+        Event::ToolRequest(mut e) => {
+            e.originator = originator;
+            Event::ToolRequest(e)
+        }
+        Event::ToolResult(mut e) => {
+            e.originator = originator;
+            Event::ToolResult(e)
+        }
+        Event::ToolError(mut e) => {
+            e.originator = originator;
+            Event::ToolError(e)
+        }
+        other => other,
     }
 }
 

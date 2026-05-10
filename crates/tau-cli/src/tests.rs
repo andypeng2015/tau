@@ -124,6 +124,7 @@ fn new_session_clears_session_ui_state() {
                 CborValue::Text("fn main() {}\n".into()),
             ),
         ]),
+        originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "old prompt"));
@@ -836,6 +837,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
                 CborValue::Text("fn main() {}\n".into()),
             ),
         ]),
+        originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "read src/main.rs (1L, 13B) ok"));
@@ -857,6 +859,7 @@ fn websearch_tool_result_shows_result_count_and_size() {
         result: CborValue::Text(
             "Title: One\nURL: https://one.example\n\nTitle: Two\nURL: https://two.example\n".into(),
         ),
+        originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "websearch_exa (2 results, 5L, 73B) ok"));

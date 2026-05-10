@@ -167,6 +167,7 @@ where
                     tool_name: invoke.tool_name,
                     message: "restarting failed".to_owned(),
                     details: None,
+                    originator: tau_proto::PromptOriginator::User,
                 })))?;
                 writer.flush()?;
             }
@@ -175,6 +176,7 @@ where
                     call_id: invoke.call_id,
                     tool_name: invoke.tool_name,
                     result: tau_proto::CborValue::Map(Vec::new()),
+                    originator: tau_proto::PromptOriginator::User,
                 })))?;
                 writer.flush()?;
             }

@@ -14,22 +14,26 @@ fn representative_events() -> Vec<Event> {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             arguments: CborValue::Text("hello".to_owned()),
+            originator: PromptOriginator::User,
         }),
         Event::ToolInvoke(ToolInvoke {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             arguments: CborValue::Text("hello".to_owned()),
+            originator: PromptOriginator::User,
         }),
         Event::ToolResult(ToolResult {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             result: CborValue::Text("hello".to_owned()),
+            originator: PromptOriginator::User,
         }),
         Event::ToolError(ToolError {
             call_id: "call-1".into(),
             tool_name: "missing_tool".into(),
             message: "no live provider".to_owned(),
             details: None,
+            originator: PromptOriginator::User,
         }),
         Event::ToolProgress(ToolProgress {
             call_id: "call-1".into(),
@@ -254,6 +258,7 @@ fn event_wire_form_uses_dotted_event_tag() {
         call_id: "call-1".into(),
         tool_name: "echo".into(),
         arguments: CborValue::Text("hi".to_owned()),
+        originator: PromptOriginator::User,
     });
     let json = serde_json::to_value(&event).expect("serialize");
     assert_eq!(json["event"], "tool.invoke");

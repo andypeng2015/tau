@@ -186,6 +186,7 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
                 call_id: "call-1".into(),
                 tool_name: "echo".into(),
                 arguments: CborValue::Null,
+                originator: tau_proto::PromptOriginator::User,
             })),
         )
         .expect("directed route should succeed");
@@ -212,6 +213,7 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
         call_id: "call-1".into(),
         tool_name: "echo".into(),
         result: CborValue::Text("done".to_owned()),
+        originator: tau_proto::PromptOriginator::User,
     })));
     assert_eq!(first_report.delivered_to, vec![tool_id.clone()]);
 
@@ -261,6 +263,7 @@ fn provider_can_register_tool_and_receive_invocations() {
                 call_id: "call-1".into(),
                 tool_name: "echo".into(),
                 arguments: CborValue::Text("hello".to_owned()),
+                originator: tau_proto::PromptOriginator::User,
             },
         )
         .expect("tool request should route");
@@ -281,6 +284,7 @@ fn provider_can_register_tool_and_receive_invocations() {
             call_id: "call-1".into(),
             tool_name: "echo".into(),
             arguments: CborValue::Text("hello".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         }))
     );
 }
@@ -571,6 +575,7 @@ fn session_tree_associates_tool_activity() {
                 call_id: "call-1".into(),
                 tool_name: "read".into(),
                 result: CborValue::Text("README".to_owned()),
+                originator: tau_proto::PromptOriginator::User,
             }),
         )
         .expect("tool result event should persist");

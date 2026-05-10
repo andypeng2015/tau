@@ -625,6 +625,13 @@ pub struct ToolRequest {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub arguments: CborValue,
+    /// Who started the prompt that produced this tool call. The
+    /// harness stamps this from the call's owning conversation so
+    /// subscribers can tell main-agent tool activity from sub-agent
+    /// (delegate / extension-query) tool activity without having to
+    /// map `call_id` back to a conversation themselves.
+    #[serde(default)]
+    pub originator: PromptOriginator,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -632,6 +639,12 @@ pub struct ToolInvoke {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub arguments: CborValue,
+    /// Echo of [`ToolRequest::originator`]. Tools usually don't
+    /// branch on it, but it's available for logging / progress
+    /// tagging / policy decisions that depend on whether the call
+    /// is for the main agent or a sub-agent.
+    #[serde(default)]
+    pub originator: PromptOriginator,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -639,6 +652,14 @@ pub struct ToolResult {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub result: CborValue,
+    /// Echo of the originating [`ToolRequest::originator`]. Tool
+    /// extensions usually pass [`PromptOriginator::User`] (the
+    /// default); the harness re-stamps this with the call's owning
+    /// conversation's originator before broadcasting, so subscribers
+    /// see a faithful tag without every extension having to track
+    /// it.
+    #[serde(default)]
+    pub originator: PromptOriginator,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -648,6 +669,10 @@ pub struct ToolError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<CborValue>,
+    /// Echo of the originating [`ToolRequest::originator`]; see
+    /// [`ToolResult::originator`].
+    #[serde(default)]
+    pub originator: PromptOriginator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

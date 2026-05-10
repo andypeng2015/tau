@@ -2493,6 +2493,7 @@ fn duplicate_tool_result_is_discarded() {
             call_id: "orphan-call".into(),
             tool_name: "read".into(),
             result: tau_proto::CborValue::Text("stale data".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         })),
     );
     // Should not error — just emits a warning and discards.
@@ -3302,6 +3303,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             call_id: "websearch-call".into(),
             tool_name: "websearch".into(),
             result: CborValue::Text("fake result".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         })),
     )
     .expect("ws result");
@@ -3457,6 +3459,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             call_id: "nested-call".into(),
             tool_name: "delegate".into(),
             result: CborValue::Text("nested answer".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         })),
     )
     .expect("nested tool result");
@@ -3717,6 +3720,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             call_id: "outer-call".into(),
             tool_name: "delegate".into(),
             result: CborValue::Text("outer answer".to_owned()),
+            originator: tau_proto::PromptOriginator::User,
         })),
     )
     .expect("delegate result");
@@ -3886,6 +3890,137 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
     assert!(
         tool_uses.is_empty(),
         "leaf prompt must not inherit unresolved ancestor tool calls; got: {tool_uses:?}",
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Tool-event originator should reflect the conversation that owns
+/// the call, not a fixed `User`. Main-agent tool calls show
+/// `PromptOriginator::User`; sub-agent tool calls show
+/// `PromptOriginator::Extension { name, query_id }` matching the
+/// side conversation. The harness re-stamps on publish, so
+/// extensions don't have to track this themselves.
+#[test]
+fn tool_events_carry_owning_conversation_originator() {
+    use tau_proto::ToolNameMaybe;
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    h.selected_model = "test/model".into();
+    let _ = connect_test_tool(&mut h, "conn-delegate");
+    h.registry.register(
+        "conn-delegate",
+        ToolSpec {
+            name: "delegate".into(),
+            description: None,
+            parameters: None,
+            side_effects: ToolSideEffects::Mutating,
+        },
+    );
+
+    // Subscribe a sink to tool.request so we can inspect originator.
+    let sink = connect_test_tool(&mut h, "test-tool-req-sink");
+    h.bus
+        .set_subscriptions(
+            "test-tool-req-sink",
+            vec![tau_proto::EventSelector::Exact(
+                tau_proto::EventName::TOOL_REQUEST,
+            )],
+        )
+        .expect("subscribe");
+
+    // Main agent submits a delegate call.
+    let cid = h.default_conversation_id.clone();
+    let main_spid: SessionPromptId = "sp-main".into();
+    seed_agent_thinking(&mut h, &cid, "sp-main");
+    h.prompt_conversations
+        .insert(main_spid.clone(), cid.clone());
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "kick off a delegate".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: main_spid,
+        text: None,
+        tool_calls: vec![AgentToolCall {
+            id: "main-call".into(),
+            name: ToolNameMaybe::from_raw("delegate"),
+            arguments: CborValue::Map(Vec::new()),
+        }],
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        originator: tau_proto::PromptOriginator::User,
+    })
+    .expect("main response");
+
+    // Spawn the sub-agent and have IT call a tool too.
+    h.handle_ext_agent_query(
+        "conn-delegate",
+        ExtAgentQuery {
+            query_id: "q-sub".to_owned(),
+            instruction: "sub task".to_owned(),
+            tool_call_id: Some("main-call".into()),
+            task_name: Some("sub".to_owned()),
+        },
+    )
+    .expect("sub query");
+    let sub_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
+        .expect("sub prompt id");
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: sub_spid,
+        text: None,
+        tool_calls: vec![AgentToolCall {
+            id: "sub-call".into(),
+            name: ToolNameMaybe::from_raw("delegate"),
+            arguments: CborValue::Map(Vec::new()),
+        }],
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-delegate".into(),
+            query_id: "q-sub".to_owned(),
+        },
+    })
+    .expect("sub response");
+
+    let frames = sink.lock().expect("sink");
+    let mut originators_by_call = std::collections::HashMap::new();
+    for routed in frames.iter() {
+        if let Frame::Message(tau_proto::Message::LogEvent(env)) = &routed.frame
+            && let Event::ToolRequest(req) = env.event.as_ref()
+        {
+            originators_by_call.insert(req.call_id.as_str().to_owned(), req.originator.clone());
+        }
+    }
+    drop(frames);
+
+    assert!(
+        matches!(
+            originators_by_call.get("main-call"),
+            Some(tau_proto::PromptOriginator::User)
+        ),
+        "main-agent tool call should be tagged User; got {:?}",
+        originators_by_call.get("main-call"),
+    );
+    assert!(
+        matches!(
+            originators_by_call.get("sub-call"),
+            Some(tau_proto::PromptOriginator::Extension { query_id, .. }) if query_id == "q-sub"
+        ),
+        "sub-agent tool call should be tagged Extension{{query_id=q-sub}}; got {:?}",
+        originators_by_call.get("sub-call"),
     );
 
     h.shutdown().expect("shutdown");

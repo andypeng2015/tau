@@ -216,6 +216,7 @@ impl ToolRegistry {
                     call_id: request.call_id,
                     tool_name: request.tool_name,
                     arguments: request.arguments,
+                    originator: request.originator,
                 })),
             )
             .map_err(ToolRouteError::Route)?;
