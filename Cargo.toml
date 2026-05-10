@@ -66,33 +66,64 @@ tau-test-support = { path = "crates/tau-test-support" }
 tau-themes = { path = "crates/tau-themes" }
 
 # External crates
-backon = "1"
-base64 = "0.22"
-bon = "3"
-built = { version = "0.8", features = ["chrono", "git2"] }
-time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
-comfy-table = "7"
-ciborium = "0.2.2"
+backon = { version = "1", default-features = false, features = [
+  "std",
+  "std-blocking-sleep",
+] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+bon = { version = "3", default-features = false }
+built = { version = "0.8", default-features = false, features = [
+  "chrono",
+  "git2",
+] }
+time = { version = "0.3", default-features = false, features = [
+  "formatting",
+  "macros",
+  "parsing",
+] }
+comfy-table = { version = "7", default-features = false }
+ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 config = { version = "0.15", default-features = false, features = ["json5"] }
-dialoguer = "0.11"
-json5 = "0.4"
-rand = "0.8"
-serde_json = "1"
-sha2 = "0.10"
+dialoguer = { version = "0.11", default-features = false }
+json5 = { version = "0.4", default-features = false }
+rand = { version = "0.8", default-features = false, features = [
+  "std",
+  "std_rng",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+sha2 = { version = "0.10", default-features = false }
 ureq = { version = "2", default-features = false, features = ["tls"] }
-url = "2"
-clap = { version = "4", features = ["derive"] }
-crossterm = { version = "0.28", features = ["bracketed-paste"] }
-unicode-width = "0.2"
-dirs = "6"
-fs2 = "0.4"
-globset = "0.4"
-ignore = "0.4"
-libc = "0.2"
-serde = { version = "1", features = ["derive"] }
-similar = "2"
-tempfile = "3"
-toml = "0.9"
+url = { version = "2", default-features = false }
+clap = { version = "4", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+  "usage",
+  "error-context",
+  "suggestions",
+  "color",
+] }
+crossterm = { version = "0.28", default-features = false, features = [
+  "bracketed-paste",
+  "events",
+] }
+unicode-width = { version = "0.2", default-features = false }
+dirs = { version = "6", default-features = false }
+fs2 = { version = "0.4", default-features = false }
+globset = { version = "0.4", default-features = false }
+ignore = { version = "0.4", default-features = false }
+libc = { version = "0.2", default-features = false }
+serde = { version = "1", default-features = false, features = [
+  "std",
+  "derive",
+] }
+similar = { version = "2", default-features = false, features = ["text"] }
+tempfile = { version = "3", default-features = false }
+toml = { version = "0.9", default-features = false, features = [
+  "parse",
+  "display",
+  "serde",
+] }
 tracing = { version = "0.1", default-features = false, features = [
   "std",
   "attributes",
@@ -102,7 +133,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt",
   "std",
 ] }
-vt100 = "0.16"
+vt100 = { version = "0.16", default-features = false }
 
 [profile.ci]
 debug = "line-tables-only"
