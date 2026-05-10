@@ -8,6 +8,8 @@
       // compat: {
       //   supportsPromptCacheKey: true,
       //   supportsPromptCacheRetention: true,
+      //   // llama.cpp: send cache_prompt=true and read tokens_cached/tokens_evaluated.
+      //   supportsLlamaCppCache: true,
       // },
       // promptCacheRetention: "24h",
       models: [

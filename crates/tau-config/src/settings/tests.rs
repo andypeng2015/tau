@@ -406,6 +406,7 @@ fn models_load_with_providers() {
                         compat: {
                             supportsPromptCacheKey: true,
                             supportsPromptCacheRetention: true,
+                            supportsLlamaCppCache: true,
                         },
                         models: [{ id: "llama-3" }]
                     }
@@ -424,6 +425,7 @@ fn models_load_with_providers() {
     );
     assert!(local.compat.supports_prompt_cache_key);
     assert!(local.compat.supports_prompt_cache_retention);
+    assert!(local.compat.supports_llama_cpp_cache);
     assert_eq!(local.models.len(), 1);
     assert_eq!(local.models[0].id, "llama-3");
 }

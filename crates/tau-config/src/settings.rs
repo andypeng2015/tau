@@ -584,6 +584,11 @@ pub struct ProviderCompat {
     pub supports_prompt_cache_key: bool,
     #[serde(rename = "supportsPromptCacheRetention")]
     pub supports_prompt_cache_retention: bool,
+    /// llama.cpp-compatible Chat Completions extension: accepts
+    /// `cache_prompt` requests and returns `tokens_cached` /
+    /// `tokens_evaluated` response stats.
+    #[serde(rename = "supportsLlamaCppCache")]
+    pub supports_llama_cpp_cache: bool,
     /// Provider's API accepts `reasoning.summary` and streams
     /// `response.reasoning_summary_text.*` events. Currently only
     /// the OpenAI Responses API surface.
@@ -599,6 +604,7 @@ impl Default for ProviderCompat {
             supports_prefill: true,
             supports_prompt_cache_key: false,
             supports_prompt_cache_retention: false,
+            supports_llama_cpp_cache: false,
             supports_reasoning_summary: false,
         }
     }

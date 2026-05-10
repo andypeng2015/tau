@@ -42,6 +42,8 @@ pub struct OpenAiConfig {
     pub prompt_cache_key: Option<String>,
     /// Provider-side prompt cache retention policy, when configured.
     pub prompt_cache_retention: Option<tau_config::settings::PromptCacheRetention>,
+    /// Whether to use llama.cpp Chat Completions cache extensions.
+    pub supports_llama_cpp_cache: bool,
 }
 
 /// Error from the OpenAI client.
@@ -178,6 +180,16 @@ pub fn chat_completion_stream(
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
     let body = build_request(config, request, true);
+    tracing::debug!(
+        target: crate::LOG_TARGET,
+        model = %config.model_id,
+        base_url = %config.base_url,
+        supports_llama_cpp_cache = config.supports_llama_cpp_cache,
+        cache_prompt = body.cache_prompt,
+        prompt_cache_key = body.prompt_cache_key.as_deref(),
+        prompt_cache_retention = body.prompt_cache_retention,
+        "chat completions request cache settings"
+    );
     let body_str = serde_json::to_string(&body).map_err(OpenAiError::Json)?;
 
     let response = tau_provider::oauth::proxy_agent()
@@ -213,9 +225,28 @@ pub fn chat_completion_stream(
             Err(_) => continue,
         };
 
-        let Some(choice) = chunk.choices.into_iter().next() else {
-            continue;
-        };
+        if tracing::enabled!(target: crate::LOG_TARGET, tracing::Level::TRACE)
+            && (chunk.usage.is_some()
+                || chunk.tokens_cached.is_some()
+                || chunk.tokens_evaluated.is_some())
+        {
+            let usage_prompt_tokens = chunk.usage.as_ref().and_then(|usage| usage.prompt_tokens);
+            let usage_cached_tokens = chunk.usage.as_ref().and_then(|usage| {
+                usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.cached_tokens)
+            });
+            tracing::trace!(
+                target: crate::LOG_TARGET,
+                usage_prompt_tokens,
+                usage_cached_tokens,
+                llama_tokens_cached = chunk.tokens_cached,
+                llama_tokens_evaluated = chunk.tokens_evaluated,
+                choices = chunk.choices.len(),
+                "chat completions stream usage chunk"
+            );
+        }
 
         if let Some(usage) = chunk.usage.as_ref() {
             if state.input_tokens.is_none() {
@@ -228,6 +259,16 @@ pub fn chat_completion_stream(
                     .and_then(|details| details.cached_tokens);
             }
         }
+        if state.input_tokens.is_none() {
+            state.input_tokens = chunk.tokens_evaluated;
+        }
+        if state.cached_tokens.is_none() {
+            state.cached_tokens = chunk.tokens_cached;
+        }
+
+        let Some(choice) = chunk.choices.into_iter().next() else {
+            continue;
+        };
 
         // Accumulate text content.
         if let Some(content) = choice.delta.content {
@@ -281,6 +322,8 @@ struct CompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
     /// Standard OpenAI Chat Completions reasoning control. Sent only
     /// when the provider supports it and the user picked a non-Off
     /// effort.
@@ -290,6 +333,13 @@ struct CompletionRequest {
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_prompt: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize)]
@@ -382,9 +432,13 @@ fn build_request(
         tools,
         tool_choice,
         stream,
+        stream_options: stream.then_some(StreamOptions {
+            include_usage: true,
+        }),
         reasoning_effort,
         prompt_cache_key,
         prompt_cache_retention,
+        cache_prompt: config.supports_llama_cpp_cache.then_some(true),
     }
 }
 
@@ -534,6 +588,10 @@ struct StreamChunk {
     choices: Vec<StreamChoice>,
     #[serde(default)]
     usage: Option<Usage>,
+    #[serde(default)]
+    tokens_cached: Option<u64>,
+    #[serde(default)]
+    tokens_evaluated: Option<u64>,
 }
 
 #[derive(Deserialize)]

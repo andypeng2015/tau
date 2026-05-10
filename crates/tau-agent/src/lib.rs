@@ -314,6 +314,7 @@ fn resolve_backend(
                 supports_reasoning_effort: provider.compat.supports_reasoning_effort,
                 prompt_cache_key,
                 prompt_cache_retention,
+                supports_llama_cpp_cache: provider.compat.supports_llama_cpp_cache,
             }))
         }
         "api-key" | "none" => {
@@ -348,6 +349,7 @@ fn chat_completions_backend(
         supports_reasoning_effort: provider.compat.supports_reasoning_effort,
         prompt_cache_key,
         prompt_cache_retention,
+        supports_llama_cpp_cache: provider.compat.supports_llama_cpp_cache,
     }))
 }
 
@@ -614,6 +616,13 @@ fn finish_stream<W: Write>(
     let text_content = state.text.clone();
     let input_tokens = state.input_tokens;
     let cached_tokens = state.cached_tokens;
+    tracing::debug!(
+        target: LOG_TARGET,
+        session_prompt_id,
+        input_tokens,
+        cached_tokens,
+        "agent response token usage"
+    );
     let thinking = state.thinking.clone();
     let tool_calls = state.into_tool_calls();
     let text = if text_empty {
