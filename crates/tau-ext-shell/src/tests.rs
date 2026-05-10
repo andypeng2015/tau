@@ -540,7 +540,7 @@ fn edit_errors_use_short_reasons() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(error.message, "no match");
+    assert_eq!(error.message, "matches: expected 1, found 0");
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -589,10 +589,172 @@ fn edit_errors_include_path_details() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(error.message, "no match");
+    assert_eq!(error.message, "matches: expected 1, found 0");
     let details = error.details.expect("details");
     let path = cbor_map_text(&details, "path").expect("path");
     assert_eq!(path, file_path.display().to_string());
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_can_replace_expected_multiple_matches() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "one fish two fish\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: EDIT_TOOL_NAME.into(),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(file_path.display().to_string()),
+                ),
+                (
+                    CborValue::Text("edits".to_owned()),
+                    CborValue::Array(vec![CborValue::Map(vec![
+                        (
+                            CborValue::Text("oldText".to_owned()),
+                            CborValue::Text("fish".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("newText".to_owned()),
+                            CborValue::Text("cat".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("expected_matches".to_owned()),
+                            CborValue::Integer(2.into()),
+                        ),
+                    ])]),
+                ),
+            ]),
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    assert!(matches!(result, Event::ToolResult(_)));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "one cat two cat\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_reports_actual_match_count_without_writing() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "one fish two fish\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: EDIT_TOOL_NAME.into(),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(file_path.display().to_string()),
+                ),
+                (
+                    CborValue::Text("edits".to_owned()),
+                    CborValue::Array(vec![CborValue::Map(vec![
+                        (
+                            CborValue::Text("oldText".to_owned()),
+                            CborValue::Text("fish".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("newText".to_owned()),
+                            CborValue::Text("cat".to_owned()),
+                        ),
+                    ])]),
+                ),
+            ]),
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
+    assert_eq!(error.message, "matches: expected 1, found 2");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "one fish two fish\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_reports_zero_applied_for_expected_zero_matches() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: EDIT_TOOL_NAME.into(),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(file_path.display().to_string()),
+                ),
+                (
+                    CborValue::Text("edits".to_owned()),
+                    CborValue::Array(vec![CborValue::Map(vec![
+                        (
+                            CborValue::Text("oldText".to_owned()),
+                            CborValue::Text("missing".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("newText".to_owned()),
+                            CborValue::Text("x".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("expected_matches".to_owned()),
+                            CborValue::Integer(0.into()),
+                        ),
+                    ])]),
+                ),
+            ]),
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    let Event::ToolResult(result) = result else {
+        panic!("expected tool result");
+    };
+    assert_eq!(cbor_map_int(&result.result, "edits_applied"), Some(0),);
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
 
     writer
         .write_frame(&disconnect_frame(None))

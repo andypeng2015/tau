@@ -238,6 +238,11 @@ where
                                 "newText": {
                                     "type": "string",
                                     "description": "Replacement text, written verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
+                                },
+                                "expected_matches": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "Expected number of matches for oldText. Defaults to 1. Use a value greater than 1 to replace all matching, non-overlapping occurrences with newText."
                                 }
                             },
                             "required": ["oldText", "newText"]
@@ -1067,25 +1072,39 @@ fn edit_file(arguments: &CborValue) -> Result<CborValue, String> {
         return Err("edits array must not be empty".to_owned());
     }
 
-    // Collect all (oldText, newText) pairs and validate against the original.
+    // Collect all replacements and validate against the original.
     let mut replacements: Vec<(usize, usize, &str)> = Vec::new();
     for edit in edits {
         let old_text = cbor_map_text(edit, "oldText")
             .ok_or_else(|| "each edit must have a string oldText".to_owned())?;
         let new_text = cbor_map_text(edit, "newText")
             .ok_or_else(|| "each edit must have a string newText".to_owned())?;
-
-        let Some(start) = original.find(old_text) else {
-            return Err("no match".to_owned());
+        let expected_matches = match cbor_map_int(edit, "expected_matches") {
+            Some(n) if n < 0 => {
+                return Err("expected_matches must not be negative".to_owned());
+            }
+            Some(n) => {
+                usize::try_from(n).map_err(|_| "expected_matches is too large".to_owned())?
+            }
+            None => 1,
         };
-        let end = start + old_text.len();
 
-        // Check uniqueness: there should be no second match.
-        if original[start + 1..].contains(old_text) {
-            return Err("ambiguous match".to_owned());
+        if old_text.is_empty() {
+            return Err("oldText must not be empty".to_owned());
         }
 
-        replacements.push((start, end, new_text));
+        let matches: Vec<(usize, &str)> = original.match_indices(old_text).collect();
+        let actual_matches = matches.len();
+        if actual_matches != expected_matches {
+            return Err(format!(
+                "matches: expected {expected_matches}, found {actual_matches}"
+            ));
+        }
+
+        for (start, matched) in matches {
+            let end = start + matched.len();
+            replacements.push((start, end, new_text));
+        }
     }
 
     // Sort by start position (descending) so we can apply from end to start
@@ -1118,7 +1137,7 @@ fn edit_file(arguments: &CborValue) -> Result<CborValue, String> {
         ),
         (
             CborValue::Text("edits_applied".to_owned()),
-            CborValue::Integer((edits.len() as i64).into()),
+            CborValue::Integer((replacements.len() as i64).into()),
         ),
         (CborValue::Text("diff".to_owned()), encode_diff(&diff)),
     ]))
@@ -2059,7 +2078,11 @@ fn optional_argument_text(arguments: &CborValue, key: &str) -> Option<String> {
 }
 
 fn optional_argument_int(arguments: &CborValue, key: &str) -> Option<i64> {
-    match arguments {
+    cbor_map_int(arguments, key)
+}
+
+fn cbor_map_int(map: &CborValue, key: &str) -> Option<i64> {
+    match map {
         CborValue::Map(entries) => entries.iter().find_map(|(k, v)| match (k, v) {
             (CborValue::Text(k), CborValue::Integer(n)) if k == key => {
                 i128::from(*n).try_into().ok()
