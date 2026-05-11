@@ -59,7 +59,7 @@ const MAX_NUM_RESULTS: u32 = 100;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
-    tau_extension::init_logging();
+    tau_extension::init_logging_for(LOG_TARGET);
     run(std::io::stdin(), std::io::stdout())
 }
 

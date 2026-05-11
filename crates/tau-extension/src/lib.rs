@@ -4,7 +4,8 @@
 //!
 //! - [`Handshake`] writes the standard Hello/Subscribe/Intercept/
 //!   ToolRegister/Ready prelude every extension opens its session with.
-//! - [`init_logging`] installs a stderr `tracing_subscriber` filtered by the
+//! - [`init_logging_for`] (or [`init_logging`] when there is no single target
+//!   to scope to) installs a stderr `tracing_subscriber` filtered by the
 //!   `TAU_LOG` env var.
 //! - [`parse_config`] decodes the harness-supplied `LifecycleConfigure.config`
 //!   into a typed struct, flattening `ciborium::value::Error`'s debug shape
@@ -65,18 +66,44 @@ pub const ENV_VAR: &str = "TAU_LOG";
 pub const DEFAULT_FILTER: &str = "info";
 
 /// Initialize the global `tracing` subscriber for this extension
-/// process. Writes to stderr (no ANSI codes — the harness captures
-/// stderr into a file), formats events with timestamp, level, and
-/// target, and applies the [`ENV_VAR`] filter.
+/// process with a generic default filter (every target at `info`).
 ///
-/// Safe to call once per process. If a subscriber is already
-/// installed (e.g. by another `init_logging` call, or tests), the
-/// duplicate-init error is logged to stderr but otherwise tolerated
-/// so the program keeps running with whatever subscriber was set
-/// first.
+/// Most extensions should prefer [`init_logging_for`], which scopes
+/// the default to one named target — that makes
+/// [`crate-doc`](self#per-extension-log-targets)'s `LOG_TARGET`
+/// convention explicit at the call site and stops noisy third-party
+/// crates from spamming stderr by default. Use this entry point only
+/// when there is no single target to scope to.
 pub fn init_logging() {
+    install_subscriber(DEFAULT_FILTER);
+}
+
+/// Initialize the global `tracing` subscriber for this extension,
+/// defaulting to `<log_target>=info,warn` when `TAU_LOG` is unset.
+///
+/// `log_target` should be the same `&'static str` the extension
+/// passes as `target:` to `tracing::*!` macros (see crate-level doc).
+/// Passing it here makes the convention legible at the call site:
+///
+/// ```ignore
+/// pub const LOG_TARGET: &str = "core-delegate";
+/// tau_extension::init_logging_for(LOG_TARGET);
+/// ```
+///
+/// The default filter keeps the extension's own info logs visible
+/// while pinning everything else (transitive deps, reqwest, hyper,
+/// etc.) to `warn`. Users can still override with
+/// `TAU_LOG=core-delegate=trace,debug` etc.
+pub fn init_logging_for(log_target: &'static str) {
+    // `EnvFilter` directive syntax: `<target>=<level>,<level>` —
+    // first directive sets the named target, trailing bare level is
+    // the global fallback. See `tracing_subscriber::EnvFilter`.
+    install_subscriber(&format!("{log_target}=info,warn"));
+}
+
+fn install_subscriber(default_filter: &str) {
     let filter =
-        EnvFilter::try_from_env(ENV_VAR).unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
+        EnvFilter::try_from_env(ENV_VAR).unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)

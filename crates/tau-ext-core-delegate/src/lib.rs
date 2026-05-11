@@ -19,7 +19,7 @@ pub const TOOL_NAME: &str = "delegate";
 const DELEGATE_PREFIX: &str = include_str!("../prompts/delegate_prefix.md");
 
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
-    tau_extension::init_logging();
+    tau_extension::init_logging_for(LOG_TARGET);
     run(std::io::stdin(), std::io::stdout())
 }
 
