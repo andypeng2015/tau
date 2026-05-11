@@ -73,7 +73,7 @@ fn stale_draft_snapshot_is_dropped_after_submit_epoch_bump() {
     let handle = (Mutex::new(DraftSlot::default()), std::sync::Condvar::new());
     {
         let (mtx, _cv) = &handle;
-        let mut slot = mtx.lock().expect("draft slot mutex poisoned");
+        let mut slot = super::locked(mtx);
         slot.pending = Some((
             slot.epoch,
             tau_proto::UiPromptDraft {
@@ -85,15 +85,11 @@ fn stale_draft_snapshot_is_dropped_after_submit_epoch_bump() {
 
     let (epoch, _draft) = {
         let (mtx, _cv) = &handle;
-        mtx.lock()
-            .expect("draft slot mutex poisoned")
-            .pending
-            .take()
-            .expect("pending draft")
+        super::locked(mtx).pending.take().expect("pending draft")
     };
     {
         let (mtx, _cv) = &handle;
-        let mut slot = mtx.lock().expect("draft slot mutex poisoned");
+        let mut slot = super::locked(mtx);
         slot.epoch = slot.epoch.wrapping_add(1);
         slot.pending = None;
     }
@@ -113,7 +109,7 @@ fn draft_snapshot_is_dropped_after_shutdown() {
     let handle = (Mutex::new(DraftSlot::default()), std::sync::Condvar::new());
     {
         let (mtx, _cv) = &handle;
-        mtx.lock().expect("draft slot mutex poisoned").done = true;
+        super::locked(mtx).done = true;
     }
 
     assert!(!should_send_draft_snapshot(&handle, 0));

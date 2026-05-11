@@ -467,14 +467,15 @@ pub struct HarnessContextUsageChanged {
 /// `thinking.budget_tokens`). `Off` disables it entirely.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub enum Effort {
     #[default]
-    Off,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    XHigh,
+    Off = 0,
+    Minimal = 1,
+    Low = 2,
+    Medium = 3,
+    High = 4,
+    XHigh = 5,
 }
 
 impl Effort {
@@ -501,6 +502,29 @@ impl Effort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+        }
+    }
+
+    /// Numeric tag suitable for storing in an `AtomicU8`. Round-trips
+    /// through [`Effort::from_u8`].
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of [`Effort::as_u8`]. Returns `None` for unknown tags so
+    /// callers can decide how to recover; the common case (loading from
+    /// an atomic mirror) maps `None` to [`Effort::Off`].
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Off),
+            1 => Some(Self::Minimal),
+            2 => Some(Self::Low),
+            3 => Some(Self::Medium),
+            4 => Some(Self::High),
+            5 => Some(Self::XHigh),
+            _ => None,
         }
     }
 }

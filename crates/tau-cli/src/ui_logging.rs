@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
+use crate::mint_short_id;
+
 const UI_LOG_ENV: &str = "TAU_LOG";
 const DEFAULT_FILTER: &str = "tau_cli=info";
 
@@ -117,15 +119,5 @@ fn mint_ui_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let mut suffix = String::with_capacity(6);
-    for _ in 0..6 {
-        use rand::Rng;
-        let n: u8 = rand::thread_rng().gen_range(0..36);
-        if n < 10 {
-            suffix.push((b'0' + n) as char);
-        } else {
-            suffix.push((b'a' + (n - 10)) as char);
-        }
-    }
-    format!("ui-{millis}-{suffix}")
+    mint_short_id(&format!("ui-{millis}"))
 }

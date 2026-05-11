@@ -26,6 +26,7 @@ mod prompt;
 mod session_cleanup;
 mod settings;
 mod turn;
+mod version;
 
 pub fn dump_initial_prompt(
     out_path: &std::path::Path,

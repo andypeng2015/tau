@@ -15,6 +15,7 @@ clap.workspace = true
 tau-agent.workspace = true
 tau-cli-picker.workspace = true
 dirs.workspace = true
+libc.workspace = true
 rand.workspace = true
 tau-cli-term.workspace = true
 tau-themes.workspace = true

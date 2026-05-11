@@ -369,6 +369,61 @@ pub fn decode_frame_from_slice(bytes: &[u8]) -> Result<Frame, DecodeError> {
     decode_frame(Cursor::new(bytes))
 }
 
+/// Looks up `key` in a [`CborValue::Map`] and returns the matching
+/// sub-value. Returns `None` if `value` is not a map or the key is
+/// absent. Key lookup is linear over the map entries — fine for the
+/// small CBOR trees produced by tools, where the alternative would be
+/// converting to a `HashMap` per access.
+#[must_use]
+pub fn cbor_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a CborValue> {
+    if let CborValue::Map(entries) = value {
+        for (k, v) in entries {
+            if let CborValue::Text(k) = k
+                && k == key
+            {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Convenience accessor for a [`CborValue::Text`] field by key.
+#[must_use]
+pub fn cbor_text_field(value: &CborValue, key: &str) -> Option<String> {
+    match cbor_field(value, key)? {
+        CborValue::Text(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Convenience accessor for a [`CborValue::Bool`] field by key.
+#[must_use]
+pub fn cbor_bool_field(value: &CborValue, key: &str) -> Option<bool> {
+    match cbor_field(value, key)? {
+        CborValue::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// Convenience accessor for a [`CborValue::Array`] field by key.
+#[must_use]
+pub fn cbor_array_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a [CborValue]> {
+    match cbor_field(value, key)? {
+        CborValue::Array(arr) => Some(arr.as_slice()),
+        _ => None,
+    }
+}
+
+/// Convenience accessor for a [`CborValue::Integer`] field by key.
+#[must_use]
+pub fn cbor_int_field(value: &CborValue, key: &str) -> Option<i128> {
+    match cbor_field(value, key)? {
+        CborValue::Integer(n) => Some((*n).into()),
+        _ => None,
+    }
+}
+
 /// Convert a `serde_json::Value` into a [`CborValue`].
 ///
 /// Numbers are preserved as integers when possible, otherwise as

@@ -4,6 +4,7 @@
 - `crates/tau-agent` — first-party LLM conversation driver and provider adapters
 - `crates/tau-blocking-notify-channel` — blocking notification channel utility
 - `crates/tau-cli` — CLI entrypoint: starts harness daemon and connects UI clients
+- `crates/tau-cli-picker` — shared interactive picker for terminal selection prompts
 - `crates/tau-cli-term` — terminal UI client
 - `crates/tau-cli-term-raw` — raw terminal rendering/input layer
 - `crates/tau-config` — user and project configuration loading
@@ -20,6 +21,7 @@
 - `crates/tau-skills` — skill discovery/loading support
 - `crates/tau-socket` — Unix socket transport glue
 - `crates/tau-supervisor` — supervised child-process and stdio transport glue
+- `crates/tau-term-screen` — terminal screen layout and styled-cell renderer
 - `crates/tau-test-support` — reusable end-to-end test utilities
 - `crates/tau-themes` — themed text/style types
 

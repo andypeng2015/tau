@@ -1495,6 +1495,7 @@ dependencies = [
  "ciborium",
  "clap",
  "dirs",
+ "libc",
  "rand",
  "tau-agent",
  "tau-cli-picker",
@@ -1650,7 +1651,9 @@ name = "tau-harness"
 version = "0.1.0"
 dependencies = [
  "bon",
+ "built",
  "dirs",
+ "libc",
  "serde_json",
  "tau-agent",
  "tau-config",

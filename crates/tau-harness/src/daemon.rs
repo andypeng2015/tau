@@ -449,6 +449,13 @@ pub fn run_harness_daemon(
     daemon_dir.write_session_id(eager_session_id)?;
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "daemon ready markers written");
 
+    // Signal the parent CLI (if it passed us a pipe fd via
+    // `TAU_READY_FD`) that the socket is bound and discoverable. The
+    // parent is blocked on `read()` until this byte arrives, so the
+    // wakeup latency is whatever it takes the kernel to deliver one
+    // byte — not the 10ms granularity of a poll loop.
+    runtime_dir::signal_ready_to_parent();
+
     let tx = harness.tx.clone();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -468,6 +475,11 @@ pub fn run_harness_daemon(
 pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
     let startup_started_at = Instant::now();
     tracing::debug!(target: "tau_harness::startup", "harness component starting");
+    // Make TAU_VERSION/TAU_BUILD/TAU_LAST_MODIFIED visible to anything
+    // we spawn (shell extension, sub-agents) by reading our own
+    // `built` snapshot — saves the parent CLI from having to forward
+    // these via env vars on every daemon launch.
+    crate::version::export_to_env();
     let project_root = std::env::current_dir()?;
     tracing::debug!(target: "tau_harness::startup", project_root = %project_root.display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "resolved project root");
     let config = resolve_config(None)?;

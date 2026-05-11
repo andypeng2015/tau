@@ -12,7 +12,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tau_cli_picker::{PickerError, PickerItem, pick};
@@ -40,7 +40,20 @@ mod built_info {
 use tau_proto::{
     CborValue, ClientKind, Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter,
     Hello, Message, PROTOCOL_VERSION, Subscribe, UiPromptDraft, UiPromptSubmitted,
+    cbor_array_field, cbor_bool_field, cbor_field, cbor_int_field, cbor_text_field,
 };
+
+/// Single shared message for mutex-poison panics: every mutex in this
+/// crate is held only for short, infallible critical sections, so poison
+/// means another thread panicked mid-update and continuing is unsafe.
+const MUTEX_POISONED: &str = "mutex poisoned";
+
+/// Locks `mutex` and panics on poison. Centralizes the panic message so
+/// individual call sites read as `let mut g = locked(&m);` instead of
+/// repeating `.expect("... mutex poisoned")` everywhere.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().expect(MUTEX_POISONED)
+}
 
 /// Shared writer handle: the input loop and the prompt-draft debounce
 /// thread both need to send events on the same socket. Stream
@@ -55,7 +68,7 @@ type WriterHandle = Arc<Mutex<FrameWriter<BufWriter<UnixStream>>>>;
 /// `io::Error` on failure so callers can use `?` or discard with
 /// `let _ = …`.
 fn send_frame(writer: &WriterHandle, frame: &Frame) -> io::Result<()> {
-    let mut w = writer.lock().expect("writer mutex poisoned");
+    let mut w = locked(writer);
     w.write_frame(frame).map_err(io::Error::other)?;
     w.flush()
 }
@@ -101,29 +114,29 @@ fn debounce_loop(handle: DraftHandle, writer: WriterHandle) {
     loop {
         // Wait for a draft to send, or shutdown.
         let snapshot = {
-            let mut g = mtx.lock().expect("draft slot mutex poisoned");
+            let mut g = locked(mtx);
             while g.pending.is_none() && !g.done {
-                g = cv.wait(g).expect("draft slot mutex poisoned");
+                g = cv.wait(g).expect(MUTEX_POISONED);
             }
             if g.done && g.pending.is_none() {
                 return;
             }
             g.pending.take()
         };
-        if let Some((epoch, draft)) = snapshot {
-            if should_send_draft_snapshot(handle.as_ref(), epoch) {
-                // Best-effort: a write failure means the socket is gone,
-                // and the input loop will notice on its next write.
-                let _ = send_event(&writer, &Event::UiPromptDraft(draft));
-            }
+        if let Some((epoch, draft)) = snapshot
+            && should_send_draft_snapshot(handle.as_ref(), epoch)
+        {
+            // Best-effort: a write failure means the socket is gone,
+            // and the input loop will notice on its next write.
+            let _ = send_event(&writer, &Event::UiPromptDraft(draft));
         }
         // Coalesce subsequent typing into one event per window. Wake
         // early on shutdown so we don't spend a second sleeping after
         // the user already typed `/quit`.
-        let g = mtx.lock().expect("draft slot mutex poisoned");
+        let g = locked(mtx);
         let (g, _timed_out) = cv
             .wait_timeout_while(g, DRAFT_DEBOUNCE, |s| !s.done)
-            .expect("draft slot mutex poisoned");
+            .expect(MUTEX_POISONED);
         if g.done && g.pending.is_none() {
             return;
         }
@@ -132,11 +145,9 @@ fn debounce_loop(handle: DraftHandle, writer: WriterHandle) {
 
 fn should_send_draft_snapshot(handle: &(Mutex<DraftSlot>, Condvar), epoch: u64) -> bool {
     let (mtx, _cv) = handle;
-    let g = mtx.lock().expect("draft slot mutex poisoned");
+    let g = locked(mtx);
     !g.done && g.epoch == epoch
 }
-
-const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
 
 const STARTUP_PUNS: &[&str] = &[
     "Tau is like Pi, but twice as much.",
@@ -178,7 +189,6 @@ pub enum CliError {
     Io(io::Error),
     Encode(tau_proto::EncodeError),
     Harness(tau_harness::HarnessError),
-    DaemonStartTimeout,
     DaemonExited(String),
     NoRunningDaemon,
     Participant(String),
@@ -191,9 +201,6 @@ impl fmt::Display for CliError {
             Self::Io(source) => write!(f, "I/O error: {source}"),
             Self::Encode(source) => write!(f, "encode error: {source}"),
             Self::Harness(source) => write!(f, "harness error: {source}"),
-            Self::DaemonStartTimeout => {
-                f.write_str("timed out waiting for harness daemon to start")
-            }
             Self::DaemonExited(msg) => write!(f, "harness daemon exited: {msg}"),
             Self::NoRunningDaemon => f.write_str(
                 "no harness daemon running for this project — \
@@ -320,22 +327,32 @@ fn session_exists(id: &str) -> Result<bool, CliError> {
 }
 
 fn mint_session_id(cwd: &Path) -> String {
-    use rand::Rng;
     let basename = cwd
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("session");
-    let suffix: String = (0..6)
-        .map(|_| {
-            let n: u8 = rand::thread_rng().gen_range(0..36);
+    mint_short_id(basename)
+}
+
+/// Build an id of the form `<prefix>-<6 base36 chars>`. Used for both
+/// session and UI ids so the visual shape is consistent.
+pub(crate) fn mint_short_id(prefix: &str) -> String {
+    use rand::distributions::Distribution;
+
+    struct Base36;
+    impl Distribution<char> for Base36 {
+        fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> char {
+            let n: u8 = rng.gen_range(0..36);
             if n < 10 {
                 (b'0' + n) as char
             } else {
                 (b'a' + (n - 10)) as char
             }
-        })
-        .collect();
-    format!("{basename}-{suffix}")
+        }
+    }
+
+    let suffix: String = Base36.sample_iter(rand::thread_rng()).take(6).collect();
+    format!("{prefix}-{suffix}")
 }
 
 fn pick_resume_session(cwd: &Path) -> Result<Option<String>, CliError> {
@@ -354,7 +371,16 @@ fn pick_resume_session(cwd: &Path) -> Result<Option<String>, CliError> {
     let rows = metas
         .into_iter()
         .map(|(sid, meta)| {
-            let locked = tau_harness::session_is_locked(&state_dir, sid.as_str()).unwrap_or(false);
+            let locked =
+                tau_harness::session_is_locked(&state_dir, sid.as_str()).unwrap_or_else(|error| {
+                    tracing::warn!(
+                        target: "tau_cli::startup",
+                        session_id = sid.as_str(),
+                        %error,
+                        "could not determine session lock state — assuming unlocked"
+                    );
+                    false
+                });
             let preview = meta
                 .latest_user_prompt_preview
                 .map(|p| format!(" — {p}"))
@@ -489,22 +515,107 @@ fn read_daemon_output_since(path: &Path, start_offset: u64) -> io::Result<String
 }
 
 /// Spawns a new harness daemon and waits for its socket to be ready.
+///
+/// Synchronization is via an inherited pipe rather than a polling
+/// loop: a `pipe2` is created with the read end retained by the parent
+/// and the write end inherited by the child. The harness writes one
+/// byte and closes its end once the socket is bound and the runtime
+/// markers are in place (see [`runtime_dir::signal_ready_to_parent`]);
+/// the parent blocks on `read_exact` until that byte arrives. EOF
+/// without a byte means the child exited early — we reap it and
+/// surface its captured output.
 fn start_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     output: DaemonOutput,
 ) -> Result<DaemonHandle, CliError> {
+    use std::os::fd::FromRawFd;
+
     let tau_binary = std::env::current_exe()?;
     tracing::debug!(target: "tau_cli::startup", tau_binary = %tau_binary.display(), session_id, "spawning harness daemon");
 
-    let mut child = Command::new(&tau_binary)
-        .arg("ext")
+    let ReadyPipe { read_fd, write_fd } = ReadyPipe::create()?;
+
+    let spawn_result = build_daemon_command(
+        &tau_binary,
+        session_id,
+        session_status,
+        output.stdout,
+        output.stderr,
+        write_fd,
+    )
+    .spawn();
+
+    // Parent never writes to the pipe; close our copy of the write end
+    // so the only remaining handle is the child's, and the read end
+    // will see EOF as soon as the child exits.
+    ReadyPipe::close_fd(write_fd);
+
+    let mut child = match spawn_result {
+        Ok(child) => child,
+        Err(e) => {
+            ReadyPipe::close_fd(read_fd);
+            return Err(e.into());
+        }
+    };
+
+    tracing::debug!(target: "tau_cli::startup", pid = child.id(), "harness daemon spawned");
+    let daemon_dir = runtime_dir::root_runtime_dir().join(child.id().to_string());
+    let started_at = Instant::now();
+
+    // SAFETY: read_fd was created above and not closed; ownership is
+    // transferred to this File which closes it on drop.
+    #[allow(unsafe_code)]
+    let mut read_pipe = unsafe { std::fs::File::from_raw_fd(read_fd) };
+    let mut byte = [0u8; 1];
+    match read_pipe.read_exact(&mut byte) {
+        Ok(()) => {
+            tracing::debug!(target: "tau_cli::startup", pid = child.id(), daemon_dir = %daemon_dir.display(), elapsed_ms = started_at.elapsed().as_millis(), "harness daemon signaled ready");
+            Ok(DaemonHandle::Owned {
+                child: Some(child),
+                daemon_dir,
+            })
+        }
+        Err(_eof_or_err) => {
+            // Read end closed without a byte. Either the child exited
+            // before signaling ready, or its pre_exec failed. Reap it
+            // either way so we can surface the captured stderr.
+            let status = child.wait()?;
+            tracing::debug!(target: "tau_cli::startup", pid = child.id(), %status, elapsed_ms = started_at.elapsed().as_millis(), "harness daemon exited before signaling ready");
+            let captured = read_daemon_output_since(&output.log_path, output.start_offset)?;
+            let mut message = format!("exit status: {status}");
+            if !captured.trim().is_empty() {
+                message.push_str("\n\nHarness output:\n");
+                message.push_str(captured.trim_end());
+            }
+            Err(CliError::DaemonExited(message))
+        }
+    }
+}
+
+/// Build the `tau ext harness` command with the readiness-pipe write fd
+/// arranged to survive `execve`. Splitting this out keeps the unsafe
+/// `pre_exec` block isolated from [`start_daemon`]'s control flow.
+fn build_daemon_command(
+    tau_binary: &Path,
+    session_id: &str,
+    session_status: SessionLaunchStatus,
+    stdout: Stdio,
+    stderr: Stdio,
+    write_fd: libc::c_int,
+) -> Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = Command::new(tau_binary);
+    cmd.arg("ext")
         .arg("harness")
         .env("TAU_SESSION_ID", session_id)
         .env("TAU_SESSION_STATUS", session_status.as_str())
-        .env("TAU_VERSION", env!("CARGO_PKG_VERSION"))
-        .env("TAU_BUILD", build_revision())
-        .envs(build_last_modified().map(|date| ("TAU_LAST_MODIFIED", date)))
+        // TAU_VERSION/TAU_BUILD/TAU_LAST_MODIFIED used to be forwarded
+        // here; the harness child now reads its own `built` snapshot
+        // (see `tau_harness::version::export_to_env`) and publishes
+        // them to its own environment instead.
+        .env(tau_harness::runtime_dir::READY_FD_ENV, write_fd.to_string())
         // Default-enable info logging in the child process so `tau`
         // captures harness logs without requiring an env var. Users
         // can still override/filter with `TAU_LOG`.
@@ -513,40 +624,59 @@ fn start_daemon(
             std::env::var("TAU_LOG").unwrap_or_else(|_| "tau_harness=info,tau_cli=info".to_owned()),
         )
         .stdin(Stdio::null())
-        .stdout(output.stdout)
-        .stderr(output.stderr)
-        .spawn()?;
+        .stdout(stdout)
+        .stderr(stderr);
 
-    tracing::debug!(target: "tau_cli::startup", pid = child.id(), "harness daemon spawned");
-    let daemon_dir = runtime_dir::root_runtime_dir().join(child.id().to_string());
-    let dir_marker = daemon_dir.join("tau.dir");
-    let started_at = Instant::now();
-
-    loop {
-        if dir_marker.exists() {
-            tracing::debug!(target: "tau_cli::startup", pid = child.id(), daemon_dir = %daemon_dir.display(), elapsed_ms = started_at.elapsed().as_millis(), "harness daemon marker observed");
-            return Ok(DaemonHandle::Owned {
-                child: Some(child),
-                daemon_dir,
-            });
-        }
-        if let Some(status) = child.try_wait()? {
-            tracing::debug!(target: "tau_cli::startup", pid = child.id(), %status, elapsed_ms = started_at.elapsed().as_millis(), "harness daemon exited before marker");
-            let captured = read_daemon_output_since(&output.log_path, output.start_offset)?;
-            let mut message = format!("exit status: {status}");
-            if !captured.trim().is_empty() {
-                message.push_str("\n\nHarness output:\n");
-                message.push_str(captured.trim_end());
+    // Safety: `pre_exec` runs in the forked child between `fork` and
+    // `execve`. We only call `fcntl` (signal-safe) and only on the fd
+    // we created ourselves. Clearing `FD_CLOEXEC` is required so the
+    // descriptor survives `execve` into the harness binary.
+    #[allow(unsafe_code)]
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(write_fd, libc::F_GETFD);
+            if flags == -1 {
+                return Err(io::Error::last_os_error());
             }
-            return Err(CliError::DaemonExited(message));
+            if libc::fcntl(write_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+/// A `pipe2(O_CLOEXEC)` pair created for the parent↔child readiness
+/// handshake. The read end is retained by the parent, the write end is
+/// passed to the child via the [`runtime_dir::READY_FD_ENV`] env var.
+struct ReadyPipe {
+    read_fd: libc::c_int,
+    write_fd: libc::c_int,
+}
+
+impl ReadyPipe {
+    fn create() -> io::Result<Self> {
+        let mut fds = [0 as libc::c_int; 2];
+        // Safety: we pass a valid 2-element array to `pipe2`; on success
+        // it writes two new fds owned by this process.
+        #[allow(unsafe_code)]
+        let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
         }
-        if DAEMON_START_TIMEOUT <= started_at.elapsed() {
-            tracing::debug!(target: "tau_cli::startup", pid = child.id(), elapsed_ms = started_at.elapsed().as_millis(), "harness daemon start timed out");
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(CliError::DaemonStartTimeout);
+        Ok(Self {
+            read_fd: fds[0],
+            write_fd: fds[1],
+        })
+    }
+
+    fn close_fd(fd: libc::c_int) {
+        // Safety: each fd is closed at most once across this module.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::close(fd);
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -668,7 +798,11 @@ fn run_chat(
                         return;
                     }
                 }
-                Ok(None) | Err(_) => return,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(target: "tau_cli::ui", %error, "socket reader exiting");
+                    return;
+                }
             }
         }
     });
@@ -712,7 +846,14 @@ fn run_chat(
         ),
     ];
     let theme = tau_themes::Theme::builtin();
-    let settings = tau_config::settings::load_cli_settings().unwrap_or_default();
+    let settings = tau_config::settings::load_cli_settings().unwrap_or_else(|error| {
+        tracing::warn!(
+            target: "tau_cli::startup",
+            %error,
+            "failed to load cli settings; falling back to defaults"
+        );
+        Default::default()
+    });
     let prompt_style = tau_cli_term::resolve::resolve(&theme, tau_themes::names::PROMPT_MARKER);
     let prompt = tau_cli_term::Span::new(format!("{} ", settings.prompt_symbol), prompt_style);
     let cursor_shape = if settings.bar_cursor {
@@ -826,7 +967,7 @@ fn run_chat(
     // emit one final draft on the closing socket and trip an `EPIPE`).
     {
         let (mtx, cv) = &*draft_handle;
-        let mut g = mtx.lock().expect("draft slot mutex poisoned");
+        let mut g = locked(mtx);
         g.done = true;
         cv.notify_all();
     }
@@ -865,10 +1006,8 @@ fn run_chat(
 }
 
 fn random_startup_pun() -> &'static str {
-    let idx = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as usize % STARTUP_PUNS.len())
-        .unwrap_or(0);
+    use rand::Rng;
+    let idx = rand::thread_rng().gen_range(0..STARTUP_PUNS.len());
     STARTUP_PUNS[idx]
 }
 
@@ -1060,15 +1199,19 @@ fn terminal_input_loop(
                 // `!` (single bang) includes it.
                 if let Some(command) = text.strip_prefix("!!") {
                     let command = command.trim();
-                    if !command.is_empty() {
-                        let _ = send_shell_command(writer, session_id, command, false);
+                    if !command.is_empty()
+                        && let Err(error) = send_shell_command(writer, session_id, command, false)
+                    {
+                        tracing::warn!(target: "tau_cli::ui", %error, "failed to send !! shell command");
                     }
                     continue;
                 }
                 if let Some(command) = text.strip_prefix('!') {
                     let command = command.trim();
-                    if !command.is_empty() {
-                        let _ = send_shell_command(writer, session_id, command, true);
+                    if !command.is_empty()
+                        && let Err(error) = send_shell_command(writer, session_id, command, true)
+                    {
+                        tracing::warn!(target: "tau_cli::ui", %error, "failed to send ! shell command");
                     }
                     continue;
                 }
@@ -1129,8 +1272,10 @@ fn terminal_input_loop(
                 // sync with `HarnessEffortChanged`, advance,
                 // send the request. The harness echoes back and the
                 // renderer updates the status block.
-                let current =
-                    effort_from_u8(ctx.effort_state.load(std::sync::atomic::Ordering::Relaxed));
+                let current = tau_proto::Effort::from_u8(
+                    ctx.effort_state.load(std::sync::atomic::Ordering::Relaxed),
+                )
+                .unwrap_or_default();
                 let next = current.next();
                 let _ = send_event(
                     writer,
@@ -1138,28 +1283,6 @@ fn terminal_input_loop(
                 );
             }
         }
-    }
-}
-
-fn effort_to_u8(level: tau_proto::Effort) -> u8 {
-    match level {
-        tau_proto::Effort::Off => 0,
-        tau_proto::Effort::Minimal => 1,
-        tau_proto::Effort::Low => 2,
-        tau_proto::Effort::Medium => 3,
-        tau_proto::Effort::High => 4,
-        tau_proto::Effort::XHigh => 5,
-    }
-}
-
-fn effort_from_u8(value: u8) -> tau_proto::Effort {
-    match value {
-        1 => tau_proto::Effort::Minimal,
-        2 => tau_proto::Effort::Low,
-        3 => tau_proto::Effort::Medium,
-        4 => tau_proto::Effort::High,
-        5 => tau_proto::Effort::XHigh,
-        _ => tau_proto::Effort::Off,
     }
 }
 
@@ -1297,7 +1420,7 @@ fn send_shell_command(
     session_id: &str,
     command: &str,
     include_in_context: bool,
-) -> Result<(), ()> {
+) -> io::Result<()> {
     let command_id = format!(
         "ui-sh-{}",
         SystemTime::now()
@@ -1314,78 +1437,11 @@ fn send_shell_command(
             include_in_context,
         }),
     )
-    .map_err(|_| ())
 }
 
 // ---------------------------------------------------------------------------
 // Tool display helpers
 // ---------------------------------------------------------------------------
-
-fn cbor_text_field(value: &CborValue, key: &str) -> Option<String> {
-    if let CborValue::Map(entries) = value {
-        for (k, v) in entries {
-            if let (CborValue::Text(k), CborValue::Text(v)) = (k, v) {
-                if k == key {
-                    return Some(v.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn cbor_bool_field(value: &CborValue, key: &str) -> Option<bool> {
-    if let CborValue::Map(entries) = value {
-        for (k, v) in entries {
-            if let (CborValue::Text(k), CborValue::Bool(b)) = (k, v) {
-                if k == key {
-                    return Some(*b);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn cbor_array_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a [CborValue]> {
-    if let CborValue::Map(entries) = value {
-        for (k, v) in entries {
-            if let (CborValue::Text(k), CborValue::Array(arr)) = (k, v) {
-                if k == key {
-                    return Some(arr.as_slice());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn cbor_int_field(value: &CborValue, key: &str) -> Option<i128> {
-    if let CborValue::Map(entries) = value {
-        for (k, v) in entries {
-            if let (CborValue::Text(k), CborValue::Integer(n)) = (k, v) {
-                if k == key {
-                    return Some((*n).into());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Returns the sub-`CborValue` at `key` in a map, if present.
-fn cbor_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a CborValue> {
-    if let CborValue::Map(entries) = value {
-        for (k, v) in entries {
-            if let CborValue::Text(k) = k {
-                if k == key {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
-}
 
 /// Format the `+N/-M` chip from a `DiffSummary` sub-tree on a tool
 /// result as themed suffix segments. `+N` is painted with the
@@ -2302,43 +2358,26 @@ struct EventRenderer {
     handle: tau_cli_term::TermHandle,
     completion_data: tau_cli_term::CompletionData,
     theme: tau_themes::Theme,
-    prompt_blocks: HashMap<String, tau_cli_term::BlockId>,
-    /// Live thinking blocks keyed by `session_prompt_id`. Lazy-created
-    /// the first time the agent emits non-empty `thinking` for the
-    /// prompt, so backends that don't return reasoning summaries
-    /// produce no extra block.
-    thinking_blocks: HashMap<String, tau_cli_term::BlockId>,
-    /// Latest thinking text per live prompt, captured during streaming
-    /// so `AgentResponseFinished` can render it into history.
-    thinking_text: HashMap<String, String>,
+    /// Per-`session_prompt_id` UI state. An entry is created on
+    /// `SessionPromptCreated` (or `AgentPromptSubmitted` for prompts
+    /// without an explicit creation event) and torn down on
+    /// `AgentResponseFinished`. Storing the response block id, thinking
+    /// block id/text, and dispatch timestamp in one place means every
+    /// per-prompt cleanup is a single `prompts.remove(spid)` instead of
+    /// four separate `.remove()` calls easy to forget when extending.
+    prompts: HashMap<String, PromptState>,
     /// Block ID of the last user message (for moving on queue).
     last_user_block: Option<tau_cli_term::BlockId>,
     /// Queued user-message blocks (in above_sticky zone).
     /// When `SessionPromptCreated` fires for a dequeued prompt,
     /// the first entry is popped and moved back to history.
     queued_user_blocks: VecDeque<(tau_cli_term::BlockId, String)>,
-    /// Live tool-call blocks keyed by call_id. Shown in
-    /// above_active while running, moved to history on completion.
-    tool_blocks: HashMap<String, tau_cli_term::BlockId>,
-    /// Sticky args (e.g. `[task_name]`) for tool calls whose live
-    /// block needs to be re-rendered on subsequent progress events
-    /// — only `delegate` for now. The original `arguments` aren't
-    /// carried on `DelegateProgress`, so we cache the display label
-    /// when the block is first created.
-    delegate_block_args: HashMap<String, String>,
-    /// Most recent `DelegateProgress` snapshot per delegate call.
-    /// On `ToolResult` we render the completion line with the final
-    /// `ctx: …` / `tools: …` chips so the user sees the delegation
-    /// cost alongside the response stats.
-    delegate_last_progress: HashMap<String, tau_proto::DelegateProgress>,
-    /// Tool call ids issued by sub-agents (side conversations). Their
-    /// lifecycle events (`ToolResult`, `ToolError`, `ToolProgress`)
-    /// share the bus with the main agent's, but the UI filters them
-    /// out: sub-agent activity is rolled up into the parent's
-    /// `delegate` block via `DelegateProgress` instead. Populated when
-    /// the side conv's `AgentResponseFinished` is observed; entries
-    /// removed on the matching result/error.
-    sub_agent_call_ids: std::collections::HashSet<String>,
+    /// Per-`call_id` UI state. Tracks the live block (if any), the
+    /// cached delegate args/progress for in-place re-renders, and
+    /// whether the call belongs to a sub-agent side-conversation (in
+    /// which case the UI suppresses its progress and result events).
+    /// Entries are removed on `ToolResult`/`ToolError`.
+    tool_calls: HashMap<String, ToolCallState>,
     /// Live user-shell blocks (from `!`/`!!`) keyed by command_id.
     /// Updated in place as progress chunks arrive, finalized on
     /// `ShellCommandFinished`.
@@ -2356,8 +2395,6 @@ struct EventRenderer {
     /// walks this list calling `set_block` so the entire transcript
     /// switches mode at once.
     diff_blocks: Vec<DiffBlockEntry>,
-    /// Prompt dispatch timestamps keyed by `session_prompt_id`.
-    prompt_started_at: HashMap<String, Instant>,
     /// Global expand-diffs toggle.
     diffs_expanded: bool,
     /// Global show-thinking toggle. When false, agent reasoning
@@ -2397,6 +2434,9 @@ struct EventRenderer {
     /// Shared effort mirror for the input thread.
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Context appended to files opened by the external prompt editor.
+    /// Locked with `if let Ok(...)` rather than [`locked`] because this is
+    /// best-effort UI metadata: if another holder panicked we'd rather
+    /// drop one editor-context update than crash the renderer thread.
     editor_context: std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>>,
     /// Symbol shown before submitted prompts in the transcript.
     submitted_prompt_symbol: String,
@@ -2418,6 +2458,54 @@ struct DiffBlockEntry {
 struct ThinkingBlockEntry {
     block_id: tau_cli_term::BlockId,
     text: String,
+}
+
+/// Per-prompt UI state held by [`EventRenderer`]. Lives from the first
+/// event observed for the prompt (`SessionPromptCreated` or
+/// `AgentPromptSubmitted`) through `AgentResponseFinished`.
+#[derive(Default)]
+struct PromptState {
+    /// Live agent-response block. `None` until `SessionPromptCreated`
+    /// allocates it (some prompts arrive without a creation event).
+    response_block_id: Option<tau_cli_term::BlockId>,
+    /// Live thinking block. Lazy-created the first time the agent emits
+    /// non-empty `thinking`, so backends that don't return reasoning
+    /// summaries produce no extra block.
+    thinking_block_id: Option<tau_cli_term::BlockId>,
+    /// Latest captured thinking text. Held so `AgentResponseFinished`
+    /// can render it into history even when the finish event doesn't
+    /// carry its own `thinking` payload.
+    thinking_text: Option<String>,
+    /// Dispatch timestamp, used to compute end-to-end latency on
+    /// `AgentResponseFinished`.
+    started_at: Option<Instant>,
+}
+
+/// Per-tool-call UI state held by [`EventRenderer`]. Created when the
+/// agent's `AgentResponseFinished` enumerates the call (or when a
+/// sub-agent's finish marks the call as suppressed) and torn down on
+/// `ToolResult`/`ToolError`.
+#[derive(Default)]
+struct ToolCallState {
+    /// Live tool-call block. `None` for sub-agent tool calls whose UI
+    /// is suppressed (their progress is rolled up into the parent
+    /// `delegate` block via `DelegateProgress` instead).
+    block_id: Option<tau_cli_term::BlockId>,
+    /// Sticky args (e.g. `[task_name]`) for tool calls whose live
+    /// block needs to be re-rendered on progress events — only
+    /// `delegate` for now. `DelegateProgress` doesn't carry the
+    /// original tool arguments, so we cache the display label when the
+    /// block is first created.
+    delegate_args: Option<String>,
+    /// Most recent `DelegateProgress` snapshot. On `ToolResult` we
+    /// render the completion line with the final `ctx: …` / `tools: …`
+    /// chips so the user sees the delegation cost alongside the
+    /// response stats.
+    delegate_last_progress: Option<tau_proto::DelegateProgress>,
+    /// `true` for tool calls in side conversations. Their lifecycle
+    /// events (`ToolResult`, `ToolError`, `ToolProgress`) share the bus
+    /// with the main agent's, but the UI filters them out.
+    is_sub_agent: bool,
 }
 
 /// In-flight state for a user `!`/`!!` shell block.
@@ -2464,21 +2552,15 @@ impl EventRenderer {
             handle,
             completion_data,
             theme,
-            prompt_blocks: HashMap::new(),
-            thinking_blocks: HashMap::new(),
-            thinking_text: HashMap::new(),
+            prompts: HashMap::new(),
             last_user_block: None,
             queued_user_blocks: VecDeque::new(),
-            tool_blocks: HashMap::new(),
-            delegate_block_args: HashMap::new(),
-            delegate_last_progress: HashMap::new(),
-            sub_agent_call_ids: std::collections::HashSet::new(),
+            tool_calls: HashMap::new(),
             shell_blocks: HashMap::new(),
             extension_blocks: HashMap::new(),
             ready_extensions: HashSet::new(),
             model_status_block: None,
             diff_blocks: Vec::new(),
-            prompt_started_at: HashMap::new(),
             diffs_expanded: state.show_diff,
             show_thinking: state.show_thinking,
             show_cache_stats: state.show_cache_stats,
@@ -2491,9 +2573,9 @@ impl EventRenderer {
             current_context_cached_tokens: None,
             current_context_window: None,
             last_turn_latency: None,
-            effort_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(effort_to_u8(
-                tau_proto::Effort::Off,
-            ))),
+            effort_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                tau_proto::Effort::Off.as_u8(),
+            )),
             editor_context: std::sync::Arc::new(std::sync::Mutex::new(
                 tau_cli_term::EditorContext::default(),
             )),
@@ -2534,10 +2616,7 @@ impl EventRenderer {
             );
             self.handle.set_block(entry.block_id, block);
         }
-        // Past diff blocks may have already scrolled out of the
-        // visible window. Force a full repaint so the toggle takes
-        // effect retroactively across scrollback.
-        self.handle.invalidate_screen();
+        self.invalidate_for_retroactive_toggle();
         self.save_cli_state();
     }
 
@@ -2565,9 +2644,12 @@ impl EventRenderer {
                 themed_block(&self.theme, names::AGENT_THINKING, display),
             );
         }
-        for (spid, &bid) in &self.thinking_blocks {
+        for state in self.prompts.values() {
+            let Some(bid) = state.thinking_block_id else {
+                continue;
+            };
             let display = if self.show_thinking {
-                self.thinking_text.get(spid).cloned().unwrap_or_default()
+                state.thinking_text.clone().unwrap_or_default()
             } else {
                 String::new()
             };
@@ -2576,10 +2658,16 @@ impl EventRenderer {
                 themed_block(&self.theme, names::AGENT_THINKING, display),
             );
         }
-        // Past thinking blocks may already be in terminal scrollback.
-        // Force a full repaint so the toggle takes effect there too.
-        self.handle.invalidate_screen();
+        self.invalidate_for_retroactive_toggle();
         self.save_cli_state();
+    }
+
+    /// Force a full repaint after a `/show-...` toggle. Edited blocks
+    /// from earlier in the transcript may already have scrolled out of
+    /// the visible window, so the renderer needs to redraw from scratch
+    /// for the toggle to take effect retroactively across scrollback.
+    fn invalidate_for_retroactive_toggle(&mut self) {
+        self.handle.invalidate_screen();
     }
 
     /// Flip provider prompt-cache hit stats in the status bar.
@@ -2593,20 +2681,14 @@ impl EventRenderer {
     /// transcript. Persistent user preferences such as `/show-diff`
     /// and `/show-thinking` are intentionally preserved.
     fn clear_for_new_session(&mut self) {
-        self.prompt_blocks.clear();
-        self.thinking_blocks.clear();
-        self.thinking_text.clear();
+        self.prompts.clear();
         self.last_user_block = None;
         self.queued_user_blocks.clear();
-        self.tool_blocks.clear();
-        self.delegate_block_args.clear();
-        self.delegate_last_progress.clear();
-        self.sub_agent_call_ids.clear();
+        self.tool_calls.clear();
         self.shell_blocks.clear();
         self.extension_blocks.clear();
         self.model_status_block = None;
         self.diff_blocks.clear();
-        self.prompt_started_at.clear();
         self.thinking_history.clear();
         // Model selection and effort are harness-global, not
         // session-scoped. `/new` only causes a SessionStarted event;
@@ -2725,7 +2807,13 @@ impl EventRenderer {
             && !finished.originator.is_user()
         {
             for call in &finished.tool_calls {
-                self.sub_agent_call_ids.insert(call.id.to_string());
+                self.tool_calls.insert(
+                    call.id.to_string(),
+                    ToolCallState {
+                        is_sub_agent: true,
+                        ..ToolCallState::default()
+                    },
+                );
             }
         }
 
@@ -2800,8 +2888,11 @@ impl EventRenderer {
                 {
                     context.active_prompt = None;
                 }
-                self.prompt_started_at
-                    .insert(prompt.session_prompt_id.to_string(), Instant::now());
+                let entry = self
+                    .prompts
+                    .entry(prompt.session_prompt_id.to_string())
+                    .or_default();
+                entry.started_at = Some(Instant::now());
                 if let Some((queued_id, text)) = self.queued_user_blocks.pop_front() {
                     self.handle.remove_block(queued_id);
                     self.handle.print_output(themed_block(
@@ -2815,12 +2906,16 @@ impl EventRenderer {
                 let id = self.handle.new_block(block);
                 self.handle.push_above_active(id);
                 self.handle.redraw();
-                self.prompt_blocks
-                    .insert(prompt.session_prompt_id.to_string(), id);
+                self.prompts
+                    .entry(prompt.session_prompt_id.to_string())
+                    .or_default()
+                    .response_block_id = Some(id);
             }
             Event::AgentPromptSubmitted(submitted) => {
-                self.prompt_started_at
-                    .insert(submitted.session_prompt_id.to_string(), Instant::now());
+                self.prompts
+                    .entry(submitted.session_prompt_id.to_string())
+                    .or_default()
+                    .started_at = Some(Instant::now());
             }
             Event::AgentResponseUpdated(update) => {
                 let spid = update.session_prompt_id.as_str();
@@ -2844,11 +2939,15 @@ impl EventRenderer {
                 if let Some(thinking) = update.thinking.as_deref()
                     && !thinking.is_empty()
                 {
-                    self.thinking_text
-                        .insert(spid.to_owned(), thinking.to_owned());
+                    self.prompts
+                        .entry(spid.to_owned())
+                        .or_default()
+                        .thinking_text = Some(thinking.to_owned());
                     if self.show_thinking {
                         let block = streaming_block(&self.theme, names::AGENT_THINKING, thinking);
-                        if let Some(&tbid) = self.thinking_blocks.get(spid) {
+                        let existing_tbid =
+                            self.prompts.get(spid).and_then(|s| s.thinking_block_id);
+                        if let Some(tbid) = existing_tbid {
                             self.handle.set_block(tbid, block);
                         } else {
                             // Insert the thinking block ABOVE the
@@ -2861,20 +2960,25 @@ impl EventRenderer {
                             // is at the response's old position and
                             // the response moves down by one.
                             let tbid = self.handle.new_block(block);
-                            if let Some(&response_bid) = self.prompt_blocks.get(spid) {
+                            let response_bid =
+                                self.prompts.get(spid).and_then(|s| s.response_block_id);
+                            if let Some(response_bid) = response_bid {
                                 self.handle.remove_above_active(response_bid);
                                 self.handle.push_above_active(tbid);
                                 self.handle.push_above_active(response_bid);
                             } else {
                                 self.handle.push_above_active(tbid);
                             }
-                            self.thinking_blocks.insert(spid.to_owned(), tbid);
+                            self.prompts
+                                .entry(spid.to_owned())
+                                .or_default()
+                                .thinking_block_id = Some(tbid);
                         }
                         self.handle.redraw();
                     }
                 }
 
-                if let Some(&bid) = self.prompt_blocks.get(spid) {
+                if let Some(bid) = self.prompts.get(spid).and_then(|s| s.response_block_id) {
                     let block =
                         streaming_block(&self.theme, names::AGENT_RESPONSE, update.text.clone());
                     self.handle.set_block(bid, block);
@@ -2883,19 +2987,18 @@ impl EventRenderer {
             }
             Event::AgentResponseFinished(finished) => {
                 let spid = finished.session_prompt_id.as_str();
-                self.last_turn_latency = self
-                    .prompt_started_at
-                    .remove(spid)
+                // Drain the whole per-prompt state in one shot — every
+                // field tracked through the stream is consumed here.
+                let prompt_state = self.prompts.remove(spid).unwrap_or_default();
+                self.last_turn_latency = prompt_state
+                    .started_at
                     .map(|started_at| started_at.elapsed());
 
                 // Finalize the thinking block above the response.
                 // Prefer the finished event's payload if it carries
                 // one; fall back to whatever streaming captured.
-                let thinking = finished
-                    .thinking
-                    .clone()
-                    .or_else(|| self.thinking_text.remove(spid));
-                if let Some(tbid) = self.thinking_blocks.remove(spid) {
+                let thinking = finished.thinking.clone().or(prompt_state.thinking_text);
+                if let Some(tbid) = prompt_state.thinking_block_id {
                     self.handle.remove_block(tbid);
                 }
                 if self.show_thinking
@@ -2911,9 +3014,8 @@ impl EventRenderer {
                         text: thinking,
                     });
                 }
-                self.thinking_text.remove(spid);
 
-                if let Some(bid) = self.prompt_blocks.remove(spid) {
+                if let Some(bid) = prompt_state.response_block_id {
                     self.handle.remove_block(bid);
                 }
 
@@ -2944,15 +3046,21 @@ impl EventRenderer {
                         let block = render_tool_block(&self.theme, &display);
                         let id = self.handle.new_block(block);
                         self.handle.push_above_active(id);
-                        self.tool_blocks.insert(call.id.to_string(), id);
                         // Cache the rendered args (`[task_name]`) for
                         // later `DelegateProgress` updates: those
                         // events don't carry the original tool
                         // arguments, only task_name + counters.
-                        if call.name.as_str() == "delegate" && !display.args.is_empty() {
-                            self.delegate_block_args
-                                .insert(call.id.to_string(), display.args.clone());
-                        }
+                        let delegate_args = (call.name.as_str() == "delegate"
+                            && !display.args.is_empty())
+                        .then(|| display.args.clone());
+                        self.tool_calls.insert(
+                            call.id.to_string(),
+                            ToolCallState {
+                                block_id: Some(id),
+                                delegate_args,
+                                ..ToolCallState::default()
+                            },
+                        );
                     }
                     if !finished.tool_calls.is_empty() {
                         self.handle.redraw();
@@ -2961,10 +3069,11 @@ impl EventRenderer {
                 self.render_model_status();
             }
             Event::ToolProgress(progress) => {
-                if self.sub_agent_call_ids.contains(progress.call_id.as_str()) {
+                let state = self.tool_calls.get(progress.call_id.as_str());
+                if state.is_some_and(|s| s.is_sub_agent) {
                     return;
                 }
-                if !self.tool_blocks.contains_key(progress.call_id.as_str()) {
+                if state.is_none_or(|s| s.block_id.is_none()) {
                     let text = tau_harness::format_tool_progress(progress);
                     self.handle
                         .print_output(themed_block(&self.theme, names::SHELL_OUTPUT, text));
@@ -2975,24 +3084,20 @@ impl EventRenderer {
                 // Snapshot the latest counters and ctx info regardless
                 // of whether the block is still live; the `ToolResult`
                 // handler reuses them on the completion line.
-                self.delegate_last_progress
-                    .insert(call_id.to_owned(), progress.clone());
-                let Some(&bid) = self.tool_blocks.get(call_id) else {
+                let state = self.tool_calls.entry(call_id.to_owned()).or_default();
+                state.delegate_last_progress = Some(progress.clone());
+                let Some(bid) = state.block_id else {
                     // Block already torn down (delegate finished or
                     // never rendered) — nothing to update.
                     return;
                 };
-                let args = self
-                    .delegate_block_args
-                    .get(call_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        if progress.task_name.is_empty() {
-                            String::new()
-                        } else {
-                            format!("[{}]", progress.task_name)
-                        }
-                    });
+                let args = state.delegate_args.clone().unwrap_or_else(|| {
+                    if progress.task_name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("[{}]", progress.task_name)
+                    }
+                });
                 let display = format_delegate_progress(args, progress);
                 let block = render_tool_block(&self.theme, &display);
                 self.handle.set_block(bid, block);
@@ -3002,15 +3107,15 @@ impl EventRenderer {
                 // Sub-agent tool activity stays out of the user's
                 // transcript — its progress is rolled up under the
                 // parent's `delegate` block by `DelegateProgress`.
-                if self.sub_agent_call_ids.remove(call_id) {
-                    self.delegate_block_args.remove(call_id);
+                let prior = self.tool_calls.remove(call_id).unwrap_or_default();
+                if prior.is_sub_agent {
                     return;
                 }
-                if let Some(bid) = self.tool_blocks.remove(call_id) {
+                if let Some(bid) = prior.block_id {
                     self.handle.remove_block(bid);
                 }
-                let args = self.delegate_block_args.remove(call_id);
-                let last_progress = self.delegate_last_progress.remove(call_id);
+                let args = prior.delegate_args;
+                let last_progress = prior.delegate_last_progress;
                 let display = if result.tool_name.as_str() == "delegate" {
                     format_delegate_completion(
                         args.unwrap_or_default(),
@@ -3037,16 +3142,15 @@ impl EventRenderer {
             }
             Event::ToolError(error) => {
                 let call_id = error.call_id.as_str();
-                if self.sub_agent_call_ids.remove(call_id) {
-                    self.delegate_block_args.remove(call_id);
-                    self.delegate_last_progress.remove(call_id);
+                let prior = self.tool_calls.remove(call_id).unwrap_or_default();
+                if prior.is_sub_agent {
                     return;
                 }
-                if let Some(bid) = self.tool_blocks.remove(call_id) {
+                if let Some(bid) = prior.block_id {
                     self.handle.remove_block(bid);
                 }
-                let args = self.delegate_block_args.remove(call_id);
-                let last_progress = self.delegate_last_progress.remove(call_id);
+                let args = prior.delegate_args;
+                let last_progress = prior.delegate_last_progress;
                 let cbor = error.details.as_ref();
                 let display = if error.tool_name.as_str() == "delegate" {
                     format_delegate_completion(
@@ -3221,10 +3325,8 @@ impl EventRenderer {
             }
             Event::HarnessEffortChanged(changed) => {
                 self.current_effort = changed.level;
-                self.effort_state.store(
-                    effort_to_u8(changed.level),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                self.effort_state
+                    .store(changed.level.as_u8(), std::sync::atomic::Ordering::Relaxed);
                 self.render_model_status();
             }
             Event::Osc1337SetUserVar(req) => {
@@ -3241,7 +3343,13 @@ impl EventRenderer {
                 self.completion_data
                     .set_arg_completions(tau_cli_term::CommandName::new("/effort"), items);
             }
-            _ => {}
+            other => {
+                tracing::trace!(
+                    target: "tau_cli::ui",
+                    event = ?std::mem::discriminant(other),
+                    "unhandled event variant"
+                );
+            }
         }
     }
 }

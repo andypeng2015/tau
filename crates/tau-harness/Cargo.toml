@@ -17,6 +17,7 @@ echo-agent = ["tau-agent/echo-agent"]
 [dependencies]
 bon.workspace = true
 dirs.workspace = true
+libc.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tau-agent.workspace = true
@@ -28,6 +29,9 @@ tau-skills.workspace = true
 tau-socket.workspace = true
 tau-supervisor.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+built.workspace = true
 
 [dev-dependencies]
 tau-agent = { workspace = true, features = ["echo-agent"] }
