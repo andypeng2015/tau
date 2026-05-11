@@ -212,18 +212,6 @@ fn input_history_navigates_submitted_and_draft_entries() {
     handle.set_buffer("first draft".to_owned(), "first draft".len());
     flush_redraws(&handle, &buf, &mut parser);
 
-    input_tx
-        .send(RawEvent::Key(KeyEvent::new(
-            KeyCode::Up,
-            KeyModifiers::NONE,
-        )))
-        .expect("send up");
-    assert!(matches!(
-        term.get_next_event().expect("event"),
-        Event::BufferChanged
-    ));
-    assert_eq!(handle.get_buffer(), "first draft");
-
     handle.set_buffer("one".to_owned(), 3);
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
@@ -499,11 +487,14 @@ fn typing_clears_sticky_column() {
 }
 
 #[test]
-fn step_history_preserves_sticky_column_across_empty_entry() {
+fn step_history_preserves_sticky_column_across_short_entry() {
     let buf = SharedBuffer::new();
     let (term, handle, input_tx) = Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
 
-    for line in ["abcdef", "", "xyzabc"] {
+    // Submit three entries with a short one in the middle — the
+    // short entry will clamp the sticky column locally but must not
+    // permanently truncate it for the next step.
+    for line in ["abcdef", "x", "xyzabc"] {
         handle.set_buffer(line.to_owned(), line.len());
         input_tx
             .send(RawEvent::Key(KeyEvent::new(
@@ -528,7 +519,7 @@ fn step_history_preserves_sticky_column_across_empty_entry() {
     assert_eq!(handle.get_buffer(), "xyzabc");
     assert_eq!(handle.get_cursor(), 4);
 
-    // Up → "" (empty middle entry).
+    // Up → "x" (short middle entry). Cursor clamps to end-of-line.
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
             KeyCode::Up,
@@ -536,10 +527,10 @@ fn step_history_preserves_sticky_column_across_empty_entry() {
         )))
         .expect("up");
     let _ = term.get_next_event().expect("event");
-    assert_eq!(handle.get_buffer(), "");
-    assert_eq!(handle.get_cursor(), 0);
+    assert_eq!(handle.get_buffer(), "x");
+    assert_eq!(handle.get_cursor(), 1);
 
-    // Up → "abcdef": sticky col 6 survived the empty entry, so cursor
+    // Up → "abcdef": sticky col 6 survived the short entry, so cursor
     // lands at byte 4 ("abcd|ef") rather than the start of the line.
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
@@ -935,31 +926,49 @@ fn down_from_empty_prompt_does_not_create_history_entry() {
     let buf = SharedBuffer::new();
     let (term, handle, input_tx) = Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
 
+    // Down/Up on an empty prompt with no history is a no-op and
+    // surfaces no event. Send a follow-up Enter that submits the
+    // (still empty) buffer; if Down had wrongly pushed an empty
+    // entry into `input_history`, a subsequent Up would recall it.
+    for code in [KeyCode::Down, KeyCode::Up] {
+        input_tx
+            .send(RawEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+            .expect("send key");
+    }
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
-            KeyCode::Down,
+            KeyCode::Enter,
             KeyModifiers::NONE,
         )))
-        .expect("send down");
+        .expect("send enter");
     assert!(matches!(
         term.get_next_event().expect("event"),
-        Event::BufferChanged
+        Event::Line(line) if line.is_empty()
     ));
     assert_eq!(handle.get_buffer(), "");
     assert_eq!(handle.get_cursor(), 0);
 
+    // No history entries exist, so Up is again a no-op. Verify by
+    // sending a typed character afterwards and confirming the
+    // BufferChanged it produces shows just that character — no
+    // recalled history line.
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
             KeyCode::Up,
             KeyModifiers::NONE,
         )))
         .expect("send up");
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )))
+        .expect("send char");
     assert!(matches!(
         term.get_next_event().expect("event"),
         Event::BufferChanged
     ));
-    assert_eq!(handle.get_buffer(), "");
-    assert_eq!(handle.get_cursor(), 0);
+    assert_eq!(handle.get_buffer(), "x");
 }
 
 #[test]

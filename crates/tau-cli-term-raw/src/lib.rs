@@ -11,9 +11,6 @@
 //!   order; `\r\n` at the bottom pushes content into scrollback
 //! - **Full render** — on resize, clears screen and re-renders everything
 
-pub mod screen;
-pub mod style;
-
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -26,8 +23,8 @@ use crossterm::event::{
 };
 use crossterm::style::Print;
 use crossterm::{QueueableCommand, terminal};
-use screen::{Screen, emit_styled_cells, layout_block, layout_lines};
-pub use style::{Align, BlockId, Cell, Color, Span, Style, StyledBlock, StyledText};
+pub use tau_term_screen::{Align, BlockId, Cell, Color, Span, Style, StyledBlock, StyledText};
+use tau_term_screen::{Screen, emit_styled_cells, layout_block, layout_lines};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorShape {
@@ -166,6 +163,34 @@ struct SharedState {
 }
 
 impl SharedState {
+    fn new(width: usize, height: usize, left_prompt: StyledText) -> Self {
+        Self {
+            blocks: HashMap::new(),
+            next_id: 0,
+            history: Vec::new(),
+            above_active: Vec::new(),
+            above_sticky: Vec::new(),
+            suggestions: Vec::new(),
+            below: Vec::new(),
+            left_prompt,
+            right_prompt: StyledText::new(),
+            buffer: String::new(),
+            cursor: 0,
+            sticky_col: None,
+            input_history: Vec::new(),
+            history_nav: None,
+            completion: None,
+            width,
+            height,
+            shutdown: false,
+            external_paused: false,
+            invalidate_screen: false,
+            sync_requested: 0,
+            sync_completed: 0,
+            pending_raw: Vec::new(),
+        }
+    }
+
     fn alloc_id(&mut self) -> BlockId {
         let id = BlockId(self.next_id);
         self.next_id += 1;
@@ -714,10 +739,10 @@ pub enum RawEvent {
 ///
 /// Virtual terminals (tests) use the injected channel branch.
 pub struct Term {
-    /// Shared mutable state.
-    state: Arc<Mutex<SharedState>>,
-    /// Notifies the redraw thread that the screen needs updating.
-    redraw: tau_blocking_notify_channel::Sender,
+    /// Cloneable handle exposing zone/buffer mutators. `Term` derefs
+    /// to this so callers can use `term.print_output(...)` etc.
+    /// without going through an explicit `.handle()` accessor.
+    handle: TermHandle,
     /// For virtual terms only: receives events injected via the test
     /// sender returned from `new_virtual`. Real terms leave this
     /// `None` and read directly from crossterm.
@@ -734,6 +759,13 @@ pub struct Term {
     bindings: HashMap<KeyBinding, String>,
 }
 
+impl std::ops::Deref for Term {
+    type Target = TermHandle;
+    fn deref(&self) -> &TermHandle {
+        &self.handle
+    }
+}
+
 impl Term {
     /// Creates a new terminal prompt.
     ///
@@ -744,31 +776,11 @@ impl Term {
         cursor_shape: CursorShape,
     ) -> io::Result<(Self, TermHandle)> {
         let (width, height) = term_size();
-        let state = Arc::new(Mutex::new(SharedState {
-            blocks: HashMap::new(),
-            next_id: 0,
-            history: Vec::new(),
-            above_active: Vec::new(),
-            above_sticky: Vec::new(),
-            suggestions: Vec::new(),
-            below: Vec::new(),
-            left_prompt: left_prompt.into(),
-            right_prompt: StyledText::new(),
-            buffer: String::new(),
-            cursor: 0,
-            input_history: Vec::new(),
-            history_nav: None,
-            sticky_col: None,
-            completion: None,
+        let state = Arc::new(Mutex::new(SharedState::new(
             width,
             height,
-            shutdown: false,
-            external_paused: false,
-            invalidate_screen: false,
-            sync_requested: 0,
-            sync_completed: 0,
-            pending_raw: Vec::new(),
-        }));
+            left_prompt.into(),
+        )));
 
         let (redraw_tx, redraw_rx) = tau_blocking_notify_channel::channel();
         let sync_condvar = Arc::new(std::sync::Condvar::new());
@@ -801,17 +813,16 @@ impl Term {
         });
 
         let handle = TermHandle {
-            state: Arc::clone(&state),
+            state,
             sync_condvar,
-            redraw: redraw_tx.clone(),
+            redraw: redraw_tx,
         };
 
-        redraw_tx.notify();
+        handle.redraw.notify();
 
         Ok((
             Self {
-                state,
-                redraw: redraw_tx,
+                handle: handle.clone(),
                 term_input_rx: None,
                 redraw_thread: Some(redraw_thread),
                 owns_raw_mode: true,
@@ -835,31 +846,11 @@ impl Term {
         output: Box<dyn Write + Send>,
         cursor_shape: CursorShape,
     ) -> (Self, TermHandle, std::sync::mpsc::Sender<RawEvent>) {
-        let state = Arc::new(Mutex::new(SharedState {
-            blocks: HashMap::new(),
-            next_id: 0,
-            history: Vec::new(),
-            above_active: Vec::new(),
-            above_sticky: Vec::new(),
-            suggestions: Vec::new(),
-            below: Vec::new(),
-            left_prompt: left_prompt.into(),
-            right_prompt: StyledText::new(),
-            buffer: String::new(),
-            cursor: 0,
-            input_history: Vec::new(),
-            history_nav: None,
-            sticky_col: None,
-            completion: None,
+        let state = Arc::new(Mutex::new(SharedState::new(
             width,
             height,
-            shutdown: false,
-            external_paused: false,
-            invalidate_screen: false,
-            sync_requested: 0,
-            sync_completed: 0,
-            pending_raw: Vec::new(),
-        }));
+            left_prompt.into(),
+        )));
 
         let (redraw_tx, redraw_rx) = tau_blocking_notify_channel::channel();
         let sync_condvar = Arc::new(std::sync::Condvar::new());
@@ -873,16 +864,15 @@ impl Term {
         let (term_input_tx, term_input_rx) = std::sync::mpsc::channel();
 
         let handle = TermHandle {
-            state: Arc::clone(&state),
+            state,
             sync_condvar,
-            redraw: redraw_tx.clone(),
+            redraw: redraw_tx,
         };
 
-        redraw_tx.notify();
+        handle.redraw.notify();
 
         let term = Self {
-            state,
-            redraw: redraw_tx,
+            handle: handle.clone(),
             term_input_rx: Some(term_input_rx),
             redraw_thread: Some(redraw_thread),
             owns_raw_mode: false,
@@ -894,25 +884,11 @@ impl Term {
         (term, handle, term_input_tx)
     }
 
-    /// Triggers a redraw of the terminal.
-    pub fn redraw(&self) {
-        self.redraw.notify();
-    }
-
-    /// Drops every rendered block from every output zone and forces a
-    /// full repaint. The prompt, current input buffer, and input-line
-    /// history are left intact.
-    pub fn clear_output(&self) {
-        let mut st = self.state.lock().expect("term state mutex poisoned");
-        st.blocks.clear();
-        st.history.clear();
-        st.above_active.clear();
-        st.above_sticky.clear();
-        st.suggestions.clear();
-        st.below.clear();
-        st.invalidate_screen = true;
-        drop(st);
-        self.redraw.notify();
+    /// Returns a reference to the embedded [`TermHandle`]. Most
+    /// callers can simply call handle methods through `Term`'s
+    /// `Deref<Target = TermHandle>` instead.
+    pub fn handle(&self) -> &TermHandle {
+        &self.handle
     }
 
     /// Blocks until the next meaningful input event.
@@ -930,18 +906,18 @@ impl Term {
             match raw {
                 RawEvent::Key(key) => {
                     if let Some(event) = self.handle_key(key)? {
-                        self.redraw.notify();
+                        self.handle.redraw.notify();
                         return Ok(event);
                     }
-                    self.redraw.notify();
+                    self.handle.redraw.notify();
                 }
                 RawEvent::Resize(w, h) => {
                     {
-                        let mut st = self.state.lock().expect("term state mutex poisoned");
+                        let mut st = self.handle.lock();
                         st.width = w as usize;
                         st.height = h as usize;
                     }
-                    self.redraw.notify();
+                    self.handle.redraw.notify();
                     return Ok(Event::Resize {
                         width: w,
                         height: h,
@@ -954,18 +930,18 @@ impl Term {
                     // would expose embedded `\n` bytes to the Enter
                     // handler and submit the line mid-paste.
                     if text.is_empty() {
-                        self.redraw.notify();
+                        self.handle.redraw.notify();
                         continue;
                     }
                     {
-                        let mut st = self.state.lock().expect("term state mutex poisoned");
+                        let mut st = self.handle.lock();
                         let cursor = st.cursor;
                         st.buffer.insert_str(cursor, &text);
                         st.write_cursor(cursor + text.len());
                         st.sync_buffer_to_history_nav();
                     }
                     self.refresh_completion();
-                    self.redraw.notify();
+                    self.handle.redraw.notify();
                     return Ok(Event::BufferChanged);
                 }
             }
@@ -983,7 +959,7 @@ impl Term {
             return rx.recv().ok();
         }
         let raw = event::read().ok()?;
-        tracing::trace!(target: "tau_cli::input", ?raw, "terminal raw input event");
+        tracing::trace!(target: "tau_cli_term_raw::input", ?raw, "terminal raw input event");
         match raw {
             CtEvent::Key(key) => {
                 // The kitty protocol surfaces Press/Repeat/Release
@@ -1008,36 +984,42 @@ impl Term {
     /// disable completion entirely. Closes the menu if currently open.
     pub fn set_completion_source(&mut self, source: Option<Box<dyn CompletionSource>>) {
         self.completion_source = source;
-        let mut st = self.state.lock().expect("term state mutex poisoned");
+        let mut st = self.handle.lock();
         st.completion = None;
     }
 
     /// Configures key bindings surfaced as [`Event::Binding`].
+    ///
+    /// The following Ctrl chords are reserved built-in editing keys
+    /// and cannot be overridden — bindings to them are silently
+    /// dropped: `Ctrl-A` (beginning-of-line), `Ctrl-C` (clear /
+    /// EOF on empty), `Ctrl-D` (EOF on empty), `Ctrl-E`
+    /// (end-of-line), `Ctrl-U` (kill-to-start), `Ctrl-W`
+    /// (kill-word). Every other Ctrl chord (including the defaults
+    /// `Ctrl-O`/`Ctrl-G`/`Ctrl-J`/`Ctrl-K`) may be rebound.
     pub fn set_bindings(&mut self, bindings: impl IntoIterator<Item = (String, String)>) {
         self.bindings = bindings
             .into_iter()
             .filter_map(|(raw_key, action)| {
                 let parsed = parse_key_binding(&raw_key);
+                let reserved = matches!(
+                    parsed,
+                    Some(KeyBinding::Ctrl('a' | 'c' | 'd' | 'e' | 'u' | 'w'))
+                );
                 tracing::trace!(
-                    target: "tau_cli::input",
+                    target: "tau_cli_term_raw::input",
                     raw_key,
                     ?parsed,
                     action,
+                    reserved,
                     "configured prompt binding"
                 );
+                if reserved {
+                    return None;
+                }
                 parsed.map(|key| (key, action))
             })
             .collect();
-    }
-
-    /// Snapshot of the open completion menu, if any. Returns `None`
-    /// when no menu is showing.
-    pub fn completion_state(&self) -> Option<CompletionView> {
-        let st = self.state.lock().expect("term state mutex poisoned");
-        st.completion.as_ref().map(|c| CompletionView {
-            candidates: c.candidates.clone(),
-            selected: c.selected,
-        })
     }
 
     /// Re-evaluates the completion source against the current buffer
@@ -1051,11 +1033,11 @@ impl Term {
             return;
         };
         let (buffer, cursor) = {
-            let st = self.state.lock().expect("term state mutex poisoned");
+            let st = self.handle.lock();
             (st.buffer.clone(), st.cursor)
         };
         let candidates = source.candidates(&buffer, cursor);
-        let mut st = self.state.lock().expect("term state mutex poisoned");
+        let mut st = self.handle.lock();
         if candidates.is_empty() {
             st.completion = None;
         } else {
@@ -1081,7 +1063,7 @@ impl Term {
             return Ok(());
         }
         {
-            let mut st = self.state.lock().expect("term state mutex poisoned");
+            let mut st = self.handle.lock();
             st.external_paused = true;
         }
         let _ = crossterm::execute!(
@@ -1121,24 +1103,12 @@ impl Term {
             crossterm::cursor::MoveTo(0, 0)
         );
         {
-            let mut st = self.state.lock().expect("term state mutex poisoned");
+            let mut st = self.handle.lock();
             st.external_paused = false;
             st.invalidate_screen = true;
         }
-        self.redraw.notify();
+        self.handle.redraw.notify();
         Ok(())
-    }
-
-    /// Creates a new block and appends it to the history.
-    /// Triggers a redraw automatically.
-    pub fn print_output(&self, block: impl Into<StyledBlock>) -> io::Result<BlockId> {
-        let mut st = self.state.lock().expect("term state mutex poisoned");
-        let id = st.alloc_id();
-        st.blocks.insert(id, block.into());
-        st.history.push(id);
-        drop(st);
-        self.redraw.notify();
-        Ok(id)
     }
 
     /// Programmatically triggers a history step (the same operation
@@ -1146,7 +1116,7 @@ impl Term {
     /// completion menu first so callers don't have to coordinate with
     /// the input loop.
     pub fn trigger_history_step(&self, delta: isize) {
-        let mut st = self.state.lock().expect("term state mutex poisoned");
+        let mut st = self.handle.lock();
         st.completion = None;
         st.step_history(delta);
     }
@@ -1162,7 +1132,7 @@ impl Term {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let binding = key_binding_for_event(key, ctrl);
         tracing::trace!(
-            target: "tau_cli::input",
+            target: "tau_cli_term_raw::input",
             ?key,
             ctrl,
             shift,
@@ -1189,7 +1159,7 @@ impl Term {
                 // into a bare Enter and fall through to the submit
                 // arm below.
                 {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     st.completion = None;
                     let cursor = st.cursor;
                     st.buffer.insert(cursor, '\n');
@@ -1205,18 +1175,17 @@ impl Term {
                 // replacement (cycling previewed it), so we just
                 // close the menu and surface a distinct event.
                 {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     if st.accept_completion() {
                         return Ok(Some(Event::CompletionAccept));
                     }
                 }
                 let line = {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     st.completion = None;
                     st.history_nav = None;
                     let line = std::mem::take(&mut st.buffer);
-                    st.write_cursor(0);
-                    st.input_history.push(line.clone());
+                    st.push_buffer_as_history_entry(line.clone());
                     line
                 };
                 return Ok(Some(Event::Line(line)));
@@ -1235,7 +1204,7 @@ impl Term {
             }
 
             KeyCode::Char('c') if ctrl => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.buffer.is_empty() {
                     return Ok(Some(Event::Eof));
                 }
@@ -1249,7 +1218,7 @@ impl Term {
 
             KeyCode::Char('u') if ctrl => {
                 {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     let cursor = st.cursor;
                     st.buffer.drain(..cursor);
                     st.write_cursor(0);
@@ -1261,7 +1230,7 @@ impl Term {
 
             KeyCode::Char('w') if ctrl => {
                 let changed = {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     if st.cursor > 0 {
                         let new_end = st.buffer[..st.cursor]
                             .trim_end()
@@ -1284,12 +1253,12 @@ impl Term {
             }
 
             KeyCode::Char('a') if ctrl => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 st.write_cursor(0);
             }
 
             KeyCode::Char('e') if ctrl => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 let len = st.buffer.len();
                 st.write_cursor(len);
             }
@@ -1303,7 +1272,7 @@ impl Term {
                 let key = binding.expect("checked above");
                 let action = self.bindings.get(&key).expect("checked above").clone();
                 tracing::trace!(
-                    target: "tau_cli::input",
+                    target: "tau_cli_term_raw::input",
                     ?key,
                     action,
                     "matched configured binding"
@@ -1324,7 +1293,7 @@ impl Term {
 
             KeyCode::Char(ch) => {
                 {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     let cursor = st.cursor;
                     st.buffer.insert(cursor, ch);
                     st.write_cursor(cursor + ch.len_utf8());
@@ -1336,7 +1305,7 @@ impl Term {
 
             KeyCode::Backspace => {
                 let changed = {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     if st.cursor > 0 {
                         let prev = prev_char_boundary(&st.buffer, st.cursor);
                         let cursor = st.cursor;
@@ -1356,7 +1325,7 @@ impl Term {
 
             KeyCode::Delete => {
                 let changed = {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     if st.cursor < st.buffer.len() {
                         let cursor = st.cursor;
                         let next = next_char_boundary(&st.buffer, cursor);
@@ -1379,7 +1348,7 @@ impl Term {
             }
 
             KeyCode::Left => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.cursor > 0 {
                     let prev = prev_char_boundary(&st.buffer, st.cursor);
                     st.write_cursor(prev);
@@ -1387,7 +1356,7 @@ impl Term {
             }
 
             KeyCode::Right => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.cursor < st.buffer.len() {
                     let next = next_char_boundary(&st.buffer, st.cursor);
                     st.write_cursor(next);
@@ -1397,7 +1366,7 @@ impl Term {
             KeyCode::Up if ctrl => return self.step_history_event(-1),
 
             KeyCode::Up => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 // Priority: completion menu, then in-buffer cursor
                 // motion, then history navigation. Only one of these
                 // can apply per press — no fallthrough/undo dance.
@@ -1412,13 +1381,12 @@ impl Term {
                 if st.step_history(-1) {
                     return Ok(Some(Event::BufferChanged));
                 }
-                return Ok(Some(Event::BufferChanged));
             }
 
             KeyCode::Down if ctrl => return self.step_history_event(1),
 
             KeyCode::Down => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.cycle_completion(1) {
                     return Ok(Some(Event::BufferChanged));
                 }
@@ -1430,22 +1398,21 @@ impl Term {
                 if st.step_history(1) {
                     return Ok(Some(Event::BufferChanged));
                 }
-                return Ok(Some(Event::BufferChanged));
             }
 
             KeyCode::Home => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 st.write_cursor(0);
             }
 
             KeyCode::End => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 let len = st.buffer.len();
                 st.write_cursor(len);
             }
 
             KeyCode::Tab => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.cycle_completion(1) {
                     return Ok(Some(Event::BufferChanged));
                 }
@@ -1454,7 +1421,7 @@ impl Term {
 
             KeyCode::BackTab => {
                 {
-                    let mut st = self.state.lock().expect("term state mutex poisoned");
+                    let mut st = self.handle.lock();
                     if st.cycle_completion(-1) {
                         return Ok(Some(Event::BufferChanged));
                     }
@@ -1463,7 +1430,7 @@ impl Term {
             }
 
             KeyCode::Esc => {
-                let mut st = self.state.lock().expect("term state mutex poisoned");
+                let mut st = self.handle.lock();
                 if st.dismiss_completion() {
                     return Ok(Some(Event::BufferChanged));
                 }
@@ -1485,10 +1452,10 @@ impl Term {
         // the flag before blocking on recv, so it will see it on the
         // next iteration.
         {
-            let mut st = self.state.lock().expect("term state mutex poisoned");
+            let mut st = self.handle.lock();
             st.shutdown = true;
         }
-        self.redraw.notify();
+        self.handle.redraw.notify();
 
         if let Some(handle) = self.redraw_thread.take() {
             let _ = handle.join();
@@ -1711,7 +1678,7 @@ fn redraw_loop(
         if size_changed || force_full {
             // Path 2: Full render (resize, or post-external-program).
             if let Err(e) = full_render(&mut writer, &mut screen, &layout, width, height) {
-                eprintln!("redraw: full render error: {e}");
+                tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
             }
             prev_visible_start = layout.all_lines.len().saturating_sub(height);
         } else {
@@ -1733,7 +1700,7 @@ fn redraw_loop(
                     height,
                     (layout.cursor_row, layout.cursor_col),
                 ) {
-                    eprintln!("redraw: scroll render error: {e}");
+                    tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "scroll render error");
                 }
             } else {
                 // No overflow — normal differential update.
@@ -1742,7 +1709,7 @@ fn redraw_loop(
                 if let Err(e) =
                     screen.update(&mut writer, visible, (cursor_in_visible, layout.cursor_col))
                 {
-                    eprintln!("redraw: update error: {e}");
+                    tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "update error");
                 }
             }
             prev_visible_start = visible_start;
