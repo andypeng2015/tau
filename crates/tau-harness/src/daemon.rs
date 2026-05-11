@@ -123,6 +123,7 @@ pub fn run_embedded_message_with_trace(
         session_id,
         message,
         default_agent_runner,
+        Vec::new(),
         EmbeddedOptions::default(),
     )
 }
@@ -149,12 +150,13 @@ pub fn run_embedded_message_with_options(
         session_id,
         message,
         default_agent_runner,
+        Vec::new(),
         options,
     )
 }
 
-/// Like [`run_embedded_message_with_trace`] but uses the echo agent for
-/// testing.
+/// Like [`run_embedded_message_with_trace`] but uses the echo agent and
+/// the in-process shell tool for testing.
 #[cfg(any(test, feature = "echo-agent"))]
 pub fn run_embedded_message_with_echo(
     state_dir: impl Into<PathBuf>,
@@ -169,6 +171,7 @@ pub fn run_embedded_message_with_echo(
         session_id,
         message,
         echo_runner,
+        echo_tools(),
         EmbeddedOptions::default(),
     )
 }
@@ -178,15 +181,30 @@ fn run_embedded_message_impl(
     session_id: &str,
     message: &str,
     agent_runner: crate::harness::AgentRunner,
+    tools: Vec<crate::harness::InProcessTool>,
     options: EmbeddedOptions,
 ) -> Result<InteractionOutcome, HarnessError> {
     let state_dir = state_dir.into();
     let dirs = options.dirs.unwrap_or_default();
-    let mut harness = Harness::new_with_agent(state_dir, dirs, agent_runner, session_id)?;
+    let mut harness = Harness::new_with_agent(state_dir, dirs, agent_runner, tools, session_id)?;
     let mut outcome = harness.send_user_message(session_id, message, None)?;
     harness.shutdown()?;
     outcome.lifecycle_messages = harness.lifecycle_messages.clone();
     Ok(outcome)
+}
+
+/// In-process tool list used by the echo-agent test helpers. Lives
+/// here so the only call site that depends on `tau-ext-shell` is
+/// gated behind the `echo-agent` feature.
+#[cfg(any(test, feature = "echo-agent"))]
+fn echo_tools() -> Vec<crate::harness::InProcessTool> {
+    fn shell_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
+        tau_ext_shell::run(r, w).map_err(|e| e.to_string())
+    }
+    vec![crate::harness::InProcessTool {
+        name: "shell",
+        runner: shell_runner,
+    }]
 }
 
 /// Runs a foreground daemon that accepts socket clients.
@@ -238,7 +256,8 @@ pub fn run_daemon_with_echo(
     let state_dir = state_dir.into();
     let listener = bind_listener(&socket_path)?;
     let dirs = options.dirs.clone().unwrap_or_default();
-    let mut harness = Harness::new_with_agent(state_dir, dirs, echo_runner, eager_session_id)?;
+    let mut harness =
+        Harness::new_with_agent(state_dir, dirs, echo_runner, echo_tools(), eager_session_id)?;
 
     let tx = harness.tx.clone();
     thread::spawn(move || {

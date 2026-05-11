@@ -70,10 +70,17 @@ fn echo_harness_for(
     session_id: &str,
     state_dir: impl Into<PathBuf>,
 ) -> Result<Harness, HarnessError> {
+    fn shell_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
+        tau_ext_shell::run(r, w).map_err(|e| e.to_string())
+    }
     Harness::new_with_agent(
         state_dir,
         tau_config::settings::TauDirs::default(),
         echo_runner,
+        vec![crate::harness::InProcessTool {
+            name: "shell",
+            runner: shell_runner,
+        }],
         session_id,
     )
 }

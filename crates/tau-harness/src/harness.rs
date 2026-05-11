@@ -233,6 +233,15 @@ pub(crate) struct Harness {
 
 pub(crate) type AgentRunner = fn(UnixStream, UnixStream) -> Result<(), String>;
 
+/// One in-process tool extension to spawn alongside the agent during
+/// [`Harness::new_with_agent`]. Callers (the embedded helper, the echo
+/// test path) supply these explicitly so the harness library doesn't
+/// hard-wire any specific tool implementation.
+pub(crate) struct InProcessTool {
+    pub(crate) name: &'static str,
+    pub(crate) runner: fn(UnixStream, UnixStream) -> Result<(), String>,
+}
+
 pub(crate) fn default_agent_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
     tau_agent::run(r, w).map_err(|e| e.to_string())
 }
@@ -261,13 +270,20 @@ impl Harness {
         dirs: tau_config::settings::TauDirs,
         eager_session_id: &str,
     ) -> Result<Self, HarnessError> {
-        Self::new_with_agent(state_dir, dirs, default_agent_runner, eager_session_id)
+        Self::new_with_agent(
+            state_dir,
+            dirs,
+            default_agent_runner,
+            Vec::new(),
+            eager_session_id,
+        )
     }
 
     pub(crate) fn new_with_agent(
         state_dir: impl Into<PathBuf>,
         dirs: tau_config::settings::TauDirs,
         agent_runner: AgentRunner,
+        tools: Vec<InProcessTool>,
         eager_session_id: &str,
     ) -> Result<Self, HarnessError> {
         let state_dir = state_dir.into();
@@ -303,26 +319,23 @@ impl Harness {
             last_acked: tau_proto::LogEventId::default(),
         });
 
-        // Shell and filesystem tools
-        let (conn_id, thread) = spawn_in_process(
-            "shell",
-            ClientKind::Tool,
-            move |r, w| tau_ext_shell::run(r, w).map_err(|e| e.to_string()),
-            &mut bus,
-            &tx,
-        )?;
-        extensions.push(ExtensionEntry {
-            name: "shell".to_owned(),
-            instance_id: next_iid(),
-            connection_id: conn_id,
-            kind: ClientKind::Tool,
-            pid: Some(own_pid),
-            in_process_thread: Some(thread),
-            supervised_config: None,
-            restart_attempt: 0,
-            state: ExtensionState::Spawning,
-            last_acked: tau_proto::LogEventId::default(),
-        });
+        // Caller-supplied in-process tools.
+        for tool in tools {
+            let (conn_id, thread) =
+                spawn_in_process(tool.name, ClientKind::Tool, tool.runner, &mut bus, &tx)?;
+            extensions.push(ExtensionEntry {
+                name: tool.name.to_owned(),
+                instance_id: next_iid(),
+                connection_id: conn_id,
+                kind: ClientKind::Tool,
+                pid: Some(own_pid),
+                in_process_thread: Some(thread),
+                supervised_config: None,
+                restart_attempt: 0,
+                state: ExtensionState::Spawning,
+                last_acked: tau_proto::LogEventId::default(),
+            });
+        }
 
         let (available_models, selected_model, model_registry, harness_settings) =
             load_model_list(&dirs);
@@ -3254,6 +3267,7 @@ impl Harness {
             &state_dir,
             tau_config::settings::TauDirs::default(),
             default_agent_runner,
+            Vec::new(),
             "s1",
         )?;
         harness.selected_model = "test/model".into();
