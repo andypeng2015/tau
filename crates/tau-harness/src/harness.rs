@@ -14,9 +14,9 @@ use tau_core::{
 };
 use tau_proto::{
     AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Disconnect, Event, EventSelector,
-    ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected, HarnessModelsAvailable,
-    Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued,
-    ToolCallId, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, UiCancelPrompt,
+    ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected, Message, ModelId,
+    SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued, ToolCallId,
+    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, UiCancelPrompt,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
@@ -53,6 +53,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 mod tests;
 
 mod interception;
+mod replay;
 mod skill_tool;
 
 /// Connection ID used for harness-owned tools (e.g. the `skill` tool).
@@ -1856,103 +1857,6 @@ impl Harness {
         );
     }
 
-    fn replay_session_events(&mut self, client_id: &str, selectors: &[EventSelector]) {
-        let Ok(events) = self.store.session_events(self.current_session_id.as_str()) else {
-            return;
-        };
-        for entry in events {
-            if selector_matches_event(selectors, &entry.event)
-                && should_replay_session_event_to_late_subscriber(&entry.event)
-            {
-                let frame = Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-                    id: entry.id,
-                    event: Box::new(entry.event),
-                }));
-                let _ = self.bus.send_to(client_id, entry.source.as_deref(), frame);
-            }
-        }
-    }
-
-    /// Replays harness info and extension lifecycle events to a
-    /// late-joining client.
-    ///
-    /// Events that are persisted to the durable per-session log
-    /// (`ExtAgentsMdAvailable`, `ExtensionContextReady`, …) are
-    /// intentionally NOT replayed here — `replay_session_events`
-    /// already delivers them from the durable log on the same
-    /// subscribe. Including them here too caused the CLI to render
-    /// each "loaded: …" / "session context ready" line twice.
-    fn replay_harness_info(&mut self, client_id: &str, selectors: &[EventSelector]) {
-        let mut cursor = 0;
-        while let Some(entry) = self.event_log.get_next_from(cursor) {
-            cursor = entry.seq + 1;
-            let dominated = matches!(
-                entry.event,
-                Event::HarnessInfo(_)
-                    | Event::HarnessSessionDir(_)
-                    | Event::HarnessUiDir(_)
-                    | Event::ExtensionStarting(_)
-                    | Event::ExtensionReady(_)
-                    | Event::ExtensionExited(_)
-            );
-            if dominated && selector_matches_event(selectors, &entry.event) {
-                let _ = self.bus.send_to(
-                    client_id,
-                    entry.source.as_deref(),
-                    Frame::Event(entry.event),
-                );
-            }
-        }
-
-        // Send current model state to the new client.
-        let models_event = Event::HarnessModelsAvailable(HarnessModelsAvailable {
-            models: self.available_models.clone(),
-        });
-        if selector_matches_event(selectors, &models_event) {
-            let _ = self
-                .bus
-                .send_to(client_id, None, Frame::Event(models_event));
-        }
-        let selected_event = Event::HarnessModelSelected(HarnessModelSelected {
-            model: self.selected_model.clone(),
-            context_window: model_context_window(
-                &self.model_registry,
-                self.selected_model.as_str(),
-            ),
-        });
-        if selector_matches_event(selectors, &selected_event) {
-            let _ = self
-                .bus
-                .send_to(client_id, None, Frame::Event(selected_event));
-        }
-        let context_event = Event::HarnessContextUsageChanged(HarnessContextUsageChanged {
-            input_tokens: self.context_input_tokens,
-            cached_tokens: self.context_cached_tokens,
-            percent_used: self.context_percent_used,
-        });
-        if selector_matches_event(selectors, &context_event) {
-            let _ = self
-                .bus
-                .send_to(client_id, None, Frame::Event(context_event));
-        }
-        let effort_event = Event::HarnessEffortChanged(tau_proto::HarnessEffortChanged {
-            level: self.selected_effort,
-        });
-        if selector_matches_event(selectors, &effort_event) {
-            let _ = self
-                .bus
-                .send_to(client_id, None, Frame::Event(effort_event));
-        }
-        let levels = efforts_for_model(&self.model_registry, self.selected_model.as_str());
-        let levels_event =
-            Event::HarnessEffortsAvailable(tau_proto::HarnessEffortsAvailable { levels });
-        if selector_matches_event(selectors, &levels_event) {
-            let _ = self
-                .bus
-                .send_to(client_id, None, Frame::Event(levels_event));
-        }
-    }
-
     fn remove_discovered_context(&mut self, source_id: &str) {
         self.discovered_skills
             .retain(|_, skill| skill.source_id != source_id);
@@ -3588,34 +3492,10 @@ fn stamp_tool_event_originator(event: Event, originator: tau_proto::PromptOrigin
     }
 }
 
-fn selector_matches_event(selectors: &[EventSelector], event: &Event) -> bool {
+pub(crate) fn selector_matches_event(selectors: &[EventSelector], event: &Event) -> bool {
     let target_name = event.name();
     selectors.iter().any(|selector| match selector {
         EventSelector::Exact(expected) => *expected == target_name,
         EventSelector::Prefix(prefix) => target_name.matches_prefix(prefix),
     })
-}
-
-fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
-    // Replay final, durable transcript facts, not progress. In
-    // particular, skip `AgentResponseUpdated` streaming chunks and
-    // `SessionPromptCreated` pending markers, but keep
-    // `UiPromptSubmitted` and `AgentResponseFinished` so a resumed UI
-    // can reconstruct completed turns.
-    match event {
-        Event::UiPromptSubmitted(_)
-        | Event::SessionPromptSteered(_)
-        | Event::SessionUserMessageInjected(_)
-        | Event::ToolRequest(_)
-        | Event::ToolResult(_)
-        | Event::ToolError(_)
-        | Event::ShellCommandFinished(_)
-        | Event::SessionStarted(_)
-        | Event::SessionShutdown(_)
-        | Event::ExtAgentsMdAvailable(_)
-        | Event::ExtensionContextReady(_)
-        | Event::ExtensionEvent(_) => true,
-        Event::AgentResponseFinished(response) => response.text.is_some(),
-        _ => false,
-    }
 }
