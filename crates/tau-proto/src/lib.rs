@@ -16,6 +16,7 @@ mod diff;
 mod events;
 mod frame;
 mod messages;
+mod token_usage;
 
 use std::io::{BufReader, Cursor, Read, Write};
 
@@ -24,6 +25,7 @@ pub use diff::{DiffHunk, DiffLine, DiffSegment, DiffSummary};
 pub use events::*;
 pub use frame::Frame;
 pub use messages::*;
+pub use token_usage::*;
 
 /// First protocol version implemented by this crate.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -31,7 +33,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 macro_rules! string_newtype {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Clone, Debug, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(Clone, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
         #[serde(transparent)]
         pub struct $name(String);
 

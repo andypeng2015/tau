@@ -92,6 +92,7 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     };
 
@@ -187,6 +188,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     };
     h.handle_agent_response_finished(response)
@@ -270,6 +272,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("agent response with tool call");
@@ -411,6 +414,7 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("persist first agent response");
@@ -465,6 +469,7 @@ fn queued_prompt_extends_completed_first_prompt() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("finish first");
@@ -595,6 +600,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("tool response");
@@ -640,6 +646,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "conn-delegate".into(),
             query_id: "q1".to_owned(),
@@ -713,6 +720,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("tool response");
@@ -839,6 +847,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -875,6 +884,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q1".to_owned(),
@@ -965,6 +975,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1031,6 +1042,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1103,6 +1115,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1143,6 +1156,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         input_tokens: Some(1234),
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q1".to_owned(),
@@ -1237,6 +1251,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1274,6 +1289,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-outer".to_owned(),
@@ -1312,6 +1328,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-nested".to_owned(),
@@ -1426,6 +1443,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1457,6 +1475,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-outer".to_owned(),
@@ -1548,6 +1567,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1575,6 +1595,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-outer".to_owned(),
@@ -1659,6 +1680,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1690,6 +1712,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-top".to_owned(),
@@ -1824,6 +1847,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -1903,6 +1927,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-A".to_owned(),
@@ -1993,6 +2018,7 @@ fn tool_events_carry_owning_conversation_originator() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     })
     .expect("main response");
@@ -2024,6 +2050,7 @@ fn tool_events_carry_owning_conversation_originator() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-delegate".into(),
             query_id: "q-sub".to_owned(),

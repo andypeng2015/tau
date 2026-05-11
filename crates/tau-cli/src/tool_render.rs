@@ -48,6 +48,26 @@ pub(crate) fn format_turn_metrics_chip(latency: Option<Duration>) -> String {
     chip
 }
 
+pub(crate) fn format_token_stats_line(usage: &tau_proto::AgentTokenUsage) -> String {
+    let prompt_uncached_tokens = usage
+        .prompt_sent_tokens
+        .saturating_sub(usage.prompt_cached_tokens);
+    let total_uncached_tokens = usage
+        .stats
+        .total
+        .sent_tokens
+        .saturating_sub(usage.stats.total.cached_tokens);
+    format!(
+        "↑Δ{}/{} ↑Σ{}/{} ↓Δ{} ↓Σ{}",
+        format_token_count(prompt_uncached_tokens),
+        format_token_count(usage.prompt_sent_tokens),
+        format_token_count(total_uncached_tokens),
+        format_token_count(usage.stats.total.sent_tokens),
+        format_token_count(usage.response_received_tokens),
+        format_token_count(usage.stats.total.received_tokens),
+    )
+}
+
 fn format_latency(latency: Duration) -> String {
     if latency < Duration::from_secs(1) {
         return format!("{}ms", latency.as_millis());

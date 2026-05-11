@@ -51,6 +51,7 @@ fn store_agent_message(store: &mut SessionStore, session_id: &str, text: &str) -
                 input_tokens: None,
                 cached_tokens: None,
                 thinking: None,
+                token_usage: None,
                 originator: tau_proto::PromptOriginator::User,
             }),
         )
@@ -121,6 +122,7 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
                 input_tokens: None,
                 cached_tokens: None,
                 thinking: None,
+                token_usage: None,
                 originator: tau_proto::PromptOriginator::User,
             })),
         )
@@ -175,6 +177,7 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         },
     )));

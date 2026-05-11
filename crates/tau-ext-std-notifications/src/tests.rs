@@ -148,6 +148,7 @@ fn emits_start_and_end_user_var_in_order() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -214,6 +215,7 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
             input_tokens: None,
             cached_tokens: None,
             thinking: Some("planning".into()),
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -262,6 +264,7 @@ fn idle_timeout_requests_summary_then_falls_back() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -362,6 +365,7 @@ fn summary_result_populates_notification_body() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -442,6 +446,7 @@ fn prompt_draft_extends_idle_deadline() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -533,6 +538,7 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -637,6 +643,7 @@ fn idle_command_runs_with_title_body_and_env() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -739,6 +746,7 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -814,6 +822,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -848,6 +857,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::Extension {
                 name: "core-delegate".into(),
                 query_id: "q1".into(),
@@ -864,6 +874,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -925,6 +936,7 @@ fn duplicate_ui_prompt_submitted_during_same_turn_emits_one_start_sound() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");

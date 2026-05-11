@@ -203,6 +203,9 @@ pub struct CliState {
     /// Whether to render provider prompt-cache hit stats in the model
     /// status bar. Toggled by `/show-cache-stats`.
     pub show_cache_stats: bool,
+    /// Whether to render per-turn token usage stats below agent
+    /// responses. Toggled by `/show-token-stats`.
+    pub show_token_stats: bool,
 }
 
 impl Default for CliState {
@@ -211,6 +214,7 @@ impl Default for CliState {
             show_diff: false,
             show_thinking: true,
             show_cache_stats: true,
+            show_token_stats: false,
         }
     }
 }

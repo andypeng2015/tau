@@ -13,10 +13,11 @@ use tau_core::{
     PolicyStore, RouteError, SessionStore, ToolRegistry, ToolRouteError,
 };
 use tau_proto::{
-    AgentResponseFinished, AgentToolCall, CborValue, ClientKind, Disconnect, Event, EventSelector,
-    ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected, Message, ModelId,
-    SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued, ToolCallId,
-    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, UiCancelPrompt,
+    AgentResponseFinished, AgentTokenUsage, AgentToolCall, CborValue, ClientKind, Disconnect,
+    Event, EventSelector, ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected,
+    Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued,
+    TokenUsageStats, ToolCallId, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest,
+    UiCancelPrompt,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
@@ -194,6 +195,12 @@ pub(crate) struct Harness {
     /// Percentage of the selected model's context window currently
     /// used. `None` when the model's context window is unknown.
     pub(crate) context_percent_used: Option<u8>,
+    /// Current-session token usage totals.
+    pub(crate) token_usage: TokenUsageStats,
+    /// Provider/model for each prompt sent to the agent, used to
+    /// attribute the corresponding finished response even if the user
+    /// switches models while it is in flight.
+    pub(crate) prompt_models: std::collections::HashMap<SessionPromptId, ModelId>,
     /// Provider/model registry, kept for runtime lookups (e.g.
     /// computing available efforts per current model).
     pub(crate) model_registry: tau_config::settings::ModelRegistry,
@@ -408,6 +415,8 @@ impl Harness {
             context_input_tokens: None,
             context_cached_tokens: None,
             context_percent_used: None,
+            token_usage: TokenUsageStats::default(),
+            prompt_models: std::collections::HashMap::new(),
             model_registry,
             discovered_skills: std::collections::HashMap::new(),
             discovered_agents_files: Vec::new(),
@@ -604,6 +613,8 @@ impl Harness {
             context_input_tokens: None,
             context_cached_tokens: None,
             context_percent_used: None,
+            token_usage: TokenUsageStats::default(),
+            prompt_models: std::collections::HashMap::new(),
             model_registry,
             discovered_skills: std::collections::HashMap::new(),
             discovered_agents_files: Vec::new(),
@@ -2554,6 +2565,11 @@ impl Harness {
         } else {
             Some(self.selected_model.clone())
         };
+        if let Some(model) = model.as_ref() {
+            self.token_usage.start_request(model);
+            self.prompt_models
+                .insert(session_prompt_id.clone(), model.clone());
+        }
         let event = Event::SessionPromptCreated(SessionPromptCreated {
             session_prompt_id: session_prompt_id.clone(),
             session_id,
@@ -2585,11 +2601,12 @@ impl Harness {
 
     fn handle_agent_response_finished(
         &mut self,
-        response: AgentResponseFinished,
+        mut response: AgentResponseFinished,
     ) -> Result<(), HarnessError> {
         if self.canceled_prompts.remove(&response.session_prompt_id) {
             self.prompt_conversations
                 .remove(response.session_prompt_id.as_str());
+            self.prompt_models.remove(&response.session_prompt_id);
             return Ok(());
         }
         if response.input_tokens.is_some() || response.cached_tokens.is_some() {
@@ -2616,6 +2633,24 @@ impl Harness {
             ));
             return Ok(());
         };
+        if let Some(model) = self.prompt_models.remove(&response.session_prompt_id) {
+            let sent_tokens = response.input_tokens.unwrap_or(0);
+            let cached_tokens = response.cached_tokens.unwrap_or(0);
+            let received_tokens = response
+                .token_usage
+                .as_ref()
+                .map_or(0, |usage| usage.response_received_tokens);
+            self.token_usage
+                .add_sent(&model, sent_tokens, cached_tokens);
+            self.token_usage.add_received(&model, received_tokens);
+            response.token_usage = Some(AgentTokenUsage {
+                model,
+                prompt_sent_tokens: sent_tokens,
+                prompt_cached_tokens: cached_tokens,
+                response_received_tokens: received_tokens,
+                stats: self.token_usage.clone(),
+            });
+        }
         // Publish via the owning conversation's branch — when text is
         // present the SessionTree fold appends an `AgentMessage` as a
         // child of `tree.head`, so an unsnapped publish would land on

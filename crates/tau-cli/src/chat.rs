@@ -283,6 +283,10 @@ pub(crate) fn run_chat(
             "Toggle provider prompt-cache hit stats in the status bar",
         ),
         SlashCommand::new(
+            "/show-token-stats",
+            "Toggle token usage stats below agent responses",
+        ),
+        SlashCommand::new(
             "/show-thinking",
             "Toggle visibility of the agent's reasoning summary blocks",
         ),
@@ -369,6 +373,7 @@ pub(crate) fn run_chat(
                 RendererCmd::ToggleDiffs => renderer.toggle_diffs_expanded(),
                 RendererCmd::ToggleThinking => renderer.toggle_thinking_visible(),
                 RendererCmd::ToggleCacheStats => renderer.toggle_cache_stats_visible(),
+                RendererCmd::ToggleTokenStats => renderer.toggle_token_stats_visible(),
             }
         }
     });
@@ -466,6 +471,7 @@ enum RendererCmd {
     /// `/show-thinking` toggle.
     ToggleThinking,
     ToggleCacheStats,
+    ToggleTokenStats,
     Remote(Event),
     /// The harness sent a `Disconnect` message over the wire.
     RemoteDisconnect(Option<String>),
@@ -611,6 +617,10 @@ fn terminal_input_loop(
                 }
                 if text == "/show-cache-stats" {
                     let _ = ctx.renderer_tx.send(RendererCmd::ToggleCacheStats);
+                    continue;
+                }
+                if text == "/show-token-stats" || text == "/show-tokens-stats" {
+                    let _ = ctx.renderer_tx.send(RendererCmd::ToggleTokenStats);
                     continue;
                 }
                 if let Some(model) = text.strip_prefix("/model ") {

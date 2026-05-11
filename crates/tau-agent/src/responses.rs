@@ -166,6 +166,12 @@ pub fn responses_stream(
                             event["usage"]["input_tokens_details"]["cached_tokens"].as_u64()
                         });
                 }
+                if state.output_tokens.is_none() {
+                    state.output_tokens = event
+                        .get("response")
+                        .and_then(|response| response["usage"]["output_tokens"].as_u64())
+                        .or_else(|| event["usage"]["output_tokens"].as_u64());
+                }
                 break;
             }
             "response.incomplete" => {

@@ -172,6 +172,7 @@ where
                                 input_tokens: None,
                                 cached_tokens: None,
                                 thinking: None,
+                                token_usage: None,
                                 originator: prompt.originator.clone(),
                             },
                         )))?;
@@ -464,11 +465,13 @@ fn finish_stream<W: Write>(
     let text_content = state.text.clone();
     let input_tokens = state.input_tokens;
     let cached_tokens = state.cached_tokens;
+    let output_tokens = state.output_tokens;
     tracing::debug!(
         target: LOG_TARGET,
         session_prompt_id,
         input_tokens,
         cached_tokens,
+        output_tokens,
         "agent response token usage"
     );
     let thinking = state.thinking.clone();
@@ -490,6 +493,10 @@ fn finish_stream<W: Write>(
             input_tokens,
             cached_tokens,
             thinking,
+            token_usage: Some(tau_proto::AgentTokenUsage {
+                response_received_tokens: output_tokens.unwrap_or(0),
+                ..tau_proto::AgentTokenUsage::default()
+            }),
             originator: originator.clone(),
         },
     )))?;
@@ -511,6 +518,7 @@ fn finish_error<W: Write>(
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: originator.clone(),
         },
     )))?;
@@ -594,6 +602,7 @@ where
                             input_tokens: None,
                             cached_tokens: None,
                             thinking: None,
+                            token_usage: None,
                             originator: prompt.originator.clone(),
                         },
                     )))?;
@@ -649,6 +658,7 @@ where
                             input_tokens: None,
                             cached_tokens: None,
                             thinking: None,
+                            token_usage: None,
                             originator: prompt.originator.clone(),
                         },
                     )))?;

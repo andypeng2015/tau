@@ -82,6 +82,7 @@ fn representative_events() -> Vec<Event> {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: PromptOriginator::User,
         }),
         Event::ExtensionStarting(ExtensionStarting {

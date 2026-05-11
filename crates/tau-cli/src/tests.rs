@@ -161,6 +161,7 @@ fn new_session_clears_session_ui_state() {
         input_tokens: Some(100),
         cached_tokens: Some(50),
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     renderer.handle(&Event::ToolResult(ToolResult {
@@ -302,6 +303,7 @@ fn single_prompt_response_cycle() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -390,6 +392,7 @@ fn thinking_renders_as_separate_block_above_response() {
         input_tokens: None,
         cached_tokens: None,
         thinking: Some("planning the answer".into()),
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -443,6 +446,7 @@ fn toggle_thinking_visible_round_trip_restores_history() {
         input_tokens: None,
         cached_tokens: None,
         thinking: Some("the_thinking_text".into()),
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -527,6 +531,7 @@ fn thinking_created_while_off_stays_invisible_after_toggle_on() {
         input_tokens: None,
         cached_tokens: None,
         thinking: Some("hidden reasoning".into()),
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -581,6 +586,7 @@ fn no_thinking_block_when_summary_absent() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -643,6 +649,7 @@ fn queued_prompt_renders_after_first_completes() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -694,6 +701,7 @@ fn queued_prompt_renders_after_first_completes() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -778,6 +786,7 @@ fn three_queued_prompts_render_sequentially() {
             input_tokens: None,
             cached_tokens: None,
             thinking: None,
+            token_usage: None,
             originator: tau_proto::PromptOriginator::User,
         }));
         sync(&handle);
@@ -841,6 +850,7 @@ fn streaming_indicator_appends_during_updates() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -871,6 +881,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -957,6 +968,7 @@ fn streaming_block_does_not_duplicate_on_finish() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1383,6 +1395,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1418,6 +1431,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1453,6 +1467,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1536,6 +1551,7 @@ fn emoji_in_response_renders_correctly() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1601,6 +1617,7 @@ fn multiple_emoji_no_column_drift() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1667,6 +1684,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
         input_tokens: None,
         cached_tokens: None,
         thinking: None,
+        token_usage: None,
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);

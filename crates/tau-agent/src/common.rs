@@ -98,6 +98,7 @@ pub struct StreamState {
     pub tool_calls: Vec<ToolCallAccumulator>,
     pub input_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
     /// Provider-supplied reasoning summary accumulated so far. `None`
     /// when the provider hasn't emitted any summary content (or when
     /// summaries weren't requested).
@@ -118,6 +119,7 @@ impl StreamState {
             tool_calls: Vec::new(),
             input_tokens: None,
             cached_tokens: None,
+            output_tokens: None,
             thinking: None,
         }
     }

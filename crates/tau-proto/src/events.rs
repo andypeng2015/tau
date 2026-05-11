@@ -11,8 +11,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CborValue, ExtensionName, ModelId, SessionId, SessionPromptId, SkillName, ToolCallId, ToolName,
-    ToolNameMaybe,
+    AgentTokenUsage, CborValue, ExtensionName, ModelId, SessionId, SessionPromptId, SkillName,
+    ToolCallId, ToolName, ToolNameMaybe,
 };
 
 // ---------------------------------------------------------------------------
@@ -1374,6 +1374,9 @@ pub struct AgentResponseFinished {
     /// never replayed into later prompts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Session token usage snapshot after this response completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<AgentTokenUsage>,
 }
 
 // ---------------------------------------------------------------------------

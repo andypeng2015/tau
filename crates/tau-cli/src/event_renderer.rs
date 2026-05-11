@@ -10,9 +10,10 @@ use tau_proto::{CborValue, Event};
 use crate::tool_render::{
     ToolCallDisplay, build_osc1337_set_user_var, extension_status_block, extract_diff,
     format_cache_hit_chip, format_context_chip, format_delegate_completion,
-    format_delegate_progress, format_tool_call, format_tool_completion, format_turn_metrics_chip,
-    render_diff_tool_block, render_harness_info, render_shell_block, render_tool_block,
-    session_status_block, streaming_block, system_loaded_block, system_status_block, ui_dir_block,
+    format_delegate_progress, format_token_stats_line, format_tool_call, format_tool_completion,
+    format_turn_metrics_chip, render_diff_tool_block, render_harness_info, render_shell_block,
+    render_tool_block, session_status_block, streaming_block, system_loaded_block,
+    system_status_block, ui_dir_block,
 };
 use crate::{build_label_parts, random_startup_pun};
 
@@ -68,6 +69,7 @@ pub(crate) struct EventRenderer {
     /// either the full text or removed, so the toggle takes effect
     /// retroactively across the visible transcript.
     thinking_history: Vec<ThinkingBlockEntry>,
+    token_stats_history: Vec<TokenStatsBlockEntry>,
     /// Where to persist `show_diff` / `show_thinking` /
     /// `show_cache_stats` toggles.
     state_dirs: tau_config::settings::TauDirs,
@@ -91,6 +93,9 @@ pub(crate) struct EventRenderer {
     /// Whether to render provider prompt-cache hit stats in the
     /// model status bar.
     show_cache_stats: bool,
+    /// Whether to render per-turn token usage stats below completed
+    /// agent responses.
+    show_token_stats: bool,
     /// End-to-end latency of the most recently completed prompt.
     last_turn_latency: Option<Duration>,
     /// Shared effort mirror for the input thread.
@@ -121,6 +126,11 @@ struct DiffBlockEntry {
 struct ThinkingBlockEntry {
     block_id: tau_cli_term::BlockId,
     text: String,
+}
+
+struct TokenStatsBlockEntry {
+    block_id: tau_cli_term::BlockId,
+    usage: tau_proto::AgentTokenUsage,
 }
 
 /// Per-prompt UI state held by [`EventRenderer`]. Lives from the first
@@ -241,7 +251,9 @@ impl EventRenderer {
             diffs_expanded: state.show_diff,
             show_thinking: state.show_thinking,
             show_cache_stats: state.show_cache_stats,
+            show_token_stats: state.show_token_stats,
             thinking_history: Vec::new(),
+            token_stats_history: Vec::new(),
             state_dirs,
             current_model: tau_proto::ModelId::from(""),
             current_effort: tau_proto::Effort::Off,
@@ -265,6 +277,7 @@ impl EventRenderer {
             show_diff: self.diffs_expanded,
             show_thinking: self.show_thinking,
             show_cache_stats: self.show_cache_stats,
+            show_token_stats: self.show_token_stats,
         }
         .save(&self.state_dirs);
     }
@@ -356,6 +369,25 @@ impl EventRenderer {
         self.save_cli_state();
     }
 
+    pub(crate) fn toggle_token_stats_visible(&mut self) {
+        use tau_cli_term::resolve::themed_block;
+        use tau_themes::names;
+        self.show_token_stats = !self.show_token_stats;
+        for entry in &self.token_stats_history {
+            let text = if self.show_token_stats {
+                format_token_stats_line(&entry.usage)
+            } else {
+                String::new()
+            };
+            self.handle.set_block(
+                entry.block_id,
+                themed_block(&self.theme, names::SYSTEM_INFO, text),
+            );
+        }
+        self.invalidate_for_retroactive_toggle();
+        self.save_cli_state();
+    }
+
     /// Clears all session-scoped UI state and re-renders an empty
     /// transcript. Persistent user preferences such as `/show-diff`
     /// and `/show-thinking` are intentionally preserved.
@@ -369,6 +401,7 @@ impl EventRenderer {
         self.model_status_block = None;
         self.diff_blocks.clear();
         self.thinking_history.clear();
+        self.token_stats_history.clear();
         // Model selection and effort are harness-global, not
         // session-scoped. `/new` only causes a SessionStarted event;
         // the harness does not re-emit HarnessModelSelected for the
@@ -711,6 +744,22 @@ impl EventRenderer {
                         names::AGENT_RESPONSE,
                         text,
                     ));
+                }
+                if let Some(usage) = finished.token_usage.clone() {
+                    let display = if self.show_token_stats {
+                        format_token_stats_line(&usage)
+                    } else {
+                        String::new()
+                    };
+                    let bid = self.handle.print_output(themed_block(
+                        &self.theme,
+                        names::SYSTEM_INFO,
+                        display,
+                    ));
+                    self.token_stats_history.push(TokenStatsBlockEntry {
+                        block_id: bid,
+                        usage,
+                    });
                 }
 
                 // Only the main agent's tool calls land in the UI as

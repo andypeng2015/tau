@@ -124,6 +124,9 @@ pub fn chat_completion_stream(
                     .as_ref()
                     .and_then(|details| details.cached_tokens);
             }
+            if state.output_tokens.is_none() {
+                state.output_tokens = usage.completion_tokens;
+            }
         }
         if state.input_tokens.is_none() {
             state.input_tokens = chunk.tokens_evaluated;
@@ -444,6 +447,8 @@ struct StreamFunction {
 struct Usage {
     #[serde(default)]
     prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
 }

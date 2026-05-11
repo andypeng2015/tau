@@ -25,6 +25,7 @@ fn into_tool_calls_drops_nameless_accumulator_artifacts() {
         ],
         input_tokens: None,
         cached_tokens: None,
+        output_tokens: None,
         thinking: None,
     };
 
