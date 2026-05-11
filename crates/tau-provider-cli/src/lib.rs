@@ -69,12 +69,18 @@ fn cmd_add() -> Result<(), Box<dyn std::error::Error>> {
         .interact_text()?;
 
     // 3. Kind-specific setup.
+    let mut ollama_model: Option<String> = None;
     let creds = match &kind {
         ProviderKind::Ollama => {
             let base_url: String = Input::new()
                 .with_prompt("Base URL")
                 .default("http://localhost:11434".to_string())
                 .interact_text()?;
+            let model_id: String = Input::new()
+                .with_prompt("Initial model id (must be present locally; edit later as needed)")
+                .default("llama3.2:latest".to_string())
+                .interact_text()?;
+            ollama_model = Some(model_id);
             Credentials::None {
                 provider_kind: kind.clone(),
                 base_url: Some(base_url),
@@ -116,7 +122,7 @@ fn cmd_add() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 5. Update or print models.json5 snippet.
-    let snippet = build_provider_entry(&kind);
+    let snippet = build_provider_entry(&kind, ollama_model.as_deref());
     update_or_print_models_json5(&name, &snippet)?;
 
     Ok(())
@@ -411,7 +417,12 @@ fn run_github_copilot_login(
 /// Build a typed [`ProviderConfig`] with sensible defaults for the chosen
 /// [`ProviderKind`]. The user is expected to edit the result afterwards;
 /// the entries here are only starting points.
-fn build_provider_entry(kind: &ProviderKind) -> ProviderConfig {
+///
+/// `ollama_model`, if `Some`, is used as the initial model id for the
+/// Ollama variant (collected interactively by `cmd_add` since there is no
+/// universally-correct default — it depends on what the user has pulled
+/// locally). Ignored for other variants.
+fn build_provider_entry(kind: &ProviderKind, ollama_model: Option<&str>) -> ProviderConfig {
     fn model(id: &str, context_window: u64) -> ModelConfig {
         ModelConfig {
             id: id.to_owned(),
@@ -428,7 +439,8 @@ fn build_provider_entry(kind: &ProviderKind) -> ProviderConfig {
             config.auth = Some(AuthType::None.as_str().to_owned());
             config.api = Some("openai-completions".to_owned());
             config.compat.supports_llama_cpp_cache = true;
-            config.models = vec![model("llama3:70b", 8192)];
+            let model_id = ollama_model.unwrap_or("llama3.2:latest");
+            config.models = vec![model(model_id, 8192)];
         }
         ProviderKind::Openai => {
             config.auth = Some(AuthType::ApiKey.as_str().to_owned());
