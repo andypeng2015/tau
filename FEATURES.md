@@ -130,6 +130,14 @@ for testing. The shell command and any wrapper prefix are configurable:
       // seconds. Tool-invoked `shell` calls use their own per-call
       // `timeout` argument (default 120s). Default: 3600 (1 hour).
       user_command_timeout_secs: 3600,
+      // Extra env vars injected into `shell` and `!`/`!!` children,
+      // applied after the isolation allowlist so they override or
+      // supplement it. Use this to forward `XDG_*` paths or set a
+      // custom `PAGER` without modifying the built-in allowlist.
+      extra_env: {
+        XDG_CONFIG_HOME: "/home/me/.config",
+        PAGER: "cat",
+      },
     },
   },
 },

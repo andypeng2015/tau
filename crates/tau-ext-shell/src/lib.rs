@@ -102,7 +102,9 @@ where
             name: WRITE_TOOL_NAME.into(),
             description: Some(
                 "Write content to a file, creating it if it does not exist. \
-                 Returns the path and bytes written."
+                 Returns the path, bytes written, and a `diff` object \
+                 describing the change against the previous contents \
+                 (every line is an Add when the file is being created)."
                     .to_owned(),
             ),
             parameters: Some(serde_json::json!({
@@ -126,7 +128,9 @@ where
             description: Some(
                 "Edit a file using exact text replacement. Each edit's oldText must match \
                  a unique, non-overlapping region of the original file. All edits are matched \
-                 against the original content, not incrementally."
+                 against the original content, not incrementally. Returns the path, the number \
+                 of edits applied, and a `diff` object summarizing the change against the \
+                 previous contents."
                     .to_owned(),
             ),
             parameters: Some(serde_json::json!({

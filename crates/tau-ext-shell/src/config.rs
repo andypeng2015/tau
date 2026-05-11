@@ -1,5 +1,6 @@
 //! Per-session configuration for the shell/file extension.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use crate::isolation::apply_command_isolation;
@@ -24,6 +25,14 @@ pub(crate) struct ShellConfig {
     /// have their own per-call `timeout` argument; this one bounds
     /// the UI path where the agent isn't driving the timeout.
     pub(crate) user_command_timeout_secs: u64,
+    /// Extra environment variables injected into shell-tool / `!`
+    /// command children, applied after the hard-coded isolation
+    /// allowlist so they override or supplement it. Use this to
+    /// forward `XDG_*` paths, set a custom `PAGER`, or thread any
+    /// other env that the harness's allowlist intentionally strips.
+    /// Keys with an empty value still clear the variable in the
+    /// child env. Does not affect the `rg` child used by `grep`.
+    extra_env: BTreeMap<String, String>,
 }
 
 impl Default for ShellConfig {
@@ -32,6 +41,7 @@ impl Default for ShellConfig {
             command: "sh".to_owned(),
             prefix: Vec::new(),
             user_command_timeout_secs: 60 * 60,
+            extra_env: BTreeMap::new(),
         }
     }
 }
@@ -69,6 +79,9 @@ impl ShellConfig {
             child_cmd.current_dir(cwd);
         }
         apply_command_isolation(&mut child_cmd);
+        for (key, value) in &self.extra_env {
+            child_cmd.env(key, value);
+        }
         child_cmd.spawn()
     }
 }
