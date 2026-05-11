@@ -8,6 +8,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes echo-agent test harness helpers (`run_daemon_with_echo`,
+# `run_embedded_message_with_echo`). Enabled by tau-test-support and
+# by this crate's own dev-dependencies for the internal test suite.
+echo-agent = ["tau-agent/echo-agent"]
+
 [dependencies]
 bon.workspace = true
 dirs.workspace = true
@@ -24,3 +30,4 @@ tau-supervisor.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tau-agent = { workspace = true, features = ["echo-agent"] }

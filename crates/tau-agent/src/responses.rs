@@ -8,7 +8,9 @@ use std::io::BufRead;
 use serde::Serialize;
 use tau_proto::{ContentBlock, ConversationMessage, ConversationRole};
 
-use crate::openai::{OpenAiError, PromptPayload, StreamState, cbor_to_json};
+use crate::common::{
+    LlmError, PromptPayload, StreamState, ToolCallAccumulator, cbor_to_json, effort_wire,
+};
 
 /// Config for the Codex Responses API.
 #[derive(Clone, Debug)]
@@ -40,11 +42,11 @@ pub fn responses_stream(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     mut on_update: impl FnMut(&str, Option<&str>),
-) -> Result<StreamState, OpenAiError> {
+) -> Result<StreamState, LlmError> {
     let url = format!("{}/codex/responses", config.base_url.trim_end_matches('/'));
 
     let body = build_request(config, request);
-    let body_str = serde_json::to_string(&body).map_err(OpenAiError::Json)?;
+    let body_str = serde_json::to_string(&body).map_err(LlmError::Json)?;
 
     let mut req = tau_provider::oauth::proxy_agent()
         .post(&url)
@@ -60,16 +62,16 @@ pub fn responses_stream(
     let response = req.send_string(&body_str).map_err(|e| match e {
         ureq::Error::Status(code, resp) => {
             let body = resp.into_string().unwrap_or_default();
-            OpenAiError::HttpStatus(code, body)
+            LlmError::HttpStatus(code, body)
         }
-        other => OpenAiError::Http(Box::new(other)),
+        other => LlmError::Http(Box::new(other)),
     })?;
 
     let reader = std::io::BufReader::new(response.into_reader());
     let mut state = StreamState::new();
 
     for line in reader.lines() {
-        let line = line.map_err(OpenAiError::Io)?;
+        let line = line.map_err(LlmError::Io)?;
 
         let Some(data) = line.strip_prefix("data: ") else {
             continue;
@@ -116,7 +118,7 @@ pub fn responses_stream(
                 let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                 if let Some(delta) = event["delta"].as_str() {
                     while state.tool_calls.len() <= output_index {
-                        state.tool_calls.push(crate::openai::ToolCallAccumulator {
+                        state.tool_calls.push(ToolCallAccumulator {
                             id: String::new(),
                             name: String::new(),
                             arguments_json: String::new(),
@@ -132,7 +134,7 @@ pub fn responses_stream(
                     if item["type"].as_str() == Some("function_call") {
                         let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                         while state.tool_calls.len() <= output_index {
-                            state.tool_calls.push(crate::openai::ToolCallAccumulator {
+                            state.tool_calls.push(ToolCallAccumulator {
                                 id: String::new(),
                                 name: String::new(),
                                 arguments_json: String::new(),
@@ -142,7 +144,7 @@ pub fn responses_stream(
                             state.tool_calls[output_index].id = id.to_owned();
                         }
                         if let Some(name) = item["name"].as_str() {
-                            state.tool_calls[output_index].name = decode_tool_name(name);
+                            state.tool_calls[output_index].name = name.to_owned();
                         }
                     }
                 }
@@ -171,7 +173,7 @@ pub fn responses_stream(
                     .get("response")
                     .and_then(|r| r["incomplete_details"]["reason"].as_str())
                     .unwrap_or("unknown reason");
-                return Err(OpenAiError::HttpStatus(
+                return Err(LlmError::HttpStatus(
                     0,
                     format!("response incomplete: {reason}"),
                 ));
@@ -185,7 +187,7 @@ pub fn responses_stream(
                             .or_else(|| r["error"]["code"].as_str())
                     })
                     .unwrap_or("unknown error");
-                return Err(OpenAiError::HttpStatus(
+                return Err(LlmError::HttpStatus(
                     0,
                     format!("response failed: {detail}"),
                 ));
@@ -195,10 +197,7 @@ pub fn responses_stream(
                     .as_str()
                     .or_else(|| event["message"].as_str())
                     .unwrap_or("unknown error");
-                return Err(OpenAiError::HttpStatus(
-                    0,
-                    format!("stream error: {detail}"),
-                ));
+                return Err(LlmError::HttpStatus(0, format!("stream error: {detail}")));
             }
             _ => {}
         }
@@ -277,7 +276,7 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
     };
 
     let effort = if config.supports_reasoning_effort {
-        crate::openai::effort_wire(request.effort)
+        effort_wire(request.effort)
     } else {
         None
     };
@@ -325,14 +324,6 @@ fn encode_tool_name(name: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Decode tool name from the API response.
-///
-/// Tool names no longer contain dots, so this is now an identity function.
-/// Kept as a hook in case future encoding transforms are needed.
-fn decode_tool_name(name: &str) -> String {
-    name.to_owned()
 }
 
 // ---------------------------------------------------------------------------

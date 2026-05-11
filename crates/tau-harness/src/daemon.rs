@@ -1,7 +1,9 @@
 //! Public entry points: blocking `run_*` daemons, the embedded
 //! single-message helpers, and the small types passed to/from them.
 
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
+#[cfg(any(test, feature = "echo-agent"))]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -151,6 +153,7 @@ pub fn run_embedded_message_with_options(
 
 /// Like [`run_embedded_message_with_trace`] but uses the echo agent for
 /// testing.
+#[cfg(any(test, feature = "echo-agent"))]
 pub fn run_embedded_message_with_echo(
     state_dir: impl Into<PathBuf>,
     session_id: &str,
@@ -219,6 +222,7 @@ pub fn run_daemon(
 /// Like [`run_daemon`] but uses the echo agent for testing. Also enables
 /// the shell extension's `echo` tool so echo-agent–driven tool calls
 /// resolve.
+#[cfg(any(test, feature = "echo-agent"))]
 pub fn run_daemon_with_echo(
     socket_path: impl Into<PathBuf>,
     state_dir: impl Into<PathBuf>,

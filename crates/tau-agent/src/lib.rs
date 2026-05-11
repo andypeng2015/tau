@@ -3,6 +3,7 @@
 //! Receives `SessionPromptCreated` from the harness and emits
 //! `AgentResponseUpdated` / `AgentResponseFinished` events.
 
+pub mod common;
 pub(crate) mod openai;
 mod responses;
 
@@ -11,10 +12,10 @@ use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use backon::BackoffBuilder;
-use tau_config::settings::{self, ModelRegistry, ProviderConfig};
+use tau_config::settings;
 use tau_proto::{
     Ack, AgentPromptSubmitted, AgentResponseFinished, AgentResponseUpdated, ClientKind, Event,
     EventName, EventSelector, Frame, FrameReader, FrameWriter, Hello, Message, PROTOCOL_VERSION,
@@ -77,7 +78,11 @@ where
                         return;
                     }
                 }
-                Ok(None) | Err(_) => return,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, "reader pump failed: {error}");
+                    return;
+                }
             }
         }
     });
@@ -137,26 +142,17 @@ where
                 // Resolve backend from the model specified in the prompt.
                 // Reload auth on every prompt so `tau provider login` or
                 // `/provider-auth` takes effect without restarting Tau.
-                let mut auth_store = tau_provider::storage::load().unwrap_or_default();
                 let backend = prompt
                     .model
                     .as_deref()
-                    .and_then(|m| resolve_backend(m, &model_registry, &mut auth_store));
+                    .and_then(|m| tau_provider::resolve(m, &model_registry))
+                    .map(BackendConfig::from);
 
                 match backend {
-                    Some(BackendConfig::ChatCompletions(cfg)) => {
-                        handle_chat_completions(
+                    Some(backend) => {
+                        handle_prompt(
                             &session_prompt_id,
-                            &cfg,
-                            &prompt,
-                            &mut writer,
-                            &mut retry_ctx,
-                        )?;
-                    }
-                    Some(BackendConfig::Responses(cfg)) => {
-                        handle_responses(
-                            &session_prompt_id,
-                            &cfg,
+                            &backend,
                             &prompt,
                             &mut writer,
                             &mut retry_ctx,
@@ -253,214 +249,48 @@ enum BackendConfig {
     Responses(responses::ResponsesConfig),
 }
 
-/// Resolve a `"provider/model_id"` string into a backend config.
-fn resolve_backend(
-    model: &str,
-    models: &ModelRegistry,
-    auth_store: &mut tau_provider::storage::AuthStore,
-) -> Option<BackendConfig> {
-    let (provider_name, model_id) = model.split_once('/')?;
-    let provider = models.providers.get(provider_name)?;
-    let auth_type = provider
-        .auth
-        .as_deref()
-        .unwrap_or(if provider.api_key.is_some() {
-            "api-key"
-        } else {
-            "none"
-        });
-
-    match auth_type {
-        "openai-codex" => {
-            // Codex subscription → Responses API via chatgpt.com.
-            use tau_provider::storage::{Credentials, ProviderKind};
-            let (access_token, account_id) = match auth_store.providers.get(provider_name)? {
-                Credentials::Oauth {
-                    access_token,
-                    refresh_token,
-                    expires_at_ms,
-                    account_id,
-                    ..
-                } => {
-                    let mut access_token = access_token.clone();
-                    let mut account_id = account_id.clone();
-                    if oauth_token_should_refresh(&access_token, *expires_at_ms) {
-                        if let Ok(tokens) = tau_provider::oauth::openai_codex_refresh(refresh_token)
-                        {
-                            access_token = tokens.access_token.clone();
-                            account_id = tokens.account_id.clone();
-                            auth_store.providers.insert(
-                                provider_name.to_owned(),
-                                Credentials::Oauth {
-                                    provider_kind: ProviderKind::OpenaiCodex,
-                                    access_token: tokens.access_token,
-                                    refresh_token: tokens.refresh_token,
-                                    expires_at_ms: tokens.expires_at_ms,
-                                    account_id: tokens.account_id,
-                                },
-                            );
-                            let _ = tau_provider::storage::save(auth_store);
-                        }
-                    }
-                    (access_token, account_id)
-                }
-                _ => return None,
-            };
-            Some(BackendConfig::Responses(responses::ResponsesConfig {
-                base_url: "https://chatgpt.com/backend-api".to_owned(),
-                api_key: access_token,
-                model_id: model_id.to_owned(),
-                account_id,
-                supports_reasoning_effort: provider.compat.supports_reasoning_effort,
-                supports_reasoning_summary: supports_reasoning_summary(
-                    provider,
-                    "https://chatgpt.com/backend-api",
-                ),
-                prompt_cache_key: prompt_cache_key(
-                    provider,
-                    "https://chatgpt.com/backend-api",
-                    model_id,
-                ),
-                prompt_cache_retention: prompt_cache_retention(
-                    provider,
-                    "https://chatgpt.com/backend-api",
-                ),
-            }))
-        }
-        "github-copilot" => {
-            // Copilot → Chat Completions with token from auth.json.
-            use tau_provider::storage::Credentials;
-            let creds = auth_store.providers.get(provider_name)?;
-            let access_token = match creds {
-                Credentials::Oauth { access_token, .. } => access_token.clone(),
-                _ => return None,
-            };
-            let base_url = extract_copilot_base_url(&access_token)
-                .unwrap_or_else(|| "https://api.individual.githubcopilot.com".to_owned());
-            let prompt_cache_key = prompt_cache_key(provider, &base_url, model_id);
-            let prompt_cache_retention = prompt_cache_retention(provider, &base_url);
-            Some(BackendConfig::ChatCompletions(openai::OpenAiConfig {
-                base_url,
-                api_key: access_token,
-                model_id: model_id.to_owned(),
-                supports_reasoning_effort: provider.compat.supports_reasoning_effort,
-                prompt_cache_key,
-                prompt_cache_retention,
-                supports_llama_cpp_cache: provider.compat.supports_llama_cpp_cache,
-            }))
-        }
-        "api-key" | "none" => {
-            chat_completions_backend(provider_name, provider, auth_store, model_id)
-        }
-        _ => chat_completions_backend(provider_name, provider, auth_store, model_id),
-    }
-}
-
-fn oauth_token_should_refresh(access_token: &str, expires_at_ms: u64) -> bool {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis() as u64;
-
-    if let Some(issued_at_ms) = jwt_issued_at_ms(access_token) {
-        let lifetime_ms = expires_at_ms.saturating_sub(issued_at_ms);
-        let refresh_at_ms = issued_at_ms.saturating_add(lifetime_ms / 2);
-        if refresh_at_ms <= now_ms {
-            return true;
+impl BackendConfig {
+    /// Dispatch a streaming call to the appropriate backend.
+    fn stream(
+        &self,
+        request: &common::PromptPayload<'_>,
+        on_update: impl FnMut(&str, Option<&str>),
+    ) -> Result<common::StreamState, common::LlmError> {
+        match self {
+            Self::ChatCompletions(cfg) => openai::chat_completion_stream(cfg, request, on_update),
+            Self::Responses(cfg) => responses::responses_stream(cfg, request, on_update),
         }
     }
-
-    // Fallback for tokens without an `iat` claim: refresh a little early to avoid
-    // expiry during a long streaming response.
-    expires_at_ms <= now_ms + Duration::from_secs(5 * 60).as_millis() as u64
 }
 
-fn jwt_issued_at_ms(jwt: &str) -> Option<u64> {
-    let payload = jwt.split('.').nth(1)?;
-    let payload = tau_provider::oauth::base64_url_safe_no_pad_decode(payload)?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    claims.get("iat")?.as_u64().map(|secs| secs * 1000)
-}
-
-fn chat_completions_backend(
-    provider_name: &str,
-    provider: &ProviderConfig,
-    auth_store: &mut tau_provider::storage::AuthStore,
-    model_id: &str,
-) -> Option<BackendConfig> {
-    // Standard Chat Completions API.
-    let base_url = provider.base_url.clone().or_else(|| {
-        // Check auth.json for API key providers without base_url.
-        use tau_provider::storage::Credentials;
-        match auth_store.providers.get(provider_name)? {
-            Credentials::ApiKey { .. } => Some("https://api.openai.com/v1".to_owned()),
-            _ => None,
-        }
-    })?;
-    let api_key = provider.api_key.clone().unwrap_or_default();
-    let prompt_cache_key = prompt_cache_key(provider, &base_url, model_id);
-    let prompt_cache_retention = prompt_cache_retention(provider, &base_url);
-    Some(BackendConfig::ChatCompletions(openai::OpenAiConfig {
-        base_url,
-        api_key,
-        model_id: model_id.to_owned(),
-        supports_reasoning_effort: provider.compat.supports_reasoning_effort,
-        prompt_cache_key,
-        prompt_cache_retention,
-        supports_llama_cpp_cache: provider.compat.supports_llama_cpp_cache,
-    }))
-}
-
-fn prompt_cache_key(provider: &ProviderConfig, base_url: &str, model_id: &str) -> Option<String> {
-    if !supports_prompt_cache_key(provider, base_url) {
-        return None;
-    }
-
-    let cwd = std::env::current_dir().ok()?;
-    Some(openai::prompt_cache_key(base_url, model_id, &cwd))
-}
-
-fn prompt_cache_retention(
-    provider: &ProviderConfig,
-    base_url: &str,
-) -> Option<settings::PromptCacheRetention> {
-    if supports_prompt_cache_retention(provider, base_url) {
-        provider.prompt_cache_retention
-    } else {
-        None
-    }
-}
-
-fn supports_prompt_cache_key(provider: &ProviderConfig, base_url: &str) -> bool {
-    provider.compat.supports_prompt_cache_key || is_builtin_openai_prompt_cache_api(base_url)
-}
-
-/// Whether to send `reasoning.summary` to this provider on the
-/// Responses path. Auto-enabled on the public OpenAI API and the
-/// Codex backend; otherwise gated behind `supportsReasoningSummary`.
-fn supports_reasoning_summary(provider: &ProviderConfig, base_url: &str) -> bool {
-    provider.compat.supports_reasoning_summary || is_builtin_openai_prompt_cache_api(base_url)
-}
-
-fn supports_prompt_cache_retention(provider: &ProviderConfig, base_url: &str) -> bool {
-    provider.compat.supports_prompt_cache_retention || is_builtin_openai_prompt_cache_api(base_url)
-}
-
-fn is_builtin_openai_prompt_cache_api(base_url: &str) -> bool {
-    matches!(
-        base_url.trim_end_matches('/'),
-        "https://api.openai.com/v1" | "https://chatgpt.com/backend-api"
-    )
-}
-
-/// Parse `proxy-ep` from a Copilot token string.
-fn extract_copilot_base_url(token: &str) -> Option<String> {
-    for part in token.split(';') {
-        if let Some(ep) = part.strip_prefix("proxy-ep=") {
-            return Some(format!("https://{ep}"));
+impl From<tau_provider::resolver::ResolvedBackend> for BackendConfig {
+    fn from(value: tau_provider::resolver::ResolvedBackend) -> Self {
+        match value {
+            tau_provider::resolver::ResolvedBackend::ChatCompletions(cfg) => {
+                Self::ChatCompletions(openai::OpenAiConfig {
+                    base_url: cfg.base_url,
+                    api_key: cfg.api_key,
+                    model_id: cfg.model_id,
+                    supports_reasoning_effort: cfg.supports_reasoning_effort,
+                    prompt_cache_key: cfg.prompt_cache_key,
+                    prompt_cache_retention: cfg.prompt_cache_retention,
+                    supports_llama_cpp_cache: cfg.supports_llama_cpp_cache,
+                })
+            }
+            tau_provider::resolver::ResolvedBackend::Responses(cfg) => {
+                Self::Responses(responses::ResponsesConfig {
+                    base_url: cfg.base_url,
+                    api_key: cfg.api_key,
+                    model_id: cfg.model_id,
+                    account_id: cfg.account_id,
+                    supports_reasoning_effort: cfg.supports_reasoning_effort,
+                    supports_reasoning_summary: cfg.supports_reasoning_summary,
+                    prompt_cache_key: cfg.prompt_cache_key,
+                    prompt_cache_retention: cfg.prompt_cache_retention,
+                })
+            }
         }
     }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -505,9 +335,9 @@ fn with_llm_retry<F, W: Write>(
     writer: &mut FrameWriter<BufWriter<W>>,
     retry_ctx: &mut RetryContext<'_>,
     mut call: F,
-) -> Result<openai::StreamState, openai::OpenAiError>
+) -> Result<common::StreamState, common::LlmError>
 where
-    F: FnMut(&mut FrameWriter<BufWriter<W>>) -> Result<openai::StreamState, openai::OpenAiError>,
+    F: FnMut(&mut FrameWriter<BufWriter<W>>) -> Result<common::StreamState, common::LlmError>,
 {
     let mut backoff = llm_retry_schedule();
     let max_attempts = LLM_MAX_RETRIES;
@@ -558,13 +388,13 @@ fn emit_retry_banner<W: Write>(
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
     writer: &mut FrameWriter<BufWriter<W>>,
-    error: &openai::OpenAiError,
+    error: &common::LlmError,
     delay: Duration,
     attempt: usize,
     max_attempts: usize,
 ) {
     let banner = format!(
-        "⏳ provider error — retrying in {}s (attempt {}/{})\n\n> {}",
+        "provider error — retrying in {}s (attempt {}/{})\n\n> {}",
         delay.as_secs(),
         attempt,
         max_attempts,
@@ -581,14 +411,14 @@ fn emit_retry_banner<W: Write>(
     let _ = writer.flush();
 }
 
-fn handle_chat_completions<W: Write>(
+fn handle_prompt<W: Write>(
     session_prompt_id: &str,
-    config: &openai::OpenAiConfig,
+    backend: &BackendConfig,
     prompt: &tau_proto::SessionPromptCreated,
     writer: &mut FrameWriter<BufWriter<W>>,
     retry_ctx: &mut RetryContext<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    let request = openai::PromptPayload {
+    let request = common::PromptPayload {
         system_prompt: &prompt.system_prompt,
         messages: &prompt.messages,
         tools: &prompt.tools,
@@ -603,49 +433,7 @@ fn handle_chat_completions<W: Write>(
         writer,
         retry_ctx,
         |writer| {
-            openai::chat_completion_stream(config, &request, |text_so_far, thinking_so_far| {
-                let _ = writer.write_frame(&Frame::Event(Event::AgentResponseUpdated(
-                    AgentResponseUpdated {
-                        session_prompt_id: session_prompt_id.into(),
-                        text: text_so_far.to_owned(),
-                        thinking: thinking_so_far.map(str::to_owned),
-                        originator: originator.clone(),
-                    },
-                )));
-                let _ = writer.flush();
-            })
-        },
-    );
-    match result {
-        Ok(state) => finish_stream(session_prompt_id, &prompt.originator, state, writer)?,
-        Err(error) => finish_error(session_prompt_id, &prompt.originator, error, writer)?,
-    }
-    Ok(())
-}
-
-fn handle_responses<W: Write>(
-    session_prompt_id: &str,
-    config: &responses::ResponsesConfig,
-    prompt: &tau_proto::SessionPromptCreated,
-    writer: &mut FrameWriter<BufWriter<W>>,
-    retry_ctx: &mut RetryContext<'_>,
-) -> Result<(), Box<dyn Error>> {
-    let request = openai::PromptPayload {
-        system_prompt: &prompt.system_prompt,
-        messages: &prompt.messages,
-        tools: &prompt.tools,
-        effort: prompt.effort,
-        thinking_summary: prompt.thinking_summary,
-    };
-
-    let originator = prompt.originator.clone();
-    let result = with_llm_retry(
-        session_prompt_id,
-        &originator,
-        writer,
-        retry_ctx,
-        |writer| {
-            responses::responses_stream(config, &request, |text_so_far, thinking_so_far| {
+            backend.stream(&request, |text_so_far, thinking_so_far| {
                 let _ = writer.write_frame(&Frame::Event(Event::AgentResponseUpdated(
                     AgentResponseUpdated {
                         session_prompt_id: session_prompt_id.into(),
@@ -668,7 +456,7 @@ fn handle_responses<W: Write>(
 fn finish_stream<W: Write>(
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
-    state: openai::StreamState,
+    state: common::StreamState,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
     let text_empty = state.text.is_empty();
@@ -711,7 +499,7 @@ fn finish_stream<W: Write>(
 fn finish_error<W: Write>(
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
-    error: openai::OpenAiError,
+    error: common::LlmError,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
     writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
@@ -735,6 +523,7 @@ fn finish_error<W: Write>(
 
 /// A simple echo agent for integration tests. Echoes user text back
 /// as a `echo` tool call, or returns tool results as text.
+#[cfg(feature = "echo-agent")]
 pub fn run_echo<R, W>(reader: R, writer: W) -> Result<(), Box<dyn Error>>
 where
     R: Read,

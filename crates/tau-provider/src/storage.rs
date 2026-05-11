@@ -128,6 +128,14 @@ pub fn load() -> io::Result<AuthStore> {
 }
 
 /// Save auth store to disk with secure permissions.
+pub fn save_provider(provider_name: &str, credentials: Credentials) -> io::Result<()> {
+    let mut store = load()?;
+    store
+        .providers
+        .insert(provider_name.to_owned(), credentials);
+    save(&store)
+}
+
 pub fn save(store: &AuthStore) -> io::Result<()> {
     let Some(path) = auth_path() else {
         return Err(io::Error::new(
