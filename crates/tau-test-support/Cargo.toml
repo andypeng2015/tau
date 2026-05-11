@@ -13,3 +13,8 @@ tau-config.workspace = true
 tau-core.workspace = true
 tau-harness = { workspace = true, features = ["echo-agent"] }
 tempfile.workspace = true
+
+[dev-dependencies]
+tau-agent.workspace = true
+tau-ext-shell.workspace = true
+tau-proto.workspace = true

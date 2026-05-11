@@ -1557,8 +1557,6 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
- "tau-agent",
- "tau-ext-shell",
  "tau-proto",
  "tempfile",
 ]
@@ -1726,9 +1724,12 @@ dependencies = [
 name = "tau-test-support"
 version = "0.1.0"
 dependencies = [
+ "tau-agent",
  "tau-config",
  "tau-core",
+ "tau-ext-shell",
  "tau-harness",
+ "tau-proto",
  "tempfile",
 ]
 
