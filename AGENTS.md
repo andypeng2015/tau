@@ -5,7 +5,7 @@
 - `crates/tau-blocking-notify-channel` — blocking notification channel utility
 - `crates/tau-cli` — CLI entrypoint: starts harness daemon and connects UI clients
 - `crates/tau-cli-picker` — shared interactive picker for terminal selection prompts
-- `crates/tau-cli-term` — terminal UI client
+- `crates/tau-cli-term` — higher-level terminal prompt: slash-command/path completion, menu rendering, `$EDITOR` integration
 - `crates/tau-cli-term-raw` — raw terminal rendering/input layer
 - `crates/tau-config` — user and project configuration loading
 - `crates/tau-core` — event bus, routing, state, sessions, policy, and tool registry

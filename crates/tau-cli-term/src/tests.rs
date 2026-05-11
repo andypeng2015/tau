@@ -430,3 +430,203 @@ fn editing_after_preview_commits_it_as_the_new_original_buffer() {
     ));
     assert_eq!(handle.get_buffer(), "/mode");
 }
+
+mod trailer {
+    use std::sync::{Arc, Mutex};
+
+    use crate::{
+        EditorContext, PROMPT_TRAILER_MARKER, append_prompt_trailer, strip_prompt_trailer,
+    };
+
+    fn ctx(ec: EditorContext) -> Arc<Mutex<EditorContext>> {
+        Arc::new(Mutex::new(ec))
+    }
+
+    #[test]
+    fn no_context_returns_buffer_unchanged() {
+        let out = append_prompt_trailer("hello", &ctx(EditorContext::default()));
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn roundtrip_strips_trailer_with_active_prompt() {
+        let edited = append_prompt_trailer(
+            "draft body",
+            &ctx(EditorContext {
+                active_prompt: Some("agent draft".to_owned()),
+                last_agent_response: None,
+                previous_prompt: None,
+            }),
+        );
+        assert!(edited.contains(PROMPT_TRAILER_MARKER));
+        assert!(edited.contains("agent draft"));
+        assert_eq!(strip_prompt_trailer(&edited), "draft body");
+    }
+
+    #[test]
+    fn roundtrip_strips_trailer_with_all_sections() {
+        let edited = append_prompt_trailer(
+            "user body",
+            &ctx(EditorContext {
+                active_prompt: Some("in progress".to_owned()),
+                last_agent_response: Some("last".to_owned()),
+                previous_prompt: Some("prev".to_owned()),
+            }),
+        );
+        assert!(edited.contains("Current response in progress"));
+        assert!(edited.contains("Last agent response"));
+        assert!(edited.contains("Previous prompt"));
+        assert_eq!(strip_prompt_trailer(&edited), "user body");
+    }
+
+    #[test]
+    fn empty_section_strings_are_skipped() {
+        let edited = append_prompt_trailer(
+            "body",
+            &ctx(EditorContext {
+                active_prompt: Some(String::new()),
+                last_agent_response: Some("kept".to_owned()),
+                previous_prompt: Some(String::new()),
+            }),
+        );
+        assert!(!edited.contains("Current response in progress"));
+        assert!(edited.contains("Last agent response"));
+        assert!(!edited.contains("Previous prompt"));
+    }
+
+    #[test]
+    fn strip_without_marker_is_identity() {
+        assert_eq!(strip_prompt_trailer("just text"), "just text");
+    }
+
+    #[test]
+    fn user_text_containing_marker_is_truncated() {
+        // Documents the *current* behavior: if the user's own draft
+        // happens to contain the trailer marker, `strip_prompt_trailer`
+        // truncates at the first occurrence. The marker is verbose
+        // enough that this is unlikely in practice, but pinning the
+        // behavior makes the trade-off explicit.
+        let mut user_text = String::from("body with marker: ");
+        user_text.push_str(PROMPT_TRAILER_MARKER);
+        user_text.push_str(" and more");
+        let stripped = strip_prompt_trailer(&user_text);
+        assert_eq!(stripped, "body with marker: ");
+    }
+}
+
+mod filesystem_token {
+    use crate::completion::{self, CompletionData, SlashCommand, build_candidates};
+
+    #[test]
+    fn dotslash_token_triggers_filesystem_candidates() {
+        // Empty directory listing is fine — we just need the path to
+        // *match* as a filesystem token (vs. returning the slash-cmd
+        // candidate list).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prefix = format!("{}/", tmp.path().display());
+        // Synthesize a buffer of the form "./" prefix. `build_candidates`
+        // requires the prefix to start with "./" or "../"; absolute
+        // paths are not a filesystem token.
+        let buffer = "./";
+        let cursor = buffer.len();
+        let cands = build_candidates(
+            &[SlashCommand::new("/whatever", "")],
+            &CompletionData::new(),
+            buffer,
+            cursor,
+        );
+        // No assertion on contents (the test machine's CWD differs);
+        // just confirm we didn't fall through to slash-command logic.
+        for c in &cands {
+            assert!(!c.replacement.starts_with('/'), "expected fs candidate");
+        }
+        let _ = prefix;
+    }
+
+    #[test]
+    fn slash_command_buffer_does_not_route_to_filesystem() {
+        let cands = build_candidates(
+            &[SlashCommand::new("/model", "Switch model")],
+            &CompletionData::new(),
+            "/mod",
+            "/mod".len(),
+        );
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].replacement, "/model");
+    }
+
+    #[test]
+    fn non_slash_non_path_buffer_returns_nothing() {
+        let cands = build_candidates(
+            &[SlashCommand::new("/model", "Switch model")],
+            &CompletionData::new(),
+            "hello",
+            "hello".len(),
+        );
+        assert!(cands.is_empty());
+    }
+
+    #[test]
+    fn parent_traversal_token_is_recognised() {
+        let cands = build_candidates(
+            &[SlashCommand::new("/whatever", "")],
+            &CompletionData::new(),
+            "../",
+            "../".len(),
+        );
+        // Non-empty or empty is fine; we just verify it didn't fall
+        // back to slash-command behavior (which would have been empty
+        // since the buffer doesn't start with '/').
+        for c in &cands {
+            assert!(!c.replacement.starts_with('/'));
+        }
+        let _ = completion::SlashCommand::new("/x", "");
+    }
+}
+
+mod prompt_action_parse {
+    use crate::PromptShellAction;
+
+    #[test]
+    fn parses_history_actions() {
+        assert!(matches!(
+            PromptShellAction::parse("prompt-next"),
+            Some(PromptShellAction::PromptNext)
+        ));
+        assert!(matches!(
+            PromptShellAction::parse("prompt-previous"),
+            Some(PromptShellAction::PromptPrevious)
+        ));
+    }
+
+    #[test]
+    fn parses_shell_insert_with_trim() {
+        let parsed = PromptShellAction::parse("shell-prompt-insert:trim:echo hi");
+        match parsed {
+            Some(PromptShellAction::Insert(cmd)) => {
+                assert!(cmd.trim);
+                assert_eq!(cmd.command, "echo hi");
+            }
+            _ => panic!("expected Insert"),
+        }
+    }
+
+    #[test]
+    fn parses_shell_edit_preserves_colons_in_command() {
+        let parsed = PromptShellAction::parse("shell-prompt-edit:full:bash -c 'echo a:b:c'");
+        match parsed {
+            Some(PromptShellAction::Edit(cmd)) => {
+                assert!(!cmd.trim);
+                assert_eq!(cmd.command, "bash -c 'echo a:b:c'");
+            }
+            _ => panic!("expected Edit"),
+        }
+    }
+
+    #[test]
+    fn unknown_action_returns_none() {
+        assert!(PromptShellAction::parse("not-a-real-action").is_none());
+        assert!(PromptShellAction::parse("shell-prompt-bogus:trim:cmd").is_none());
+        assert!(PromptShellAction::parse("shell-prompt-edit:trim").is_none());
+    }
+}

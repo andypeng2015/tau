@@ -1530,6 +1530,7 @@ dependencies = [
  "tau-themes",
  "tempfile",
  "tracing",
+ "unicode-width",
 ]
 
 [[package]]

@@ -118,22 +118,12 @@ impl HighTerm {
         &self.handle
     }
 
-    /// Updates the context appended to external-editor prompt files.
-    pub fn set_editor_context(
-        &self,
-        last_agent_response: Option<String>,
-        previous_prompt: Option<String>,
-    ) {
-        *self
-            .editor_context
-            .lock()
-            .expect("editor context mutex poisoned") = EditorContext {
-            active_prompt: None,
-            last_agent_response,
-            previous_prompt,
-        };
-    }
-
+    /// Replaces the editor-context storage with a shared handle.
+    ///
+    /// Use this when another component (e.g. the event renderer) owns
+    /// the authoritative context and needs the prompt's external-editor
+    /// integration to read from the same `Arc`. The previously-owned
+    /// `EditorContext` is dropped.
     pub fn set_editor_context_handle(&mut self, editor_context: Arc<Mutex<EditorContext>>) {
         self.editor_context = editor_context;
     }
@@ -192,7 +182,10 @@ impl HighTerm {
 
                 RawEvent::ExternalEditor => {
                     self.sync_menu_block();
-                    self.run_external_editor();
+                    self.run_prompt_action(PromptShellAction::Edit(PromptShellCommand {
+                        command: "${VISUAL:-${EDITOR:-}} \"$TAU_PROMPT_PATH\"".to_owned(),
+                        trim: false,
+                    }));
                     self.handle.redraw_sync();
                     return Ok(Event::BufferChanged);
                 }
@@ -234,38 +227,19 @@ impl HighTerm {
         }
     }
 
-    /// Spawns `$VISUAL || $EDITOR` synchronously with the current
-    /// input buffer in a tempfile, releases raw mode while it runs,
-    /// and replaces the buffer with the result on success. Errors
-    /// (no editor, spawn failure, non-zero exit) surface as a themed
-    /// info line above the prompt.
-    fn run_external_editor(&self) {
-        match run_prompt_shell_action(
-            &self.term,
-            &self.handle,
-            self.editor_context.clone(),
-            PromptShellAction::Edit(PromptShellCommand {
-                command: "${VISUAL:-${EDITOR:-}} \"$TAU_PROMPT_PATH\"".to_owned(),
-                trim: false,
-            }),
-        ) {
-            Ok(Some(PromptShellResult::Replace(new_text))) => {
-                let cursor = new_text.len();
-                self.handle.set_buffer(new_text, cursor);
-            }
-            Ok(Some(PromptShellResult::Insert(_))) => {}
-            Ok(Some(PromptShellResult::History(_))) => {}
-            Ok(None) => {} // editor exited non-zero or text unchanged.
-            Err(msg) => self.print_local(&format!("external editor: {msg}")),
-        }
-    }
-
     fn run_binding(&self, action: &str) {
         tracing::trace!(target: "tau_cli::input", action, "running prompt binding");
         let Some(action) = PromptShellAction::parse(action) else {
             self.print_local(&format!("binding: unknown action `{action}`"));
             return;
         };
+        self.run_prompt_action(action);
+    }
+
+    /// Runs a [`PromptShellAction`] and applies its result to the
+    /// input buffer. Errors (spawn failure, bad utf-8, no editor)
+    /// surface as a themed info line above the prompt.
+    fn run_prompt_action(&self, action: PromptShellAction) {
         match run_prompt_shell_action(
             &self.term,
             &self.handle,
@@ -285,8 +259,8 @@ impl HighTerm {
             Ok(Some(PromptShellResult::History(delta))) => {
                 self.term.trigger_history_step(delta);
             }
-            Ok(None) => {}
-            Err(msg) => self.print_local(&format!("binding: {msg}")),
+            Ok(None) => {} // shell exited non-zero or no output applies.
+            Err(msg) => self.print_local(&format!("prompt action: {msg}")),
         }
     }
 

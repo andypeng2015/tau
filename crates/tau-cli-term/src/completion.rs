@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use tau_cli_term_raw::{Candidate, CompletionView, Span, StyledBlock, StyledText};
 use tau_themes::Theme;
+use unicode_width::UnicodeWidthStr;
 
 use crate::resolve;
 
@@ -27,7 +28,7 @@ pub struct CommandName(String);
 impl CommandName {
     pub fn new(name: impl Into<String>) -> Self {
         let s = name.into();
-        debug_assert!(s.starts_with('/'), "CommandName must start with '/'");
+        assert!(s.starts_with('/'), "CommandName must start with '/'");
         Self(s)
     }
 
@@ -81,6 +82,15 @@ impl CompletionItem {
     }
 }
 
+/// A [`CompletionItem`] paired with a precomputed lowercased copy of
+/// its `value`, so the per-keystroke match loop doesn't reallocate
+/// the haystack on every call.
+#[derive(Clone)]
+struct IndexedItem {
+    item: CompletionItem,
+    value_lower: String,
+}
+
 /// Thread-safe storage for dynamic argument completions.
 ///
 /// Clone this handle and pass it to background threads that need to
@@ -88,7 +98,7 @@ impl CompletionItem {
 /// list).
 #[derive(Clone, Default)]
 pub struct CompletionData {
-    inner: Arc<Mutex<HashMap<CommandName, Vec<CompletionItem>>>>,
+    inner: Arc<Mutex<HashMap<CommandName, Vec<IndexedItem>>>>,
 }
 
 impl CompletionData {
@@ -98,13 +108,20 @@ impl CompletionData {
 
     /// Sets the argument completions for a slash command.
     pub fn set_arg_completions(&self, command: CommandName, items: Vec<CompletionItem>) {
+        let indexed = items
+            .into_iter()
+            .map(|item| IndexedItem {
+                value_lower: item.value.to_lowercase(),
+                item,
+            })
+            .collect();
         self.inner
             .lock()
             .expect("completion data lock")
-            .insert(command, items);
+            .insert(command, indexed);
     }
 
-    fn get_arg_completions(&self, command: &CommandName) -> Option<Vec<CompletionItem>> {
+    fn get_arg_completions(&self, command: &CommandName) -> Option<Vec<IndexedItem>> {
         self.inner
             .lock()
             .expect("completion data lock")
@@ -249,15 +266,14 @@ fn build_arg_candidates(data: &CompletionData, cmd: &str, arg_prefix: &str) -> V
     let mut prefix_matches = Vec::new();
     let mut substr_matches = Vec::new();
 
-    for item in &items {
-        let hay = item.value.to_lowercase();
-        if needle.is_empty() || hay.starts_with(&needle) {
+    for IndexedItem { item, value_lower } in &items {
+        if needle.is_empty() || value_lower.starts_with(&needle) {
             prefix_matches.push(Candidate {
                 label: item.value.clone(),
                 description: item.description.clone(),
                 replacement: format!("{cmd} {}", item.value),
             });
-        } else if hay.contains(&needle) {
+        } else if value_lower.contains(&needle) {
             substr_matches.push(Candidate {
                 label: item.value.clone(),
                 description: item.description.clone(),
@@ -277,10 +293,10 @@ pub fn render_menu_block(view: &CompletionView, theme: &Theme) -> StyledBlock {
     let label_style = resolve::resolve(theme, tau_themes::names::COMPLETION_LABEL);
     let desc_style = resolve::resolve(theme, tau_themes::names::COMPLETION_DESC);
 
-    let max_label_len = view
+    let max_label_width = view
         .candidates
         .iter()
-        .map(|c| c.label.len())
+        .map(|c| UnicodeWidthStr::width(c.label.as_str()))
         .max()
         .unwrap_or(0);
 
@@ -291,7 +307,8 @@ pub fn render_menu_block(view: &CompletionView, theme: &Theme) -> StyledBlock {
         }
 
         let is_selected = view.selected == Some(i);
-        let padding = max_label_len - candidate.label.len() + 2;
+        let label_width = UnicodeWidthStr::width(candidate.label.as_str());
+        let padding = max_label_width - label_width + 2;
 
         let line_text = if candidate.description.is_empty() {
             format!("  {}  ", candidate.label)
