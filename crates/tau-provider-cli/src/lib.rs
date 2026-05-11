@@ -108,12 +108,10 @@ fn cmd_add() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // 4. Save to auth.json.
-    let mut store = storage::load()?;
-    store.providers.insert(name.clone(), creds);
-    storage::save(&store)?;
+    // 4. Save to disk under auth.d/<name>.json.
+    storage::save_provider(&name, &creds)?;
 
-    if let Some(path) = storage::auth_path() {
+    if let Ok(path) = storage::provider_auth_path(&name) {
         eprintln!("\nCredentials saved to: {}", path.display());
     }
 
@@ -130,7 +128,7 @@ fn cmd_add() -> Result<(), Box<dyn std::error::Error>> {
 
 fn cmd_remove(name_arg: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let models = tau_config::settings::load_models()?;
-    let mut store = storage::load()?;
+    let store = storage::load()?;
 
     let name = match name_arg {
         Some(n) => n.to_string(),
@@ -156,10 +154,8 @@ fn cmd_remove(name_arg: Option<&str>) -> Result<(), Box<dyn std::error::Error>> 
 
     let mut removed_anything = false;
 
-    // Remove from auth.json.
-    if store.providers.remove(&name).is_some() {
-        storage::save(&store)?;
-        eprintln!("Removed credentials for '{name}' from auth.json.");
+    if storage::delete_provider(&name)? {
+        eprintln!("Removed credentials for '{name}'.");
         removed_anything = true;
     }
 
@@ -254,7 +250,6 @@ fn cmd_list() -> Result<(), Box<dyn std::error::Error>> {
 
 fn cmd_login(name_arg: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let models = tau_config::settings::load_models()?;
-    let mut store = storage::load()?;
 
     let mut oauth_names: Vec<String> = models
         .providers
@@ -300,8 +295,7 @@ fn cmd_login(name_arg: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    store.providers.insert(name.clone(), new_creds);
-    storage::save(&store)?;
+    storage::save_provider(&name, &new_creds)?;
     eprintln!("Login refreshed for '{name}'.");
     Ok(())
 }

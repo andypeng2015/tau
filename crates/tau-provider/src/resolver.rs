@@ -96,15 +96,13 @@ fn responses_backend(
                         expires_at_ms: tokens.expires_at_ms,
                         account_id: tokens.account_id,
                     };
-                    auth_store
-                        .providers
-                        .insert(provider_name.to_owned(), creds.clone());
-                    if let Err(error) = storage::save_provider(provider_name, creds) {
+                    if let Err(error) = storage::save_provider(provider_name, &creds) {
                         tracing::warn!(
                             provider = provider_name,
                             "failed to save refreshed credentials: {error}"
                         );
                     }
+                    auth_store.providers.insert(provider_name.to_owned(), creds);
                 }
             }
             (access_token, account_id)
