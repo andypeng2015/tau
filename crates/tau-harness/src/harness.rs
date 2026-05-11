@@ -451,6 +451,7 @@ impl Harness {
         harness.register_harness_tools();
         harness.check_config_exists();
         harness.check_config_parses();
+        harness.check_models_parses();
 
         // Eager session init for the default session. INTENTIONAL —
         // do NOT "simplify" this to lazy-on-first-prompt.
@@ -650,6 +651,7 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness tools registered");
         harness.check_config_exists();
         harness.check_config_parses();
+        harness.check_models_parses();
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "config checks complete");
 
         harness.start_session_init(
@@ -1868,8 +1870,19 @@ impl Harness {
     fn check_config_parses(&mut self) {
         if let Err(error) = tau_config::settings::load_harness_settings_in(&self.dirs) {
             self.emit_info_important(&format!(
-                "harness.json5 failed to parse — extensions and model selection from it are being IGNORED.\n{error}"
+                "harness.json5 failed to parse — ignored.\n{error}"
             ));
+        }
+    }
+
+    /// Re-parse `models.json5`. Same rationale as
+    /// [`Self::check_config_parses`]: the load during startup already
+    /// fell back to an empty registry on error; this surfaces the
+    /// reason in the UI so the user isn't left wondering why their
+    /// provider list is empty.
+    fn check_models_parses(&mut self) {
+        if let Err(error) = tau_config::settings::load_models_in(&self.dirs) {
+            self.emit_info_important(&format!("models.json5 failed to parse — ignored.\n{error}"));
         }
     }
 

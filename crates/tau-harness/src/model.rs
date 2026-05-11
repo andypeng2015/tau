@@ -4,7 +4,7 @@
 
 use tau_proto::ModelId;
 
-use crate::settings::load_harness_settings_or_warn;
+use crate::settings::{load_harness_settings_or_warn, load_models_or_warn};
 
 /// Load model registry and harness settings, build the flat model list
 /// and determine the initially selected model.
@@ -19,7 +19,7 @@ pub(crate) fn load_model_list(
     tau_config::settings::ModelRegistry,
     tau_config::settings::HarnessSettings,
 ) {
-    let model_registry = tau_config::settings::load_models_in(dirs).unwrap_or_default();
+    let model_registry = load_models_or_warn(dirs);
     let harness_settings = load_harness_settings_or_warn(dirs);
     let mut available: Vec<ModelId> = Vec::new();
     for (provider_name, provider_cfg) in &model_registry.providers {

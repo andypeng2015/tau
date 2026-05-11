@@ -238,10 +238,26 @@ pub(crate) fn load_harness_settings_or_warn(
     match tau_config::settings::load_harness_settings_in(dirs) {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!(
-                "tau: failed to load harness.json5: {error}\ntau: falling back to default harness settings — extensions and model selection from harness.json5 will be ignored"
-            );
+            eprintln!("tau: harness.json5 failed to parse — ignored.\n{error}");
             HarnessSettings::default()
+        }
+    }
+}
+
+/// Load `models.json5` and fall back to an empty registry on parse
+/// error, after writing a warning to stderr. The harness re-runs the
+/// load later via `check_models_parses` so the same error also
+/// surfaces in the UI; the stderr line is there for users who started
+/// `tau` from a terminal and may still see it before the TUI takes
+/// over.
+pub(crate) fn load_models_or_warn(
+    dirs: &tau_config::settings::TauDirs,
+) -> tau_config::settings::ModelRegistry {
+    match tau_config::settings::load_models_in(dirs) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("tau: models.json5 failed to parse — ignored.\n{error}");
+            tau_config::settings::ModelRegistry::default()
         }
     }
 }
