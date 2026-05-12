@@ -1408,6 +1408,38 @@ pub struct AgentResponseFinished {
     /// Session token usage snapshot after this response completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<AgentTokenUsage>,
+    /// Which LLM backend handled this turn. Recorded once per turn
+    /// (instead of in a trace line) so offline inspection of the
+    /// event log can correlate cache-miss / retry patterns with the
+    /// backend that produced them — e.g. distinguishing OpenAI
+    /// public-API behavior from the ChatGPT Codex Responses backend.
+    /// `None` for turns that never reached a backend (e.g. an
+    /// agent-side resolution failure or the in-process echo agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<AgentBackend>,
+}
+
+/// Identifies the LLM backend that handled an
+/// [`AgentResponseFinished`].
+///
+/// Kind discriminates the provider API shape (Chat Completions vs.
+/// Responses), and `base_url` pins down the specific endpoint —
+/// `https://api.openai.com/v1` and `https://chatgpt.com/backend-api`
+/// share the Responses kind but have very different cache /
+/// rate-limit behavior, so the base URL is what an offline analysis
+/// needs to tell them apart.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentBackend {
+    pub kind: AgentBackendKind,
+    pub base_url: String,
+}
+
+/// The provider API shape an [`AgentBackend`] talks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentBackendKind {
+    ChatCompletions,
+    Responses,
 }
 
 // ---------------------------------------------------------------------------

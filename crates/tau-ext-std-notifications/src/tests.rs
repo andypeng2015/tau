@@ -150,6 +150,8 @@ fn emits_start_and_end_user_var_in_order() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     // Explicit disconnect so the loop exits without waiting on
@@ -217,6 +219,8 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
             thinking: Some("planning".into()),
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
@@ -266,6 +270,8 @@ fn idle_timeout_requests_summary_then_falls_back() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -367,6 +373,8 @@ fn summary_result_populates_notification_body() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -448,6 +456,8 @@ fn prompt_draft_extends_idle_deadline() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -540,6 +550,8 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -645,6 +657,8 @@ fn idle_command_runs_with_title_body_and_env() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -748,6 +762,8 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer
@@ -824,6 +840,8 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
 
@@ -862,6 +880,8 @@ fn sub_agent_prompts_and_responses_are_ignored() {
                 name: "core-delegate".into(),
                 query_id: "q1".into(),
             },
+
+            backend: None,
         }))
         .expect("write");
 
@@ -876,6 +896,8 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
@@ -938,6 +960,8 @@ fn duplicate_ui_prompt_submitted_during_same_turn_emits_one_start_sound() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");

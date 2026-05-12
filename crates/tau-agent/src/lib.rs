@@ -174,6 +174,8 @@ where
                                 thinking: None,
                                 token_usage: None,
                                 originator: prompt.originator.clone(),
+                                // No backend ran: model failed to resolve.
+                                backend: None,
                             },
                         )))?;
                         writer.flush()?;
@@ -261,6 +263,23 @@ impl BackendConfig {
         match self {
             Self::ChatCompletions(cfg) => openai::chat_completion_stream(cfg, request, on_update),
             Self::Responses(cfg) => responses::responses_stream(cfg, request, on_update),
+        }
+    }
+
+    /// Wire-form descriptor stamped on the turn's
+    /// `AgentResponseFinished` so offline inspection knows which
+    /// backend produced it without each request having to log
+    /// separately.
+    fn descriptor(&self) -> tau_proto::AgentBackend {
+        match self {
+            Self::ChatCompletions(cfg) => tau_proto::AgentBackend {
+                kind: tau_proto::AgentBackendKind::ChatCompletions,
+                base_url: cfg.base_url.clone(),
+            },
+            Self::Responses(cfg) => tau_proto::AgentBackend {
+                kind: tau_proto::AgentBackendKind::Responses,
+                base_url: cfg.base_url.clone(),
+            },
         }
     }
 }
@@ -448,9 +467,22 @@ fn handle_prompt<W: Write>(
             })
         },
     );
+    let backend_descriptor = backend.descriptor();
     match result {
-        Ok(state) => finish_stream(session_prompt_id, &prompt.originator, state, writer)?,
-        Err(error) => finish_error(session_prompt_id, &prompt.originator, error, writer)?,
+        Ok(state) => finish_stream(
+            session_prompt_id,
+            &prompt.originator,
+            &backend_descriptor,
+            state,
+            writer,
+        )?,
+        Err(error) => finish_error(
+            session_prompt_id,
+            &prompt.originator,
+            &backend_descriptor,
+            error,
+            writer,
+        )?,
     }
     Ok(())
 }
@@ -458,6 +490,7 @@ fn handle_prompt<W: Write>(
 fn finish_stream<W: Write>(
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
+    backend: &tau_proto::AgentBackend,
     state: common::StreamState,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
@@ -498,6 +531,7 @@ fn finish_stream<W: Write>(
                 ..tau_proto::AgentTokenUsage::default()
             }),
             originator: originator.clone(),
+            backend: Some(backend.clone()),
         },
     )))?;
     writer.flush()?;
@@ -507,6 +541,7 @@ fn finish_stream<W: Write>(
 fn finish_error<W: Write>(
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
+    backend: &tau_proto::AgentBackend,
     error: common::LlmError,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
@@ -520,6 +555,7 @@ fn finish_error<W: Write>(
             thinking: None,
             token_usage: None,
             originator: originator.clone(),
+            backend: Some(backend.clone()),
         },
     )))?;
     writer.flush()?;
@@ -604,6 +640,8 @@ where
                             thinking: None,
                             token_usage: None,
                             originator: prompt.originator.clone(),
+                            // Echo agent never calls a real LLM backend.
+                            backend: None,
                         },
                     )))?;
                 } else {
@@ -660,6 +698,8 @@ where
                             thinking: None,
                             token_usage: None,
                             originator: prompt.originator.clone(),
+                            // Echo agent never calls a real LLM backend.
+                            backend: None,
                         },
                     )))?;
                 }

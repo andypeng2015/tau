@@ -136,6 +136,8 @@ fn late_joining_ui_client_replays_only_final_session_events() {
             cached_tokens: None,
             thinking: None,
             token_usage: None,
+
+            backend: None,
         }),
     );
 
@@ -345,6 +347,8 @@ fn resumed_harness_replays_persisted_session_history() {
             thinking: None,
             token_usage: None,
             originator: tau_proto::PromptOriginator::User,
+
+            backend: None,
         })
         .expect("persist agent response");
 
@@ -405,6 +409,8 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
         thinking: Some("The user is asking ...".to_owned()),
         token_usage: None,
         originator: tau_proto::PromptOriginator::User,
+
+        backend: None,
     })
     .expect("persist agent response");
 

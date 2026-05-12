@@ -255,6 +255,8 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
         thinking: None,
         token_usage: None,
         originator: tau_proto::PromptOriginator::User,
+
+        backend: None,
     };
 
     h.handle_agent_response_finished(response)
@@ -353,6 +355,8 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
         thinking: None,
         token_usage: None,
         originator: tau_proto::PromptOriginator::User,
+
+        backend: None,
     };
 
     h.handle_agent_response_finished(response)

@@ -84,6 +84,8 @@ fn representative_events() -> Vec<Event> {
             thinking: None,
             token_usage: None,
             originator: PromptOriginator::User,
+
+            backend: None,
         }),
         Event::ExtensionStarting(ExtensionStarting {
             instance_id: 1.into(),

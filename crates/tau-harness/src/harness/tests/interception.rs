@@ -76,6 +76,8 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
         thinking: None,
         token_usage: None,
         originator: tau_proto::PromptOriginator::User,
+
+        backend: None,
     })
     .expect("main response");
 
