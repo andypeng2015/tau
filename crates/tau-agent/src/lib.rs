@@ -7,7 +7,7 @@ pub mod common;
 pub(crate) mod openai;
 mod responses;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -88,6 +88,15 @@ where
     });
 
     let mut deferred: VecDeque<Frame> = VecDeque::new();
+    // Per-process WS state, lifted out of the per-prompt scope so
+    // connections survive between turns. See `TODO-codex-websocket.md`
+    // §2 for the design.
+    let mut ws_pool = responses::pool::WsPool::new();
+    // Sessions where the WS upgrade or stream got slapped down with
+    // an unambiguous "go away" — flip them permanently to HTTP for
+    // the rest of this agent's life, rather than retrying WS on
+    // every turn.
+    let mut ws_disabled: HashSet<String> = HashSet::new();
 
     loop {
         let frame = match deferred.pop_front() {
@@ -157,6 +166,8 @@ where
                             &prompt,
                             &mut writer,
                             &mut retry_ctx,
+                            &mut ws_pool,
+                            &mut ws_disabled,
                         )?;
                     }
                     None => {
@@ -256,11 +267,16 @@ enum BackendConfig {
 }
 
 impl BackendConfig {
-    /// Dispatch a streaming call to the appropriate backend.
-    fn stream(
+    /// Dispatch a streaming call to the appropriate HTTP backend.
+    ///
+    /// Pure HTTP+SSE — the WebSocket dispatch lives in
+    /// [`stream_with_ws`] because it needs the agent loop's
+    /// connection pool and per-session fallback state, which a
+    /// per-prompt `&BackendConfig` cannot reach.
+    fn stream_http(
         &self,
         request: &common::PromptPayload<'_>,
-        on_update: impl FnMut(&str, Option<&str>),
+        on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<common::StreamState, common::LlmError> {
         match self {
             Self::ChatCompletions(cfg) => openai::chat_completion_stream(cfg, request, on_update),
@@ -311,6 +327,7 @@ impl From<tau_provider::resolver::ResolvedBackend> for BackendConfig {
                     supports_reasoning_summary: cfg.supports_reasoning_summary,
                     supports_verbosity: cfg.supports_verbosity,
                     supports_phase: cfg.supports_phase,
+                    supports_websocket: cfg.supports_websocket,
                     prompt_cache_key: cfg.prompt_cache_key,
                     prompt_cache_retention: cfg.prompt_cache_retention,
                 })
@@ -437,12 +454,76 @@ fn emit_retry_banner<W: Write>(
     let _ = writer.flush();
 }
 
+/// Single-attempt streaming dispatch used inside the retry loop.
+///
+/// For Chat Completions and HTTP-only Responses turns, this is just
+/// [`BackendConfig::stream_http`]. For Responses turns with WS
+/// enabled (and the per-session sticky-disable flag still off), it
+/// tries the WS pool first; on an upgrade-failure-style error (HTTP
+/// 426 or the sticky-disable WS-close cases the WS guide warns
+/// about), it sets `ws_disabled` for this session and falls through
+/// to HTTP for the rest of the agent's lifetime. Other errors
+/// surface to the outer retry loop, which decides whether they're
+/// retryable (`stream error: ...`) or terminal.
+fn stream_with_dispatch(
+    backend: &BackendConfig,
+    request: &common::PromptPayload<'_>,
+    ws_pool: &mut responses::pool::WsPool,
+    ws_disabled: &mut HashSet<String>,
+    on_update: &mut impl FnMut(&str, Option<&str>),
+) -> Result<common::StreamState, common::LlmError> {
+    if let BackendConfig::Responses(cfg) = backend {
+        let session_id = request.session_id.as_str();
+        let try_ws = cfg.supports_websocket && !ws_disabled.contains(session_id);
+        if try_ws {
+            match responses::pool::run_turn_through_pool(
+                ws_pool, cfg, session_id, request, on_update,
+            ) {
+                Ok(state) => return Ok(state),
+                Err(error) if should_disable_ws(&error) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        session_id,
+                        "WS path failed ({error}); falling back to HTTP for this session",
+                    );
+                    ws_disabled.insert(session_id.to_owned());
+                    // Fall through to the HTTP path below.
+                }
+                Err(other) => return Err(other),
+            }
+        }
+    }
+    backend.stream_http(request, on_update)
+}
+
+/// True for WS-side failures that should trigger sticky fallback to
+/// HTTP+SSE rather than just being retried on WS:
+///
+/// - **HTTP 426 Upgrade Required** during the WS handshake — the server told us
+///   WS isn't available for this client right now.
+/// - **`websocket_connection_limit_reached`** — codex CLI treats this as
+///   retryable on WS, but flipping to HTTP after one bounce matches the
+///   documented policy ("Don't loop on a hostile server" in
+///   `TODO-codex-websocket.md` §3) and avoids burning the next prompt on
+///   another doomed upgrade.
+fn should_disable_ws(error: &common::LlmError) -> bool {
+    match error {
+        common::LlmError::HttpStatus(426, _) => true,
+        common::LlmError::HttpStatus(_, body) => {
+            body.contains("websocket_connection_limit_reached")
+        }
+        _ => false,
+    }
+}
+
 fn handle_prompt<W: Write>(
     session_prompt_id: &str,
     backend: &BackendConfig,
     prompt: &tau_proto::SessionPromptCreated,
     writer: &mut FrameWriter<BufWriter<W>>,
     retry_ctx: &mut RetryContext<'_>,
+    ws_pool: &mut responses::pool::WsPool,
+    ws_disabled: &mut HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
     let request = common::PromptPayload {
         system_prompt: &prompt.system_prompt,
@@ -457,6 +538,7 @@ fn handle_prompt<W: Write>(
                 message_index: p.message_index,
             }),
         originator: &prompt.originator,
+        session_id: &prompt.session_id,
     };
 
     let originator = prompt.originator.clone();
@@ -466,7 +548,7 @@ fn handle_prompt<W: Write>(
         writer,
         retry_ctx,
         |writer| {
-            backend.stream(&request, |text_so_far, thinking_so_far| {
+            let mut on_update = |text_so_far: &str, thinking_so_far: Option<&str>| {
                 let _ = writer.write_frame(&Frame::Event(Event::AgentResponseUpdated(
                     AgentResponseUpdated {
                         session_prompt_id: session_prompt_id.into(),
@@ -476,7 +558,8 @@ fn handle_prompt<W: Write>(
                     },
                 )));
                 let _ = writer.flush();
-            })
+            };
+            stream_with_dispatch(backend, &request, ws_pool, ws_disabled, &mut on_update)
         },
     );
     let backend_descriptor = backend.descriptor();

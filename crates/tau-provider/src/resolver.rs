@@ -39,6 +39,9 @@ pub struct ResolvedResponses {
     /// Provider accepts (and the model emits) the Codex assistant
     /// `phase` field. See [`ProviderCompat::supports_phase`].
     pub supports_phase: bool,
+    /// Provider exposes the Responses API over a persistent
+    /// WebSocket. See [`ProviderCompat::supports_websocket`].
+    pub supports_websocket: bool,
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<PromptCacheRetention>,
 }
@@ -131,6 +134,7 @@ fn responses_backend(
         supports_reasoning_summary: supports_reasoning_summary(provider, base_url),
         supports_verbosity: provider.compat.supports_verbosity,
         supports_phase: supports_phase(provider, base_url, model_id),
+        supports_websocket: supports_websocket(provider, base_url),
         prompt_cache_key: prompt_cache_key(provider, base_url, model_id),
         prompt_cache_retention: prompt_cache_retention(provider, base_url, model_id),
     }))
@@ -293,6 +297,18 @@ fn supports_phase(provider: &ProviderConfig, base_url: &str, model_id: &str) -> 
         return true;
     }
     is_builtin_openai_codex_endpoint(base_url) && is_known_phase_capable_model_id(model_id)
+}
+
+/// Effective WebSocket-transport support for a resolved Responses
+/// backend.
+///
+/// Explicit provider opt-in always wins. As a convenience, the flag
+/// auto-enables for the built-in OpenAI Codex endpoint
+/// (`chatgpt.com/backend-api`) — the only built-in surface known to
+/// implement WS mode. Custom OpenAI-compatible endpoints stay
+/// HTTP+SSE-only unless their `models.json5` flips the flag.
+fn supports_websocket(provider: &ProviderConfig, base_url: &str) -> bool {
+    provider.compat.supports_websocket || is_builtin_openai_codex_endpoint(base_url)
 }
 
 /// True for the ChatGPT Codex Responses backend specifically — the

@@ -2,6 +2,13 @@
 //!
 //! Endpoint: `POST {base_url}/codex/responses`
 //! SSE streaming with `response.output_text.delta` events.
+//!
+//! When the resolver advertises `supports_websocket`, the harness's
+//! agent loop routes Responses turns through the [`ws`] module
+//! instead — same wire envelope, persistent connection, per-session
+//! pooling. This module's HTTP+SSE path is kept as the universal
+//! fallback (and as the only transport for endpoints that don't
+//! support WS).
 
 use std::io::BufRead;
 
@@ -12,6 +19,9 @@ use crate::common::{
     LlmError, PromptPayload, StreamState, ToolCallAccumulator, cbor_to_json, effort_wire,
     mix_originator_into_cache_key,
 };
+
+pub(crate) mod pool;
+pub(crate) mod ws;
 
 /// Config for the Codex Responses API.
 #[derive(Clone, Debug)]
@@ -40,6 +50,10 @@ pub struct ResponsesConfig {
     ///    the harness can persist it.
     /// When off, no `phase` field is sent or parsed.
     pub supports_phase: bool,
+    /// Whether to attempt a persistent WebSocket transport for this
+    /// provider instead of one-shot HTTP+SSE. See
+    /// [`tau_config::settings::ProviderCompat::supports_websocket`].
+    pub supports_websocket: bool,
     /// Routing key sent as `prompt_cache_key`. See
     /// `openai::prompt_cache_key` for the derivation rationale.
     pub prompt_cache_key: Option<String>,
@@ -65,9 +79,9 @@ pub struct ResponsesConfig {
 pub fn responses_stream(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
-    mut on_update: impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<StreamState, LlmError> {
-    let first = responses_stream_once(config, request, &mut on_update);
+    let first = responses_stream_once(config, request, on_update);
     if request.previous_response.is_none() {
         return first;
     }
@@ -88,8 +102,9 @@ pub fn responses_stream(
         tools: request.tools,
         params: request.params,
         originator: request.originator,
+        session_id: request.session_id,
     };
-    responses_stream_once(config, &fallback, &mut on_update)
+    responses_stream_once(config, &fallback, on_update)
 }
 
 /// True for the narrow class of 4xx errors that say the prior
@@ -156,37 +171,76 @@ fn responses_stream_once(
             Err(_) => continue,
         };
 
-        let event_type = event["type"].as_str().unwrap_or("");
+        if apply_event(&mut state, &event, on_update)? {
+            break;
+        }
+    }
 
-        match event_type {
-            "response.output_text.delta" => {
-                if let Some(delta) = event["delta"].as_str() {
-                    state.text.push_str(delta);
-                    on_update(&state.text, state.thinking.as_deref());
+    Ok(state)
+}
+
+/// Apply one decoded `response.*` event from the upstream stream to
+/// `state`. Returns `Ok(true)` when the event terminates the stream
+/// (`response.completed` / `response.done`), `Ok(false)` to keep
+/// reading, or an error when the server signaled a model-side
+/// failure that should be surfaced as `LlmError`.
+///
+/// Shared between the HTTP+SSE and WebSocket transports — both
+/// decode a single JSON event and hand it here. The WS docs state
+/// "server events and ordering match the existing Responses
+/// streaming event model", so the parse rules are identical.
+pub(crate) fn apply_event(
+    state: &mut StreamState,
+    event: &serde_json::Value,
+    on_update: &mut impl FnMut(&str, Option<&str>),
+) -> Result<bool, LlmError> {
+    let event_type = event["type"].as_str().unwrap_or("");
+
+    match event_type {
+        "response.output_text.delta" => {
+            if let Some(delta) = event["delta"].as_str() {
+                state.text.push_str(delta);
+                on_update(&state.text, state.thinking.as_deref());
+            }
+        }
+        "response.reasoning_summary_text.delta" => {
+            if let Some(delta) = event["delta"].as_str() {
+                state
+                    .thinking
+                    .get_or_insert_with(String::new)
+                    .push_str(delta);
+                on_update(&state.text, state.thinking.as_deref());
+            }
+        }
+        "response.reasoning_summary_part.added" => {
+            // Each summary part is a separate paragraph. Insert a
+            // blank line between parts so consecutive paragraphs
+            // are visually separated.
+            if let Some(thinking) = state.thinking.as_mut() {
+                if !thinking.is_empty() && !thinking.ends_with("\n\n") {
+                    thinking.push_str("\n\n");
                 }
             }
-            "response.reasoning_summary_text.delta" => {
-                if let Some(delta) = event["delta"].as_str() {
-                    state
-                        .thinking
-                        .get_or_insert_with(String::new)
-                        .push_str(delta);
-                    on_update(&state.text, state.thinking.as_deref());
+        }
+        "response.function_call_arguments.delta" => {
+            let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
+            if let Some(delta) = event["delta"].as_str() {
+                while state.tool_calls.len() <= output_index {
+                    state.tool_calls.push(ToolCallAccumulator {
+                        id: String::new(),
+                        name: String::new(),
+                        arguments_json: String::new(),
+                    });
                 }
+                state.tool_calls[output_index]
+                    .arguments_json
+                    .push_str(delta);
             }
-            "response.reasoning_summary_part.added" => {
-                // Each summary part is a separate paragraph. Insert a
-                // blank line between parts so consecutive paragraphs
-                // are visually separated.
-                if let Some(thinking) = state.thinking.as_mut() {
-                    if !thinking.is_empty() && !thinking.ends_with("\n\n") {
-                        thinking.push_str("\n\n");
-                    }
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
-                if let Some(delta) = event["delta"].as_str() {
+        }
+        "response.output_item.added" | "response.output_item.done" => {
+            if let Some(item) = event.get("item") {
+                if item["type"].as_str() == Some("function_call") {
+                    let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                     while state.tool_calls.len() <= output_index {
                         state.tool_calls.push(ToolCallAccumulator {
                             id: String::new(),
@@ -194,116 +248,96 @@ fn responses_stream_once(
                             arguments_json: String::new(),
                         });
                     }
-                    state.tool_calls[output_index]
-                        .arguments_json
-                        .push_str(delta);
-                }
-            }
-            "response.output_item.added" | "response.output_item.done" => {
-                if let Some(item) = event.get("item") {
-                    if item["type"].as_str() == Some("function_call") {
-                        let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
-                        while state.tool_calls.len() <= output_index {
-                            state.tool_calls.push(ToolCallAccumulator {
-                                id: String::new(),
-                                name: String::new(),
-                                arguments_json: String::new(),
-                            });
-                        }
-                        if let Some(id) = item["call_id"].as_str() {
-                            state.tool_calls[output_index].id = id.to_owned();
-                        }
-                        if let Some(name) = item["name"].as_str() {
-                            state.tool_calls[output_index].name = name.to_owned();
-                        }
+                    if let Some(id) = item["call_id"].as_str() {
+                        state.tool_calls[output_index].id = id.to_owned();
                     }
-                    if state.phase.is_none() {
-                        state.phase = parse_phase_from_item(item);
+                    if let Some(name) = item["name"].as_str() {
+                        state.tool_calls[output_index].name = name.to_owned();
                     }
-                }
-            }
-            "response.completed" | "response.done" => {
-                if state.input_tokens.is_none() {
-                    state.input_tokens = event
-                        .get("response")
-                        .and_then(|response| response["usage"]["input_tokens"].as_u64())
-                        .or_else(|| event["usage"]["input_tokens"].as_u64());
-                }
-                if state.cached_tokens.is_none() {
-                    state.cached_tokens = event
-                        .get("response")
-                        .and_then(|response| {
-                            response["usage"]["input_tokens_details"]["cached_tokens"].as_u64()
-                        })
-                        .or_else(|| {
-                            event["usage"]["input_tokens_details"]["cached_tokens"].as_u64()
-                        });
-                }
-                if state.output_tokens.is_none() {
-                    state.output_tokens = event
-                        .get("response")
-                        .and_then(|response| response["usage"]["output_tokens"].as_u64())
-                        .or_else(|| event["usage"]["output_tokens"].as_u64());
-                }
-                if state.response_id.is_none() {
-                    state.response_id = event
-                        .get("response")
-                        .and_then(|response| response["id"].as_str())
-                        .or_else(|| event["id"].as_str())
-                        .map(str::to_owned);
                 }
                 if state.phase.is_none() {
-                    // Some providers only surface `phase` on the
-                    // terminal `response.completed` envelope, not on
-                    // per-item events. Scan `response.output[]` as a
-                    // fallback so we capture whatever the model
-                    // committed to before the stream ended.
-                    state.phase = event
-                        .get("response")
-                        .and_then(|response| response.get("output"))
-                        .and_then(serde_json::Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .find_map(parse_phase_from_item);
+                    state.phase = parse_phase_from_item(item);
                 }
-                break;
             }
-            "response.incomplete" => {
-                let reason = event
-                    .get("response")
-                    .and_then(|r| r["incomplete_details"]["reason"].as_str())
-                    .unwrap_or("unknown reason");
-                return Err(LlmError::HttpStatus(
-                    0,
-                    format!("response incomplete: {reason}"),
-                ));
-            }
-            "response.failed" => {
-                let detail = event
-                    .get("response")
-                    .and_then(|r| {
-                        r["error"]["message"]
-                            .as_str()
-                            .or_else(|| r["error"]["code"].as_str())
-                    })
-                    .unwrap_or("unknown error");
-                return Err(LlmError::HttpStatus(
-                    0,
-                    format!("response failed: {detail}"),
-                ));
-            }
-            "error" => {
-                let detail = event["error"]["message"]
-                    .as_str()
-                    .or_else(|| event["message"].as_str())
-                    .unwrap_or("unknown error");
-                return Err(LlmError::HttpStatus(0, format!("stream error: {detail}")));
-            }
-            _ => {}
         }
+        "response.completed" | "response.done" => {
+            if state.input_tokens.is_none() {
+                state.input_tokens = event
+                    .get("response")
+                    .and_then(|response| response["usage"]["input_tokens"].as_u64())
+                    .or_else(|| event["usage"]["input_tokens"].as_u64());
+            }
+            if state.cached_tokens.is_none() {
+                state.cached_tokens = event
+                    .get("response")
+                    .and_then(|response| {
+                        response["usage"]["input_tokens_details"]["cached_tokens"].as_u64()
+                    })
+                    .or_else(|| event["usage"]["input_tokens_details"]["cached_tokens"].as_u64());
+            }
+            if state.output_tokens.is_none() {
+                state.output_tokens = event
+                    .get("response")
+                    .and_then(|response| response["usage"]["output_tokens"].as_u64())
+                    .or_else(|| event["usage"]["output_tokens"].as_u64());
+            }
+            if state.response_id.is_none() {
+                state.response_id = event
+                    .get("response")
+                    .and_then(|response| response["id"].as_str())
+                    .or_else(|| event["id"].as_str())
+                    .map(str::to_owned);
+            }
+            if state.phase.is_none() {
+                // Some providers only surface `phase` on the
+                // terminal `response.completed` envelope, not on
+                // per-item events. Scan `response.output[]` as a
+                // fallback so we capture whatever the model
+                // committed to before the stream ended.
+                state.phase = event
+                    .get("response")
+                    .and_then(|response| response.get("output"))
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find_map(parse_phase_from_item);
+            }
+            return Ok(true);
+        }
+        "response.incomplete" => {
+            let reason = event
+                .get("response")
+                .and_then(|r| r["incomplete_details"]["reason"].as_str())
+                .unwrap_or("unknown reason");
+            return Err(LlmError::HttpStatus(
+                0,
+                format!("response incomplete: {reason}"),
+            ));
+        }
+        "response.failed" => {
+            let detail = event
+                .get("response")
+                .and_then(|r| {
+                    r["error"]["message"]
+                        .as_str()
+                        .or_else(|| r["error"]["code"].as_str())
+                })
+                .unwrap_or("unknown error");
+            return Err(LlmError::HttpStatus(
+                0,
+                format!("response failed: {detail}"),
+            ));
+        }
+        "error" => {
+            let detail = event["error"]["message"]
+                .as_str()
+                .or_else(|| event["message"].as_str())
+                .unwrap_or("unknown error");
+            return Err(LlmError::HttpStatus(0, format!("stream error: {detail}")));
+        }
+        _ => {}
     }
-
-    Ok(state)
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +350,12 @@ struct ResponsesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
     input: Vec<serde_json::Value>,
-    stream: bool,
+    /// `Some(true)` for HTTP+SSE transport — the only mode where the
+    /// `stream` flag actually toggles framing. `None` on the WS
+    /// transport, where the WS guide explicitly notes "transport-
+    /// specific fields like `stream` and `background` are not used".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
     /// Always `false` on the ChatGPT Codex Responses endpoint — it
     /// rejects `store: true` even when chaining (see `build_request`).
     /// Kept as a serialized field rather than dropped because future
@@ -449,7 +488,9 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         model: config.model_id.clone(),
         instructions,
         input,
-        stream: true,
+        // HTTP path always streams; WS path overrides this back to
+        // `None` via [`ws_envelope`] before serializing.
+        stream: Some(true),
         // ALWAYS `false` on the ChatGPT Codex backend
         // (`chatgpt.com/backend-api/codex/responses`) — it rejects
         // `store: true` with `HTTP 400 {"detail":"Store must be set
@@ -468,6 +509,36 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         prompt_cache_key,
         prompt_cache_retention,
         previous_response_id,
+    }
+}
+
+/// WebSocket-side wrapper around a [`ResponsesRequest`]. The OpenAI
+/// WS guide requires every client message to carry `type:
+/// "response.create"` at the top level, while HTTP+SSE has no
+/// envelope. `#[serde(flatten)]` keeps the body shape identical
+/// across the two transports so request-build tests don't need a
+/// separate fixture for each.
+#[derive(Serialize)]
+pub(crate) struct WsResponseCreate {
+    #[serde(rename = "type")]
+    ty: &'static str,
+    #[serde(flatten)]
+    body: ResponsesRequest,
+}
+
+/// Build the JSON envelope to send over a WebSocket text frame for
+/// one turn. Reuses [`build_request`] for the body — the only deltas
+/// vs. the HTTP body are (a) the top-level `type` tag and (b)
+/// dropping `stream` (transport-implicit on WS, per the WS guide).
+pub(crate) fn build_ws_envelope(
+    config: &ResponsesConfig,
+    request: &PromptPayload<'_>,
+) -> WsResponseCreate {
+    let mut body = build_request(config, request);
+    body.stream = None;
+    WsResponseCreate {
+        ty: "response.create",
+        body,
     }
 }
 

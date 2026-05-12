@@ -45,7 +45,7 @@ pub struct OpenAiConfig {
 pub fn chat_completion_stream(
     config: &OpenAiConfig,
     request: &PromptPayload<'_>,
-    mut on_update: impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<StreamState, LlmError> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 

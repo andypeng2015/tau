@@ -5,7 +5,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
-use tau_proto::{AgentToolCall, CborValue, ConversationMessage, PromptOriginator, ToolDefinition};
+use tau_proto::{
+    AgentToolCall, CborValue, ConversationMessage, PromptOriginator, SessionId, ToolDefinition,
+};
 
 /// The parts of a prompt needed by an LLM backend client.
 pub struct PromptPayload<'a> {
@@ -32,6 +34,12 @@ pub struct PromptPayload<'a> {
     /// per `(prefix, prompt_cache_key)` overflows to additional
     /// machines and degrades hit rate).
     pub originator: &'a PromptOriginator,
+    /// Harness session this prompt belongs to. Used by the Responses
+    /// WebSocket pool to key per-conversation connections — same
+    /// session stays on the same socket across turns, so the
+    /// connection-local `previous_response_id` cache stays warm.
+    /// Backends without a connection pool ignore this.
+    pub session_id: &'a SessionId,
 }
 
 /// See [`PromptPayload::previous_response`].

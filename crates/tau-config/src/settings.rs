@@ -474,6 +474,16 @@ pub struct ProviderCompat {
     /// Responses endpoint auto-enables this at resolver time, so
     /// users don't need to flip it on for the built-in OAuth flow.
     pub supports_phase: bool,
+    /// Provider exposes the Responses API over a persistent
+    /// WebSocket transport instead of (or in addition to) HTTP+SSE.
+    /// When on, the agent caches per-conversation WS connections
+    /// across prompts so the connection-local `previous_response_id`
+    /// cache stays warm — the change buys ~40% on tool-heavy
+    /// turns. Off by default — custom OpenAI-compatible endpoints
+    /// generally do not implement WS mode. Auto-enabled for the
+    /// built-in OpenAI Codex endpoint at resolver time, so users
+    /// don't need to flip it on for the OAuth flow.
+    pub supports_websocket: bool,
 }
 
 impl Default for ProviderCompat {
@@ -488,6 +498,7 @@ impl Default for ProviderCompat {
             supports_reasoning_summary: false,
             supports_verbosity: false,
             supports_phase: false,
+            supports_websocket: false,
         }
     }
 }

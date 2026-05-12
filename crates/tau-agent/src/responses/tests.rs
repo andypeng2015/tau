@@ -15,6 +15,7 @@ fn build_request_includes_prompt_cache_fields_when_configured() {
         supports_verbosity: false,
         supports_phase: false,
         supports_reasoning_summary: false,
+        supports_websocket: false,
         prompt_cache_key: Some("tau:seed".into()),
         prompt_cache_retention: Some(PromptCacheRetention::InMemory),
     };
@@ -25,6 +26,7 @@ fn build_request_includes_prompt_cache_fields_when_configured() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -45,6 +47,7 @@ fn build_request_omits_prompt_cache_fields_without_seed_or_retention() {
         supports_verbosity: false,
         supports_phase: false,
         supports_reasoning_summary: false,
+        supports_websocket: false,
         prompt_cache_key: None,
         prompt_cache_retention: None,
     };
@@ -55,6 +58,7 @@ fn build_request_omits_prompt_cache_fields_without_seed_or_retention() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -80,6 +84,7 @@ fn build_request_first_turn_replays_full_history_without_chain() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -130,6 +135,7 @@ fn build_request_chain_turn_sends_delta_and_previous_response_id() {
             message_index: 2,
         }),
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -166,6 +172,7 @@ fn build_request_chain_with_oob_index_falls_back_to_full_replay() {
             message_index: 99,
         }),
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -228,6 +235,7 @@ fn build_request_chain_turn_still_emits_prompt_cache_key() {
             message_index: 2,
         }),
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
@@ -257,6 +265,7 @@ fn build_request_prompt_cache_key_differs_for_extension_originator() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
     let ext_request = PromptPayload {
         system_prompt: "sys",
@@ -265,6 +274,7 @@ fn build_request_prompt_cache_key_differs_for_extension_originator() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &ext,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
 
     let user_body = serde_json::to_value(build_request(&config, &user_request)).expect("serialize");
@@ -285,6 +295,7 @@ fn chain_test_config() -> ResponsesConfig {
         supports_verbosity: false,
         supports_phase: false,
         supports_reasoning_summary: false,
+        supports_websocket: false,
         prompt_cache_key: None,
         prompt_cache_retention: None,
     }
@@ -341,6 +352,7 @@ fn build_request_stamps_phase_on_assistant_messages_when_supported() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
     let input = body["input"].as_array().expect("input");
@@ -376,6 +388,7 @@ fn build_request_omits_phase_when_unsupported() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
     let input = body["input"].as_array().expect("input");
@@ -420,6 +433,7 @@ fn build_request_stamps_phase_on_pre_tool_call_text_flush() {
         params: tau_proto::ModelParams::default(),
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
     };
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
     let input = body["input"].as_array().expect("input");
@@ -488,4 +502,147 @@ fn parse_phase_from_item_recognizes_wire_strings() {
         None,
         "non-message items must not have their `phase` field harvested"
     );
+}
+
+// -----------------------------------------------------------------------
+// WebSocket envelope wrapping
+// -----------------------------------------------------------------------
+
+/// The WS guide requires every client frame to carry `type:
+/// "response.create"` at the top level. The HTTP body does not.
+/// [`build_ws_envelope`] is the only place we add the tag — pin it
+/// here so a future refactor that drops the wrapper struct can't
+/// silently regress it.
+#[test]
+fn ws_envelope_adds_type_and_drops_stream() {
+    let config = chain_test_config();
+    let request = PromptPayload {
+        system_prompt: "sys",
+        messages: &[],
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+    };
+
+    let http_body = serde_json::to_value(build_request(&config, &request)).expect("http body");
+    let ws_body = serde_json::to_value(build_ws_envelope(&config, &request)).expect("ws envelope");
+
+    assert_eq!(ws_body["type"], "response.create");
+    assert!(
+        ws_body.as_object().unwrap().get("stream").is_none(),
+        "WS frame must omit `stream` — the WS guide says it's not used and the field is transport-implicit"
+    );
+    // Every other body shape stays identical so the request-build
+    // tests already in this file double as WS-envelope coverage.
+    assert_eq!(ws_body["model"], http_body["model"]);
+    assert_eq!(ws_body["store"], http_body["store"]);
+    assert_eq!(ws_body["input"], http_body["input"]);
+}
+
+// -----------------------------------------------------------------------
+// apply_event — shared event applicator for SSE + WS
+// -----------------------------------------------------------------------
+
+/// `response.output_text.delta` accumulates into `state.text` and
+/// fires `on_update` once per delta. Mirrors the original SSE-only
+/// behavior — keeps the WS path equivalent.
+#[test]
+fn apply_event_text_delta_accumulates_and_notifies() {
+    let mut state = crate::common::StreamState::new();
+    let mut updates: Vec<String> = Vec::new();
+    let mut on_update = |text: &str, _thinking: Option<&str>| {
+        updates.push(text.to_owned());
+    };
+
+    for chunk in ["hel", "lo, ", "world"] {
+        let ev = serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": chunk,
+        });
+        let done = apply_event(&mut state, &ev, &mut on_update).expect("apply ok");
+        assert!(!done, "text delta should not terminate the stream");
+    }
+    assert_eq!(state.text, "hello, world");
+    assert_eq!(updates, vec!["hel", "hello, ", "hello, world"]);
+}
+
+#[test]
+fn apply_event_completed_terminates_and_captures_response_id() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_xyz",
+            "usage": {
+                "input_tokens": 42,
+                "output_tokens": 7,
+                "input_tokens_details": { "cached_tokens": 5 },
+            },
+        },
+    });
+    let done = apply_event(&mut state, &ev, &mut on_update).expect("apply ok");
+    assert!(done, "response.completed must terminate the stream");
+    assert_eq!(state.response_id.as_deref(), Some("resp_xyz"));
+    assert_eq!(state.input_tokens, Some(42));
+    assert_eq!(state.output_tokens, Some(7));
+    assert_eq!(state.cached_tokens, Some(5));
+}
+
+#[test]
+fn apply_event_function_call_assembles_tool_call() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "function_call",
+                "call_id": "call_a",
+                "name": "shell",
+            },
+        }),
+        &mut on_update,
+    )
+    .expect("ok");
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "delta": "{\"cmd\":\"ls\"}",
+        }),
+        &mut on_update,
+    )
+    .expect("ok");
+
+    assert_eq!(state.tool_calls.len(), 1);
+    assert_eq!(state.tool_calls[0].id, "call_a");
+    assert_eq!(state.tool_calls[0].name, "shell");
+    assert_eq!(state.tool_calls[0].arguments_json, "{\"cmd\":\"ls\"}");
+}
+
+#[test]
+fn apply_event_failed_returns_error() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "response.failed",
+        "response": {
+            "error": { "message": "model overloaded" },
+        },
+    });
+    let result = apply_event(&mut state, &ev, &mut on_update);
+    match result {
+        Err(LlmError::HttpStatus(0, body)) => {
+            assert!(body.contains("response failed"));
+            assert!(body.contains("model overloaded"));
+        }
+        other => panic!("expected HttpStatus(0, ...), got {other:?}"),
+    }
 }

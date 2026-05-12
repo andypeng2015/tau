@@ -210,6 +210,19 @@ that didn't return a `response_id`; if the upstream rejects the stored id
 (server-side expiry), the agent falls back to a full-replay retry once before
 surfacing the error.
 
+The Codex backend additionally routes turns over a persistent **WebSocket**
+connection (auto-enabled for `chatgpt.com/backend-api`; toggle for custom
+endpoints via the `supportsWebsocket` provider compat flag). One connection
+per `(account, session)` lives in a small LRU pool inside the agent process,
+so the server-side connection-local response cache stays warm across turns of
+the same conversation — including when the agent context-switches between
+sessions (sub-agent delegations interleaved with the parent). Connections
+age out before the upstream's 60-minute hard cap, and refreshed OAuth tokens
+invalidate stale sockets on next use. Per-session sticky fallback to HTTP+SSE
+kicks in if the WS upgrade gets `426 Upgrade Required` or the server signals
+`websocket_connection_limit_reached`, so a misbehaving upstream never breaks
+a prompt outright.
+
 ### `std-notifications` — idle and turn notifications
 
 Plays a sound on prompt submit and on the final response of a turn. After
