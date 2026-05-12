@@ -84,6 +84,61 @@ fn build_request_includes_llama_cpp_cache_prompt_when_configured() {
 }
 
 #[test]
+fn build_request_sets_parallel_tool_calls_when_tools_offered() {
+    let config = OpenAiConfig {
+        base_url: "https://api.openai.com/v1".into(),
+        api_key: "test".into(),
+        model_id: "gpt-5".into(),
+        supports_reasoning_effort: false,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
+        supports_llama_cpp_cache: false,
+    };
+    let tool = tau_proto::ToolDefinition {
+        name: tau_proto::ToolName::new("shell"),
+        description: None,
+        parameters: None,
+    };
+    let request = PromptPayload {
+        system_prompt: "system",
+        messages: &[],
+        tools: std::slice::from_ref(&tool),
+        effort: Effort::Off,
+        thinking_summary: tau_proto::ThinkingSummary::Off,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
+
+    assert_eq!(body["parallel_tool_calls"], true);
+    assert_eq!(body["tool_choice"], "auto");
+}
+
+#[test]
+fn build_request_omits_parallel_tool_calls_without_tools() {
+    let config = OpenAiConfig {
+        base_url: "https://api.openai.com/v1".into(),
+        api_key: "test".into(),
+        model_id: "gpt-5".into(),
+        supports_reasoning_effort: false,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
+        supports_llama_cpp_cache: false,
+    };
+    let request = PromptPayload {
+        system_prompt: "system",
+        messages: &[],
+        tools: &[],
+        effort: Effort::Off,
+        thinking_summary: tau_proto::ThinkingSummary::Off,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
+    let object = body.as_object().expect("request object");
+
+    assert!(!object.contains_key("parallel_tool_calls"));
+}
+
+#[test]
 fn stream_chunk_reads_llama_cpp_cache_stats() {
     let chunk: StreamChunk = serde_json::from_value(serde_json::json!({
         "choices": [],

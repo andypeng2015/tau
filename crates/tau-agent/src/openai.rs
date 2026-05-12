@@ -190,6 +190,12 @@ struct CompletionRequest {
     tools: Vec<ApiTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    /// Explicit per OpenAI Chat Completions; default is `true` server-side
+    /// on api.openai.com, but some compatible servers default to `false`.
+    /// Set only when at least one tool is offered so requests without tools
+    /// stay minimal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
@@ -284,6 +290,7 @@ fn build_request(
     } else {
         Some("auto".to_owned())
     };
+    let parallel_tool_calls = (!tools.is_empty()).then_some(true);
 
     let reasoning_effort = if config.supports_reasoning_effort {
         effort_wire(request.effort)
@@ -300,6 +307,7 @@ fn build_request(
         messages,
         tools,
         tool_choice,
+        parallel_tool_calls,
         stream,
         stream_options: stream.then_some(StreamOptions {
             include_usage: true,
