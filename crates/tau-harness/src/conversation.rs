@@ -21,6 +21,8 @@ use std::collections::VecDeque;
 use tau_core::NodeId;
 use tau_proto::{ConnectionId, ModelId, PromptOriginator, SessionId, SessionPromptId, ToolCallId};
 
+use crate::dedup::ResultDedupMap;
+
 /// Opaque per-process conversation identifier. Not on the wire — the
 /// harness mints these locally and uses them as routing keys.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -139,6 +141,14 @@ pub(crate) struct Conversation {
     /// full transcript. `None` initially, after model switches, or
     /// after an edit / error invalidates the chain.
     pub(crate) chain_anchor: Option<ChainAnchor>,
+    /// Per-conversation map from tool-result-content hash to the first
+    /// `call_id` on this branch that produced that content. Consulted
+    /// at intake of every `ToolResult` / `ToolError` to collapse a
+    /// duplicate's payload into a short pointer that refers back to
+    /// the original. Branch-scoped: rebuilt from
+    /// [`Conversation::head`] whenever the cursor moves
+    /// non-linearly. See `crate::dedup` for the full rationale.
+    pub(crate) result_dedup: ResultDedupMap,
 }
 
 /// See [`Conversation::chain_anchor`].
@@ -188,6 +198,7 @@ impl Conversation {
             context_input_tokens: None,
             context_percent_used: None,
             chain_anchor: None,
+            result_dedup: ResultDedupMap::new(),
         }
     }
 }

@@ -1757,11 +1757,13 @@ version = "0.1.0"
 dependencies = [
  "bon",
  "built",
+ "ciborium",
  "dirs",
  "json5",
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "tau-agent",
  "tau-config",
  "tau-core",

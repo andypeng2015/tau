@@ -14,6 +14,7 @@ pub mod runtime_dir;
 mod conversation;
 mod daemon;
 mod debug_log;
+mod dedup;
 mod dirs;
 mod discovery;
 mod error;

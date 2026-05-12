@@ -23,6 +23,10 @@ use tau_proto::{
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
 use crate::daemon::InteractionOutcome;
 use crate::debug_log::DebugEventLog;
+use crate::dedup::{
+    DEFAULT_THRESHOLD_BYTES, build_pointer_error_message, build_pointer_value,
+    encode_error_for_hash, encode_for_hash, sha256_truncated,
+};
 use crate::dirs::policy_store_path_from;
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 use crate::error::HarnessError;
@@ -696,6 +700,119 @@ impl Harness {
         self.prompt_conversations.get(spid).cloned()
     }
 
+    /// If the conversation's dedup map's "built for" cursor doesn't
+    /// match its current `head`, rebuild it from the assembled branch.
+    /// O(branch_len) on rebuild; O(1) on the steady-state hot path
+    /// where the linear-extension hook in [`Self::commit_event`] keeps
+    /// `built_for` in sync after every fold.
+    ///
+    /// `None` is returned only if the conversation no longer exists
+    /// (the caller raced its own teardown), and the caller treats that
+    /// as "skip dedup, just publish".
+    fn ensure_dedup_built_for_branch(&mut self, cid: &ConversationId) -> Option<()> {
+        let head = self.conversations.get(cid)?.head;
+        let needs = self
+            .conversations
+            .get(cid)
+            .map(|c| c.result_dedup.needs_rebuild(head))
+            .unwrap_or(false);
+        if !needs {
+            return Some(());
+        }
+        // Walk the branch under an immutable borrow of the store, then
+        // hand the snapshot to the conversation under a mut borrow —
+        // the branch iterator borrows the tree, so we materialize it
+        // into an owned Vec first to release the tree borrow.
+        let session_id = self.conversations.get(cid)?.session_id.clone();
+        let branch: Vec<tau_core::SessionEntry> = self
+            .store
+            .session(session_id.as_str())
+            .map(|t| t.branch_from(head).into_iter().cloned().collect())
+            .unwrap_or_default();
+        let conv = self.conversations.get_mut(cid)?;
+        conv.result_dedup
+            .rebuild_from_branch(branch.iter(), head, DEFAULT_THRESHOLD_BYTES);
+        Some(())
+    }
+
+    /// Replace `result.result` with a pointer if a previous tool
+    /// result on this conversation's branch has the same content.
+    /// Mutates `result` in place; the caller publishes the (possibly
+    /// modified) value, which is what gets folded into the tree and
+    /// what the LLM sees on the next turn.
+    fn dedup_tool_result(&mut self, cid: &ConversationId, result: &mut tau_proto::ToolResult) {
+        if self.ensure_dedup_built_for_branch(cid).is_none() {
+            return;
+        }
+        let bytes = encode_for_hash(&result.result);
+        if bytes.len() < DEFAULT_THRESHOLD_BYTES {
+            return;
+        }
+        let hash = sha256_truncated(&bytes);
+        let Some(conv) = self.conversations.get_mut(cid) else {
+            return;
+        };
+        if let Some(original_call_id) = conv.result_dedup.lookup(&hash).cloned() {
+            // Belt-and-suspenders: refuse to point a call at itself.
+            // This can't happen in practice — `tool_conversations`
+            // already drops the call_id between intake and now — but
+            // a future change to the tracking map could let a tool
+            // result re-enter this path twice, and self-pointing is a
+            // worse failure mode than just skipping the dedup.
+            if original_call_id == result.call_id {
+                return;
+            }
+            tracing::debug!(
+                target: "tau_harness",
+                cid = %cid,
+                tool = %result.tool_name,
+                call_id = %result.call_id,
+                points_to = %original_call_id,
+                bytes = bytes.len(),
+                "deduping tool result against earlier identical output"
+            );
+            result.result = build_pointer_value(&original_call_id, &result.tool_name);
+        } else {
+            conv.result_dedup.insert(hash, result.call_id.clone());
+        }
+    }
+
+    /// Companion to [`Self::dedup_tool_result`] for `ToolError`s.
+    /// Same semantics — collapses repeated identical errors (same
+    /// message, same `details`) into a pointer back to the first
+    /// occurrence on this branch.
+    fn dedup_tool_error(&mut self, cid: &ConversationId, error: &mut tau_proto::ToolError) {
+        if self.ensure_dedup_built_for_branch(cid).is_none() {
+            return;
+        }
+        let bytes = encode_error_for_hash(&error.message, error.details.as_ref());
+        if bytes.len() < DEFAULT_THRESHOLD_BYTES {
+            return;
+        }
+        let hash = sha256_truncated(&bytes);
+        let Some(conv) = self.conversations.get_mut(cid) else {
+            return;
+        };
+        if let Some(original_call_id) = conv.result_dedup.lookup(&hash).cloned() {
+            if original_call_id == error.call_id {
+                return;
+            }
+            tracing::debug!(
+                target: "tau_harness",
+                cid = %cid,
+                tool = %error.tool_name,
+                call_id = %error.call_id,
+                points_to = %original_call_id,
+                bytes = bytes.len(),
+                "deduping tool error against earlier identical output"
+            );
+            error.message = build_pointer_error_message(&original_call_id, &error.tool_name);
+            error.details = None;
+        } else {
+            conv.result_dedup.insert(hash, error.call_id.clone());
+        }
+    }
+
     /// Publishes an event for a specific conversation. The fold uses
     /// the conversation's `head` as the explicit parent — no more
     /// `UiNavigateTree` head-bouncing — and the post-commit hook in
@@ -843,6 +960,25 @@ impl Harness {
             // tool request onto the wrong branch and produce orphan
             // ToolUse blocks downstream.
             c.head = Some(node_id);
+            // Keep the dedup map's "built for" cursor in lockstep with
+            // the just-folded linear extension. The dedup-decision
+            // path already inserted any new (hash, call_id) entry
+            // before the publish, so the map's contents already match
+            // what a fresh rebuild from this new head would produce.
+            // Bumping the cursor here lets the next tool result skip
+            // the rebuild entirely (the steady-state hot path).
+            //
+            // We pass *every* fold through this hook, including ones
+            // that didn't touch the dedup map (a `UserMessage` from
+            // session re-init, an `AgentMessage`, a `ToolRequest`
+            // node). [`ResultDedupMap::note_head_advanced_to`] guards
+            // against the dangerous case — `built_for == None` plus a
+            // non-dedup-eligible fold — by skipping the bump, so the
+            // rebuild still triggers on the next dedup intake. Don't
+            // gate this call on the event variant: that would re-couple
+            // `commit_event` to per-tool semantics that the dedup
+            // module deliberately owns.
+            c.result_dedup.note_head_advanced_to(node_id);
         }
         // Wrap in a `LogEvent` message envelope so subscribers get the
         // id and can ack after processing. Receivers that don't care
@@ -1282,9 +1418,14 @@ impl Harness {
                     Err(error) => return Err(HarnessError::ToolRoute(error)),
                 }
             }
-            Event::ToolResult(result) => {
+            Event::ToolResult(mut result) => {
                 if let Some(cid) = self.tool_conversations.get(&result.call_id).cloned() {
                     let call_id = result.call_id.to_string();
+                    // Collapse byte-identical large results into a
+                    // pointer back to the first call_id that produced
+                    // this content on this conversation's branch. See
+                    // `crate::dedup` for the design.
+                    self.dedup_tool_result(&cid, &mut result);
                     // Snap to the owning conversation's head before
                     // folding the result. Without this, a sibling side
                     // conv that just ran `snap_to_default_conversation`
@@ -1306,9 +1447,10 @@ impl Harness {
                     ));
                 }
             }
-            Event::ToolError(error) => {
+            Event::ToolError(mut error) => {
                 if let Some(cid) = self.tool_conversations.get(&error.call_id).cloned() {
                     let call_id = error.call_id.to_string();
+                    self.dedup_tool_error(&cid, &mut error);
                     self.publish_for_conversation_from(
                         &cid,
                         Some(source_id),

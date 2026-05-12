@@ -307,6 +307,7 @@ fn draft_event(text: &str) -> Event {
     })
 }
 
+mod dedup;
 mod dispatch;
 mod format;
 mod interception;

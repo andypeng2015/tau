@@ -25,11 +25,13 @@ echo-agent = ["tau-agent/echo-agent", "dep:tau-ext-shell"]
 
 [dependencies]
 bon.workspace = true
+ciborium.workspace = true
 dirs.workspace = true
 json5.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 tau-agent.workspace = true
 tau-config.workspace = true
