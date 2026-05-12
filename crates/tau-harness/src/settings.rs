@@ -56,11 +56,13 @@ pub struct ExtensionConfig {
 
 /// Built-in extension shipped with `tau`. Used by
 /// [`resolve_extensions`] to seed the table before applying user
-/// overrides.
+/// overrides. argv = `prefix ++ command ++ suffix`.
 pub struct BuiltinExtension {
-    pub name: &'static str,
+    pub name: String,
+    pub prefix: Vec<String>,
     pub command: Vec<String>,
-    pub role: Option<&'static str>,
+    pub suffix: Vec<String>,
+    pub role: Option<String>,
     pub enable: bool,
     /// Built-in default config for this extension, merged below any
     /// user-provided `config: { … }` object in `harness.json5`.
@@ -92,6 +94,7 @@ impl std::error::Error for ResolveExtensionsError {}
 struct ResolvedExtension {
     prefix: Vec<String>,
     command: Vec<String>,
+    suffix: Vec<String>,
     enable: bool,
     role: Option<String>,
     config: serde_json::Value,
@@ -118,17 +121,18 @@ pub fn resolve_extensions(
     use std::collections::HashMap;
 
     // Pass 1: seed an indexed map with built-ins, in order.
-    let mut order: Vec<String> = builtins.iter().map(|b| b.name.to_owned()).collect();
+    let mut order: Vec<String> = builtins.iter().map(|b| b.name.clone()).collect();
     let mut entries: HashMap<String, ResolvedExtension> = builtins
         .into_iter()
         .map(|b| {
             (
-                b.name.to_owned(),
+                b.name,
                 ResolvedExtension {
-                    prefix: Vec::new(),
+                    prefix: b.prefix,
                     command: b.command,
+                    suffix: b.suffix,
                     enable: b.enable,
-                    role: b.role.map(str::to_owned),
+                    role: b.role,
                     config: b.config,
                 },
             )
@@ -147,6 +151,15 @@ pub fn resolve_extensions(
                 }
                 if let Some(command) = user.command.as_ref() {
                     existing.command = command.clone();
+                    // Setting `command` replaces the built-in's full argv tail.
+                    // `suffix` is cleared so users overriding only `command`
+                    // don't accidentally inherit the built-in's subcommand
+                    // tokens (e.g. `["ext", "agent"]`). Users who want to
+                    // keep them must set `suffix` explicitly below.
+                    existing.suffix = Vec::new();
+                }
+                if let Some(suffix) = user.suffix.as_ref() {
+                    existing.suffix = suffix.clone();
                 }
                 if let Some(enable) = user.enable {
                     existing.enable = enable;
@@ -169,6 +182,7 @@ pub fn resolve_extensions(
                     ResolvedExtension {
                         prefix: user.prefix.clone().unwrap_or_default(),
                         command,
+                        suffix: user.suffix.clone().unwrap_or_default(),
                         enable: user.enable.unwrap_or(true),
                         role: user.role.clone(),
                         config: user
@@ -182,8 +196,8 @@ pub fn resolve_extensions(
     }
 
     // Pass 3: produce ExtensionConfigs in declared order, dropping
-    // disabled entries. argv = prefix ++ command; argv[0] is the
-    // executable, rest are args.
+    // disabled entries. argv = prefix ++ command ++ suffix; argv[0]
+    // is the executable, rest are args.
     let mut out = Vec::new();
     for name in order {
         let entry = entries.remove(&name).expect("seeded above");
@@ -192,6 +206,7 @@ pub fn resolve_extensions(
         }
         let mut argv = entry.prefix;
         argv.extend(entry.command);
+        argv.extend(entry.suffix);
         let (program, args) = match argv.split_first() {
             Some((first, rest)) => (first.clone(), rest.to_vec()),
             None => return Err(ResolveExtensionsError::EmptyCommand(name)),
@@ -243,7 +258,7 @@ pub(crate) fn load_harness_settings_or_warn(
         Ok(settings) => (settings, None),
         Err(error) => {
             eprintln!("tau: harness.json5 failed to parse — ignored.\n{error}");
-            (HarnessSettings::default(), Some(error))
+            (HarnessSettings::built_in(), Some(error))
         }
     }
 }
@@ -269,73 +284,70 @@ pub(crate) fn load_models_or_warn(
 
 /// The set of extensions the harness ships with by default.
 ///
-/// Each entry's `command` is `[<current-exe>, "ext", <name>]`, so a
-/// fresh `tau` install with no `harness.json5` runs the in-binary
-/// core-agent and core-shell extensions out of the box. Users can override
-/// individual fields (or set `enable: false`) per entry in
-/// `harness.json5` under `extensions: { name: { … } }`.
+/// Each entry's `command` is `[<current-exe>]` and `suffix` is
+/// `["ext", <name>]`, so a fresh `tau` install with no
+/// `harness.json5` runs the in-binary core-agent and core-shell
+/// extensions out of the box. Users can override individual fields
+/// (or set `enable: false`) per entry in `harness.json5` under
+/// `extensions: { name: { … } }`.
+///
+/// The list itself lives in `config/built-in.extensions.json5` and is
+/// embedded into the binary via `include_str!`; see
+/// [`built_in_extension_defs`] for the parse step.
 #[must_use]
 pub fn builtin_extensions() -> Vec<BuiltinExtension> {
     let tau_binary = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "tau".to_owned());
 
-    vec![
-        BuiltinExtension {
-            name: "core-agent",
-            command: vec![tau_binary.clone(), "ext".to_owned(), "agent".to_owned()],
-            role: Some("agent"),
-            enable: true,
-            config: serde_json::json!({}),
-        },
-        BuiltinExtension {
-            name: "core-shell",
-            command: vec![tau_binary.clone(), "ext".to_owned(), "ext-shell".to_owned()],
-            role: Some("tool"),
-            enable: true,
-            config: serde_json::json!({}),
-        },
-        BuiltinExtension {
-            name: "test-dummy",
-            command: vec![
-                tau_binary.clone(),
-                "ext".to_owned(),
-                "ext-test-dummy".to_owned(),
-            ],
-            role: Some("tool"),
-            enable: false,
-            config: serde_json::json!({}),
-        },
-        BuiltinExtension {
-            name: "core-delegate",
-            command: vec![
-                tau_binary.clone(),
-                "ext".to_owned(),
-                "ext-core-delegate".to_owned(),
-            ],
-            role: Some("tool"),
-            enable: true,
-            config: serde_json::json!({}),
-        },
-        BuiltinExtension {
-            name: "std-notifications",
-            command: vec![
-                tau_binary.clone(),
-                "ext".to_owned(),
-                "ext-std-notifications".to_owned(),
-            ],
-            role: Some("tool"),
-            enable: true,
-            config: serde_json::json!({ "idle_seconds": 60 }),
-        },
-        BuiltinExtension {
-            name: "std-websearch-exa",
-            command: vec![tau_binary, "ext".to_owned(), "ext-websearch-exa".to_owned()],
-            role: Some("tool"),
-            enable: true,
-            config: serde_json::json!({}),
-        },
-    ]
+    built_in_extension_defs()
+        .iter()
+        .map(|def| BuiltinExtension {
+            name: def.name.clone(),
+            prefix: def.prefix.clone().unwrap_or_default(),
+            command: def
+                .command
+                .clone()
+                .unwrap_or_else(|| vec![tau_binary.clone()]),
+            suffix: def.suffix.clone().unwrap_or_default(),
+            role: def.role.clone(),
+            enable: def.enable,
+            config: def.config.clone(),
+        })
+        .collect()
+}
+
+const BUILT_IN_EXTENSIONS_JSON5: &str = include_str!("../config/built-in.extensions.json5");
+
+/// Wire schema for one entry in `built-in.extensions.json5`. `command`
+/// is optional — when omitted, [`builtin_extensions`] substitutes
+/// `[<current-exe>]` so the built-in runs the tau binary itself.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuiltInExtensionDef {
+    pub name: String,
+    #[serde(default)]
+    pub prefix: Option<Vec<String>>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub suffix: Option<Vec<String>>,
+    #[serde(default)]
+    pub role: Option<String>,
+    pub enable: bool,
+    pub config: serde_json::Value,
+}
+
+pub(crate) fn built_in_extension_defs() -> &'static [BuiltInExtensionDef] {
+    static B: std::sync::LazyLock<Vec<BuiltInExtensionDef>> = std::sync::LazyLock::new(|| {
+        json5::from_str(BUILT_IN_EXTENSIONS_JSON5).unwrap_or_else(|err| {
+            panic!(
+                "tau ships with malformed built-in.extensions.json5: {err}\n\
+                 this is a bug; please report it"
+            )
+        })
+    });
+    &B
 }
 
 #[must_use]
@@ -344,7 +356,7 @@ pub fn default_config() -> Config {
     // empty `command`. Here we pass an empty `HarnessSettings` and the
     // hard-coded `builtin_extensions()` list (all with non-empty `command`),
     // so the failure path is unreachable.
-    let extensions = match resolve_extensions(&HarnessSettings::default(), builtin_extensions()) {
+    let extensions = match resolve_extensions(&HarnessSettings::built_in(), builtin_extensions()) {
         Ok(extensions) => extensions,
         Err(err) => unreachable!("built-in extensions resolve cleanly: {err}"),
     };

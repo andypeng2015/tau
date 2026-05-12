@@ -15,12 +15,39 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Built-in configs
+//
+// Tau ships its baseline `cli.json5`, `cli-bindings.json5` and
+// `harness.json5` as ordinary source files under
+// `crates/tau-config/config/`, embedded via `include_str!`. They are
+// layered underneath the user's own files at load time (see
+// `load_json5_layered_with_builtin`) so user partial overrides keep
+// working without the public `CliSettings` / `HarnessSettings` types
+// having to carry a `#[serde(default)]` and a synthesized `Default`
+// impl that secretly parses a file.
+// ---------------------------------------------------------------------------
+
+const BUILT_IN_CLI_JSON5: &str = include_str!("../config/built-in.cli.json5");
+const BUILT_IN_CLI_BINDINGS_JSON5: &str = include_str!("../config/built-in.cli-bindings.json5");
+const BUILT_IN_HARNESS_JSON5: &str = include_str!("../config/built-in.harness.json5");
+
+fn parse_built_in<T: for<'de> Deserialize<'de>>(name: &str, text: &str) -> T {
+    json5::from_str(text).unwrap_or_else(|err| {
+        panic!("tau ships with malformed {name}: {err}\nthis is a bug; please report it")
+    })
+}
+
+// ---------------------------------------------------------------------------
 // CLI settings
 // ---------------------------------------------------------------------------
 
 /// CLI display settings loaded from `cli.json5`.
+///
+/// Has no `Default` impl on purpose — the baseline lives in
+/// `config/built-in.cli.json5` and is layered in by the loader. Use
+/// [`CliSettings::built_in`] when you need a fresh, populated value
+/// in a test or fallback.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
 pub struct CliSettings {
     /// Show a greeting message on startup.
     pub greeting: bool,
@@ -33,8 +60,21 @@ pub struct CliSettings {
     pub prompt_symbol: String,
     /// Symbol shown before submitted prompts in the transcript.
     pub submitted_prompt_symbol: String,
-    /// Key bindings for prompt-local shell actions.
+    /// Key bindings for prompt-local shell actions. Defaults to an
+    /// empty map at the serde layer; the loader merges
+    /// `built-in.cli-bindings.json5` underneath the user's bindings.
+    #[serde(default)]
     pub bind: HashMap<String, CliBindingAction>,
+}
+
+impl CliSettings {
+    /// The fully-populated baseline that ships with tau, parsed from
+    /// the embedded `built-in.cli.json5` plus `built-in.cli-bindings.json5`.
+    pub fn built_in() -> Self {
+        let mut s: Self = parse_built_in("built-in.cli.json5", BUILT_IN_CLI_JSON5);
+        s.bind = default_cli_bindings();
+        s
+    }
 }
 
 /// Shell command configured for a CLI key binding.
@@ -100,86 +140,12 @@ impl Default for CliBindingAction {
     }
 }
 
-impl Default for CliSettings {
-    fn default() -> Self {
-        Self {
-            greeting: true,
-            show_logo: true,
-            bar_cursor: true,
-            prompt_symbol: "◯".to_string(),
-            submitted_prompt_symbol: "⬤".to_string(),
-            bind: default_cli_bindings(),
-        }
-    }
-}
-
-fn default_cli_bindings() -> HashMap<String, CliBindingAction> {
-    HashMap::from([
-        (
-            "C-f".to_owned(),
-            CliBindingAction {
-                action: "shell-prompt-insert".to_owned(),
-                command: "rg --files --hidden --glob '!.git' | fzf --height=100%".to_owned(),
-                trim: true,
-            },
-        ),
-        (
-            "C-r".to_owned(),
-            CliBindingAction {
-                action: "shell-prompt-insert".to_owned(),
-                command: r#"RG_PREFIX='rg --line-number --column --no-heading --color=always --smart-case'; fzf --height=100% --ansi --disabled --bind "change:reload:$RG_PREFIX {q} || true" --delimiter : --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1} 2>/dev/null || awk -v line={2} '\''line - 4 <= NR && NR <= line + 4 { printf "%6d  %s\n", NR, $0 }'\'' -- {1}' --preview-window '+{2}/2' | cut -d: -f1"#.to_owned(),
-                trim: true,
-            },
-        ),
-        (
-            "C-k".to_owned(),
-            CliBindingAction {
-                action: "prompt-previous".to_owned(),
-                command: String::new(),
-                trim: false,
-            },
-        ),
-        (
-            "C-Up".to_owned(),
-            CliBindingAction {
-                action: "prompt-previous".to_owned(),
-                command: String::new(),
-                trim: false,
-            },
-        ),
-        (
-            "C-j".to_owned(),
-            CliBindingAction {
-                action: "prompt-next".to_owned(),
-                command: String::new(),
-                trim: false,
-            },
-        ),
-        (
-            "C-Down".to_owned(),
-            CliBindingAction {
-                action: "prompt-next".to_owned(),
-                command: String::new(),
-                trim: false,
-            },
-        ),
-        (
-            "C-o".to_owned(),
-            CliBindingAction {
-                action: "shell-prompt-edit".to_owned(),
-                command: "$TAU_EDITOR \"$TAU_PROMPT_PATH\"".to_owned(),
-                trim: false,
-            },
-        ),
-        (
-            "C-g".to_owned(),
-            CliBindingAction {
-                action: "shell-prompt-edit".to_owned(),
-                command: "$TAU_EDITOR \"$TAU_PROMPT_PATH\"".to_owned(),
-                trim: false,
-            },
-        ),
-    ])
+/// Parse the embedded `built-in.cli-bindings.json5`. Called from
+/// [`CliSettings::built_in`] and from [`load_cli_settings_in`] (the
+/// latter overlays user bindings on top of this baseline so users
+/// don't lose unmentioned keys when they customize a single chord).
+pub(crate) fn default_cli_bindings() -> HashMap<String, CliBindingAction> {
+    parse_built_in("built-in.cli-bindings.json5", BUILT_IN_CLI_BINDINGS_JSON5)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,8 +229,12 @@ impl CliState {
 // ---------------------------------------------------------------------------
 
 /// Harness/agent settings loaded from `harness.json5`.
+///
+/// Has no `Default` impl on purpose — the baseline lives in
+/// `config/built-in.harness.json5` and is layered in by the loader.
+/// Use [`HarnessSettings::built_in`] when you need a fresh,
+/// populated value in a test or fallback.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
 pub struct HarnessSettings {
     /// Default model provider/model to use (e.g.
     /// "anthropic/claude-sonnet-4-20250514").
@@ -298,18 +268,13 @@ pub struct HarnessSettings {
     pub extensions: HashMap<String, ExtensionEntry>,
 }
 
-impl Default for HarnessSettings {
-    fn default() -> Self {
-        Self {
-            default_model: None,
-            default_efforts: HashMap::new(),
-            session_retention_days: 60,
-            extensions: HashMap::new(),
-        }
-    }
-}
-
 impl HarnessSettings {
+    /// The fully-populated baseline that ships with tau, parsed from
+    /// the embedded `built-in.harness.json5`.
+    pub fn built_in() -> Self {
+        parse_built_in("built-in.harness.json5", BUILT_IN_HARNESS_JSON5)
+    }
+
     #[must_use]
     pub fn session_retention(&self) -> Option<Duration> {
         if self.session_retention_days == 0 {
@@ -339,9 +304,16 @@ pub struct ExtensionEntry {
 
     /// argv of the extension itself. `command[0]` is the executable;
     /// the rest are arguments. For built-in extensions this defaults
-    /// to `[<current-exe>, "ext", <name>]`; for new entries
-    /// this must be set explicitly.
+    /// to `[<current-exe>]`; for new entries this must be set
+    /// explicitly. Tau-piggybacking entries can omit `command` and
+    /// use `suffix` to pick the subcommand on the running tau binary.
     pub command: Option<Vec<String>>,
+
+    /// argv suffix appended after `command`. Symmetric to `prefix`.
+    /// Built-in extensions use this to spell their subcommand (e.g.
+    /// `["ext", "agent"]`) so the `command` slot stays as the tau
+    /// binary path.
+    pub suffix: Option<Vec<String>>,
 
     /// Whether to run this extension. Defaults to the built-in's
     /// `enable` (or `true` for user-added entries). Set to `false`
@@ -672,16 +644,14 @@ pub fn load_cli_settings() -> Result<CliSettings, SettingsError> {
 
 /// Like [`load_cli_settings`] but reads from an explicit directory layout.
 ///
-/// Scalar fields follow `#[serde(default)]` on [`CliSettings`] — anything the
-/// user omits gets the built-in default automatically. The one special case
-/// is `bind`: when the user writes a `bind: { … }` table, the built-in
-/// key bindings are merged underneath so unmentioned keys stay bound to
-/// their defaults instead of being dropped.
+/// The embedded `built-in.cli.json5` is layered underneath the user's
+/// own `cli.json5` (and any `cli.d/*.json5` drop-ins), so the user
+/// can write a partial file and unmentioned fields fall back to the
+/// shipped defaults. The `bind` map is merged per-key on top so a
+/// user customizing one chord doesn't lose the others.
 pub fn load_cli_settings_in(dirs: &TauDirs) -> Result<CliSettings, SettingsError> {
-    let Some(ref dir) = dirs.config_dir else {
-        return Ok(CliSettings::default());
-    };
-    let mut settings: CliSettings = load_json5_layered(dir, "cli")?;
+    let mut settings: CliSettings =
+        load_json5_layered_with_builtin(BUILT_IN_CLI_JSON5, dirs.config_dir.as_deref(), "cli")?;
     let mut bindings = default_cli_bindings();
     bindings.extend(settings.bind);
     settings.bind = bindings;
@@ -696,10 +666,11 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
-    let Some(ref dir) = dirs.config_dir else {
-        return Ok(HarnessSettings::default());
-    };
-    load_json5_layered(dir, "harness")
+    load_json5_layered_with_builtin(
+        BUILT_IN_HARNESS_JSON5,
+        dirs.config_dir.as_deref(),
+        "harness",
+    )
 }
 
 /// Loads the model registry from `models.json5` with `models.d/*.json5`
@@ -714,6 +685,54 @@ pub fn load_models_in(dirs: &TauDirs) -> Result<ModelRegistry, SettingsError> {
         return Ok(ModelRegistry::default());
     };
     load_json5_layered(dir, "models")
+}
+
+/// Like [`load_json5_layered`] but also stacks an embedded built-in
+/// json5 string underneath the user's files. `T` therefore doesn't
+/// need a `Default` impl — the built-in layer always supplies every
+/// required field.
+fn load_json5_layered_with_builtin<T: for<'de> Deserialize<'de>>(
+    built_in_text: &'static str,
+    dir: Option<&Path>,
+    name: &str,
+) -> Result<T, SettingsError> {
+    let mut builder = config::Config::builder().add_source(
+        config::File::from_str(built_in_text, config::FileFormat::Json5).required(true),
+    );
+
+    if let Some(dir) = dir {
+        let base_path = dir.join(format!("{name}.json5"));
+        if base_path.exists() {
+            builder = builder.add_source(
+                config::File::from(base_path)
+                    .format(config::FileFormat::Json5)
+                    .required(true),
+            );
+        }
+
+        let drop_dir = dir.join(format!("{name}.d"));
+        if drop_dir.is_dir() {
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(&drop_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|ext| ext == "json5"))
+                .collect();
+            paths.sort();
+            for path in paths {
+                builder = builder.add_source(
+                    config::File::from(path)
+                        .format(config::FileFormat::Json5)
+                        .required(true),
+                );
+            }
+        }
+    }
+
+    builder
+        .build()?
+        .try_deserialize()
+        .map_err(SettingsError::from)
 }
 
 /// Generic layered JSON5 loader: reads `{name}.json5` then all

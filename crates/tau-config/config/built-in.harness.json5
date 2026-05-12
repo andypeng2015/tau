@@ -1,0 +1,9 @@
+// Built-in HarnessSettings defaults. Read once into a private mirror
+// struct by `HarnessSettings::default()` to avoid `#[serde(default)]`
+// recursion on the public type.
+{
+    default_model: null,
+    default_efforts: {},
+    session_retention_days: 60,
+    extensions: {},
+}

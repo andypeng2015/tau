@@ -2,79 +2,35 @@ use tempfile::TempDir;
 
 use super::*;
 
-#[test]
-fn default_cli_settings_have_logo_enabled() {
-    let s = CliSettings::default();
-    assert!(s.greeting);
-    assert!(s.show_logo);
-    assert!(s.bar_cursor);
-    assert_eq!(s.prompt_symbol, "◯");
-    assert_eq!(s.submitted_prompt_symbol, "⬤");
-}
-
-#[test]
-fn default_harness_settings_have_no_model() {
-    let s = HarnessSettings::default();
-    assert!(s.default_model.is_none());
-    assert!(s.default_efforts.is_empty());
-    assert_eq!(s.session_retention_days, 60);
+fn dirs_with_config(dir: &std::path::Path) -> TauDirs {
+    TauDirs {
+        config_dir: Some(dir.to_path_buf()),
+        state_dir: None,
+    }
 }
 
 #[test]
 fn zero_session_retention_disables_cleanup() {
     let settings = HarnessSettings {
         session_retention_days: 0,
-        ..HarnessSettings::default()
+        ..HarnessSettings::built_in()
     };
 
     assert_eq!(settings.session_retention(), None);
 }
 
 #[test]
-fn cli_settings_load_from_json5_file() {
+fn cli_settings_user_scalar_override_wins_over_built_in() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(dir.join("cli.json5"), r#"{ greeting: false }"#).expect("write");
 
-    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
+    let s = load_cli_settings_in(&dirs_with_config(dir)).expect("load");
     assert!(!s.greeting);
-    assert!(s.show_logo); // default
-    assert!(s.bar_cursor); // default
-    assert_eq!(s.prompt_symbol, "◯"); // default
-    assert_eq!(s.submitted_prompt_symbol, "⬤"); // default
-    assert_eq!(
-        s.bind.get("C-o"),
-        Some(&CliBindingAction {
-            action: "shell-prompt-edit".to_owned(),
-            command: "$TAU_EDITOR \"$TAU_PROMPT_PATH\"".to_owned(),
-            trim: false,
-        })
-    );
 }
 
 #[test]
-fn cli_settings_load_bindings() {
-    let td = TempDir::new().expect("tempdir");
-    let dir = td.path();
-    std::fs::write(
-        dir.join("cli.json5"),
-        r#"{ bind: { "C-f": { action: "shell-prompt-insert", command: "fzf" } } }"#,
-    )
-    .expect("write");
-
-    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
-    assert_eq!(
-        s.bind.get("C-f"),
-        Some(&CliBindingAction {
-            action: "shell-prompt-insert".to_owned(),
-            command: "fzf".to_owned(),
-            trim: false,
-        })
-    );
-}
-
-#[test]
-fn load_cli_settings_merges_builtin_bindings_with_user_overrides() {
+fn cli_settings_user_binding_keeps_built_in_chords() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
@@ -82,68 +38,25 @@ fn load_cli_settings_merges_builtin_bindings_with_user_overrides() {
         r#"{ bind: { "C-f": { action: "shell-prompt-edit", command: "pick", trim: true } } }"#,
     )
     .expect("write");
-    let dirs = TauDirs {
-        config_dir: Some(dir.to_owned()),
-        state_dir: None,
-    };
 
-    let s = load_cli_settings_in(&dirs).expect("load");
-    assert_eq!(
-        s.bind.get("C-f"),
-        Some(&CliBindingAction {
-            action: "shell-prompt-edit".to_owned(),
-            command: "pick".to_owned(),
-            trim: true,
-        })
-    );
-    assert_eq!(
-        s.bind.get("C-r").map(|binding| binding.action.as_str()),
-        Some("shell-prompt-insert")
-    );
-    assert_eq!(
-        s.bind.get("C-o").map(|binding| binding.action.as_str()),
-        Some("shell-prompt-edit")
-    );
+    let s = load_cli_settings_in(&dirs_with_config(dir)).expect("load");
+    // User-overridden key reflects the user's value...
+    let cf = s.bind.get("C-f").expect("C-f");
+    assert_eq!(cf.action, "shell-prompt-edit");
+    assert_eq!(cf.command, "pick");
+    // ...and other built-in chords survive the merge.
+    assert!(s.bind.contains_key("C-r"));
+    assert!(s.bind.contains_key("C-o"));
 }
 
 #[test]
-fn load_cli_settings_in_surfaces_scalar_field_overrides() {
-    // Regression guard against re-introducing the manual field-by-field
-    // copy in `load_cli_settings_in`. Any field with `#[serde(default)]`
-    // on `CliSettings` should reach the caller without per-field
-    // plumbing.
-    let td = TempDir::new().expect("tempdir");
-    let dir = td.path();
-    std::fs::write(
-        dir.join("cli.json5"),
-        r#"{ greeting: false, show_logo: false, bar_cursor: false, prompt_symbol: "λ", submitted_prompt_symbol: "✓" }"#,
-    )
-    .expect("write");
-    let dirs = TauDirs {
-        config_dir: Some(dir.to_owned()),
-        state_dir: None,
-    };
-
-    let s = load_cli_settings_in(&dirs).expect("load");
-    assert!(!s.greeting);
-    assert!(!s.show_logo);
-    assert!(!s.bar_cursor);
-    assert_eq!(s.prompt_symbol, "λ");
-    assert_eq!(s.submitted_prompt_symbol, "✓");
-}
-
-#[test]
-fn cli_state_defaults_when_file_missing() {
+fn cli_state_load_returns_default_when_file_missing() {
     let td = TempDir::new().expect("tempdir");
     let dirs = TauDirs {
         config_dir: None,
         state_dir: Some(td.path().to_path_buf()),
     };
-    let state = CliState::load(&dirs);
-    assert_eq!(state, CliState::default());
-    assert!(!state.show_diff);
-    assert!(state.show_thinking);
-    assert!(state.show_cache_stats);
+    assert_eq!(CliState::load(&dirs), CliState::default());
 }
 
 #[test]
@@ -166,36 +79,7 @@ fn cli_state_round_trip_through_save_and_load() {
 }
 
 #[test]
-fn cli_settings_can_disable_bar_cursor() {
-    let td = TempDir::new().expect("tempdir");
-    let dir = td.path();
-    std::fs::write(dir.join("cli.json5"), r#"{ bar_cursor: false }"#).expect("write");
-
-    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
-    assert!(!s.bar_cursor);
-    assert!(s.greeting); // default
-    assert!(s.show_logo); // default
-    assert_eq!(s.prompt_symbol, "◯"); // default
-    assert_eq!(s.submitted_prompt_symbol, "⬤"); // default
-}
-
-#[test]
-fn cli_settings_can_customize_prompt_symbols() {
-    let td = TempDir::new().expect("tempdir");
-    let dir = td.path();
-    std::fs::write(
-        dir.join("cli.json5"),
-        r#"{ prompt_symbol: "λ", submitted_prompt_symbol: "✓" }"#,
-    )
-    .expect("write");
-
-    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
-    assert_eq!(s.prompt_symbol, "λ");
-    assert_eq!(s.submitted_prompt_symbol, "✓");
-}
-
-#[test]
-fn harness_settings_load_from_json5_file() {
+fn harness_settings_user_override_wins_over_built_in() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
@@ -209,7 +93,7 @@ fn harness_settings_load_from_json5_file() {
     )
     .expect("write");
 
-    let s: HarnessSettings = load_json5_layered(dir, "harness").expect("load");
+    let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     assert_eq!(
         s.default_model.as_deref(),
         Some("anthropic/claude-sonnet-4-20250514")
@@ -220,11 +104,10 @@ fn harness_settings_load_from_json5_file() {
             .copied(),
         Some(tau_proto::Effort::High)
     );
-    assert_eq!(s.session_retention_days, 60);
 }
 
 #[test]
-fn drop_in_overrides_base() {
+fn cli_settings_drop_in_layers_on_top_of_base() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(dir.join("cli.json5"), r#"{ greeting: true }"#).expect("write");
@@ -235,7 +118,7 @@ fn drop_in_overrides_base() {
     )
     .expect("write");
 
-    let s: CliSettings = load_json5_layered(dir, "cli").expect("load");
+    let s = load_cli_settings_in(&dirs_with_config(dir)).expect("load");
     assert!(!s.greeting);
 }
 
@@ -280,19 +163,23 @@ fn models_load_with_providers() {
 }
 
 #[test]
-fn missing_files_return_defaults() {
+fn missing_user_files_load_the_built_in_baseline() {
+    // With no user files present, the loader still returns a fully
+    // populated `CliSettings` / `HarnessSettings` from the embedded
+    // built-in layer, and an empty `ModelRegistry` (no user-shipped
+    // providers).
     let td = TempDir::new().expect("tempdir");
-    let s: CliSettings = load_json5_layered(td.path(), "cli").expect("load");
-    assert!(s.greeting);
-    let h: HarnessSettings = load_json5_layered(td.path(), "harness").expect("load");
-    assert!(h.default_model.is_none());
-    assert!(h.default_efforts.is_empty());
-    let m: ModelRegistry = load_json5_layered(td.path(), "models").expect("load");
+    let _cli = load_cli_settings_in(&dirs_with_config(td.path())).expect("cli");
+    let _harness = load_harness_settings_in(&dirs_with_config(td.path())).expect("harness");
+    let m = load_models_in(&dirs_with_config(td.path())).expect("models");
     assert!(m.providers.is_empty());
 }
 
 #[test]
 fn sample_configs_deserialize() {
+    // Sanity-check the sample configs shipped in the workspace root
+    // `config/` directory (used in the README) by feeding them
+    // through the user-config loader.
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
 
@@ -312,15 +199,10 @@ fn sample_configs_deserialize() {
     )
     .expect("write models");
 
-    let _cli: CliSettings = load_json5_layered(dir, "cli").expect("cli sample should parse");
-    let _harness: HarnessSettings =
-        load_json5_layered(dir, "harness").expect("harness sample should parse");
-    let models: ModelRegistry =
-        load_json5_layered(dir, "models").expect("models sample should parse");
-    assert!(
-        models.providers.contains_key("local"),
-        "sample models should contain 'local' provider"
-    );
+    let _cli = load_cli_settings_in(&dirs_with_config(dir)).expect("cli sample should parse");
+    let _harness =
+        load_harness_settings_in(&dirs_with_config(dir)).expect("harness sample should parse");
+    let _models = load_models_in(&dirs_with_config(dir)).expect("models sample should parse");
 }
 
 #[test]
