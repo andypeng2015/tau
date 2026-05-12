@@ -1,5 +1,6 @@
 //! `grep` tool: ripgrep-backed search using `rg --json`.
 
+use std::fmt;
 use std::io::{BufReader, Read};
 use std::process::Command;
 
@@ -93,11 +94,15 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<CborValue, String> {
         .wait_with_output()
         .map_err(|e| format!("failed to wait for ripgrep: {e}"))?;
 
-    // rg exit codes: 0=matches found, 1=no matches, 2=error
+    // rg exit codes: 0=matches found, 1=no matches, 2=error.
+    // Exit-2 is overloaded — ripgrep emits regex parse errors, IO
+    // errors, and permission denials all under the same code. Classify
+    // the stderr into a short, single-line message so the UI doesn't
+    // surface a multi-line regex-parser dump in the inline tool block.
     let status = output.status.code();
     if status == Some(2) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ripgrep error: {}", stderr.trim()));
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        return Err(classify_ripgrep_stderr(stderr_raw.trim()).to_string());
     }
 
     if result_lines.is_empty() {
@@ -150,6 +155,83 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<CborValue, String> {
         match_count,
         output_text,
     ))
+}
+
+/// Categorized ripgrep failure (exit code 2). The variants encode the
+/// kind of fault; the `Display` impl produces the short single-line
+/// message we surface as the tool error. Untagged callers stringify
+/// this via `to_string()`. When the unified tool-usage descriptor
+/// lands, the variants can be mapped to its `status` field directly
+/// instead of being flattened to a string.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum RipgrepError {
+    /// Bad regex / pattern from the agent. Carries ripgrep's trailing
+    /// `error: <diagnostic>` line (e.g. `unclosed group`) when found.
+    Usage {
+        detail: String,
+    },
+    NotFound,
+    Permission,
+    /// Anything else. Carries the first non-empty stderr line so the
+    /// chip stays readable but we don't lose the signal entirely.
+    Runtime {
+        detail: String,
+    },
+}
+
+impl fmt::Display for RipgrepError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage { detail } if !detail.is_empty() => {
+                write!(f, "regex parse error: {detail}")
+            }
+            Self::Usage { .. } => f.write_str("regex parse error"),
+            Self::NotFound => f.write_str("no such file or directory"),
+            Self::Permission => f.write_str("permission denied"),
+            Self::Runtime { detail } if !detail.is_empty() => {
+                write!(f, "ripgrep error: {detail}")
+            }
+            Self::Runtime { .. } => f.write_str("ripgrep error"),
+        }
+    }
+}
+
+/// Classify ripgrep's stderr (exit code 2). ripgrep prints stable,
+/// well-known prefixes for each failure class — `regex parse error:`
+/// for a bad pattern from the agent, and the OS-error suffix
+/// (`(os error 2)` / `(os error 13)`) for not-found and
+/// permission-denied — so we can label these without parsing
+/// arbitrary downstream text.
+pub(crate) fn classify_ripgrep_stderr(stderr: &str) -> RipgrepError {
+    if stderr.contains("regex parse error")
+        || stderr.contains("error parsing regex")
+        || stderr.contains("unrecognized escape sequence")
+    {
+        // ripgrep's regex-parser output puts the human-readable
+        // diagnostic on a trailing `error: <text>` line; the header
+        // and pattern/caret lines aren't useful for a one-line chip.
+        let detail = stderr
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("error:"))
+            .map(str::trim)
+            .next_back()
+            .unwrap_or("")
+            .to_owned();
+        return RipgrepError::Usage { detail };
+    }
+    if stderr.contains("(os error 2)") || stderr.contains("No such file or directory") {
+        return RipgrepError::NotFound;
+    }
+    if stderr.contains("(os error 13)") || stderr.contains("Permission denied") {
+        return RipgrepError::Permission;
+    }
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_owned();
+    RipgrepError::Runtime { detail }
 }
 
 /// Result of streaming and rendering rg's `--json` output.

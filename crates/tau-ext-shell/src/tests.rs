@@ -10,7 +10,7 @@ use super::*;
 use crate::agents::{discover_agents_files_from, discover_agents_files_from_roots};
 use crate::argument::{cbor_map_int, cbor_map_text, optional_argument_text};
 use crate::tools::find::run_find;
-use crate::tools::grep::{grep_result_map, run_grep};
+use crate::tools::grep::{RipgrepError, classify_ripgrep_stderr, grep_result_map, run_grep};
 use crate::tools::ls::run_ls;
 use crate::tools::read::{read_file, slice_lines};
 use crate::tools::shell::command_details_value;
@@ -1108,6 +1108,40 @@ fn grep_result_map_echoes_request_context_for_ui() {
     assert_eq!(cbor_int_field(&no_glob, "matches"), Some(0));
     assert_eq!(cbor_int_field(&no_glob, "output_lines"), Some(1));
     assert_eq!(cbor_int_field(&no_glob, "output_bytes"), Some(16));
+}
+
+#[test]
+fn classify_ripgrep_stderr_recognizes_stable_prefixes() {
+    // Bad regex from the agent. The trailing `error: <diagnostic>`
+    // line is the useful one — the header and caret lines aren't.
+    let parsed = classify_ripgrep_stderr(
+        "regex parse error:\n    (?:Result<(.*Address.*TweakIdx)\n    ^\nerror: unclosed group",
+    );
+    assert!(
+        matches!(parsed, RipgrepError::Usage { .. }),
+        "got: {parsed:?}"
+    );
+    assert_eq!(parsed.to_string(), "regex parse error: unclosed group");
+    // Missing path / file.
+    assert_eq!(
+        classify_ripgrep_stderr("No such file or directory (os error 2)"),
+        RipgrepError::NotFound,
+    );
+    assert_eq!(
+        classify_ripgrep_stderr("No such file or directory (os error 2)").to_string(),
+        "no such file or directory",
+    );
+    // Permission denied.
+    assert_eq!(
+        classify_ripgrep_stderr("Permission denied (os error 13)"),
+        RipgrepError::Permission,
+    );
+    // Anything else (genuine runtime fault) keeps the first stderr
+    // line so the chip still carries a useful signal.
+    assert_eq!(
+        classify_ripgrep_stderr("some unfamiliar ripgrep failure").to_string(),
+        "ripgrep error: some unfamiliar ripgrep failure",
+    );
 }
 
 #[test]
