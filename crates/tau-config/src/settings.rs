@@ -539,6 +539,52 @@ pub struct ModelConfig {
     /// Total context window size, in tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Whether this model accepts `reasoning_effort=xhigh`. `None`
+    /// (the default) means "fall back to the built-in whitelist for
+    /// well-known OpenAI model IDs" — see [`is_known_xhigh_model_id`].
+    /// Set explicitly in `models.json5` (`supportsXhigh: true|false`)
+    /// to override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_xhigh: Option<bool>,
+}
+
+impl ModelConfig {
+    /// Effective xhigh support: explicit `supports_xhigh` wins,
+    /// otherwise consult the built-in whitelist of known OpenAI
+    /// model IDs.
+    #[must_use]
+    pub fn supports_xhigh(&self) -> bool {
+        self.supports_xhigh
+            .unwrap_or_else(|| is_known_xhigh_model_id(&self.id))
+    }
+}
+
+/// Returns `true` for OpenAI model IDs known to accept
+/// `reasoning_effort=xhigh` on the public API as of 2026-05.
+///
+/// Curated from OpenAI's model documentation:
+/// - `gpt-5.5` family (excluding mini/nano)
+/// - `gpt-5.4` and `gpt-5.4-pro` (excluding mini/nano)
+/// - `gpt-5.3-codex` family
+/// - `gpt-5.2` (excluding mini/nano) — introduced xhigh
+/// - `gpt-5.1-codex-max`
+///
+/// Matches by prefix so dated/aliased variants (e.g.
+/// `gpt-5.5-2026-04-15`) pick up the same setting as their base ID.
+/// `mini` and `nano` variants are excluded — they top out at `high`.
+#[must_use]
+pub fn is_known_xhigh_model_id(id: &str) -> bool {
+    if id.contains("mini") || id.contains("nano") {
+        return false;
+    }
+    const PREFIXES: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+    ];
+    PREFIXES.iter().any(|p| id.starts_with(p))
 }
 
 // ---------------------------------------------------------------------------

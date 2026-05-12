@@ -360,6 +360,7 @@ pub(crate) fn run_chat(
         settings.submitted_prompt_symbol,
     );
     let effort_state = renderer.effort_state();
+    let efforts_available = renderer.efforts_available();
     let editor_context = renderer.editor_context();
     term.set_editor_context_handle(editor_context.clone());
     let _renderer = std::thread::spawn(move || {
@@ -400,6 +401,7 @@ pub(crate) fn run_chat(
         &mut active_session_id,
         TerminalInputLoopCtx {
             effort_state,
+            efforts_available,
             theme,
             renderer_tx: event_tx,
             editor_context,
@@ -478,6 +480,12 @@ enum RendererCmd {
 
 struct TerminalInputLoopCtx {
     effort_state: Arc<std::sync::atomic::AtomicU8>,
+    /// Set of effort levels the harness currently accepts, kept in
+    /// sync with `HarnessEffortsAvailable` by the renderer. The
+    /// Shift+Tab cycle reads it so we don't ask for a level the
+    /// model doesn't support (which the harness would clamp,
+    /// trapping the cycle in place).
+    efforts_available: Arc<Mutex<std::collections::BTreeSet<tau_proto::Effort>>>,
     theme: tau_themes::Theme,
     renderer_tx: mpsc::Sender<RendererCmd>,
     editor_context: Arc<Mutex<tau_cli_term::EditorContext>>,
@@ -711,16 +719,32 @@ fn terminal_input_loop(
                 }
             }
             TermEvent::BackTab => {
-                // Pi-style: cycle effort. Read the current
-                // level from the shared atomic the renderer keeps in
-                // sync with `HarnessEffortChanged`, advance,
-                // send the request. The harness echoes back and the
-                // renderer updates the status block.
+                // Pi-style: cycle effort. Read the current level
+                // from the shared atomic the renderer keeps in sync
+                // with `HarnessEffortChanged`, advance through the
+                // currently-allowed set (mirrored from
+                // `HarnessEffortsAvailable`), send the request. The
+                // harness echoes back and the renderer updates the
+                // status block. Skipping unavailable levels avoids
+                // a stuck cycle when the model lacks `xhigh`.
                 let current = tau_proto::Effort::from_u8(
                     ctx.effort_state.load(std::sync::atomic::Ordering::Relaxed),
                 )
                 .unwrap_or_default();
-                let next = current.next();
+                let allowed: Vec<tau_proto::Effort> = match ctx.efforts_available.lock() {
+                    Ok(set) => set.iter().copied().collect(),
+                    Err(_) => Vec::new(),
+                };
+                if allowed.is_empty() {
+                    // No allowed set known yet (pre-handshake or no
+                    // model selected). Don't send a request the
+                    // harness would just clamp.
+                    continue;
+                }
+                let next = current.next_in(&allowed);
+                if next == current {
+                    continue;
+                }
                 let _ = send_event(
                     writer,
                     &Event::UiSetEffort(tau_proto::UiSetEffort { level: next }),

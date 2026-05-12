@@ -490,7 +490,7 @@ pub struct HarnessContextUsageChanged {
 /// Reasoning effort level. Maps to provider-specific reasoning
 /// controls (OpenAI `reasoning.effort`, Anthropic
 /// `thinking.budget_tokens`). `Off` disables it entirely.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Effort {
@@ -515,6 +515,29 @@ impl Effort {
             Self::High => Self::XHigh,
             Self::XHigh => Self::Off,
         }
+    }
+
+    /// Cycle in the canonical order, but only through levels that are
+    /// in `allowed`. Used by Shift+Tab in the CLI so the user doesn't
+    /// land on a level the current model doesn't support (e.g. xhigh
+    /// on `gpt-5.4-mini`). Falls back to [`Effort::next`] when
+    /// `allowed` is empty.
+    #[must_use]
+    pub fn next_in(self, allowed: &[Self]) -> Self {
+        if allowed.is_empty() {
+            return self.next();
+        }
+        let mut candidate = self.next();
+        // Bounded by `Effort` variant count — at most one full
+        // wrap-around before we either land on an allowed level or
+        // confirm none exist.
+        for _ in 0..6 {
+            if allowed.contains(&candidate) {
+                return candidate;
+            }
+            candidate = candidate.next();
+        }
+        self
     }
 
     /// Short label for status display (`off` / `low` / `high` / etc).

@@ -202,3 +202,102 @@ fn borked_harness_json5_emits_important_info() {
         "message should explain what happened, got: {message}"
     );
 }
+
+/// `efforts_for_model` appends `XHigh` for models that opt in (either
+/// the built-in whitelist of known OpenAI IDs, or an explicit
+/// `supportsXhigh: true` in models.json5), and omits it for the
+/// rest. Pinning the set so a future tweak to the whitelist still
+/// surfaces here.
+#[test]
+fn efforts_for_model_includes_xhigh_for_supported_models_only() {
+    use tau_proto::Effort as L;
+
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("models.json5"),
+        r#"{
+            providers: {
+                openai: {
+                    api: "openai-chat",
+                    auth: "api-key",
+                    apiKey: "test",
+                    compat: { supportsReasoningEffort: true },
+                    models: [
+                        { id: "gpt-5.5" },
+                        { id: "gpt-5.4-mini" },
+                        { id: "weird-custom", supportsXhigh: true },
+                        { id: "gpt-5.5-pinned-off", supportsXhigh: false },
+                    ],
+                },
+                local: {
+                    compat: { supportsReasoningEffort: false },
+                    models: [{ id: "llama" }],
+                },
+            },
+        }"#,
+    )
+    .expect("write models");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(dir.to_path_buf()),
+        state_dir: None,
+    };
+    let registry = tau_config::settings::load_models_in(&dirs).expect("load");
+
+    let with_xhigh = [L::Off, L::Minimal, L::Low, L::Medium, L::High, L::XHigh];
+    let without_xhigh = [L::Off, L::Minimal, L::Low, L::Medium, L::High];
+
+    assert_eq!(
+        efforts_for_model(&registry, "openai/gpt-5.5"),
+        with_xhigh,
+        "whitelisted OpenAI model gets xhigh",
+    );
+    assert_eq!(
+        efforts_for_model(&registry, "openai/gpt-5.4-mini"),
+        without_xhigh,
+        "mini variant excluded by whitelist",
+    );
+    assert_eq!(
+        efforts_for_model(&registry, "openai/weird-custom"),
+        with_xhigh,
+        "explicit supportsXhigh=true opts in",
+    );
+    assert_eq!(
+        efforts_for_model(&registry, "openai/gpt-5.5-pinned-off"),
+        without_xhigh,
+        "explicit supportsXhigh=false opts out",
+    );
+    assert_eq!(
+        efforts_for_model(&registry, "local/llama"),
+        vec![L::Off],
+        "non-reasoning provider stays at Off-only",
+    );
+    assert!(
+        efforts_for_model(&registry, "openai/unknown-id").last() == Some(&L::High),
+        "unknown id falls back to the canonical 5-level set",
+    );
+    assert!(
+        efforts_for_model(&registry, "").is_empty(),
+        "empty model id yields no choices",
+    );
+}
+
+/// `clamp_effort` must degrade `XHigh` to `High` (Pi-style) when the
+/// model doesn't expose it, rather than silently dropping all the
+/// way to `Off`. `Off` remains the fallback for other unsupported
+/// levels so users with a no-reasoning provider don't get pinned to
+/// a level the model can't handle.
+#[test]
+fn clamp_effort_degrades_xhigh_to_high_when_unsupported() {
+    use tau_proto::Effort as L;
+    let without_xhigh = [L::Off, L::Minimal, L::Low, L::Medium, L::High];
+
+    assert_eq!(clamp_effort(L::XHigh, &without_xhigh), L::High);
+    // Sanity: when xhigh IS allowed, no demotion.
+    let with_xhigh = [L::Off, L::Minimal, L::Low, L::Medium, L::High, L::XHigh];
+    assert_eq!(clamp_effort(L::XHigh, &with_xhigh), L::XHigh);
+    // Other unsupported requests still fall to Off.
+    assert_eq!(clamp_effort(L::Minimal, &[L::Off]), L::Off);
+    // No Off in the allowed set: degrade to the first entry.
+    assert_eq!(clamp_effort(L::High, &[L::Medium, L::Low]), L::Medium);
+}

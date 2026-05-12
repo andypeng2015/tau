@@ -429,6 +429,9 @@ fn build_provider_entry(kind: &ProviderKind, ollama_model: Option<&str>) -> Prov
             name: None,
             max_output_tokens: None,
             context_window: Some(context_window),
+            // `None` defers to the built-in xhigh whitelist
+            // (`tau_config::settings::is_known_xhigh_model_id`).
+            supports_xhigh: None,
         }
     }
 

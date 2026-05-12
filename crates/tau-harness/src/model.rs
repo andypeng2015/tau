@@ -60,8 +60,11 @@ pub(crate) fn load_model_list(dirs: &tau_config::settings::TauDirs) -> LoadedMod
 /// Returns the efforts valid for `model` (a `provider/model_id`
 /// string). Empty list means no effort applies — no model selected, or
 /// the provider doesn't support reasoning. Otherwise returns the
-/// canonical [Off, Minimal, Low, Medium, High] set; xhigh is gated on
-/// future per-model config (Pi only enables it for codex-max).
+/// canonical [Off, Minimal, Low, Medium, High] set, optionally with
+/// `XHigh` appended when the model opts in (per-model
+/// `supportsXhigh` in `models.json5`, or the built-in whitelist of
+/// known OpenAI model IDs in
+/// [`tau_config::settings::is_known_xhigh_model_id`]).
 pub(crate) fn efforts_for_model(
     registry: &tau_config::settings::ModelRegistry,
     model: &str,
@@ -70,7 +73,7 @@ pub(crate) fn efforts_for_model(
     if model.is_empty() {
         return Vec::new();
     }
-    let Some((provider_name, _)) = model.split_once('/') else {
+    let Some((provider_name, model_id)) = model.split_once('/') else {
         return Vec::new();
     };
     let Some(provider) = registry.providers.get(provider_name) else {
@@ -79,7 +82,16 @@ pub(crate) fn efforts_for_model(
     if !provider.compat.supports_reasoning_effort {
         return vec![L::Off];
     }
-    vec![L::Off, L::Minimal, L::Low, L::Medium, L::High]
+    let mut levels = vec![L::Off, L::Minimal, L::Low, L::Medium, L::High];
+    if provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .is_some_and(tau_config::settings::ModelConfig::supports_xhigh)
+    {
+        levels.push(L::XHigh);
+    }
+    levels
 }
 
 pub(crate) fn model_context_window(
@@ -107,13 +119,22 @@ pub(crate) fn clamp_effort(
     requested: tau_proto::Effort,
     allowed: &[tau_proto::Effort],
 ) -> tau_proto::Effort {
+    use tau_proto::Effort as L;
     if allowed.contains(&requested) {
         return requested;
     }
-    if allowed.contains(&tau_proto::Effort::Off) {
-        return tau_proto::Effort::Off;
+    // Graceful degradation for `xhigh` on models that don't expose
+    // it: fall back to `high` rather than all the way to `off`, so
+    // `/effort xhigh` on (say) `gpt-5.4-mini` still produces a
+    // sensible reasoning level instead of silently disabling
+    // reasoning. Mirrors Pi's behaviour.
+    if requested == L::XHigh && allowed.contains(&L::High) {
+        return L::High;
     }
-    allowed.first().copied().unwrap_or(tau_proto::Effort::Off)
+    if allowed.contains(&L::Off) {
+        return L::Off;
+    }
+    allowed.first().copied().unwrap_or(L::Off)
 }
 
 fn parse_effort(value: &str) -> Option<tau_proto::Effort> {

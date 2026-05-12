@@ -1508,7 +1508,22 @@ impl Harness {
             }
             Event::UiSetEffort(req) => {
                 let levels = efforts_for_model(&self.model_registry, self.selected_model.as_str());
-                self.selected_effort = clamp_effort(req.level, &levels);
+                let clamped = clamp_effort(req.level, &levels);
+                if clamped != req.level {
+                    self.publish_event(
+                        None,
+                        Event::HarnessInfo(tau_proto::HarnessInfo {
+                            message: format!(
+                                "effort `{}` not supported by `{}`; using `{}` instead",
+                                req.level.as_str(),
+                                self.selected_model.as_str(),
+                                clamped.as_str(),
+                            ),
+                            level: tau_proto::HarnessInfoLevel::Normal,
+                        }),
+                    );
+                }
+                self.selected_effort = clamped;
                 save_harness_state(
                     &self.dirs,
                     self.selected_model.as_str(),

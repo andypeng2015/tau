@@ -341,6 +341,7 @@ fn add_provider_in_writes_typed_entry() {
         name: None,
         max_output_tokens: None,
         context_window: Some(123_456),
+        supports_xhigh: None,
     });
 
     let path = add_provider_in(&dirs, "openai", &provider).expect("add provider");
@@ -396,6 +397,103 @@ fn add_provider_in_preserves_other_entries_and_unknown_fields() {
     assert_eq!(root["extraTopLevelField"], 42);
     assert_eq!(root["providers"]["keep"]["extraProviderField"], "preserved");
     assert_eq!(root["providers"]["added"]["auth"], "api-key");
+}
+
+/// The xhigh whitelist drives the default for models that don't set
+/// `supportsXhigh` explicitly. Lock the curated set so a future tweak
+/// can't silently demote (or promote) a model that was working before.
+#[test]
+fn xhigh_whitelist_covers_known_openai_families() {
+    // Full-size GPT-5 frontier models support xhigh.
+    assert!(is_known_xhigh_model_id("gpt-5.5"));
+    assert!(is_known_xhigh_model_id("gpt-5.5-2026-04-15"));
+    assert!(is_known_xhigh_model_id("gpt-5.4"));
+    assert!(is_known_xhigh_model_id("gpt-5.4-pro"));
+    assert!(is_known_xhigh_model_id("gpt-5.3-codex"));
+    assert!(is_known_xhigh_model_id("gpt-5.3-codex-spark"));
+    assert!(is_known_xhigh_model_id("gpt-5.2"));
+    assert!(is_known_xhigh_model_id("gpt-5.1-codex-max"));
+
+    // mini / nano variants top out at `high`.
+    assert!(!is_known_xhigh_model_id("gpt-5.5-mini"));
+    assert!(!is_known_xhigh_model_id("gpt-5.4-mini"));
+    assert!(!is_known_xhigh_model_id("gpt-5.4-nano"));
+    assert!(!is_known_xhigh_model_id("gpt-5.2-mini"));
+
+    // Older / unrelated families.
+    assert!(!is_known_xhigh_model_id("o3-mini"));
+    assert!(!is_known_xhigh_model_id("gpt-4.1"));
+    assert!(!is_known_xhigh_model_id("claude-sonnet-4.6"));
+    assert!(!is_known_xhigh_model_id("llama3.2:latest"));
+    assert!(!is_known_xhigh_model_id(""));
+}
+
+/// Explicit `supportsXhigh` in models.json5 must win over the
+/// built-in whitelist in either direction.
+#[test]
+fn model_supports_xhigh_explicit_override_wins() {
+    let base = ModelConfig {
+        id: "gpt-5.5".to_owned(),
+        name: None,
+        max_output_tokens: None,
+        context_window: None,
+        supports_xhigh: None,
+    };
+    assert!(base.supports_xhigh(), "whitelist default for gpt-5.5");
+
+    let forced_off = ModelConfig {
+        supports_xhigh: Some(false),
+        ..base.clone()
+    };
+    assert!(
+        !forced_off.supports_xhigh(),
+        "explicit `false` overrides the whitelist"
+    );
+
+    let forced_on = ModelConfig {
+        id: "exotic-local-model".to_owned(),
+        supports_xhigh: Some(true),
+        ..base
+    };
+    assert!(
+        forced_on.supports_xhigh(),
+        "explicit `true` overrides the (absent) whitelist entry"
+    );
+}
+
+/// `supportsXhigh: true` should round-trip through json5.
+#[test]
+fn models_json5_supports_xhigh_field_parses() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("models.json5"),
+        r#"{
+            providers: {
+                openai: {
+                    api: "openai-chat",
+                    auth: "api-key",
+                    apiKey: "test",
+                    models: [
+                        { id: "gpt-5.4" },
+                        { id: "weird-custom", supportsXhigh: true },
+                        { id: "gpt-5.5", supportsXhigh: false },
+                    ],
+                },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let m: ModelRegistry = load_json5_layered(dir, "models").expect("load");
+    let models = &m.providers["openai"].models;
+    let by_id = |id: &str| models.iter().find(|m| m.id == id).expect(id);
+    assert_eq!(by_id("gpt-5.4").supports_xhigh, None);
+    assert!(by_id("gpt-5.4").supports_xhigh(), "whitelist default");
+    assert_eq!(by_id("weird-custom").supports_xhigh, Some(true));
+    assert!(by_id("weird-custom").supports_xhigh());
+    assert_eq!(by_id("gpt-5.5").supports_xhigh, Some(false));
+    assert!(!by_id("gpt-5.5").supports_xhigh(), "explicit opt-out wins");
 }
 
 #[test]

@@ -37,7 +37,7 @@ use crate::daemon::{
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 use crate::error::HarnessError;
 use crate::event::HarnessEvent;
-use crate::model::selected_effort_for_model;
+use crate::model::{clamp_effort, efforts_for_model, selected_effort_for_model};
 use crate::prompt::build_system_prompt;
 use crate::turn::{PromptSubmission, TurnState};
 

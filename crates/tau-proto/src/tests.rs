@@ -431,3 +431,32 @@ fn tool_name_maybe_serializes_as_transparent_string() {
         serde_json::from_str("\"bad.name\"").expect("deserialize invalid");
     assert!(matches!(reparsed, ToolNameMaybe::Invalid(_)));
 }
+
+/// `Effort::next_in` powers the Shift+Tab cycle on the CLI side: it
+/// must skip levels that aren't in the harness's allowed set so the
+/// cycle doesn't trap when (say) `xhigh` is missing for the current
+/// model. Locking the behaviour with explicit cases so a future
+/// refactor of the cycle helper can't silently regress the UX.
+#[test]
+fn effort_next_in_skips_disallowed_levels_and_wraps() {
+    use Effort::*;
+    let canonical = [Off, Minimal, Low, Medium, High];
+    let with_xhigh = [Off, Minimal, Low, Medium, High, XHigh];
+
+    // Without xhigh, High wraps back to Off — XHigh is skipped.
+    assert_eq!(High.next_in(&canonical), Off);
+    // With xhigh, High advances to XHigh and XHigh wraps to Off.
+    assert_eq!(High.next_in(&with_xhigh), XHigh);
+    assert_eq!(XHigh.next_in(&with_xhigh), Off);
+
+    // Sparse allowed set (provider with no reasoning effort) — Off
+    // is the only legal level, so any input lands there.
+    let only_off = [Off];
+    assert_eq!(High.next_in(&only_off), Off);
+    assert_eq!(Off.next_in(&only_off), Off);
+
+    // Empty allowed set falls through to plain `next()` so callers
+    // that haven't received `HarnessEffortsAvailable` yet still
+    // make progress on Shift+Tab presses.
+    assert_eq!(Medium.next_in(&[]), Medium.next());
+}

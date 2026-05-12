@@ -100,6 +100,12 @@ pub(crate) struct EventRenderer {
     last_turn_latency: Option<Duration>,
     /// Shared effort mirror for the input thread.
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Shared set of currently-available effort levels, mirrored
+    /// from `HarnessEffortsAvailable`. The input thread's Shift+Tab
+    /// cycle reads it to skip levels the current model doesn't
+    /// support (e.g. `xhigh` on `gpt-5.4-mini`).
+    efforts_available:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<tau_proto::Effort>>>,
     /// Context appended to files opened by the external prompt editor.
     /// Locked with `if let Ok(...)` rather than [`crate::locked`] because
     /// this is best-effort UI metadata: if another holder panicked we'd
@@ -265,6 +271,13 @@ impl EventRenderer {
             effort_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 tau_proto::Effort::Off.as_u8(),
             )),
+            // Empty until the first `HarnessEffortsAvailable`
+            // arrives. The input loop's BackTab handler treats an
+            // empty set as "no allowed levels known yet" and
+            // skips sending a request the harness would just clamp.
+            efforts_available: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeSet::new(),
+            )),
             editor_context: std::sync::Arc::new(std::sync::Mutex::new(
                 tau_cli_term::EditorContext::default(),
             )),
@@ -292,6 +305,15 @@ impl EventRenderer {
     /// input thread to read the current level for Shift+Tab cycling.
     pub(crate) fn effort_state(&self) -> std::sync::Arc<std::sync::atomic::AtomicU8> {
         self.effort_state.clone()
+    }
+
+    /// Returns a clone of the shared available-efforts set. The
+    /// input thread uses it to skip levels the current model
+    /// doesn't expose (e.g. `xhigh` on `gpt-5.4-mini`).
+    pub(crate) fn efforts_available(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<tau_proto::Effort>>> {
+        self.efforts_available.clone()
     }
 
     /// Flip the global expand-diffs flag and re-render every diff
@@ -1070,6 +1092,10 @@ impl EventRenderer {
                     .collect();
                 self.completion_data
                     .set_arg_completions(tau_cli_term::CommandName::new("/effort"), items);
+                if let Ok(mut set) = self.efforts_available.lock() {
+                    set.clear();
+                    set.extend(avail.levels.iter().copied());
+                }
             }
             other => {
                 tracing::trace!(

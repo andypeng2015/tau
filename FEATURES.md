@@ -71,16 +71,27 @@ a stdio pipe to a remote process works the same way (`docker exec`, `nsenter`,
 
 Tau exposes a uniform six-level effort knob — `off`, `minimal`, `low`,
 `medium`, `high`, `xhigh` — that maps onto provider-specific reasoning
-controls. Defaults can be set per-model:
+controls. The `xhigh` rung is gated per model: a curated whitelist
+covers known OpenAI models (`gpt-5.5`, `gpt-5.4`/`gpt-5.4-pro`,
+`gpt-5.3-codex`, `gpt-5.2`, `gpt-5.1-codex-max`, excluding `mini`/`nano`
+variants) and individual model entries can opt in or out explicitly
+with `supportsXhigh: true|false` in `models.json5`. Defaults can be set
+per-model:
 
 ```json5
 // harness.json5
 default_efforts: {
   "anthropic/claude-opus-4-7": "high",
+  "openai/gpt-5.5": "xhigh",
 },
 ```
 
-In the UI: `/effort medium`, or hit `Shift+Tab` to cycle.
+In the UI: `/effort medium`, or hit `Shift+Tab` to cycle. The cycle
+walks the levels the harness reports as available for the current
+model, so `xhigh` is reachable on `gpt-5.5` and skipped on
+`gpt-5.4-mini`. Asking for an unsupported level (e.g. `/effort xhigh`
+on a mini model) degrades to `high` and surfaces a `HarnessInfo`
+notice rather than silently disabling reasoning.
 
 ### Prompt input caching
 
