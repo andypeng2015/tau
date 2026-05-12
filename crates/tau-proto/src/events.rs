@@ -1903,6 +1903,11 @@ pub struct AgentResponseFinished {
 pub struct AgentBackend {
     pub kind: AgentBackendKind,
     pub base_url: String,
+    /// Wire transport the turn was sent over. Defaults to
+    /// `HttpSse` for backwards compatibility with sessions recorded
+    /// before this field existed.
+    #[serde(default)]
+    pub transport: AgentBackendTransport,
 }
 
 /// The provider API shape an [`AgentBackend`] talks.
@@ -1911,6 +1916,22 @@ pub struct AgentBackend {
 pub enum AgentBackendKind {
     ChatCompletions,
     Responses,
+}
+
+/// Transport the agent used to deliver one turn. `HttpSse` covers
+/// both the Chat Completions path and the HTTP+SSE Responses path
+/// (kind discriminates which API); `Websocket` is the Codex
+/// Responses persistent-WS path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentBackendTransport {
+    /// One-shot HTTP request with Server-Sent Events streaming.
+    /// Default — covers Chat Completions and the HTTP+SSE Responses
+    /// fallback.
+    #[default]
+    HttpSse,
+    /// Persistent WebSocket. Only Codex Responses today.
+    Websocket,
 }
 
 // ---------------------------------------------------------------------------

@@ -287,16 +287,19 @@ impl BackendConfig {
     /// Wire-form descriptor stamped on the turn's
     /// `AgentResponseFinished` so offline inspection knows which
     /// backend produced it without each request having to log
-    /// separately.
-    fn descriptor(&self) -> tau_proto::AgentBackend {
+    /// separately. `transport` is the actual wire path the turn took
+    /// — captured at dispatch time by [`stream_with_dispatch`].
+    fn descriptor(&self, transport: tau_proto::AgentBackendTransport) -> tau_proto::AgentBackend {
         match self {
             Self::ChatCompletions(cfg) => tau_proto::AgentBackend {
                 kind: tau_proto::AgentBackendKind::ChatCompletions,
                 base_url: cfg.base_url.clone(),
+                transport,
             },
             Self::Responses(cfg) => tau_proto::AgentBackend {
                 kind: tau_proto::AgentBackendKind::Responses,
                 base_url: cfg.base_url.clone(),
+                transport,
             },
         }
     }
@@ -470,6 +473,7 @@ fn stream_with_dispatch(
     request: &common::PromptPayload<'_>,
     ws_pool: &mut responses::pool::WsPool,
     ws_disabled: &mut HashSet<String>,
+    transport_taken: &mut tau_proto::AgentBackendTransport,
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<common::StreamState, common::LlmError> {
     if let BackendConfig::Responses(cfg) = backend {
@@ -479,7 +483,10 @@ fn stream_with_dispatch(
             match responses::pool::run_turn_through_pool(
                 ws_pool, cfg, session_id, request, on_update,
             ) {
-                Ok(state) => return Ok(state),
+                Ok(state) => {
+                    *transport_taken = tau_proto::AgentBackendTransport::Websocket;
+                    return Ok(state);
+                }
                 Err(error) if should_disable_ws(&error) => {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -493,6 +500,7 @@ fn stream_with_dispatch(
             }
         }
     }
+    *transport_taken = tau_proto::AgentBackendTransport::HttpSse;
     backend.stream_http(request, on_update)
 }
 
@@ -542,6 +550,12 @@ fn handle_prompt<W: Write>(
     };
 
     let originator = prompt.originator.clone();
+    // Captures which wire transport the *final* attempt actually
+    // took. Each retry overwrites it — the descriptor stamped on the
+    // emitted `AgentResponseFinished` therefore reflects the
+    // surviving path (the WS attempt that succeeded, or the HTTP
+    // fallback if WS bounced).
+    let mut transport_taken = tau_proto::AgentBackendTransport::HttpSse;
     let result = with_llm_retry(
         session_prompt_id,
         &originator,
@@ -559,10 +573,17 @@ fn handle_prompt<W: Write>(
                 )));
                 let _ = writer.flush();
             };
-            stream_with_dispatch(backend, &request, ws_pool, ws_disabled, &mut on_update)
+            stream_with_dispatch(
+                backend,
+                &request,
+                ws_pool,
+                ws_disabled,
+                &mut transport_taken,
+                &mut on_update,
+            )
         },
     );
-    let backend_descriptor = backend.descriptor();
+    let backend_descriptor = backend.descriptor(transport_taken);
     match result {
         Ok(state) => finish_stream(
             session_prompt_id,
