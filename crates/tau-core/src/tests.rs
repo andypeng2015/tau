@@ -55,6 +55,7 @@ fn store_agent_message(store: &mut SessionStore, session_id: &str, text: &str) -
                 originator: tau_proto::PromptOriginator::User,
 
                 backend: None,
+                response_id: None,
             }),
         )
         .expect("append session event");
@@ -128,6 +129,7 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
                 originator: tau_proto::PromptOriginator::User,
 
                 backend: None,
+                response_id: None,
             })),
         )
         .expect("directed route should succeed");
@@ -186,6 +188,7 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
             originator: tau_proto::PromptOriginator::User,
 
             backend: None,
+            response_id: None,
         },
     )));
     assert_eq!(second_report.delivered_to, vec![agent_id.clone()]);

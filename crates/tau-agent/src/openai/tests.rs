@@ -21,6 +21,7 @@ fn build_request_includes_prompt_cache_fields_when_configured() {
         tools: &[],
         effort: Effort::Off,
         thinking_summary: tau_proto::ThinkingSummary::Off,
+        previous_response: None,
     };
 
     let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
@@ -48,6 +49,7 @@ fn build_request_omits_prompt_cache_fields_without_seed_or_retention() {
         tools: &[],
         effort: Effort::Off,
         thinking_summary: tau_proto::ThinkingSummary::Off,
+        previous_response: None,
     };
 
     let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
@@ -76,6 +78,7 @@ fn build_request_includes_llama_cpp_cache_prompt_when_configured() {
         tools: &[],
         effort: Effort::Off,
         thinking_summary: tau_proto::ThinkingSummary::Off,
+        previous_response: None,
     };
 
     let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
@@ -105,6 +108,7 @@ fn build_request_sets_parallel_tool_calls_when_tools_offered() {
         tools: std::slice::from_ref(&tool),
         effort: Effort::Off,
         thinking_summary: tau_proto::ThinkingSummary::Off,
+        previous_response: None,
     };
 
     let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
@@ -130,6 +134,7 @@ fn build_request_omits_parallel_tool_calls_without_tools() {
         tools: &[],
         effort: Effort::Off,
         thinking_summary: tau_proto::ThinkingSummary::Off,
+        previous_response: None,
     };
 
     let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");

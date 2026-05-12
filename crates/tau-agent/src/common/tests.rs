@@ -27,6 +27,7 @@ fn into_tool_calls_drops_nameless_accumulator_artifacts() {
         cached_tokens: None,
         output_tokens: None,
         thinking: None,
+        response_id: None,
     };
 
     let calls = state.into_tool_calls();

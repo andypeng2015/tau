@@ -19,6 +19,21 @@ pub struct PromptPayload<'a> {
     /// and at what verbosity. Only honored on backends whose config
     /// reports `supports_reasoning_summary`.
     pub thinking_summary: tau_proto::ThinkingSummary,
+    /// Hint from the harness for stateful chaining: the previous
+    /// turn's `response_id` and the index in `messages` where new
+    /// content for this turn begins. Backends that don't support
+    /// stateful chaining (Chat Completions) ignore this and replay
+    /// the full `messages` slice. The Responses backend slices
+    /// `messages[index..]` and sets `previous_response_id` +
+    /// `store: true` on the upstream call.
+    pub previous_response: Option<PreviousResponse<'a>>,
+}
+
+/// See [`PromptPayload::previous_response`].
+#[derive(Clone, Copy)]
+pub struct PreviousResponse<'a> {
+    pub id: &'a str,
+    pub message_index: usize,
 }
 
 /// Transport / protocol error returned from any LLM backend stream.
@@ -103,6 +118,11 @@ pub struct StreamState {
     /// when the provider hasn't emitted any summary content (or when
     /// summaries weren't requested).
     pub thinking: Option<String>,
+    /// Provider-supplied `response.id`, used by the harness to chain
+    /// the next turn off this one via `previous_response_id`. Only
+    /// populated by the Responses backend; the Chat Completions
+    /// backend leaves this `None`.
+    pub response_id: Option<String>,
 }
 
 /// Accumulates one tool call across streaming chunks.
@@ -121,6 +141,7 @@ impl StreamState {
             cached_tokens: None,
             output_tokens: None,
             thinking: None,
+            response_id: None,
         }
     }
 

@@ -2608,6 +2608,41 @@ impl Harness {
         let messages = tree
             .map(|t| assemble_conversation_from(t, head))
             .unwrap_or_default();
+        // Stateful-chain hint: if the prior turn for this conversation
+        // produced a `response_id` AND the anchor is still consistent
+        // (same model selected, anchor node still on the path to
+        // current head, message_count not larger than the assembled
+        // count) we let the next turn run as a delta call. Otherwise
+        // drop the anchor — the chain is busted and full replay is
+        // the safe fallback. We resolve this BEFORE moving on so we
+        // can clear an invalidated anchor in the same pass.
+        let previous_response = {
+            let conv = self
+                .conversations
+                .get(cid)
+                .expect("send_prompt_to_agent_for: unknown conversation id");
+            let anchor = conv.chain_anchor.as_ref();
+            let valid = anchor.is_some_and(|a| {
+                let model_ok = self.selected_model.as_ref() == Some(&a.model);
+                let count_ok = a.message_count <= messages.len();
+                let tree_ok = tree.is_some_and(|t| anchor_is_ancestor(t, a.head, conv.head));
+                model_ok && count_ok && tree_ok
+            });
+            if valid {
+                anchor.map(|a| tau_proto::PreviousResponseRef {
+                    id: a.response_id.clone(),
+                    message_index: a.message_count,
+                })
+            } else {
+                None
+            }
+        };
+        if previous_response.is_none() {
+            // Drop a stale anchor so we don't keep re-checking it.
+            if let Some(conv) = self.conversations.get_mut(cid) {
+                conv.chain_anchor = None;
+            }
+        }
         let tools = self.gather_tool_definitions();
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -2646,6 +2681,7 @@ impl Harness {
             thinking_summary: self.selected_thinking_summary,
             originator,
             ctx_id,
+            previous_response,
         });
         self.publish_event(None, event);
 
@@ -2698,18 +2734,23 @@ impl Harness {
             ));
             return Ok(());
         };
-        if let Some(model) = self.prompt_models.remove(&response.session_prompt_id) {
+        // Save the model that ran this turn before the
+        // `prompt_models` entry is consumed below — we'll need it
+        // again to anchor the stateful-chain state, and re-reading
+        // `selected_model` later would lie if the user switched
+        // models mid-turn.
+        let turn_model = self.prompt_models.remove(&response.session_prompt_id);
+        if let Some(ref model) = turn_model {
             let sent_tokens = response.input_tokens.unwrap_or(0);
             let cached_tokens = response.cached_tokens.unwrap_or(0);
             let received_tokens = response
                 .token_usage
                 .as_ref()
                 .map_or(0, |usage| usage.response_received_tokens);
-            self.token_usage
-                .add_sent(&model, sent_tokens, cached_tokens);
-            self.token_usage.add_received(&model, received_tokens);
+            self.token_usage.add_sent(model, sent_tokens, cached_tokens);
+            self.token_usage.add_received(model, received_tokens);
             response.token_usage = Some(AgentTokenUsage {
-                model: Some(model),
+                model: Some(model.clone()),
                 prompt_sent_tokens: sent_tokens,
                 prompt_cached_tokens: cached_tokens,
                 response_received_tokens: received_tokens,
@@ -2738,6 +2779,32 @@ impl Harness {
         self.publish_for_conversation(&cid, Event::AgentResponseFinished(response.clone()));
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
+        // Stateful-chain anchor: set only when the agent supplied a
+        // `response_id` (i.e. the upstream backend exposed one — the
+        // Responses API does, Chat Completions doesn't). The anchor
+        // pins this conversation's current head + assembled message
+        // count so the next `send_prompt_to_agent_for` can send a
+        // delta instead of replaying the full transcript.
+        if let (Some(response_id), Some(model)) = (response.response_id.clone(), turn_model) {
+            let (conv_head, conv_session) = self
+                .conversations
+                .get(&cid)
+                .map(|c| (c.head, c.session_id.clone()))
+                .unzip();
+            let message_count = conv_session
+                .as_ref()
+                .and_then(|sid| self.store.session(sid.as_str()))
+                .map(|tree| assemble_conversation_from(tree, conv_head.flatten()).len())
+                .unwrap_or(0);
+            if let Some(conv) = self.conversations.get_mut(&cid) {
+                conv.chain_anchor = Some(crate::conversation::ChainAnchor {
+                    response_id,
+                    head: conv_head.flatten(),
+                    model,
+                    message_count,
+                });
+            }
+        }
         if let Some(conv) = self.conversations.get_mut(&cid) {
             conv.in_flight_prompt = None;
             conv.turn_state = ConversationTurnState::Idle;
@@ -3519,6 +3586,34 @@ impl Harness {
 ///
 /// Tools without a known label shape return `None`; the renderer
 /// falls back to a name-only block.
+/// True iff `anchor` is on the path from the tree root to
+/// `descendant`. Used to check whether a previously-captured
+/// stateful-chain anchor is still consistent with the conversation's
+/// current head — branch switches (via `UiNavigateTree`) leave the
+/// anchor stranded on a sibling branch, in which case the chain
+/// should be invalidated and the next turn replays the full
+/// transcript.
+fn anchor_is_ancestor(
+    tree: &tau_core::SessionTree,
+    anchor: Option<tau_core::NodeId>,
+    descendant: Option<tau_core::NodeId>,
+) -> bool {
+    // An empty-tree anchor matches an empty-tree descendant: both
+    // sit at the root sentinel. Anything else with `anchor == None`
+    // would be a malformed anchor (chain pinned to nothing).
+    let Some(anchor) = anchor else {
+        return descendant.is_none();
+    };
+    let mut current = descendant;
+    while let Some(id) = current {
+        if id == anchor {
+            return true;
+        }
+        current = tree.node(id).and_then(|node| node.parent_id);
+    }
+    false
+}
+
 fn build_tool_args_display(
     tool_name: &str,
     arguments: &tau_proto::CborValue,

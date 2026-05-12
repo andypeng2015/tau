@@ -19,7 +19,7 @@
 use std::collections::VecDeque;
 
 use tau_core::NodeId;
-use tau_proto::{ConnectionId, PromptOriginator, SessionId, SessionPromptId, ToolCallId};
+use tau_proto::{ConnectionId, ModelId, PromptOriginator, SessionId, SessionPromptId, ToolCallId};
 
 /// Opaque per-process conversation identifier. Not on the wire — the
 /// harness mints these locally and uses them as routing keys.
@@ -131,6 +131,36 @@ pub(crate) struct Conversation {
     /// agent has used. Computed from `context_input_tokens` and the
     /// model's window size; `None` when the window is unknown.
     pub(crate) context_percent_used: Option<u8>,
+    /// Stateful-chain anchor for backends that support it (currently
+    /// the OpenAI Codex Responses API). Set when an agent reports a
+    /// `response_id` on the previous finished turn; consumed by the
+    /// next `send_prompt_to_agent_for` as a hint that the upstream
+    /// call can chain off the prior turn instead of replaying the
+    /// full transcript. `None` initially, after model switches, or
+    /// after an edit / error invalidates the chain.
+    pub(crate) chain_anchor: Option<ChainAnchor>,
+}
+
+/// See [`Conversation::chain_anchor`].
+#[derive(Clone, Debug)]
+pub(crate) struct ChainAnchor {
+    /// `response.id` returned by the provider on the most recent
+    /// successful turn for this conversation.
+    pub(crate) response_id: String,
+    /// The conversation's tree cursor at the moment the anchor was
+    /// captured (after the finished response was folded). The chain
+    /// is valid only while the current `head` descends from this
+    /// node — if a `UiNavigateTree` jumps to a different branch, the
+    /// next send detects the mismatch and drops the anchor.
+    pub(crate) head: Option<NodeId>,
+    /// Model id that produced `response_id`. Switching models busts
+    /// the chain even if the tree position is unchanged.
+    pub(crate) model: ModelId,
+    /// Number of assembled `ConversationMessage`s in the conversation
+    /// at the moment the anchor was captured. The next send slices
+    /// `messages[message_count..]` to get the new content the upstream
+    /// API hasn't seen yet.
+    pub(crate) message_count: usize,
 }
 
 impl Conversation {
@@ -157,6 +187,7 @@ impl Conversation {
             tools_total: 0,
             context_input_tokens: None,
             context_percent_used: None,
+            chain_anchor: None,
         }
     }
 }

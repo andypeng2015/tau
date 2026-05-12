@@ -178,6 +178,15 @@ tool invocations, emits reasoning blocks, and respects the effort knob. Talks
 to OpenAI-compatible Responses-API and Chat-Completions-API providers; manage
 credentials with `tau provider add` / `tau provider login`.
 
+On Responses-API backends (OpenAI Codex / ChatGPT subscription), conversations
+chain via `previous_response_id` after the first turn: each follow-up request
+sends only the messages added since the prior `response.id` and lets the
+upstream API carry reasoning state forward server-side. The chain is dropped
+automatically on model switches, branch edits (`UiNavigateTree`), and turns
+that didn't return a `response_id`; if the upstream rejects the stored id
+(server-side expiry), the agent falls back to a full-replay retry once before
+surfacing the error.
+
 ### `std-notifications` — idle and turn notifications
 
 Plays a sound on prompt submit and on the final response of a turn. After

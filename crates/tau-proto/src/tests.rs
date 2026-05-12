@@ -76,6 +76,7 @@ fn representative_events() -> Vec<Event> {
             thinking_summary: ThinkingSummary::Off,
             originator: PromptOriginator::User,
             ctx_id: None,
+            previous_response: None,
         }),
         Event::AgentResponseFinished(AgentResponseFinished {
             session_prompt_id: "sp-1".into(),
@@ -88,6 +89,7 @@ fn representative_events() -> Vec<Event> {
             originator: PromptOriginator::User,
 
             backend: None,
+            response_id: None,
         }),
         Event::ExtensionStarting(ExtensionStarting {
             instance_id: 1.into(),

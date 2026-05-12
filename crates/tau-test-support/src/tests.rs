@@ -218,6 +218,7 @@ fn deterministic_agent_and_tool_complete_one_vertical_slice() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     };
     let _ = bus.send_to(
         &agent_id,

@@ -176,6 +176,7 @@ where
                                 originator: prompt.originator.clone(),
                                 // No backend ran: model failed to resolve.
                                 backend: None,
+                                response_id: None,
                             },
                         )))?;
                         writer.flush()?;
@@ -445,6 +446,13 @@ fn handle_prompt<W: Write>(
         tools: &prompt.tools,
         effort: prompt.effort,
         thinking_summary: prompt.thinking_summary,
+        previous_response: prompt
+            .previous_response
+            .as_ref()
+            .map(|p| common::PreviousResponse {
+                id: p.id.as_str(),
+                message_index: p.message_index,
+            }),
     };
 
     let originator = prompt.originator.clone();
@@ -508,6 +516,7 @@ fn finish_stream<W: Write>(
         "agent response token usage"
     );
     let thinking = state.thinking.clone();
+    let response_id = state.response_id.clone();
     let tool_calls = state.into_tool_calls();
     let text = if text_empty {
         if tool_calls.is_empty() {
@@ -532,6 +541,7 @@ fn finish_stream<W: Write>(
             }),
             originator: originator.clone(),
             backend: Some(backend.clone()),
+            response_id,
         },
     )))?;
     writer.flush()?;
@@ -556,6 +566,7 @@ fn finish_error<W: Write>(
             token_usage: None,
             originator: originator.clone(),
             backend: Some(backend.clone()),
+            response_id: None,
         },
     )))?;
     writer.flush()?;
@@ -642,6 +653,7 @@ where
                             originator: prompt.originator.clone(),
                             // Echo agent never calls a real LLM backend.
                             backend: None,
+                            response_id: None,
                         },
                     )))?;
                 } else {
@@ -703,6 +715,7 @@ where
                             originator: prompt.originator.clone(),
                             // Echo agent never calls a real LLM backend.
                             backend: None,
+                            response_id: None,
                         },
                     )))?;
                 }

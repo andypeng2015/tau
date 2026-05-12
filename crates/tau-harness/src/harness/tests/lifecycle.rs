@@ -258,6 +258,7 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     };
 
     h.handle_agent_response_finished(response)
@@ -360,6 +361,7 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     };
 
     h.handle_agent_response_finished(response)

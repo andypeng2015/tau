@@ -1463,6 +1463,32 @@ pub struct SessionPromptCreated {
     /// the rest of the chain by spid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx_id: Option<String>,
+    /// Hint for backends that support stateful chaining (currently the
+    /// OpenAI Codex Responses API): the most recent
+    /// [`AgentResponseFinished::response_id`] from this conversation
+    /// and the index in `messages` where the new turn's content
+    /// begins. Backends that don't support stateful chaining ignore
+    /// this and replay the full `messages` slice; the Responses
+    /// backend slices `messages[message_index..]` and sets
+    /// `previous_response_id` + `store: true` on the upstream call.
+    /// `None` when no chain has been established yet, or when an
+    /// edit / model switch / error invalidated the prior chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response: Option<PreviousResponseRef>,
+}
+
+/// Reference to a prior turn's response, used to enable stateful
+/// chaining on backends that support it. See
+/// [`SessionPromptCreated::previous_response`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreviousResponseRef {
+    /// `response.id` returned by the provider on the most recent
+    /// successful turn for this conversation.
+    pub id: String,
+    /// Index in [`SessionPromptCreated::messages`] where messages
+    /// added since the prior response begin. Backends slicing for a
+    /// delta call use `messages[message_index..]`.
+    pub message_index: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,6 +1585,17 @@ pub struct AgentResponseFinished {
     /// agent-side resolution failure or the in-process echo agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<AgentBackend>,
+    /// Provider-supplied `response.id` for this turn, when the
+    /// backend exposed one. Used by the harness to thread a
+    /// `previous_response_id` into the next `SessionPromptCreated`
+    /// so the upstream call can run in stateful-chain mode (smaller
+    /// request body, server-side reasoning continuity). `None` for
+    /// backends that don't expose response ids (Chat Completions),
+    /// for error turns, and for turns the harness shouldn't chain
+    /// from (the agent withholds the id when it judged the response
+    /// unfit for chaining — e.g. after a fallback retry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
 }
 
 /// Identifies the LLM backend that handled an

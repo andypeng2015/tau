@@ -38,10 +38,65 @@ pub struct ResponsesConfig {
 /// thinking)`, where `thinking` is the accumulated reasoning summary
 /// the provider has streamed so far (or `None` if no summary
 /// content has arrived yet).
+///
+/// Stateful-chain fallback: when `request.previous_response` was set
+/// but the upstream rejects the prior `response_id` (server-side
+/// expiry, evicted state), this retries once with the full transcript
+/// instead of the delta. The fallback is invisible to the caller — a
+/// successful result looks identical to a chain hit, just with a
+/// larger request body. Only triggered for HTTP 4xx whose body
+/// mentions `previous_response`; transient 5xx / network errors
+/// surface to the harness retry layer unchanged.
 pub fn responses_stream(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     mut on_update: impl FnMut(&str, Option<&str>),
+) -> Result<StreamState, LlmError> {
+    let first = responses_stream_once(config, request, &mut on_update);
+    if request.previous_response.is_none() {
+        return first;
+    }
+    let Err(error) = first else {
+        return first;
+    };
+    if !is_stale_chain_error(&error) {
+        return Err(error);
+    }
+    tracing::info!(
+        target: crate::LOG_TARGET,
+        "Responses chain rejected by upstream; retrying with full replay"
+    );
+    let fallback = PromptPayload {
+        previous_response: None,
+        system_prompt: request.system_prompt,
+        messages: request.messages,
+        tools: request.tools,
+        effort: request.effort,
+        thinking_summary: request.thinking_summary,
+    };
+    responses_stream_once(config, &fallback, &mut on_update)
+}
+
+/// True for the narrow class of 4xx errors that say the prior
+/// `previous_response_id` we sent is no longer valid (expired,
+/// evicted, never existed). Matched on body substrings rather than a
+/// brittle JSON-shape contract — the provider's error envelope has
+/// changed shape before, and a missed match here just means the user
+/// sees the error instead of an auto-retry.
+fn is_stale_chain_error(error: &LlmError) -> bool {
+    let LlmError::HttpStatus(code, body) = error else {
+        return false;
+    };
+    if !(400..500).contains(code) {
+        return false;
+    }
+    body.contains("previous_response") || body.contains("response not found")
+}
+
+fn responses_stream_once(
+    config: &ResponsesConfig,
+    request: &PromptPayload<'_>,
+    on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<StreamState, LlmError> {
     let url = format!("{}/codex/responses", config.base_url.trim_end_matches('/'));
 
@@ -172,6 +227,13 @@ pub fn responses_stream(
                         .and_then(|response| response["usage"]["output_tokens"].as_u64())
                         .or_else(|| event["usage"]["output_tokens"].as_u64());
                 }
+                if state.response_id.is_none() {
+                    state.response_id = event
+                        .get("response")
+                        .and_then(|response| response["id"].as_str())
+                        .or_else(|| event["id"].as_str())
+                        .map(str::to_owned);
+                }
                 break;
             }
             "response.incomplete" => {
@@ -223,6 +285,11 @@ struct ResponsesRequest {
     instructions: Option<String>,
     input: Vec<serde_json::Value>,
     stream: bool,
+    /// Always `false` on the ChatGPT Codex Responses endpoint — it
+    /// rejects `store: true` even when chaining (see `build_request`).
+    /// Kept as a serialized field rather than dropped because future
+    /// public-API support will need it set to `true` for chained
+    /// turns.
     store: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
@@ -234,6 +301,16 @@ struct ResponsesRequest {
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_retention: Option<&'static str>,
+    /// Stateful-chain mode: points to the prior turn's `response.id`.
+    /// When set, the upstream API carries reasoning context across
+    /// turns and the request body only needs the *new* input
+    /// (`messages[previous_response.message_index..]`). The win is a
+    /// smaller request and faster TTFT — the server keeps the prior
+    /// reasoning hot rather than re-deriving it from a replayed
+    /// transcript. On Codex this works alongside `store: false`; on
+    /// the public Responses API it requires `store: true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -251,8 +328,23 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         Some(request.system_prompt.to_owned())
     };
 
+    // Stateful chaining: when the harness supplied a previous
+    // response id, slice the messages to just what's new since
+    // that response. The OpenAI Responses API picks up the prior
+    // conversation from the stored response — replaying its prefix
+    // would duplicate it. A defensive cap to `messages.len()` covers
+    // the (impossible by harness invariants) case of a stale index.
+    let (input_messages, previous_response_id): (&[ConversationMessage], Option<String>) =
+        match request.previous_response {
+            Some(prev) if prev.message_index <= request.messages.len() => (
+                &request.messages[prev.message_index..],
+                Some(prev.id.to_owned()),
+            ),
+            _ => (request.messages, None),
+        };
+
     let mut input = Vec::new();
-    for msg in request.messages {
+    for msg in input_messages {
         convert_message(msg, &mut input);
     }
 
@@ -306,12 +398,23 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         instructions,
         input,
         stream: true,
+        // ALWAYS `false` on the ChatGPT Codex backend
+        // (`chatgpt.com/backend-api/codex/responses`) — it rejects
+        // `store: true` with `HTTP 400 {"detail":"Store must be set
+        // to false"}` even when `previous_response_id` is also set.
+        // The Codex endpoint tracks chains internally; only the
+        // public `api.openai.com/v1/responses` endpoint requires
+        // `store: true` to use `previous_response_id`. Tau today
+        // only routes the Responses backend through Codex, so
+        // hardcoding `false` is correct; if/when the public Responses
+        // API becomes reachable this needs to become endpoint-aware.
         store: false,
         tools,
         tool_choice,
         reasoning,
         prompt_cache_key,
         prompt_cache_retention,
+        previous_response_id,
     }
 }
 

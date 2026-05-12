@@ -114,6 +114,7 @@ fn late_joining_ui_client_replays_only_final_session_events() {
             thinking_summary: Default::default(),
             originator: Default::default(),
             ctx_id: None,
+            previous_response: None,
         }),
     );
     h.publish_event(
@@ -138,6 +139,7 @@ fn late_joining_ui_client_replays_only_final_session_events() {
             token_usage: None,
 
             backend: None,
+            response_id: None,
         }),
     );
 
@@ -349,6 +351,7 @@ fn resumed_harness_replays_persisted_session_history() {
             originator: tau_proto::PromptOriginator::User,
 
             backend: None,
+            response_id: None,
         })
         .expect("persist agent response");
 
@@ -411,6 +414,7 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("persist agent response");
 

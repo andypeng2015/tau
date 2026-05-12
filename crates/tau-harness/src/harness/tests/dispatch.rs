@@ -99,6 +99,7 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     };
 
     h.handle_agent_response_finished(response)
@@ -200,6 +201,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     };
     h.handle_agent_response_finished(response)
         .expect("finished");
@@ -287,6 +289,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("agent response with tool call");
 
@@ -431,6 +434,7 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("persist first agent response");
 
@@ -453,6 +457,143 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
         &prompt2.messages[..prompt1.messages.len()],
         prompt1.messages.as_slice(),
         "second prompt must keep first prompt messages as an exact prefix"
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// When the agent reports a `response_id` on a finished turn, the
+/// next `SessionPromptCreated` for that conversation must carry a
+/// `previous_response` pointing back at it — that's the hook the
+/// Responses backend uses to switch into stateful-chain mode and
+/// send just the delta upstream. `message_index` must equal the
+/// assembled message count at the moment the anchor was captured,
+/// so the delta slice is exactly the messages added since.
+#[test]
+fn response_id_anchors_next_prompt_with_previous_response() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    h.submit_user_prompt("s1".into(), "first".to_owned())
+        .expect("submit first");
+    let spid1: SessionPromptId = "sp-0".into();
+    let prompt1 = read_prompt_created(&h, &spid1);
+
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1,
+        text: Some("first answer".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: Some("resp_abc".to_owned()),
+    })
+    .expect("finish first");
+
+    h.submit_user_prompt("s1".into(), "second".to_owned())
+        .expect("submit second");
+    let spid2: SessionPromptId = "sp-1".into();
+    let prompt2 = read_prompt_created(&h, &spid2);
+
+    let prev = prompt2.previous_response.expect("chain anchor on prompt 2");
+    assert_eq!(prev.id, "resp_abc");
+    // After turn 1 finished and was folded, the assembled count is:
+    //   user "first" + assistant "first answer" = 2 messages.
+    // That's the slice point — `messages[2..]` on prompt 2 is just
+    // the new "second" user turn (1 message).
+    assert_eq!(prev.message_index, prompt1.messages.len() + 1);
+    assert_eq!(prev.message_index + 1, prompt2.messages.len());
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Switching `selected_model` mid-conversation must bust the chain.
+/// The prior response was produced by a different model — its
+/// stored state on the upstream API is meaningless for the new
+/// model, and sending `previous_response_id` would either error or
+/// silently mix incompatible reasoning.
+#[test]
+fn model_switch_invalidates_chain_anchor() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model-a".into());
+
+    h.submit_user_prompt("s1".into(), "first".to_owned())
+        .expect("submit first");
+    let spid1: SessionPromptId = "sp-0".into();
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1,
+        text: Some("first answer".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: Some("resp_abc".to_owned()),
+    })
+    .expect("finish first");
+
+    // User switches models.
+    h.selected_model = Some("test/model-b".into());
+
+    h.submit_user_prompt("s1".into(), "second".to_owned())
+        .expect("submit second");
+    let spid2: SessionPromptId = "sp-1".into();
+    let prompt2 = read_prompt_created(&h, &spid2);
+
+    assert!(
+        prompt2.previous_response.is_none(),
+        "model switch must clear the previous-response anchor"
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// A turn that didn't yield a `response_id` (Chat Completions
+/// backend, an error, etc.) must NOT anchor a chain. The next prompt
+/// has to be a full replay — pretending we have a chain we don't
+/// would make the upstream API reject the next call.
+#[test]
+fn missing_response_id_leaves_chain_unset() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    h.submit_user_prompt("s1".into(), "first".to_owned())
+        .expect("submit first");
+    let spid1: SessionPromptId = "sp-0".into();
+
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1,
+        text: Some("first answer".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: None,
+    })
+    .expect("finish first");
+
+    h.submit_user_prompt("s1".into(), "second".to_owned())
+        .expect("submit second");
+    let spid2: SessionPromptId = "sp-1".into();
+    let prompt2 = read_prompt_created(&h, &spid2);
+
+    assert!(
+        prompt2.previous_response.is_none(),
+        "no response_id on the prior turn means no chain"
     );
 
     h.shutdown().expect("shutdown");
@@ -488,6 +629,7 @@ fn queued_prompt_extends_completed_first_prompt() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("finish first");
 
@@ -622,6 +764,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("tool response");
 
@@ -673,6 +816,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("side finished");
 
@@ -747,6 +891,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("tool response");
 
@@ -877,6 +1022,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -920,6 +1066,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("side response");
 
@@ -1012,6 +1159,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1083,6 +1231,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
     assert_eq!(
@@ -1159,6 +1308,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1206,6 +1356,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("side response");
 
@@ -1302,6 +1453,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1346,6 +1498,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("outer response");
     h.handle_ext_agent_query(
@@ -1387,6 +1540,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("nested final");
 
@@ -1503,6 +1657,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1541,6 +1696,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("outer response");
 
@@ -1633,6 +1789,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1666,6 +1823,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("side final");
 
@@ -1752,6 +1910,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -1790,6 +1949,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("top response");
 
@@ -1926,6 +2086,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -2012,6 +2173,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("A response");
 
@@ -2103,6 +2265,7 @@ fn tool_events_carry_owning_conversation_originator() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     })
     .expect("main response");
 
@@ -2141,6 +2304,7 @@ fn tool_events_carry_owning_conversation_originator() {
         },
 
         backend: None,
+        response_id: None,
     })
     .expect("sub response");
 

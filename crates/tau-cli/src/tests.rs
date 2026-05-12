@@ -147,6 +147,7 @@ fn new_session_clears_session_ui_state() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
         session_prompt_id: "sp-0".into(),
@@ -167,6 +168,7 @@ fn new_session_clears_session_ui_state() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     renderer.handle(&Event::ToolResult(ToolResult {
         call_id: "call-1".into(),
@@ -291,6 +293,7 @@ fn single_prompt_response_cycle() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "…"));
@@ -317,6 +320,7 @@ fn single_prompt_response_cycle() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(
@@ -352,6 +356,7 @@ fn thinking_renders_as_separate_block_above_response() {
         thinking_summary: tau_proto::ThinkingSummary::Auto,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     sync(&handle);
 
@@ -408,6 +413,7 @@ fn thinking_renders_as_separate_block_above_response() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     // Thinking should appear above the response in the history.
@@ -452,6 +458,7 @@ fn set_show_thinking_round_trip_restores_history() {
         thinking_summary: tau_proto::ThinkingSummary::Auto,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
         session_prompt_id: "sp-0".into(),
@@ -464,6 +471,7 @@ fn set_show_thinking_round_trip_restores_history() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "the_thinking_text"));
@@ -539,6 +547,7 @@ fn thinking_created_while_off_stays_invisible_after_toggle_on() {
         thinking_summary: tau_proto::ThinkingSummary::Auto,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
         session_prompt_id: "sp-0".into(),
@@ -551,6 +560,7 @@ fn thinking_created_while_off_stays_invisible_after_toggle_on() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "answer"));
@@ -590,6 +600,7 @@ fn no_thinking_block_when_summary_absent() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
         session_prompt_id: "sp-0".into(),
@@ -608,6 +619,7 @@ fn no_thinking_block_when_summary_absent() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     // Just make sure we didn't crash and the response is visible.
@@ -641,6 +653,7 @@ fn queued_prompt_renders_after_first_completes() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
 
     // Second prompt queued.
@@ -673,6 +686,7 @@ fn queued_prompt_renders_after_first_completes() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "response one"));
@@ -689,6 +703,7 @@ fn queued_prompt_renders_after_first_completes() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     sync(&handle);
     assert!(
@@ -727,6 +742,7 @@ fn queued_prompt_renders_after_first_completes() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(
@@ -771,6 +787,7 @@ fn three_queued_prompts_render_sequentially() {
                 thinking_summary: tau_proto::ThinkingSummary::Off,
                 originator: tau_proto::PromptOriginator::User,
                 ctx_id: None,
+                previous_response: None,
             }));
         } else {
             renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
@@ -795,6 +812,7 @@ fn three_queued_prompts_render_sequentially() {
                 thinking_summary: tau_proto::ThinkingSummary::Off,
                 originator: tau_proto::PromptOriginator::User,
                 ctx_id: None,
+                previous_response: None,
             }));
         }
         renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
@@ -814,6 +832,7 @@ fn three_queued_prompts_render_sequentially() {
             originator: tau_proto::PromptOriginator::User,
 
             backend: None,
+            response_id: None,
         }));
         sync(&handle);
     }
@@ -856,6 +875,7 @@ fn streaming_indicator_appends_during_updates() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "…"));
@@ -880,6 +900,7 @@ fn streaming_indicator_appends_during_updates() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "Hello"));
@@ -919,6 +940,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "read src/main.rs …"));
@@ -1008,6 +1030,7 @@ fn streaming_block_does_not_duplicate_on_finish() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
         session_prompt_id: "sp-0".into(),
@@ -1026,6 +1049,7 @@ fn streaming_block_does_not_duplicate_on_finish() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
 
@@ -1278,6 +1302,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
 
     // Agent starts streaming response 1.
@@ -1337,6 +1362,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(
@@ -1357,6 +1383,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
         session_prompt_id: "sp-1".into(),
@@ -1375,6 +1402,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
     assert!(
@@ -1395,6 +1423,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
     renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
         session_prompt_id: "sp-2".into(),
@@ -1413,6 +1442,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
 
@@ -1478,6 +1508,7 @@ fn emoji_in_response_renders_correctly() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
 
     // Response with emoji followed by text on next line.
@@ -1499,6 +1530,7 @@ fn emoji_in_response_renders_correctly() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
 
@@ -1552,6 +1584,7 @@ fn multiple_emoji_no_column_drift() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
 
     // 3 emoji = 6 columns + "end" = 9 columns total.
@@ -1567,6 +1600,7 @@ fn multiple_emoji_no_column_drift() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
 
@@ -1608,6 +1642,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
         thinking_summary: tau_proto::ThinkingSummary::Off,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        previous_response: None,
     }));
 
     let partial = "stream 0\nstream 1\nstream 2\nstream 3\nPARTIAL ONLY";
@@ -1636,6 +1671,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
         originator: tau_proto::PromptOriginator::User,
 
         backend: None,
+        response_id: None,
     }));
     sync(&handle);
 
