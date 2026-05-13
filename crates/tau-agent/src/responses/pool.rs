@@ -305,26 +305,33 @@ pub(crate) fn run_turn_through_pool(
 /// is to reopen and retry once silently rather than letting the outer
 /// retry loop burn a backoff on the same broken state.
 ///
-/// Two flavors land here:
-/// - Transport-level: tungstenite raised `ConnectionClosed`, `AlreadyClosed`,
-///   or an IO break; or the server sent a close frame mid-stream. All surface
-///   as `HttpStatus(0, "stream error: ws closed..." | "stream error: <io>")`
-///   from [`super::ws::map_ws_runtime_error`].
+/// Every `run_turn` error path lands here as `LlmError::HttpStatus(0,
+/// "stream error: ...")` — and by construction every one of them
+/// indicates "this socket can't serve another turn":
+///
+/// - Transport-level closes: tungstenite raised `ConnectionClosed`,
+///   `AlreadyClosed`, or an IO break; the server sent a close frame mid-stream;
+///   keepalive ping or turn-send failed write-side.
+/// - Task-supervision failures: the per-conn reader or writer task exited or
+///   got aborted — the socket they owned is gone.
 /// - Server-level stale-chain: an `error` event whose message says the
 ///   `previous_response_id` we just sent doesn't exist on this socket. Same
-///   root cause (the previous socket carrying that chain id is gone), just
-///   surfaced through the JSON event stream instead of a TCP close.
+///   root cause as a transport close — the previous socket carrying that chain
+///   id is gone — just surfaced through the JSON event stream instead of a TCP
+///   close.
+///
+/// The matcher is therefore deliberately broad: anything with the
+/// `"stream error:"` prefix from `run_turn` is recoverable. The
+/// alternative — a narrow allow-list — silently leaks any new
+/// failure mode (e.g. the previous `"ws writer task gone"`) to the
+/// outer retry loop, which burns a backoff sleep on the same dead
+/// socket. Other `LlmError` variants and non-stream-prefixed bodies
+/// fall through unchanged.
 fn is_recoverable_ws_error(err: &LlmError) -> bool {
     let LlmError::HttpStatus(0, body) = err else {
         return false;
     };
-    if !body.starts_with("stream error:") {
-        return false;
-    }
-    body.contains("ws closed")
-        || body.contains("Previous response")
-        || body.contains("previous_response")
-        || body.contains("response not found")
+    body.starts_with("stream error:")
 }
 
 /// Borrow `request` but blank out its `previous_response`. Used on
@@ -642,6 +649,59 @@ mod tests {
             1,
             "stat counter should record the silent reconnect"
         );
+    }
+
+    /// Every error shape `WsConn::run_turn` can emit must be
+    /// classified recoverable so the silent-reconnect path catches
+    /// it. The old narrow allow-list (`"ws closed"` /
+    /// `"previous_response"` / `"response not found"`) silently
+    /// missed `"ws writer task gone"` and `"ws keepalive failed:
+    /// ..."` after the tokio-tungstenite refactor — a dead cached
+    /// socket would then leak its error to the user instead of
+    /// being reopened transparently. Guards against re-tightening.
+    #[test]
+    fn all_run_turn_error_shapes_are_recoverable() {
+        let cases = [
+            "stream error: ws closed",
+            "stream error: ws closed mid-stream (code=1011 reason=keepalive ping timeout)",
+            "stream error: ws writer task gone",
+            "stream error: ws reader task gone",
+            "stream error: ws send failed: Connection closed normally",
+            "stream error: ws keepalive failed: IO error: broken pipe",
+            "stream error: Previous response not found",
+            "stream error: previous_response_id expired",
+            "stream error: response not found",
+            "stream error: WebSocket protocol error: bad frame",
+        ];
+        for body in cases {
+            let err = LlmError::HttpStatus(0, body.to_owned());
+            assert!(
+                is_recoverable_ws_error(&err),
+                "expected recoverable: {body}"
+            );
+        }
+    }
+
+    /// Inverse: only `HttpStatus(0, "stream error: ...")` is in
+    /// scope. Other code paths (real HTTP errors, JSON failures,
+    /// non-stream `HttpStatus(0, ...)` bodies) must not be
+    /// transparently retried — they could be terminal user-facing
+    /// problems (bad auth, malformed request) where reopening the
+    /// socket changes nothing.
+    #[test]
+    fn non_run_turn_errors_are_not_recoverable() {
+        let cases = [
+            LlmError::HttpStatus(0, "response failed: model overloaded".to_owned()),
+            LlmError::HttpStatus(401, "Unauthorized".to_owned()),
+            LlmError::HttpStatus(429, "rate limit".to_owned()),
+            LlmError::HttpStatus(0, "some unrelated body".to_owned()),
+        ];
+        for err in cases {
+            assert!(
+                !is_recoverable_ws_error(&err),
+                "expected NOT recoverable: {err:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------

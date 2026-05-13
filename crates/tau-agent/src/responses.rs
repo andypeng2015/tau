@@ -22,6 +22,7 @@ use crate::common::{
 
 pub(crate) mod pool;
 pub(crate) mod ws;
+pub(crate) mod ws_runtime;
 
 /// Config for the Codex Responses API.
 #[derive(Clone, Debug)]
