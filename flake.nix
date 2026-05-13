@@ -5,6 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
     flakebox.url = "github:rustshop/flakebox";
+    selfci = {
+      url = "github:dpc/selfci";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.flakebox.follows = "flakebox";
+    };
   };
 
   outputs =
@@ -13,6 +19,7 @@
       nixpkgs,
       flake-utils,
       flakebox,
+      selfci,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -191,7 +198,10 @@
           components = flakeboxLib.config.toolchain.components ++ [
             "rustc-codegen-cranelift-preview"
           ];
-          packages = [ pkgs.taplo ];
+          packages = [
+            pkgs.taplo
+            selfci.packages.${system}.default
+          ];
         };
       }
     );
