@@ -42,7 +42,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite};
 
-use super::{ResponsesConfig, apply_event, build_ws_envelope};
+use super::{ResponsesConfig, apply_event, build_ws_envelope, build_ws_prewarm_envelope};
 use crate::common::{LlmError, PromptPayload, StreamState};
 use crate::responses::ws_runtime;
 
@@ -196,6 +196,26 @@ impl WsConn {
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<StreamState, LlmError> {
         let envelope = build_ws_envelope(config, request);
+        self.run_envelope(envelope, on_update)
+    }
+
+    /// Send one non-generating prewarm envelope and wait for the
+    /// provider to finish accepting it. No Tau-visible response
+    /// events are emitted by this layer's caller.
+    pub fn run_prewarm(
+        &mut self,
+        config: &ResponsesConfig,
+        request: &PromptPayload<'_>,
+    ) -> Result<StreamState, LlmError> {
+        let envelope = build_ws_prewarm_envelope(config, request);
+        self.run_envelope(envelope, &mut |_, _| {})
+    }
+
+    fn run_envelope(
+        &mut self,
+        envelope: super::WsResponseCreate,
+        on_update: &mut impl FnMut(&str, Option<&str>),
+    ) -> Result<StreamState, LlmError> {
         let text = serde_json::to_string(&envelope).map_err(LlmError::Json)?;
         self.outbound_tx
             .send(WsCommand::SendText(text))

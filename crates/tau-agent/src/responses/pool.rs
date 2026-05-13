@@ -300,6 +300,55 @@ pub(crate) fn run_turn_through_pool(
     }
 }
 
+/// Send a best-effort non-generating prewarm over the same pooled WS
+/// connection a later real turn for this session will use. Unlike
+/// real turns, a failed cached socket is simply dropped and retried
+/// once on a fresh socket; no stateful chain id exists on prewarm.
+pub(crate) fn run_prewarm_through_pool(
+    pool: &mut WsPool,
+    config: &ResponsesConfig,
+    session_id: &str,
+    request: &crate::common::PromptPayload<'_>,
+) -> Result<crate::common::StreamState, LlmError> {
+    let key = PoolKey::for_request(config, session_id);
+
+    if let Some(mut conn) = pool.checkout(&key, &config.api_key) {
+        match conn.run_prewarm(config, request) {
+            Ok(state) => {
+                pool.release(key, conn);
+                return Ok(state);
+            }
+            Err(err) if is_recoverable_ws_error(&err) => {
+                pool.stats.silent_reconnects += 1;
+                tracing::info!(
+                    target: crate::LOG_TARGET,
+                    session_id,
+                    error = %err,
+                    "Codex WS connection lost during prewarm; reopening",
+                );
+                drop(conn);
+            }
+            Err(other) => {
+                drop(conn);
+                return Err(other);
+            }
+        }
+    }
+
+    let mut conn = WsConn::connect(config)?;
+    pool.stats.upgrades += 1;
+    match conn.run_prewarm(config, request) {
+        Ok(state) => {
+            pool.release(key, conn);
+            Ok(state)
+        }
+        Err(err) => {
+            drop(conn);
+            Err(err)
+        }
+    }
+}
+
 /// Errors from `WsConn::run_turn` that mean "this socket is dead,
 /// but the *next* socket can probably serve the turn." Caller's job
 /// is to reopen and retry once silently rather than letting the outer

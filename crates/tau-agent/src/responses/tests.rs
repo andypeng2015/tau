@@ -791,15 +791,49 @@ fn ws_envelope_adds_type_and_drops_stream() {
     let ws_body = serde_json::to_value(build_ws_envelope(&config, &request)).expect("ws envelope");
 
     assert_eq!(ws_body["type"], "response.create");
+    let ws_object = ws_body.as_object().expect("WS envelope object");
     assert!(
-        ws_body.as_object().unwrap().get("stream").is_none(),
+        ws_object.get("stream").is_none(),
         "WS frame must omit `stream` — the WS guide says it's not used and the field is transport-implicit"
     );
     // Every other body shape stays identical so the request-build
     // tests already in this file double as WS-envelope coverage.
+    assert!(
+        ws_object.get("generate").is_none(),
+        "normal streaming WS turns must preserve the old wire shape"
+    );
     assert_eq!(ws_body["model"], http_body["model"]);
     assert_eq!(ws_body["store"], http_body["store"]);
     assert_eq!(ws_body["input"], http_body["input"]);
+}
+
+#[test]
+fn ws_prewarm_envelope_sets_generate_false_and_drops_previous_response() {
+    let config = chain_test_config();
+    let messages = vec![user_text("AGENTS.md context")];
+    let request = PromptPayload {
+        system_prompt: "sys",
+        messages: &messages,
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        previous_response: Some(PreviousResponse {
+            id: "resp_previous",
+            message_index: 1,
+        }),
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_ws_prewarm_envelope(&config, &request))
+        .expect("prewarm envelope");
+
+    assert_eq!(body["type"], "response.create");
+    assert_eq!(body["generate"], false);
+    let object = body.as_object().expect("prewarm envelope object");
+    assert!(object.get("stream").is_none());
+    assert!(object.get("previous_response_id").is_none());
 }
 
 // -----------------------------------------------------------------------

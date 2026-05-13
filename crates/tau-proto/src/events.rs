@@ -262,6 +262,8 @@ impl EventName {
     pub const SESSION_SHUTDOWN: Self = Self::from_static(EventCategory::Session, "shutdown");
     pub const SESSION_PROMPT_CREATED: Self =
         Self::from_static(EventCategory::Session, "prompt_created");
+    pub const SESSION_PROMPT_PREWARM_REQUESTED: Self =
+        Self::from_static(EventCategory::Session, "prompt_prewarm_requested");
     pub const SESSION_USER_MESSAGE_INJECTED: Self =
         Self::from_static(EventCategory::Session, "user_message_injected");
 
@@ -1811,6 +1813,36 @@ pub struct SessionPromptCreated {
     pub previous_response: Option<PreviousResponseRef>,
 }
 
+/// Best-effort provider-side prompt-cache prewarm request.
+///
+/// Carries the same stable prefix fields as the first real
+/// [`SessionPromptCreated`] but intentionally has no
+/// [`SessionPromptId`], no user task prompt, and no
+/// `previous_response_id`. Agents that support a non-generating
+/// upstream call may send it; all others no-op.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptPrewarmRequested {
+    pub session_id: SessionId,
+    pub system_prompt: String,
+    pub messages: Vec<ConversationMessage>,
+    pub tools: Vec<ToolDefinition>,
+    /// Currently selected model as `"provider/model_id"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelId>,
+    /// Per-prompt model knobs, matching the first real prompt.
+    #[serde(default)]
+    pub model_params: ModelParams,
+    /// Whether tool calls are allowed on the warmed prefix.
+    #[serde(default, skip_serializing_if = "ToolChoice::is_default")]
+    pub tool_choice: ToolChoice,
+    /// Prewarm only warms the interactive user's cache bucket.
+    #[serde(default)]
+    pub originator: PromptOriginator,
+    /// Preserve the first real user prompt's cache-key derivation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub share_user_cache_key: bool,
+}
+
 /// Reference to a prior turn's response, used to enable stateful
 /// chaining on backends that support it. See
 /// [`SessionPromptCreated::previous_response`].
@@ -2290,6 +2322,8 @@ pub enum Event {
     SessionShutdown(SessionShutdown),
     #[serde(rename = "session.prompt_created")]
     SessionPromptCreated(SessionPromptCreated),
+    #[serde(rename = "session.prompt_prewarm_requested")]
+    SessionPromptPrewarmRequested(SessionPromptPrewarmRequested),
     #[serde(rename = "session.user_message_injected")]
     SessionUserMessageInjected(SessionUserMessageInjected),
 
@@ -2361,6 +2395,7 @@ impl Event {
             Self::SessionStarted(_) => EventName::SESSION_STARTED,
             Self::SessionShutdown(_) => EventName::SESSION_SHUTDOWN,
             Self::SessionPromptCreated(_) => EventName::SESSION_PROMPT_CREATED,
+            Self::SessionPromptPrewarmRequested(_) => EventName::SESSION_PROMPT_PREWARM_REQUESTED,
             Self::SessionUserMessageInjected(_) => EventName::SESSION_USER_MESSAGE_INJECTED,
             Self::AgentPromptSubmitted(_) => EventName::AGENT_PROMPT_SUBMITTED,
             Self::AgentResponseUpdated(_) => EventName::AGENT_RESPONSE_UPDATED,

@@ -56,6 +56,7 @@ where
     writer.write_frame(&Frame::Message(Message::Subscribe(Subscribe {
         selectors: vec![
             EventSelector::Exact(EventName::SESSION_PROMPT_CREATED),
+            EventSelector::Exact(EventName::SESSION_PROMPT_PREWARM_REQUESTED),
             EventSelector::Exact(EventName::UI_CANCEL_PROMPT),
         ],
     })))?;
@@ -111,6 +112,9 @@ where
         // after handling whatever is inside.
         let (log_id, inner) = frame.peel_log();
         match inner {
+            Frame::Event(Event::SessionPromptPrewarmRequested(prewarm)) => {
+                handle_prewarm(&prewarm, &model_registry, &mut ws_pool, &mut ws_disabled);
+            }
             Frame::Event(Event::SessionPromptCreated(prompt)) => {
                 let session_prompt_id = prompt.session_prompt_id.clone();
 
@@ -525,6 +529,73 @@ fn should_disable_ws(error: &common::LlmError) -> bool {
             body.contains("websocket_connection_limit_reached")
         }
         _ => false,
+    }
+}
+
+fn handle_prewarm(
+    prewarm: &tau_proto::SessionPromptPrewarmRequested,
+    model_registry: &settings::ModelRegistry,
+    ws_pool: &mut responses::pool::WsPool,
+    ws_disabled: &mut HashSet<String>,
+) {
+    let Some(model) = prewarm.model.as_ref() else {
+        tracing::debug!(
+            target: LOG_TARGET,
+            session_id = %prewarm.session_id,
+            "skipping prompt prewarm: no selected model",
+        );
+        return;
+    };
+
+    let mut auth_store = tau_provider::storage::load().unwrap_or_default();
+    let Some(BackendConfig::Responses(cfg)) =
+        tau_provider::resolve(model, model_registry, &mut auth_store).map(BackendConfig::from)
+    else {
+        tracing::debug!(
+            target: LOG_TARGET,
+            session_id = %prewarm.session_id,
+            model = %model,
+            "skipping prompt prewarm: unsupported backend",
+        );
+        return;
+    };
+    let session_id = prewarm.session_id.as_str();
+    if !cfg.supports_websocket || ws_disabled.contains(session_id) {
+        tracing::debug!(
+            target: LOG_TARGET,
+            session_id,
+            "skipping prompt prewarm: websocket prewarm unsupported",
+        );
+        return;
+    }
+
+    let request = common::PromptPayload {
+        system_prompt: &prewarm.system_prompt,
+        messages: &prewarm.messages,
+        tools: &prewarm.tools,
+        params: prewarm.model_params,
+        tool_choice: prewarm.tool_choice,
+        previous_response: None,
+        originator: &prewarm.originator,
+        share_user_cache_key: prewarm.share_user_cache_key,
+        session_id: &prewarm.session_id,
+    };
+    tracing::debug!(target: LOG_TARGET, session_id, "starting prompt prewarm");
+    match responses::pool::run_prewarm_through_pool(ws_pool, &cfg, session_id, &request) {
+        Ok(_) => tracing::debug!(target: LOG_TARGET, session_id, "completed prompt prewarm"),
+        Err(error) if should_disable_ws(&error) => {
+            tracing::debug!(
+                target: LOG_TARGET,
+                session_id,
+                "prompt prewarm disabled WS path: {error}",
+            );
+            ws_disabled.insert(session_id.to_owned());
+        }
+        Err(error) => tracing::debug!(
+            target: LOG_TARGET,
+            session_id,
+            "prompt prewarm failed: {error}",
+        ),
     }
 }
 

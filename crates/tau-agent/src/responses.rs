@@ -592,6 +592,8 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
 pub(crate) struct WsResponseCreate {
     #[serde(rename = "type")]
     ty: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generate: Option<bool>,
     #[serde(flatten)]
     body: ResponsesRequest,
 }
@@ -608,6 +610,24 @@ pub(crate) fn build_ws_envelope(
     body.stream = None;
     WsResponseCreate {
         ty: "response.create",
+        generate: None,
+        body,
+    }
+}
+
+/// Build a non-generating WebSocket envelope for provider-side
+/// prompt-cache prewarm. Normal turns must keep `generate` omitted;
+/// only this path serializes `generate: false`.
+pub(crate) fn build_ws_prewarm_envelope(
+    config: &ResponsesConfig,
+    request: &PromptPayload<'_>,
+) -> WsResponseCreate {
+    let mut body = build_request(config, request);
+    body.stream = None;
+    body.previous_response_id = None;
+    WsResponseCreate {
+        ty: "response.create",
+        generate: Some(false),
         body,
     }
 }

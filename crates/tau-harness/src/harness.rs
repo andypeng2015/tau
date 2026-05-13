@@ -15,9 +15,9 @@ use tau_core::{
 use tau_proto::{
     AgentResponseFinished, AgentTokenUsage, AgentToolCall, CborValue, ClientKind, Disconnect,
     Event, EventSelector, ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected,
-    Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId, SessionPromptQueued,
-    TokenUsageStats, ToolCallId, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest,
-    UiCancelPrompt,
+    Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId,
+    SessionPromptPrewarmRequested, SessionPromptQueued, TokenUsageStats, ToolCallId,
+    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, UiCancelPrompt,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState};
@@ -1100,6 +1100,7 @@ impl Harness {
             Event::SessionStarted(started) => Some(started.session_id.clone()),
             Event::SessionShutdown(shutdown) => Some(shutdown.session_id.clone()),
             Event::SessionPromptCreated(created) => Some(created.session_id.clone()),
+            Event::SessionPromptPrewarmRequested(prewarm) => Some(prewarm.session_id.clone()),
             Event::SessionUserMessageInjected(injected) => Some(injected.session_id.clone()),
             Event::AgentPromptSubmitted(submitted) => {
                 self.session_id_for_prompt(&submitted.session_prompt_id)
@@ -2812,10 +2813,67 @@ impl Harness {
         // `default_conversation_id` and the post-commit hook keeps
         // `c.head` aligned. For other sessions there's no
         // matching live conversation anyway.
-        self.initialized_sessions.insert(session_id);
+        self.initialized_sessions.insert(session_id.clone());
+        self.request_prompt_prewarm(&session_id);
         self.turn_state = TurnState::Idle;
         self.try_advance_queue();
         Ok(())
+    }
+
+    fn request_prompt_prewarm(&mut self, session_id: &SessionId) {
+        let Some(model) = self.selected_model.clone() else {
+            tracing::debug!(
+                target: "harness",
+                session_id = %session_id,
+                "skipping prompt prewarm: no selected model",
+            );
+            return;
+        };
+        if session_id != &self.current_session_id {
+            tracing::debug!(
+                target: "harness",
+                session_id = %session_id,
+                "skipping prompt prewarm: session is not bound to this harness",
+            );
+            return;
+        }
+
+        let cid = self.default_conversation_id.clone();
+        let Some(conv) = self.conversations.get(&cid) else {
+            tracing::debug!(
+                target: "harness",
+                session_id = %session_id,
+                "skipping prompt prewarm: default conversation missing",
+            );
+            return;
+        };
+        let head = conv.head;
+        let tree = self.store.session(session_id.as_str());
+        let messages = tree
+            .map(|t| assemble_conversation_from(t, head))
+            .unwrap_or_default();
+        let tools = self.gather_tool_definitions();
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "(unknown)".to_owned());
+        let system_prompt = build_system_prompt(&self.discovered_skills, &cwd);
+        let event = Event::SessionPromptPrewarmRequested(SessionPromptPrewarmRequested {
+            session_id: session_id.clone(),
+            system_prompt,
+            messages,
+            tools,
+            model: Some(model),
+            model_params: self.selected_params,
+            tool_choice: tau_proto::ToolChoice::Auto,
+            originator: tau_proto::PromptOriginator::User,
+            share_user_cache_key: false,
+        });
+        tracing::debug!(
+            target: "harness",
+            session_id = %session_id,
+            "scheduled prompt prewarm",
+        );
+        self.publish_event(None, event);
     }
 
     // -----------------------------------------------------------------------
