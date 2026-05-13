@@ -1312,7 +1312,7 @@ fn render_tool_display_assembles_chips_in_order() {
     assert_eq!(rendered.tool_name, "grep");
     assert_eq!(rendered.args, "\"foo\" in src");
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
-    assert_eq!(texts, vec!["(3M, 7L, 120B)", "ok"]);
+    assert_eq!(texts, vec!["(3, 7L, 120B)", "ok"]);
     assert!(matches!(
         rendered.suffixes.last().expect("status suffix").status,
         ToolStatus::Success

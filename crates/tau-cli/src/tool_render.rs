@@ -505,7 +505,7 @@ fn format_tool_display_stats(stats: &tau_proto::ToolDisplayStats) -> String {
 fn format_stats(matches: Option<u64>, lines: Option<u64>, bytes: Option<u64>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(m) = matches {
-        parts.push(format!("{m}M"));
+        parts.push(m.to_string());
     }
     if let Some(l) = lines {
         parts.push(format!("{l}L"));
