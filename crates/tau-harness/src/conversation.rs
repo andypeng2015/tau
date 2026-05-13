@@ -21,18 +21,25 @@ use std::collections::VecDeque;
 use tau_core::NodeId;
 use tau_proto::{
     ConnectionId, ModelId, ModelParams, PromptOriginator, SessionId, SessionPromptId, ToolCallId,
-    ToolChoice, ToolDefinition,
+    ToolDefinition,
 };
 
 use crate::dedup::ResultDedupMap;
 
 /// Hash the per-request inputs whose drift would invalidate a Codex
-/// chain (`previous_response_id`). System prompt, tool list, model
-/// params, and tool_choice each appear on the wire on every turn; if
-/// they differ from the prior turn the server's reasoning continuity
-/// can decohere silently. Used by both [`ChainAnchor::request_fingerprint`]
-/// (set when the anchor is minted) and the anchor-validity check before
+/// chain (`previous_response_id`). System prompt, tool list, and model
+/// params each appear on the wire on every turn; if they differ from
+/// the prior turn the server's reasoning continuity can decohere
+/// silently. Used by both [`ChainAnchor::request_fingerprint`] (set
+/// when the anchor is minted) and the anchor-validity check before
 /// sending the next prompt.
+///
+/// `tool_choice` is intentionally NOT hashed: it's a per-turn directive
+/// to the model (call tools or don't), not part of the cached prefix.
+/// Hashing it broke the chain on every `std-notifications` idle-summary
+/// query — those flip `tool_choice` to `None` while keeping tools/system
+/// identical, exactly to preserve the cache prefix per the design
+/// comment in `tau_agent::responses::build_request`.
 ///
 /// Domain-separated by a NUL byte between fields so e.g. a system
 /// prompt ending in `"]"` can't be confused with the start of the
@@ -43,7 +50,6 @@ pub(crate) fn compute_chain_fingerprint(
     system_prompt: &str,
     tools: &[ToolDefinition],
     model_params: &ModelParams,
-    tool_choice: ToolChoice,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(system_prompt.as_bytes());
@@ -51,8 +57,6 @@ pub(crate) fn compute_chain_fingerprint(
     hasher.update(&serde_json::to_vec(tools).unwrap_or_default());
     hasher.update(b"\0params:");
     hasher.update(&serde_json::to_vec(model_params).unwrap_or_default());
-    hasher.update(b"\0tool_choice:");
-    hasher.update(&serde_json::to_vec(&tool_choice).unwrap_or_default());
     *hasher.finalize().as_bytes()
 }
 
@@ -204,13 +208,12 @@ pub(crate) struct ChainAnchor {
     /// `messages[message_count..]` to get the new content the upstream
     /// API hasn't seen yet.
     pub(crate) message_count: usize,
-    /// Blake3 fingerprint of `(system_prompt, tools, model_params,
-    /// tool_choice)` as observed when the anchor was minted. Codex
-    /// rejects (or silently misinterprets) a chained request whose
-    /// non-input fields drift from the prior turn, so the next send
-    /// re-hashes the same inputs and drops the anchor on mismatch —
-    /// catching the divergence before the round-trip rather than
-    /// after. Matches Pi's `requestBodiesMatchExceptInput` check.
+    /// Blake3 fingerprint of `(system_prompt, tools, model_params)` as
+    /// observed when the anchor was minted. Codex rejects (or silently
+    /// misinterprets) a chained request whose non-input fields drift
+    /// from the prior turn, so the next send re-hashes the same inputs
+    /// and drops the anchor on mismatch — catching the divergence
+    /// before the round-trip rather than after.
     pub(crate) request_fingerprint: [u8; 32],
 }
 
@@ -241,5 +244,66 @@ impl Conversation {
             chain_anchor: None,
             result_dedup: ResultDedupMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tau_proto::{ModelParams, ToolDefinition, ToolName};
+
+    use super::compute_chain_fingerprint;
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: ToolName::new(name),
+            description: None,
+            parameters: None,
+        }
+    }
+
+    /// Locks in the inputs that DO matter for chain validity. If a
+    /// future change drops one of these from the hash, the matching
+    /// pair below stops differing and the test fails — catching the
+    /// regression before any real session loses cache.
+    #[test]
+    fn fingerprint_changes_when_real_inputs_drift() {
+        let base = compute_chain_fingerprint("sys", &[tool("a")], &ModelParams::default());
+
+        assert_ne!(
+            base,
+            compute_chain_fingerprint("sys-changed", &[tool("a")], &ModelParams::default()),
+            "system_prompt drift must change the fingerprint",
+        );
+        assert_ne!(
+            base,
+            compute_chain_fingerprint("sys", &[tool("a"), tool("b")], &ModelParams::default()),
+            "tools drift must change the fingerprint",
+        );
+        let mut params = ModelParams::default();
+        params.effort = tau_proto::Effort::High;
+        assert_ne!(
+            base,
+            compute_chain_fingerprint("sys", &[tool("a")], &params),
+            "model_params drift must change the fingerprint",
+        );
+    }
+
+    /// Inverse: `tool_choice` is intentionally NOT hashed because it's
+    /// a per-turn directive, not part of the cached prefix. Without
+    /// this exclusion the std-notifications idle-summary side conv
+    /// (which flips `tool_choice` to `None` while leaving everything
+    /// else identical) busts the chain anchor and pays for a full
+    /// transcript replay each time. If anyone re-adds `tool_choice`
+    /// to the hash inputs, this test should be updated alongside —
+    /// not silently broken.
+    #[test]
+    fn fingerprint_is_stable_across_unrelated_inputs() {
+        // Whatever inputs `compute_chain_fingerprint` accepts must
+        // produce the same hash when called twice with the same
+        // values. Guards against accidental nondeterminism (e.g. if
+        // someone reaches for `HashMap` serialization for tools).
+        let a = compute_chain_fingerprint("sys", &[tool("a")], &ModelParams::default());
+        let b = compute_chain_fingerprint("sys", &[tool("a")], &ModelParams::default());
+        assert_eq!(a, b, "fingerprint must be deterministic");
     }
 }

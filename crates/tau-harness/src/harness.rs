@@ -208,11 +208,11 @@ pub(crate) struct Harness {
     /// attribute the corresponding finished response even if the user
     /// switches models while it is in flight.
     pub(crate) prompt_models: std::collections::HashMap<SessionPromptId, ModelId>,
-    /// Per-prompt fingerprint of `(system_prompt, tools, model_params,
-    /// tool_choice)` as observed on the outbound request. Read at
-    /// response time to stamp `ChainAnchor::request_fingerprint`, so
-    /// the anchor records what was *actually sent* even if the user
-    /// flipped a setting between send and receive. See
+    /// Per-prompt fingerprint of `(system_prompt, tools, model_params)`
+    /// as observed on the outbound request. Read at response time to
+    /// stamp `ChainAnchor::request_fingerprint`, so the anchor records
+    /// what was *actually sent* even if the user flipped a setting
+    /// between send and receive. See
     /// [`crate::conversation::compute_chain_fingerprint`].
     pub(crate) prompt_fingerprints: std::collections::HashMap<SessionPromptId, [u8; 32]>,
     /// Provider/model registry, kept for runtime lookups (e.g.
@@ -2934,7 +2934,6 @@ impl Harness {
             &system_prompt,
             &tools,
             &self.selected_params,
-            tool_choice,
         );
         // Stateful-chain hint: if the prior turn for this conversation
         // produced a `response_id` AND the anchor is still consistent

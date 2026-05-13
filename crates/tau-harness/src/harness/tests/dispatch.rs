@@ -689,12 +689,70 @@ fn system_prompt_drift_invalidates_chain_anchor() {
     );
 }
 
+/// A tool registering mid-conversation must bust the chain — the
+/// upstream stored its reasoning state against the *previous* tools
+/// list, and chaining a request whose `tools` field grew (or shrank)
+/// would silently mix new affordances into reasoning that never saw
+/// them. Realistic trigger: an extension hot-registers a tool while
+/// the user is mid-task.
+#[test]
+fn tools_drift_invalidates_chain_anchor() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    h.submit_user_prompt("s1".into(), "first".to_owned())
+        .expect("submit first");
+    let spid1: SessionPromptId = "sp-0".into();
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1,
+        text: Some("first answer".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        output_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: Some("resp_tools".to_owned()),
+        phase: None,
+        reasoning_items: Vec::new(),
+    })
+    .expect("finish first");
+
+    // A new tool appears between turns — same shape as an extension
+    // hot-registering. `gather_tool_definitions` reads from the
+    // registry on every send, so the next prompt's `tools` field
+    // grows by one.
+    h.registry.register(
+        "test-ext",
+        ToolSpec {
+            name: ToolName::new("late_tool"),
+            description: Some("appeared between turns".to_owned()),
+            parameters: None,
+            side_effects: ToolSideEffects::Pure,
+        },
+    );
+
+    h.submit_user_prompt("s1".into(), "second".to_owned())
+        .expect("submit second");
+    let spid2: SessionPromptId = "sp-1".into();
+    let prompt2 = read_prompt_created(&h, &spid2);
+
+    assert!(
+        prompt2.previous_response.is_none(),
+        "tools drift (new tool registered) must clear the chain anchor"
+    );
+}
+
 /// Counterpart: when the per-request fingerprint inputs *don't*
 /// change between turns, the chain anchor must remain valid. Locks
-/// in the "compute fingerprint over (system_prompt, tools, params,
-/// tool_choice)" surface — if a future change quietly mixes in some
-/// other input that drifts across turns (e.g. cwd, current date,
-/// session id), this test starts failing.
+/// in the "compute fingerprint over (system_prompt, tools, params)"
+/// surface — if a future change quietly mixes in some other input
+/// that drifts across turns (e.g. cwd, current date, session id),
+/// this test starts failing.
 #[test]
 fn stable_params_preserve_chain_anchor() {
     let td = TempDir::new().expect("tempdir");
@@ -1319,6 +1377,75 @@ fn non_tool_ext_agent_query_inherits_parent_branch() {
     );
 
     h.shutdown().expect("shutdown");
+}
+
+/// A non-tool ext-agent query (idle-summary path) flips per-turn
+/// `tool_choice` to `None` while leaving system prompt, tools, and
+/// model params identical. That `tool_choice` change must NOT bust
+/// the chain anchor: the side conv has to inherit the parent's
+/// `previous_response_id` so the upstream prompt cache is reused
+/// instead of paying for a full transcript replay (~50k tokens per
+/// idle summary in real sessions).
+#[test]
+fn non_tool_ext_agent_query_preserves_chain_anchor() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    // Drive one full main-conv turn through the normal dispatch path
+    // so `prompt_fingerprints`/`prompt_models` are populated and
+    // `handle_agent_response_finished` actually mints the anchor.
+    h.submit_user_prompt("s1".into(), "find the bug in foo.rs".to_owned())
+        .expect("submit main");
+    let main_spid: SessionPromptId = "sp-0".into();
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: main_spid,
+        text: Some("I fixed the off-by-one in foo.rs".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        output_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: Some("resp_parent".to_owned()),
+        phase: None,
+        reasoning_items: Vec::new(),
+    })
+    .expect("main response");
+
+    // std-notifications-shaped query — `tool_call_id: None` triggers
+    // the `tool_choice: None` branch in `send_prompt_to_agent_for`.
+    h.handle_ext_agent_query(
+        "conn-notifications",
+        ExtAgentQuery {
+            query_id: "idle-0".to_owned(),
+            instruction: "Summarize in one sentence.".to_owned(),
+            tool_call_id: None,
+            task_name: None,
+        },
+    )
+    .expect("ext query");
+
+    let side_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
+        .expect("side prompt id");
+    let side_prompt = read_prompt_created(&h, &side_spid);
+
+    assert_eq!(
+        side_prompt.tool_choice,
+        tau_proto::ToolChoice::None,
+        "sanity: idle-summary query still flips tool_choice to None",
+    );
+    let prev = side_prompt.previous_response.as_ref().expect(
+        "idle-summary side conv must inherit parent's chain anchor — \
+         tool_choice flipping is intentional and must not bust the cache",
+    );
+    assert_eq!(prev.id, "resp_parent");
 }
 
 /// Counterpart to `non_tool_ext_agent_query_inherits_parent_branch`.
