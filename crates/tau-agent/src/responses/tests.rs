@@ -941,3 +941,110 @@ fn apply_event_failed_returns_error() {
         other => panic!("expected HttpStatus(0, ...), got {other:?}"),
     }
 }
+
+/// Streaming `error` event in the documented OpenAI Responses shape:
+/// `{ type: "error", code: <code>, message: <msg> }` (no nested
+/// `error` object). The retry classifier needs the code in the
+/// `(type=...)` suffix to distinguish account caps from transport
+/// hiccups.
+#[test]
+fn apply_event_error_top_level_code_is_propagated() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "error",
+        "code": "rate_limit_exceeded",
+        "message": "Rate limit reached",
+    });
+    let result = apply_event(&mut state, &ev, &mut on_update);
+    match result {
+        Err(LlmError::HttpStatus(0, body)) => {
+            assert!(body.contains("Rate limit reached"));
+            assert!(
+                body.contains("(type=rate_limit_exceeded)"),
+                "missing (type=...) suffix in {body:?}",
+            );
+            assert!(
+                !crate::common::is_account_limit_body(&body)
+                    .then_some(())
+                    .is_none(),
+                "is_account_limit_body must classify this body as a cap"
+            );
+        }
+        other => panic!("expected HttpStatus(0, ...), got {other:?}"),
+    }
+}
+
+/// Nested `error.code` shape — some Codex error envelopes wrap the
+/// code in an `error` object alongside the message. Must produce the
+/// same suffix as the top-level form.
+#[test]
+fn apply_event_error_nested_code_is_propagated() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "error",
+        "error": {
+            "code": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+        },
+    });
+    let result = apply_event(&mut state, &ev, &mut on_update);
+    match result {
+        Err(LlmError::HttpStatus(0, body)) => {
+            assert!(body.contains("usage limit has been reached"));
+            assert!(
+                body.contains("(type=usage_limit_reached)"),
+                "missing (type=...) suffix in {body:?}",
+            );
+        }
+        other => panic!("expected HttpStatus(0, ...), got {other:?}"),
+    }
+}
+
+/// Legacy nested `error.type` shape — kept as a fallback so an older
+/// recorded session log replayed through the agent still classifies
+/// correctly.
+#[test]
+fn apply_event_error_nested_type_fallback_is_propagated() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "quota_exceeded",
+            "message": "quota",
+        },
+    });
+    let result = apply_event(&mut state, &ev, &mut on_update);
+    match result {
+        Err(LlmError::HttpStatus(0, body)) => {
+            assert!(
+                body.contains("(type=quota_exceeded)"),
+                "missing (type=...) suffix in {body:?}",
+            );
+        }
+        other => panic!("expected HttpStatus(0, ...), got {other:?}"),
+    }
+}
+
+/// No code/type anywhere: body still produced, just without the
+/// `(type=...)` suffix. The outer retry layer keeps retrying (we
+/// can't safely classify), but we don't crash or drop the message.
+#[test]
+fn apply_event_error_without_code_omits_suffix() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+    let ev = serde_json::json!({
+        "type": "error",
+        "message": "something broke",
+    });
+    let result = apply_event(&mut state, &ev, &mut on_update);
+    match result {
+        Err(LlmError::HttpStatus(0, body)) => {
+            assert!(body.contains("something broke"));
+            assert!(!body.contains("(type="), "unexpected suffix in {body:?}");
+        }
+        other => panic!("expected HttpStatus(0, ...), got {other:?}"),
+    }
+}

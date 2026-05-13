@@ -379,17 +379,26 @@ pub(crate) fn apply_event(
                 .as_str()
                 .or_else(|| event["message"].as_str())
                 .unwrap_or("unknown error");
-            // Preserve the error type alongside the message so the
+            // Preserve the error code alongside the message so the
             // retry classifier can distinguish a transient transport
             // hiccup from an account-level cap (usage limit, rate
-            // limit, quota) — the latter must not be retried. The
-            // `(type=...)` suffix is a stable substring contract
-            // matched by `LlmError::retry_after` and
-            // `pool::is_recoverable_ws_error`.
-            let body = match event["error"]["type"].as_str() {
-                Some(error_type) => {
-                    format!("stream error: {detail} (type={error_type})")
-                }
+            // limit, quota) — the latter must not be retried.
+            //
+            // The OpenAI Responses streaming `error` event uses
+            // `code` at the top level (e.g. `code:
+            // "rate_limit_exceeded"`); some Codex variants nest an
+            // `error.code` or older-style `error.type`. We check
+            // all three so an upstream wording drift on one path
+            // doesn't silently re-enable the futile retry loop on
+            // an account cap. The `(type=...)` suffix is a stable
+            // substring contract matched by `LlmError::retry_after`
+            // and `pool::is_recoverable_ws_error`.
+            let error_code = event["error"]["code"]
+                .as_str()
+                .or_else(|| event["code"].as_str())
+                .or_else(|| event["error"]["type"].as_str());
+            let body = match error_code {
+                Some(code) => format!("stream error: {detail} (type={code})"),
                 None => format!("stream error: {detail}"),
             };
             return Err(LlmError::HttpStatus(0, body));

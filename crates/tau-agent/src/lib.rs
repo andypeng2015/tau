@@ -98,6 +98,20 @@ where
     // the rest of this agent's life, rather than retrying WS on
     // every turn.
     let mut ws_disabled: HashSet<String> = HashSet::new();
+    // Spids the harness asked us to cancel via a targeted
+    // `UiCancelPrompt` (`session_prompt_id: Some(...)`). Populated
+    // from two places: (a) the main loop below, when a cancel is
+    // received before the corresponding `SessionPromptCreated` has
+    // been dispatched, and (b) `RetryContext::sleep_or_abort`, when
+    // a cancel for a *different* spid arrives mid-retry on the
+    // currently in-flight one. Each `SessionPromptCreated` is
+    // checked against this set before being handed to
+    // `handle_prompt`, and dropped with a stub finished event if
+    // present. This is the gate that prevents the
+    // `preempt_blocking_ext_side_conversations` cancel from running
+    // a still-queued side conv that the harness has already given
+    // up on.
+    let mut canceled_spids: HashSet<tau_proto::SessionPromptId> = HashSet::new();
 
     loop {
         let frame = match deferred.pop_front() {
@@ -117,6 +131,48 @@ where
             }
             Frame::Event(Event::SessionPromptCreated(prompt)) => {
                 let session_prompt_id = prompt.session_prompt_id.clone();
+
+                // Drop a prompt the harness asked us to cancel before
+                // we could even dequeue it. Two ways this triggers:
+                //   - A `preempt_blocking_ext_side_conversations` cancel arrived while we were
+                //     retry-sleeping on a different spid; `sleep_or_abort` parked the cancel in
+                //     this set instead of mis-aborting the wrong attempt.
+                //   - A targeted cancel raced ahead of its `SessionPromptCreated` (unusual but
+                //     possible if the harness publishes both inside the same tick).
+                // Either way, we surface a stub finished event so the
+                // harness's prompt-routing book-keeping closes cleanly
+                // and the spid isn't left dangling.
+                if canceled_spids.remove(&session_prompt_id) {
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        session_prompt_id = %session_prompt_id,
+                        "skipping prompt — already canceled by harness",
+                    );
+                    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
+                        AgentResponseFinished {
+                            session_prompt_id: session_prompt_id.clone(),
+                            text: Some("(cancelled by harness)".to_owned()),
+                            tool_calls: Vec::new(),
+                            input_tokens: None,
+                            cached_tokens: None,
+                            output_tokens: None,
+                            thinking: None,
+                            token_usage: None,
+                            originator: prompt.originator.clone(),
+                            backend: None,
+                            response_id: None,
+                            phase: None,
+                            reasoning_items: Vec::new(),
+                            ws_pool_delta: None,
+                        },
+                    )))?;
+                    writer.flush()?;
+                    if let Some(id) = log_id {
+                        writer.write_frame(&Frame::Message(Message::Ack(Ack { up_to: id })))?;
+                        writer.flush()?;
+                    }
+                    continue;
+                }
 
                 // Full prompt dump for debugging. Off by default;
                 // enable with `TAU_LOG=agent=trace`. Pretty JSON
@@ -150,6 +206,7 @@ where
                 let mut retry_ctx = RetryContext {
                     frame_rx: &frame_rx,
                     deferred: &mut deferred,
+                    canceled_spids: &mut canceled_spids,
                 };
 
                 // Resolve backend from the model specified in the prompt.
@@ -202,6 +259,19 @@ where
                     }
                 }
             }
+            Frame::Event(Event::UiCancelPrompt(cancel)) => {
+                // Targeted cancel that arrived while the agent was
+                // idle (no retry sleep in progress) — typically a
+                // `preempt_blocking_ext_side_conversations` cancel
+                // for a side conv whose `SessionPromptCreated` is
+                // still queued behind it in `frame_rx`. Record the
+                // spid so the gate above drops the prompt when it
+                // pops. Broadcast cancels (`None`) are no-ops here:
+                // there's nothing in flight to abort.
+                if let Some(spid) = cancel.session_prompt_id {
+                    canceled_spids.insert(spid);
+                }
+            }
             Frame::Message(Message::Disconnect(_)) => return Ok(()),
             _ => {}
         }
@@ -214,12 +284,15 @@ where
 
 /// What the retry loop needs from the agent's main event pump:
 /// access to the channel of incoming events (so a long backoff sleep
-/// can wake on disconnect / queued prompts) and a deferred buffer
-/// for events that arrive mid-sleep but belong to a later main-loop
-/// iteration.
+/// can wake on disconnect / queued prompts), a deferred buffer for
+/// events that arrive mid-sleep but belong to a later main-loop
+/// iteration, and the shared `canceled_spids` set so a targeted cancel
+/// arriving for a *different* in-flight spid can be recorded for the
+/// main loop's gate instead of mis-aborting the current attempt.
 struct RetryContext<'a> {
     frame_rx: &'a Receiver<Frame>,
     deferred: &'a mut VecDeque<Frame>,
+    canceled_spids: &'a mut HashSet<tau_proto::SessionPromptId>,
 }
 
 /// Outcome of an interruptible sleep.
@@ -233,11 +306,14 @@ enum SleepOutcome {
 
 impl<'a> RetryContext<'a> {
     /// Sleep for up to `delay`, but wake early if the harness sends a
-    /// `LifecycleDisconnect` (or the reader thread exits). Any other
-    /// events that arrive mid-sleep are stashed onto the deferred
-    /// buffer so the main loop processes them after the current
-    /// prompt finishes.
-    fn sleep_or_abort(&mut self, delay: Duration) -> SleepOutcome {
+    /// `LifecycleDisconnect` or a `UiCancelPrompt` targeting the
+    /// prompt this retry loop is owning. Cancels for a different spid
+    /// (e.g. a side-conv preempt that arrived while we're retrying a
+    /// user/delegate prompt) are buffered for the main loop instead
+    /// of aborting the wrong attempt. A targetless cancel
+    /// (`session_prompt_id: None` — the legacy `/cancel`) still
+    /// aborts whatever's in flight.
+    fn sleep_or_abort(&mut self, delay: Duration, current_spid: &str) -> SleepOutcome {
         let deadline = Instant::now() + delay;
         loop {
             let now = Instant::now();
@@ -248,11 +324,33 @@ impl<'a> RetryContext<'a> {
                 Err(RecvTimeoutError::Timeout) => return SleepOutcome::Elapsed,
                 Err(RecvTimeoutError::Disconnected) => return SleepOutcome::Aborted,
                 Ok(frame) => {
-                    let abort = matches!(
-                        frame,
-                        Frame::Message(Message::Disconnect(_))
-                            | Frame::Event(Event::UiCancelPrompt(_))
-                    );
+                    if let Frame::Event(Event::UiCancelPrompt(cancel)) = &frame {
+                        match &cancel.session_prompt_id {
+                            // Broadcast cancel (legacy `/cancel`):
+                            // abort whatever's in flight.
+                            None => {
+                                self.deferred.push_back(frame);
+                                return SleepOutcome::Aborted;
+                            }
+                            Some(spid) if spid.as_str() == current_spid => {
+                                self.deferred.push_back(frame);
+                                return SleepOutcome::Aborted;
+                            }
+                            Some(spid) => {
+                                // Targeted at a *different* queued spid
+                                // (e.g. side-conv preempt while we're
+                                // retrying a user/delegate prompt).
+                                // Don't push to deferred — the main
+                                // loop has no use for the bare cancel
+                                // event; just record the spid so its
+                                // queued `SessionPromptCreated` is
+                                // dropped when it pops.
+                                self.canceled_spids.insert(spid.clone());
+                                continue;
+                            }
+                        }
+                    }
+                    let abort = matches!(&frame, Frame::Message(Message::Disconnect(_)));
                     self.deferred.push_back(frame);
                     if abort {
                         return SleepOutcome::Aborted;
@@ -438,7 +536,10 @@ where
             attempt,
             max_attempts,
         );
-        if matches!(retry_ctx.sleep_or_abort(delay), SleepOutcome::Aborted) {
+        if matches!(
+            retry_ctx.sleep_or_abort(delay, session_prompt_id),
+            SleepOutcome::Aborted,
+        ) {
             tracing::info!(
                 target: LOG_TARGET,
                 session_prompt_id = %session_prompt_id,

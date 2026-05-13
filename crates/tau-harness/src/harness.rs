@@ -1936,8 +1936,13 @@ impl Harness {
         self.emit_info("cancelled current prompt");
         self.publish_event(
             None,
+            // Targetless cancel: legacy `/cancel` semantics. The
+            // agent aborts whatever it's currently retry-sleeping
+            // on; the harness has already cleared the default
+            // conversation above.
             Event::UiCancelPrompt(UiCancelPrompt {
                 session_id: session_id.clone(),
+                session_prompt_id: None,
             }),
         );
         self.try_advance_queue();
@@ -2612,19 +2617,22 @@ impl Harness {
             self.emit_info(&format!(
                 "preempting side conv `{cid}` ({spid}) for incoming user prompt",
             ));
+            // Targeted cancel per spid. A broadcast cancel
+            // (`session_prompt_id: None`) would also abort an
+            // unrelated user/delegate prompt that happens to be
+            // retry-sleeping on the agent side — the very prompt
+            // we're trying to *unblock* by preempting these side
+            // convs. Targeted form: the agent only aborts the
+            // matching attempt, or records the spid in
+            // `canceled_spids` if the prompt is still queued.
+            self.publish_event(
+                None,
+                Event::UiCancelPrompt(UiCancelPrompt {
+                    session_id: session_id.clone(),
+                    session_prompt_id: Some(spid.clone()),
+                }),
+            );
         }
-
-        // One cancel event is enough: the agent processes prompts
-        // serially, so at most one of the preempted spids is the
-        // one the agent is actually mid-flight on. The agent's
-        // retry-loop `sleep_or_abort` doesn't filter by spid — any
-        // `UiCancelPrompt` aborts the current attempt.
-        self.publish_event(
-            None,
-            Event::UiCancelPrompt(UiCancelPrompt {
-                session_id: session_id.clone(),
-            }),
-        );
     }
 
     /// Broadcasts `SessionStarted` for `session_id` and enters

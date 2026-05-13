@@ -1557,11 +1557,28 @@ pub struct UiNavigateTree {
     pub node_id: u64,
 }
 
-/// The user typed `/cancel`: stop advancing the current in-flight
-/// prompt at the next harness boundary.
+/// Stop advancing an in-flight prompt at the next harness boundary.
+///
+/// Originally tied to the user typing `/cancel`, now also published
+/// by the harness itself to preempt non-tool extension side
+/// conversations when a user prompt arrives. The optional
+/// [`Self::session_prompt_id`] disambiguates the two cases:
+///
+/// - `None` — broadcast cancel (the legacy `/cancel` semantics). The harness
+///   clears the default conversation; the agent aborts whatever prompt it's
+///   currently retry-sleeping on.
+/// - `Some(spid)` — targeted cancel. The agent only aborts if the in-flight
+///   prompt's spid matches; otherwise the frame is left in the retry-loop's
+///   deferred buffer so the wrong prompt isn't collateral damage. The agent
+///   serializes prompt processing internally, so a cancel published while the
+///   spid in question is still queued (not yet dequeued from the agent's frame
+///   channel) is harmless — it just falls through with no in-flight match.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UiCancelPrompt {
     pub session_id: SessionId,
+    /// Optional target. See struct doc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_prompt_id: Option<SessionPromptId>,
 }
 
 /// Which stream a [`ShellCommandProgress`] chunk came from.

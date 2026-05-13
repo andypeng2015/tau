@@ -523,6 +523,11 @@ fn terminal_input_loop(
                         writer,
                         &Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
                             session_id: session_id.as_str().into(),
+                            // Broadcast cancel — abort whatever's in
+                            // flight, regardless of spid. The targeted
+                            // variant is used by the harness for
+                            // surgical preempts.
+                            session_prompt_id: None,
                         }),
                     );
                     continue;
