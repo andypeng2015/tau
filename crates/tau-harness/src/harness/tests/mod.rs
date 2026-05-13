@@ -271,7 +271,7 @@ fn drain_delegate_progress(
     out
 }
 
-fn read_prompt_created(h: &Harness, spid: &SessionPromptId) -> SessionPromptCreated {
+fn read_raw_prompt_created(h: &Harness, spid: &SessionPromptId) -> SessionPromptCreated {
     let mut cursor = 0;
     loop {
         let entry = h
@@ -286,6 +286,11 @@ fn read_prompt_created(h: &Harness, spid: &SessionPromptId) -> SessionPromptCrea
             _ => {}
         }
     }
+}
+
+fn read_prompt_created(h: &Harness, spid: &SessionPromptId) -> SessionPromptCreated {
+    h.read_session_prompt_created(spid)
+        .expect("materialized prompt event")
 }
 
 fn intercepted_payload(events: &Arc<Mutex<Vec<RoutedFrame>>>) -> (Event, bool) {

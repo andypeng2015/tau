@@ -18,6 +18,8 @@ fn message_variant(msg: &Message) -> &'static str {
         Message::Emit(_) => "Emit",
         Message::InterceptRequest(_) => "InterceptRequest",
         Message::InterceptReply(_) => "InterceptReply",
+        Message::GetSessionPromptCreated(_) => "GetSessionPromptCreated",
+        Message::SessionPromptCreatedResult(_) => "SessionPromptCreatedResult",
         Message::LogEvent(_) => "LogEvent",
         Message::Ack(_) => "Ack",
     }

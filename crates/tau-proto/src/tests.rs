@@ -67,6 +67,7 @@ fn representative_events() -> Vec<Event> {
                 }],
                 phase: None,
             }],
+            message_prefix: None,
             tools: vec![ToolDefinition {
                 name: ToolName::new("read"),
                 description: Some("Read a file".to_owned()),

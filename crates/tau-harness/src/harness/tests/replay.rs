@@ -108,6 +108,7 @@ fn late_joining_ui_client_replays_only_final_session_events() {
             session_id: "s1".into(),
             system_prompt: String::new(),
             messages: Vec::new(),
+            message_prefix: None,
             tools: Vec::new(),
             model: None,
             model_params: Default::default(),

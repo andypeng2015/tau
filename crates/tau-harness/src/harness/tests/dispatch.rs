@@ -425,6 +425,48 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
 }
 
 #[test]
+fn session_prompt_created_uses_message_prefix_for_linear_extension() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    append_user_message_via_event(&mut h, "s1", "hello");
+    let spid1 = h.send_prompt_to_agent("s1");
+    let prompt1 = read_prompt_created(&h, &spid1);
+
+    h.handle_agent_response_finished(AgentResponseFinished {
+        session_prompt_id: spid1.clone(),
+        text: Some("hi".to_owned()),
+        tool_calls: Vec::new(),
+        input_tokens: None,
+        cached_tokens: None,
+        output_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: None,
+        phase: None,
+        reasoning_items: Vec::new(),
+        ws_pool_delta: None,
+    })
+    .expect("finish first");
+
+    append_user_message_via_event(&mut h, "s1", "again");
+    let spid2 = h.send_prompt_to_agent("s1");
+    let raw2 = read_raw_prompt_created(&h, &spid2);
+    let prompt2 = read_prompt_created(&h, &spid2);
+    let prefix = raw2.message_prefix.expect("prefix reference");
+
+    assert_eq!(prefix.base_session_prompt_id, spid1);
+    assert_eq!(prefix.message_count, prompt1.messages.len());
+    assert_eq!(raw2.messages, prompt2.messages[prompt1.messages.len()..]);
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
 fn linear_session_prompts_strictly_extend_previous_messages() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");

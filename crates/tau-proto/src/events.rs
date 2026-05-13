@@ -1817,6 +1817,15 @@ impl PromptOriginator {
     }
 }
 
+/// Reference to a message prefix carried by an earlier prompt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PromptMessagePrefix {
+    /// Prompt whose materialized messages contain the prefix.
+    pub base_session_prompt_id: SessionPromptId,
+    /// Number of leading messages to copy from the base prompt.
+    pub message_count: usize,
+}
+
 /// The harness persisted a user prompt and assigned it an ID.
 /// Also carries the assembled conversation context for the agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1824,7 +1833,14 @@ pub struct SessionPromptCreated {
     pub session_prompt_id: SessionPromptId,
     pub session_id: SessionId,
     pub system_prompt: String,
+    /// Conversation messages, or only the suffix when
+    /// [`Self::message_prefix`] is set.
     pub messages: Vec<ConversationMessage>,
+    /// Optional reference to leading messages from an earlier prompt.
+    /// When set, handlers materialize the full message list as:
+    /// `base.messages[..message_count] + messages`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_prefix: Option<PromptMessagePrefix>,
     pub tools: Vec<ToolDefinition>,
     /// Currently selected model as `"provider/model_id"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

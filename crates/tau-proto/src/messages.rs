@@ -243,6 +243,21 @@ pub struct InterceptReply {
     pub action: InterceptAction,
 }
 
+/// Request a materialized full `session.prompt_created` payload by id.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionPromptCreated {
+    pub request_id: String,
+    pub session_prompt_id: crate::SessionPromptId,
+}
+
+/// Response to [`GetSessionPromptCreated`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptCreatedResult {
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<crate::SessionPromptCreated>,
+}
+
 /// Receiver → sender acknowledgement that all log events with id
 /// `<= up_to` have been processed. Cumulative — newer acks supersede
 /// older ones.
@@ -274,6 +289,8 @@ pub enum Message {
     Emit(Emit),
     InterceptRequest(InterceptRequest),
     InterceptReply(InterceptReply),
+    GetSessionPromptCreated(GetSessionPromptCreated),
+    SessionPromptCreatedResult(Box<SessionPromptCreatedResult>),
     LogEvent(LogEvent),
     Ack(Ack),
 }

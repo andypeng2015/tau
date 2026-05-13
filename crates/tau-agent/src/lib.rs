@@ -7,7 +7,7 @@ pub mod common;
 pub(crate) mod openai;
 mod responses;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -27,6 +27,37 @@ use tau_proto::{
 /// user can name in `TAU_LOG=agent=trace` to dump every prompt
 /// the harness hands the agent.
 pub const LOG_TARGET: &str = "agent";
+
+fn materialize_prompt(
+    prompt: &tau_proto::SessionPromptCreated,
+    snapshots: &HashMap<tau_proto::SessionPromptId, tau_proto::SessionPromptCreated>,
+) -> Result<tau_proto::SessionPromptCreated, String> {
+    let Some(prefix) = &prompt.message_prefix else {
+        return Ok(prompt.clone());
+    };
+    let base = snapshots
+        .get(&prefix.base_session_prompt_id)
+        .ok_or_else(|| {
+            format!(
+                "missing prompt prefix base {}",
+                prefix.base_session_prompt_id
+            )
+        })?;
+    if base.messages.len() < prefix.message_count {
+        return Err(format!(
+            "prompt prefix base {} has only {} messages, need {}",
+            prefix.base_session_prompt_id,
+            base.messages.len(),
+            prefix.message_count
+        ));
+    }
+    let mut materialized = prompt.clone();
+    let mut messages = base.messages[..prefix.message_count].to_vec();
+    messages.extend(prompt.messages.clone());
+    materialized.messages = messages;
+    materialized.message_prefix = None;
+    Ok(materialized)
+}
 
 /// Runs the agent on stdin/stdout.
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
@@ -112,6 +143,8 @@ where
     // a still-queued side conv that the harness has already given
     // up on.
     let mut canceled_spids: HashSet<tau_proto::SessionPromptId> = HashSet::new();
+    let mut prompt_snapshots: HashMap<tau_proto::SessionPromptId, tau_proto::SessionPromptCreated> =
+        HashMap::new();
 
     loop {
         let frame = match deferred.pop_front() {
@@ -131,6 +164,37 @@ where
             }
             Frame::Event(Event::SessionPromptCreated(prompt)) => {
                 let session_prompt_id = prompt.session_prompt_id.clone();
+
+                let prompt = match materialize_prompt(&prompt, &prompt_snapshots) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
+                            AgentResponseFinished {
+                                session_prompt_id: session_prompt_id.clone(),
+                                text: Some(error),
+                                tool_calls: Vec::new(),
+                                input_tokens: None,
+                                cached_tokens: None,
+                                output_tokens: None,
+                                thinking: None,
+                                token_usage: None,
+                                originator: prompt.originator.clone(),
+                                backend: None,
+                                response_id: None,
+                                phase: None,
+                                reasoning_items: Vec::new(),
+                                ws_pool_delta: None,
+                            },
+                        )))?;
+                        writer.flush()?;
+                        if let Some(id) = log_id {
+                            writer.write_frame(&Frame::Message(Message::Ack(Ack { up_to: id })))?;
+                            writer.flush()?;
+                        }
+                        continue;
+                    }
+                };
+                prompt_snapshots.insert(session_prompt_id.clone(), prompt.clone());
 
                 // Drop a prompt the harness asked us to cancel before
                 // we could even dequeue it. Two ways this triggers:
@@ -949,6 +1013,8 @@ where
     writer.flush()?;
 
     let mut next_call = 1_u64;
+    let mut prompt_snapshots: HashMap<tau_proto::SessionPromptId, tau_proto::SessionPromptCreated> =
+        HashMap::new();
 
     loop {
         let Some(frame) = reader.read_frame()? else {
@@ -958,6 +1024,32 @@ where
         match inner {
             Frame::Event(Event::SessionPromptCreated(prompt)) => {
                 let spid = prompt.session_prompt_id.clone();
+                let prompt = match materialize_prompt(&prompt, &prompt_snapshots) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
+                            AgentResponseFinished {
+                                session_prompt_id: spid,
+                                text: Some(error),
+                                tool_calls: Vec::new(),
+                                input_tokens: None,
+                                cached_tokens: None,
+                                output_tokens: None,
+                                thinking: None,
+                                token_usage: None,
+                                originator: prompt.originator.clone(),
+                                backend: None,
+                                response_id: None,
+                                phase: None,
+                                reasoning_items: Vec::new(),
+                                ws_pool_delta: None,
+                            },
+                        )))?;
+                        writer.flush()?;
+                        continue;
+                    }
+                };
+                prompt_snapshots.insert(spid.clone(), prompt.clone());
                 writer.write_frame(&Frame::Event(Event::AgentPromptSubmitted(
                     AgentPromptSubmitted {
                         session_prompt_id: spid.clone(),

@@ -15,7 +15,7 @@ use tau_core::{
 use tau_proto::{
     AgentResponseFinished, AgentTokenUsage, AgentToolCall, CborValue, ClientKind, Disconnect,
     Event, EventSelector, ExtensionName, Frame, HarnessContextUsageChanged, HarnessModelSelected,
-    Message, ModelId, SessionId, SessionPromptCreated, SessionPromptId,
+    Message, ModelId, PromptMessagePrefix, SessionId, SessionPromptCreated, SessionPromptId,
     SessionPromptPrewarmRequested, SessionPromptQueued, TokenUsageStats, ToolCallId,
     ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest, UiCancelPrompt,
 };
@@ -145,6 +145,11 @@ pub(crate) struct Harness {
     /// `prompt_sessions[spid]` lookups become two hops:
     /// `prompt_conversations[spid]` → `conversations[cid].session_id`.
     pub(crate) prompt_conversations: std::collections::HashMap<SessionPromptId, ConversationId>,
+    /// Materialized full `session.prompt_created` payloads by id.
+    /// Later compressed prompts reference these for their message
+    /// prefix; request/response helpers expose the same materialized
+    /// form to extensions that joined late or missed the base event.
+    pub(crate) prompt_snapshots: std::collections::HashMap<SessionPromptId, SessionPromptCreated>,
     /// All in-flight conversations keyed by `ConversationId`. The
     /// user's interactive UI thread is one fixed entry (see
     /// `default_conversation_id`); side queries from extensions spawn
@@ -419,6 +424,7 @@ impl Harness {
             next_session_prompt_id: 0,
             next_synthetic_call_id: 0,
             prompt_conversations: std::collections::HashMap::new(),
+            prompt_snapshots: std::collections::HashMap::new(),
             conversations,
             default_conversation_id,
             turn_state: TurnState::Idle,
@@ -635,6 +641,7 @@ impl Harness {
             next_session_prompt_id: 0,
             next_synthetic_call_id: 0,
             prompt_conversations: std::collections::HashMap::new(),
+            prompt_snapshots: std::collections::HashMap::new(),
             conversations,
             default_conversation_id,
             turn_state: TurnState::Idle,
@@ -929,6 +936,46 @@ impl Harness {
         self.enqueue_publish(source, event, transient, false, sync);
     }
 
+    fn materialize_session_prompt_created(
+        &self,
+        prompt: &SessionPromptCreated,
+    ) -> Option<SessionPromptCreated> {
+        let Some(prefix) = &prompt.message_prefix else {
+            return Some(prompt.clone());
+        };
+        let base = self.prompt_snapshots.get(&prefix.base_session_prompt_id)?;
+        if base.messages.len() < prefix.message_count {
+            return None;
+        }
+        let mut materialized = prompt.clone();
+        let mut messages = base.messages[..prefix.message_count].to_vec();
+        messages.extend(prompt.messages.clone());
+        materialized.messages = messages;
+        materialized.message_prefix = None;
+        Some(materialized)
+    }
+
+    fn note_session_prompt_created(&mut self, prompt: &SessionPromptCreated) {
+        let Some(materialized) = self.materialize_session_prompt_created(prompt) else {
+            tracing::warn!(
+                target: "tau_harness",
+                session_prompt_id = %prompt.session_prompt_id,
+                "could not materialize committed session.prompt_created"
+            );
+            return;
+        };
+        self.prompt_snapshots
+            .insert(materialized.session_prompt_id.clone(), materialized.clone());
+        if let Some(cid) = self
+            .prompt_conversations
+            .get(&materialized.session_prompt_id)
+            .cloned()
+            && let Some(conv) = self.conversations.get_mut(&cid)
+        {
+            conv.last_prompt_id = Some(materialized.session_prompt_id);
+        }
+    }
+
     /// Final commit: persist (when applicable), append to the event
     /// log, and broadcast on the bus. Does not consult interception
     /// state — the caller is responsible for getting here only when
@@ -982,6 +1029,9 @@ impl Harness {
         }
         let folded_node_id =
             self.persist_session_event(source, &event, transient, parent_for_fold, recorded_at);
+        if let Event::SessionPromptCreated(prompt) = &event {
+            self.note_session_prompt_created(prompt);
+        }
         if let Some(sync) = sync_head_for
             && let Some(node_id) = folded_node_id
             && let Some(c) = self.conversations.get_mut(&sync.cid)
@@ -1326,6 +1376,31 @@ impl Harness {
         }
     }
 
+    fn send_session_prompt_created_result(
+        &mut self,
+        connection_id: &str,
+        request: tau_proto::GetSessionPromptCreated,
+    ) {
+        let prompt = self
+            .prompt_snapshots
+            .get(&request.session_prompt_id)
+            .cloned()
+            .or_else(|| {
+                self.read_session_prompt_created(&request.session_prompt_id)
+                    .ok()
+            });
+        let _ = self.bus.send_to(
+            connection_id,
+            None,
+            Frame::Message(Message::SessionPromptCreatedResult(Box::new(
+                tau_proto::SessionPromptCreatedResult {
+                    request_id: request.request_id,
+                    prompt,
+                },
+            ))),
+        );
+    }
+
     fn handle_extension_message(
         &mut self,
         source_id: &str,
@@ -1384,11 +1459,15 @@ impl Harness {
             Message::InterceptReply(reply) => {
                 self.handle_intercept_reply(source_id, reply);
             }
+            Message::GetSessionPromptCreated(request) => {
+                self.send_session_prompt_created_result(source_id, request);
+            }
             // Messages sent by the harness only — extensions shouldn't
             // round-trip these. Ignore silently.
             Message::Configure(_)
             | Message::Disconnect(_)
             | Message::InterceptRequest(_)
+            | Message::SessionPromptCreatedResult(_)
             | Message::LogEvent(_) => {}
         }
         Ok(())
@@ -1606,6 +1685,10 @@ impl Harness {
                 }
             }
             Message::Disconnect(_) => Ok(false),
+            Message::GetSessionPromptCreated(request) => {
+                self.send_session_prompt_created_result(client_id, request);
+                Ok(true)
+            }
             // Other messages from clients are ignored (Configure, Ack,
             // LogEvent, InterceptRequest, InterceptReply, Emit,
             // ConfigError, Intercept).
@@ -1616,6 +1699,7 @@ impl Harness {
             | Message::InterceptRequest(_)
             | Message::InterceptReply(_)
             | Message::Ready(_)
+            | Message::SessionPromptCreatedResult(_)
             | Message::LogEvent(_)
             | Message::Emit(_) => Ok(true),
         }
@@ -3206,11 +3290,34 @@ impl Harness {
         // racing the response.
         self.prompt_fingerprints
             .insert(session_prompt_id.clone(), request_fingerprint);
+        let (messages, message_prefix) = self
+            .conversations
+            .get(cid)
+            .and_then(|c| c.last_prompt_id.as_ref())
+            .and_then(|base_id| {
+                self.prompt_snapshots
+                    .get(base_id)
+                    .map(|base| (base_id, base))
+            })
+            .and_then(|(base_id, base)| {
+                messages.starts_with(&base.messages).then(|| {
+                    let prefix_len = base.messages.len();
+                    (
+                        messages[prefix_len..].to_vec(),
+                        Some(PromptMessagePrefix {
+                            base_session_prompt_id: base_id.clone(),
+                            message_count: prefix_len,
+                        }),
+                    )
+                })
+            })
+            .unwrap_or((messages, None));
         let event = Event::SessionPromptCreated(SessionPromptCreated {
             session_prompt_id: session_prompt_id.clone(),
             session_id,
             system_prompt,
             messages,
+            message_prefix,
             tools,
             model,
             model_params: self.selected_params,
@@ -4077,15 +4184,41 @@ impl Harness {
         prompt_id: &SessionPromptId,
     ) -> Result<SessionPromptCreated, HarnessError> {
         let mut cursor = 0;
+        let mut snapshots = self.prompt_snapshots.clone();
         loop {
             let entry = self.event_log.get_next_from(cursor).ok_or_else(|| {
                 HarnessError::Participant("prompt event missing from log".to_owned())
             })?;
             cursor = entry.seq + 1;
-            if let Event::SessionPromptCreated(prompt) = entry.event
-                && &prompt.session_prompt_id == prompt_id
-            {
-                return Ok(prompt);
+            if let Event::SessionPromptCreated(prompt) = entry.event {
+                let materialized = match &prompt.message_prefix {
+                    Some(prefix) => {
+                        let base =
+                            snapshots
+                                .get(&prefix.base_session_prompt_id)
+                                .ok_or_else(|| {
+                                    HarnessError::Participant(
+                                        "prompt prefix base missing".to_owned(),
+                                    )
+                                })?;
+                        if base.messages.len() < prefix.message_count {
+                            return Err(HarnessError::Participant(
+                                "prompt prefix base too short".to_owned(),
+                            ));
+                        }
+                        let mut materialized = prompt.clone();
+                        let mut messages = base.messages[..prefix.message_count].to_vec();
+                        messages.extend(prompt.messages.clone());
+                        materialized.messages = messages;
+                        materialized.message_prefix = None;
+                        materialized
+                    }
+                    None => prompt.clone(),
+                };
+                snapshots.insert(materialized.session_prompt_id.clone(), materialized.clone());
+                if &materialized.session_prompt_id == prompt_id {
+                    return Ok(materialized);
+                }
             }
         }
     }
