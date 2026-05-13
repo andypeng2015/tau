@@ -83,6 +83,7 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
         response_id: None,
         phase: None,
         reasoning_items: Vec::new(),
+        ws_pool_delta: None,
     })
     .expect("main response");
 

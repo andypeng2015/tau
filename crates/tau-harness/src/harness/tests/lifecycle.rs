@@ -262,6 +262,7 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
         response_id: None,
         phase: None,
         reasoning_items: Vec::new(),
+        ws_pool_delta: None,
     };
 
     h.handle_agent_response_finished(response)
@@ -368,6 +369,7 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
         response_id: None,
         phase: None,
         reasoning_items: Vec::new(),
+        ws_pool_delta: None,
     };
 
     h.handle_agent_response_finished(response)

@@ -94,6 +94,7 @@ fn representative_events() -> Vec<Event> {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }),
         Event::ExtensionStarting(ExtensionStarting {
             instance_id: 1.into(),

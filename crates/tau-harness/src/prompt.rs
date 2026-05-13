@@ -428,6 +428,7 @@ mod tests {
                 response_id: None,
                 phase: Some(tau_proto::MessagePhase::Commentary),
                 reasoning_items: Vec::new(),
+                ws_pool_delta: None,
             },
         ));
 
@@ -477,6 +478,7 @@ mod tests {
                 response_id: None,
                 phase: None,
                 reasoning_items: vec![blob.clone()],
+                ws_pool_delta: None,
             },
         ));
 
@@ -537,6 +539,7 @@ mod tests {
                 response_id: None,
                 phase: None,
                 reasoning_items: vec![blob.clone()],
+                ws_pool_delta: None,
             },
         ));
 

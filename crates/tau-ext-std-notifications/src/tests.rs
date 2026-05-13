@@ -156,6 +156,7 @@ fn emits_start_and_end_user_var_in_order() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     // Explicit disconnect so the loop exits without waiting on
@@ -230,6 +231,7 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
@@ -285,6 +287,7 @@ fn idle_timeout_requests_summary_then_falls_back() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -392,6 +395,7 @@ fn summary_result_populates_notification_body() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -479,6 +483,7 @@ fn prompt_draft_extends_idle_deadline() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -577,6 +582,7 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -688,6 +694,7 @@ fn idle_command_runs_with_title_body_and_env() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.flush().expect("flush");
@@ -797,6 +804,7 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer
@@ -880,6 +888,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
 
@@ -924,6 +933,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
 
@@ -944,6 +954,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
@@ -1012,6 +1023,7 @@ fn duplicate_ui_prompt_submitted_during_same_turn_emits_one_start_sound() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         }))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");

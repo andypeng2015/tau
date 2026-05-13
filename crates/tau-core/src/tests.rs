@@ -59,6 +59,7 @@ fn store_agent_message(store: &mut SessionStore, session_id: &str, text: &str) -
                 response_id: None,
                 phase: None,
                 reasoning_items: Vec::new(),
+                ws_pool_delta: None,
             }),
         )
         .expect("append session event");
@@ -136,6 +137,7 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
                 response_id: None,
                 phase: None,
                 reasoning_items: Vec::new(),
+                ws_pool_delta: None,
             })),
         )
         .expect("directed route should succeed");
@@ -198,6 +200,7 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta: None,
         },
     )));
     assert_eq!(second_report.delivered_to, vec![agent_id.clone()]);
@@ -541,6 +544,7 @@ fn session_tree_captures_phase_from_agent_response_finished() {
         response_id: None,
         phase: Some(MessagePhase::Commentary),
         reasoning_items: Vec::new(),
+        ws_pool_delta: None,
     }));
 
     let last = tree

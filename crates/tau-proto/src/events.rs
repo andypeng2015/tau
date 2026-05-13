@@ -1945,6 +1945,43 @@ pub struct AgentResponseFinished {
     /// chain — same role as Pi's `thinkingSignature` blob.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_items: Vec<String>,
+    /// Per-turn delta of the agent's Codex WS pool counters. `Some(_)`
+    /// only for Responses-backend turns where the WS path was
+    /// attempted (i.e. `cfg.supports_websocket` and the per-session
+    /// sticky-disable flag was off). `None` for Chat Completions and
+    /// for Responses sessions that have been permanently flipped to
+    /// HTTP+SSE. Lets offline analysis attribute a low
+    /// `cached_tokens` to a chain-strip event (the Codex chain cache
+    /// is connection-local; a fresh socket or a silent reconnect
+    /// drops the in-request `previous_response_id`, collapsing
+    /// `cached_tokens` to the static system+tools baseline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_pool_delta: Option<WsPoolDelta>,
+}
+
+/// Per-turn delta of the agent's Codex WebSocket pool counters. All
+/// three counters are monotonic-since-process-start in the agent;
+/// the harness records the *delta* incurred by a single turn so
+/// offline analysis can attribute cache misses to WS-layer events.
+///
+/// A non-zero `silent_reconnects` or `chain_strips_on_fresh` on a
+/// turn is the definitive signature of why that turn's
+/// `previous_response_id` was stripped on the wire — and therefore
+/// why its `cached_tokens` dropped to the static system+tools
+/// baseline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WsPoolDelta {
+    /// Fresh sockets opened this turn. Counts every reason: cold
+    /// pool, server-age purge, bearer rotation, silent-reconnect
+    /// recovery.
+    pub upgrades: u32,
+    /// Cached sockets that died mid-turn and triggered the silent
+    /// reopen-and-replay-without-chain-id recovery this turn.
+    pub silent_reconnects: u32,
+    /// Times the fresh-socket path stripped `previous_response_id`
+    /// from the outgoing request this turn because the new socket's
+    /// chain cache was empty by definition.
+    pub chain_strips_on_fresh: u32,
 }
 
 /// Identifies the LLM backend that handled an

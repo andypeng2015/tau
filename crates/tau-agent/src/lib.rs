@@ -191,6 +191,7 @@ where
                                 response_id: None,
                                 phase: None,
                                 reasoning_items: Vec::new(),
+                                ws_pool_delta: None,
                             },
                         )))?;
                         writer.flush()?;
@@ -560,6 +561,12 @@ fn handle_prompt<W: Write>(
     // surviving path (the WS attempt that succeeded, or the HTTP
     // fallback if WS bounced).
     let mut transport_taken = tau_proto::AgentBackendTransport::HttpSse;
+    // Snapshot the WS pool counters before the turn so we can emit a
+    // per-turn delta on `AgentResponseFinished`. Skipped entirely for
+    // non-Responses backends (Chat Completions never touches the
+    // pool) so an offline reader can tell "pool wasn't applicable"
+    // from "pool was applicable but no event happened."
+    let ws_pool_before = matches!(backend, BackendConfig::Responses(_)).then(|| ws_pool.stats());
     let result = with_llm_retry(
         session_prompt_id,
         &originator,
@@ -588,12 +595,14 @@ fn handle_prompt<W: Write>(
         },
     );
     let backend_descriptor = backend.descriptor(transport_taken);
+    let ws_pool_delta = ws_pool_before.map(|before| compute_ws_pool_delta(before, ws_pool.stats()));
     match result {
         Ok(state) => finish_stream(
             session_prompt_id,
             &prompt.originator,
             &backend_descriptor,
             state,
+            ws_pool_delta,
             writer,
         )?,
         Err(error) => finish_error(
@@ -601,10 +610,28 @@ fn handle_prompt<W: Write>(
             &prompt.originator,
             &backend_descriptor,
             error,
+            ws_pool_delta,
             writer,
         )?,
     }
     Ok(())
+}
+
+/// Subtract `before` from `after` (saturating, clamped to `u32`) so
+/// the wire payload stays tight. The pool counters are monotonic so
+/// the saturating-sub fence is purely defensive against a counter
+/// reset (which shouldn't happen — the pool lives for the agent
+/// process lifetime). u32 fits any realistic per-turn count.
+fn compute_ws_pool_delta(
+    before: responses::pool::WsPoolStats,
+    after: responses::pool::WsPoolStats,
+) -> tau_proto::WsPoolDelta {
+    let sub = |a: u64, b: u64| u32::try_from(a.saturating_sub(b)).unwrap_or(u32::MAX);
+    tau_proto::WsPoolDelta {
+        upgrades: sub(after.upgrades, before.upgrades),
+        silent_reconnects: sub(after.silent_reconnects, before.silent_reconnects),
+        chain_strips_on_fresh: sub(after.chain_strips_on_fresh, before.chain_strips_on_fresh),
+    }
 }
 
 fn finish_stream<W: Write>(
@@ -612,6 +639,7 @@ fn finish_stream<W: Write>(
     originator: &tau_proto::PromptOriginator,
     backend: &tau_proto::AgentBackend,
     state: common::StreamState,
+    ws_pool_delta: Option<tau_proto::WsPoolDelta>,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
     let text_empty = state.text.is_empty();
@@ -662,6 +690,7 @@ fn finish_stream<W: Write>(
             response_id,
             phase,
             reasoning_items,
+            ws_pool_delta,
         },
     )))?;
     writer.flush()?;
@@ -673,6 +702,7 @@ fn finish_error<W: Write>(
     originator: &tau_proto::PromptOriginator,
     backend: &tau_proto::AgentBackend,
     error: common::LlmError,
+    ws_pool_delta: Option<tau_proto::WsPoolDelta>,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
     writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
@@ -690,6 +720,7 @@ fn finish_error<W: Write>(
             response_id: None,
             phase: None,
             reasoning_items: Vec::new(),
+            ws_pool_delta,
         },
     )))?;
     writer.flush()?;
@@ -780,6 +811,7 @@ where
                             response_id: None,
                             phase: None,
                             reasoning_items: Vec::new(),
+                            ws_pool_delta: None,
                         },
                     )))?;
                 } else {
@@ -845,6 +877,7 @@ where
                             response_id: None,
                             phase: None,
                             reasoning_items: Vec::new(),
+                            ws_pool_delta: None,
                         },
                     )))?;
                 }
