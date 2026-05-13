@@ -611,7 +611,7 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
         suffixes.push(tool_suffix("…".to_owned(), ToolStatus::Progress));
     }
     ToolCallDisplay {
-        tool_name: "skills:".to_owned(),
+        tool_name: "tools".to_owned(),
         args: format!("{}/{}", summary.completed, summary.total),
         suffixes,
     }

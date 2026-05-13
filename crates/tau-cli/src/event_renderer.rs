@@ -97,9 +97,12 @@ pub(crate) struct EventRenderer {
     show_token_stats: bool,
     /// Tool block visibility mode.
     show_tools: tau_config::settings::ShowTools,
-    /// One summary block per assistant tool batch. Hidden when
-    /// `show_tools` is `On`, rendered when it is `Collapse`.
+    /// Tool summary blocks keyed by their block id. Hidden when
+    /// `show_tools` is `On`, rendered in summarize modes.
     tool_summaries: HashMap<tau_cli_term::BlockId, ToolSummaryDisplay>,
+    /// In `summarize-prompt` mode, the summary block for each active
+    /// session prompt. Reused across multiple assistant tool turns.
+    prompt_tool_summaries: HashMap<String, tau_cli_term::BlockId>,
     /// Snapshot of persisted CLI settings, kept in sync with the four
     /// `show_*` fields above by [`Self::save_cli_state`]. The input
     /// loop captures this handle in the `/set` name-completion
@@ -295,6 +298,7 @@ impl EventRenderer {
             show_token_stats: state.show_token_stats,
             show_tools: state.show_tools,
             tool_summaries: HashMap::new(),
+            prompt_tool_summaries: HashMap::new(),
             cli_state_mirror,
             thinking_history: Vec::new(),
             token_stats_history: Vec::new(),
@@ -523,7 +527,11 @@ impl EventRenderer {
     }
 
     fn render_summary_block(&self, summary: &ToolSummaryDisplay) -> tau_cli_term::StyledBlock {
-        if matches!(self.show_tools, tau_config::settings::ShowTools::Collapse) {
+        if matches!(
+            self.show_tools,
+            tau_config::settings::ShowTools::SummarizeTurn
+                | tau_config::settings::ShowTools::SummarizePrompt
+        ) {
             render_tool_block(&self.theme, &build_tool_summary_display(summary))
         } else {
             Self::empty_block()
@@ -577,6 +585,11 @@ impl EventRenderer {
             let new_block_id = self
                 .handle
                 .print_output(self.render_summary_block(&summary));
+            for prompt_block_id in self.prompt_tool_summaries.values_mut() {
+                if *prompt_block_id == block_id {
+                    *prompt_block_id = new_block_id;
+                }
+            }
             self.tool_summaries.insert(new_block_id, summary);
         } else {
             self.update_tool_summary_block(block_id);
@@ -640,6 +653,7 @@ impl EventRenderer {
         self.token_stats_history.clear();
         self.tool_history.clear();
         self.tool_summaries.clear();
+        self.prompt_tool_summaries.clear();
         // Model selection and effort are harness-global, not
         // session-scoped. `/new` only causes a SessionStarted event;
         // the harness does not re-emit HarnessModelSelected for the
@@ -1001,7 +1015,32 @@ impl EventRenderer {
                 // a flood of nested invocations.
                 if finished.originator.is_user() {
                     let summary_block_id = if finished.tool_calls.is_empty() {
+                        self.prompt_tool_summaries.remove(spid);
                         None
+                    } else if matches!(
+                        self.show_tools,
+                        tau_config::settings::ShowTools::SummarizePrompt
+                    ) {
+                        let total_delta = finished.tool_calls.len() as u64;
+                        let id = if let Some(id) = self.prompt_tool_summaries.get(spid).copied() {
+                            if let Some(summary) = self.tool_summaries.get_mut(&id) {
+                                summary.total += total_delta;
+                            }
+                            self.update_tool_summary_block(id);
+                            id
+                        } else {
+                            let summary = ToolSummaryDisplay {
+                                total: total_delta,
+                                ..ToolSummaryDisplay::default()
+                            };
+                            let block = self.render_summary_block(&summary);
+                            let id = self.handle.new_block(block);
+                            self.handle.push_above_active(id);
+                            self.tool_summaries.insert(id, summary);
+                            self.prompt_tool_summaries.insert(spid.to_owned(), id);
+                            id
+                        };
+                        Some(id)
                     } else {
                         let summary = ToolSummaryDisplay {
                             total: finished.tool_calls.len() as u64,

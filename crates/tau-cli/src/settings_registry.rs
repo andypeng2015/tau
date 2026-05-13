@@ -51,8 +51,12 @@ const SHOW_TOOLS_VALUES: &[SettingValue] = &[
         description: "hide tool blocks",
     },
     SettingValue {
-        value: "collapse",
-        description: "show one summary per tool batch",
+        value: "summarize-turn",
+        description: "show one summary per assistant tool turn",
+    },
+    SettingValue {
+        value: "summarize-prompt",
+        description: "show one summary per user prompt",
     },
     SettingValue {
         value: "on",

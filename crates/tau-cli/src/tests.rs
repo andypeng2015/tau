@@ -1042,14 +1042,14 @@ fn running_tool_call_shows_ellipsis_until_result() {
 }
 
 #[test]
-fn show_tools_collapse_summarizes_tool_batch() {
+fn show_tools_summarize_turn_summarizes_tool_batch() {
     let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
         handle.clone(),
         tau_cli_term::CompletionData::new(),
         tau_themes::Theme::builtin(),
     );
-    renderer.apply_setting("show-tools", "collapse");
+    renderer.apply_setting("show-tools", "summarize-turn");
 
     renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
         session_prompt_id: "sp-0".into(),
@@ -1091,7 +1091,7 @@ fn show_tools_collapse_summarizes_tool_batch() {
         ws_pool_delta: None,
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "skills: 0/2 …"));
+    assert!(vt.screen_contains(80, "tools 0/2 …"));
     assert!(!vt.screen_contains(80, "read src/main.rs"));
 
     renderer.handle(&Event::ToolResult(ToolResult {
@@ -1125,7 +1125,7 @@ fn show_tools_collapse_summarizes_tool_batch() {
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "skills: 2/2 (1L, 13B) ok: 1 err: 1"));
+    assert!(vt.screen_contains(80, "tools 2/2 (1L, 13B) ok: 1 err: 1"));
     assert!(!vt.screen_contains(80, "read src/main.rs (1L, 13B) ok"));
     assert!(!vt.screen_contains(80, "grep foo err: nope"));
 }
@@ -1169,7 +1169,7 @@ fn show_tools_off_hides_tool_blocks() {
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
-    assert!(!vt.screen_contains(80, "skills:"));
+    assert!(!vt.screen_contains(80, "tools"));
     assert!(!vt.screen_contains(80, "read"));
 }
 
