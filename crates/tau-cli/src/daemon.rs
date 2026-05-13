@@ -100,8 +100,8 @@ pub(crate) fn resolve_run_session_id(
 }
 
 fn session_exists(id: &str) -> Result<bool, CliError> {
-    let state_dir = tau_session_inspect::default_state_dir();
-    let metas = tau_harness::list_session_metas(&state_dir)?;
+    let sessions_dir = tau_session_inspect::default_sessions_dir();
+    let metas = tau_harness::list_session_metas(&sessions_dir)?;
     Ok(metas
         .into_iter()
         .any(|(session_id, _)| session_id.as_str() == id))
@@ -116,8 +116,8 @@ pub(crate) fn mint_session_id(cwd: &Path) -> String {
 }
 
 fn pick_resume_session(cwd: &Path) -> Result<Option<String>, CliError> {
-    let state_dir = tau_session_inspect::default_state_dir();
-    let mut metas = tau_harness::list_session_metas(&state_dir)?;
+    let sessions_dir = tau_session_inspect::default_sessions_dir();
+    let mut metas = tau_harness::list_session_metas(&sessions_dir)?;
     metas.retain(|(_, meta)| meta.cwd.as_deref() == Some(cwd));
     metas.sort_by_key(|(_, meta)| std::cmp::Reverse(meta.last_touched));
     metas.truncate(RESUME_PICKER_LIMIT);
@@ -131,8 +131,8 @@ fn pick_resume_session(cwd: &Path) -> Result<Option<String>, CliError> {
     let rows = metas
         .into_iter()
         .map(|(sid, meta)| {
-            let locked =
-                tau_harness::session_is_locked(&state_dir, sid.as_str()).unwrap_or_else(|error| {
+            let locked = tau_harness::session_is_locked(&sessions_dir, sid.as_str())
+                .unwrap_or_else(|error| {
                     tracing::warn!(
                         target: "tau_cli::startup",
                         session_id = sid.as_str(),

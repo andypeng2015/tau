@@ -130,10 +130,12 @@ impl Error for SessionStoreError {
 /// Append-only persistence for per-session protocol events, with a
 /// derived [`SessionTree`] cached in memory.
 ///
-/// Each session lives in its own directory under `state_dir`:
+/// Each session lives in its own directory under `sessions_dir` (the
+/// per-session subdirectory of `state_dir`, typically
+/// `<state_dir>/sessions/`):
 ///
 /// ```text
-/// <state_dir>/<session_id>/
+/// <sessions_dir>/<session_id>/
 ///   events.cbor   # length-prefixed PersistedSessionEvent stream — the source of truth
 ///   meta.json     # SessionMeta sidecar (cwd, created_at, last_touched)
 ///   lock          # exclusively flock'd while this store has the session loaded for write
@@ -159,7 +161,7 @@ pub struct AppendOutcome {
 
 #[derive(Debug)]
 pub struct SessionStore {
-    state_dir: PathBuf,
+    sessions_dir: PathBuf,
     sessions: HashMap<SessionId, SessionTree>,
     /// Held flocks per session, acquired lazily on first write. Released
     /// when this store is dropped (the OS releases the flock when the
@@ -168,7 +170,7 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// Opens the session store rooted at `state_dir`, eagerly loading
+    /// Opens the session store rooted at `sessions_dir`, eagerly loading
     /// every session subdirectory found there.
     ///
     /// Cost is O(total bytes across every session's `events.cbor`),
@@ -176,15 +178,15 @@ impl SessionStore {
     /// `tau session list`) that genuinely need every tree resident in
     /// memory. Daemon startup should use [`Self::open_lazy`] and
     /// load individual trees on demand via [`Self::load_session`].
-    pub fn open(state_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
-        let state_dir = state_dir.into();
-        let mut store = Self::open_lazy(state_dir.clone())?;
-        for entry in fs::read_dir(&state_dir).map_err(|source| SessionStoreError::Read {
-            path: state_dir.clone(),
+    pub fn open(sessions_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
+        let sessions_dir = sessions_dir.into();
+        let mut store = Self::open_lazy(sessions_dir.clone())?;
+        for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionStoreError::Read {
+            path: sessions_dir.clone(),
             source,
         })? {
             let entry = entry.map_err(|source| SessionStoreError::Read {
-                path: state_dir.clone(),
+                path: sessions_dir.clone(),
                 source,
             })?;
             let path = entry.path();
@@ -204,20 +206,21 @@ impl SessionStore {
         Ok(store)
     }
 
-    /// Opens the session store rooted at `state_dir` without loading
-    /// session event logs. Individual sessions are loaded on write;
-    /// callers that need a pre-existing tree should use [`Self::open`].
-    pub fn open_lazy(state_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
-        let state_dir = state_dir.into();
-        fs::create_dir_all(&state_dir).map_err(|source| {
+    /// Opens the session store rooted at `sessions_dir` without
+    /// loading session event logs. Individual sessions are loaded on
+    /// write; callers that need a pre-existing tree should use
+    /// [`Self::open`].
+    pub fn open_lazy(sessions_dir: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
+        let sessions_dir = sessions_dir.into();
+        fs::create_dir_all(&sessions_dir).map_err(|source| {
             SessionStoreError::CreateParentDirectory {
-                path: state_dir.clone(),
+                path: sessions_dir.clone(),
                 source,
             }
         })?;
 
         Ok(Self {
-            state_dir,
+            sessions_dir,
             sessions: HashMap::new(),
             locks: HashMap::new(),
         })
@@ -241,7 +244,7 @@ impl SessionStore {
     /// Returns the path to one session's directory (created lazily on
     /// write).
     fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.state_dir.join(session_id)
+        self.sessions_dir.join(session_id)
     }
 
     /// Acquires an exclusive flock on the session's `lock` file if not
@@ -396,10 +399,11 @@ impl SessionStore {
         load_session_events(&path)
     }
 
-    /// Returns the state dir this store is rooted at.
+    /// Returns the per-session storage root this store is rooted at
+    /// (typically `<state_dir>/sessions/`).
     #[must_use]
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+    pub fn sessions_dir(&self) -> &Path {
+        &self.sessions_dir
     }
 
     /// Returns one session tree if it exists, loading a persisted log
@@ -447,7 +451,7 @@ impl SessionStore {
     }
 }
 
-/// Lists session metadata across `state_dir` without taking any flocks.
+/// Lists session metadata across `sessions_dir` without taking any flocks.
 ///
 /// Sessions whose `meta.json` is missing are skipped silently (the
 /// session may have just been created and not yet touched). A
@@ -455,12 +459,12 @@ impl SessionStore {
 /// emits a warning to stderr so a corrupt sidecar does not become
 /// invisible to operators. The goal is best-effort discovery for
 /// `-r` resumption, not strict listing.
-pub fn list_session_metas(state_dir: &Path) -> io::Result<Vec<(SessionId, SessionMeta)>> {
+pub fn list_session_metas(sessions_dir: &Path) -> io::Result<Vec<(SessionId, SessionMeta)>> {
     let mut out = Vec::new();
-    if !state_dir.exists() {
+    if !sessions_dir.exists() {
         return Ok(out);
     }
-    for entry in fs::read_dir(state_dir)? {
+    for entry in fs::read_dir(sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
@@ -487,8 +491,8 @@ pub fn list_session_metas(state_dir: &Path) -> io::Result<Vec<(SessionId, Sessio
 }
 
 /// Best-effort check whether a session's lock is currently held.
-pub fn session_is_locked(state_dir: &Path, session_id: &str) -> io::Result<bool> {
-    let lock_path = state_dir.join(session_id).join("lock");
+pub fn session_is_locked(sessions_dir: &Path, session_id: &str) -> io::Result<bool> {
+    let lock_path = sessions_dir.join(session_id).join("lock");
     let file = match OpenOptions::new().read(true).write(true).open(&lock_path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),

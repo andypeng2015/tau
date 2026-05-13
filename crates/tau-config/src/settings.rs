@@ -672,6 +672,23 @@ pub fn state_dir() -> Option<PathBuf> {
         .map(|d| d.join("tau"))
 }
 
+/// Returns the per-session storage root inside `state_dir`. Each
+/// session lives in its own directory at
+/// `<state_dir>/sessions/<session_id>/`; grouping them under a
+/// dedicated subdirectory keeps the state dir's top level reserved
+/// for tau-wide scalar state (`policy.cbor`, `cli.json`, …).
+#[must_use]
+pub fn sessions_dir_of(state_dir: &Path) -> PathBuf {
+    state_dir.join("sessions")
+}
+
+/// Returns the default tau per-session storage root
+/// (`~/.local/state/tau/sessions`).
+#[must_use]
+pub fn sessions_dir() -> Option<PathBuf> {
+    state_dir().map(|d| sessions_dir_of(&d))
+}
+
 /// Overridable directory layout for tau. Use the defaults (`Self::default()`)
 /// for normal user runs or construct explicit paths for tests and custom
 /// installations.

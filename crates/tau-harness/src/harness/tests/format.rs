@@ -94,10 +94,11 @@ fn session_and_policy_lines_are_printable() {
     let _ = send_daemon_message_with_trace(&sock, "s1", "hello").expect("ok");
     server.join().expect("join").expect("clean exit");
 
-    let sl = session_lines(&sp, "s1").expect("lines");
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    let sl = session_lines(&sessions_dir, "s1").expect("lines");
     assert!(sl.iter().any(|l| l.contains("user: hello")));
     assert!(sl.iter().any(|l| l.contains("tool.request echo")));
-    let sll = session_list_lines(&sp).expect("list");
+    let sll = session_list_lines(&sessions_dir).expect("list");
     assert!(sll.iter().any(|l| l.contains("s1 (5 entries)")));
     let pl = policy_lines(sp.join("policy.cbor")).expect("policy");
     assert!(pl.iter().any(|l| l.contains("socket-ui")));
@@ -107,14 +108,18 @@ fn session_and_policy_lines_are_printable() {
 fn empty_session_and_policy_views() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
-    std::fs::create_dir_all(&sp).expect("mkdir");
-    assert_eq!(session_list_lines(&sp).expect("ok"), vec!["no sessions"]);
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    std::fs::create_dir_all(&sessions_dir).expect("mkdir");
+    assert_eq!(
+        session_list_lines(&sessions_dir).expect("ok"),
+        vec!["no sessions"]
+    );
     assert_eq!(
         policy_lines(sp.join("policy.cbor")).expect("ok"),
         vec!["no policy approvals"]
     );
     assert_eq!(
-        session_lines(&sp, "x").expect("ok"),
+        session_lines(&sessions_dir, "x").expect("ok"),
         vec!["session x not found"]
     );
 }

@@ -399,7 +399,7 @@ pub struct PersistedSessionEvent {
     pub recorded_at: UnixMicros,
 }
 
-/// Per-session sidecar metadata at `<state_dir>/<session_id>/meta.json`.
+/// Per-session sidecar metadata at `<sessions_dir>/<session_id>/meta.json`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SessionMeta {
     /// Working directory at the time of session creation.

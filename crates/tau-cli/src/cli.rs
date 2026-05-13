@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use tau_session_inspect::{default_session_id, default_state_dir};
+use tau_session_inspect::{default_session_id, default_sessions_dir, default_state_dir};
 
 #[derive(Parser)]
 #[command(
@@ -56,9 +56,9 @@ pub enum Command {
 
     /// List all sessions
     SessionList {
-        /// Path to session state directory
-        #[arg(long, default_value_os_t = default_state_dir())]
-        state_dir: PathBuf,
+        /// Path to per-session storage root (`<state-dir>/sessions/`)
+        #[arg(long, default_value_os_t = default_sessions_dir())]
+        sessions_dir: PathBuf,
     },
 
     /// Show a single session's history
@@ -67,14 +67,14 @@ pub enum Command {
         #[arg(long, default_value_t = default_session_id().to_owned())]
         session_id: String,
 
-        /// Path to session state directory
-        #[arg(long, default_value_os_t = default_state_dir())]
-        state_dir: PathBuf,
+        /// Path to per-session storage root (`<state-dir>/sessions/`)
+        #[arg(long, default_value_os_t = default_sessions_dir())]
+        sessions_dir: PathBuf,
     },
 
     /// Show persisted policy approvals
     PolicyShow {
-        /// Path to session state directory (policy.cbor lives inside)
+        /// Path to tau state directory (policy.cbor lives inside)
         #[arg(long, default_value_os_t = default_state_dir())]
         state_dir: PathBuf,
     },

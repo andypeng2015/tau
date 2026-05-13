@@ -98,7 +98,7 @@ impl TestRuntime {
 
     /// Opens the session store for assertions.
     pub fn open_session_store(&self) -> Result<SessionStore, InspectError> {
-        open_session_store(&self.state_dir)
+        open_session_store(tau_config::settings::sessions_dir_of(&self.state_dir))
     }
 
     /// Opens the policy store for assertions.

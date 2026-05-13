@@ -449,6 +449,7 @@ pub fn run_harness_daemon(
     tracing::debug!(target: "tau_harness::startup", socket_path = %daemon_dir.socket_path().display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "bound daemon socket");
 
     let state_dir = tau_session_inspect::default_state_dir();
+    let sessions_dir = tau_config::settings::sessions_dir_of(&state_dir);
     let dirs = options.dirs.clone().unwrap_or_default();
     tracing::debug!(target: "tau_harness::startup", state_dir = %state_dir.display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "constructing harness");
     let mut harness = Harness::from_config(config, &state_dir, dirs, eager_session_id)?;
@@ -457,7 +458,7 @@ pub fn run_harness_daemon(
         None,
         Event::HarnessSessionDir(tau_proto::HarnessSessionDir {
             session_id: eager_session_id.to_owned().into(),
-            path: state_dir.join(eager_session_id),
+            path: sessions_dir.join(eager_session_id),
             status: options.session_status.into(),
         }),
     );

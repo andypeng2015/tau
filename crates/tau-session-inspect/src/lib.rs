@@ -59,6 +59,15 @@ pub fn default_state_dir() -> PathBuf {
     tau_config::settings::state_dir().unwrap_or_else(|| PathBuf::from(".tau").join("state"))
 }
 
+/// Returns the default per-session storage root: `default_state_dir()` joined
+/// with `sessions/`. Session subdirectories live one level deeper to keep the
+/// state-dir top level reserved for tau-wide scalar files (`policy.cbor`,
+/// `cli.json`, …).
+#[must_use]
+pub fn default_sessions_dir() -> PathBuf {
+    tau_config::settings::sessions_dir_of(&default_state_dir())
+}
+
 #[must_use]
 pub fn default_session_id() -> &'static str {
     "default"

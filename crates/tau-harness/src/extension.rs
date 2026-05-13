@@ -92,11 +92,15 @@ where
 }
 
 /// Path of the per-session, per-extension stderr log:
-/// `<state_dir>/<session_id>/extensions/<name>.log`. Stays inside the
-/// session dir so a session is self-contained (logs sit next to
+/// `<sessions_dir>/<session_id>/extensions/<name>.log`. Stays inside
+/// the session dir so a session is self-contained (logs sit next to
 /// `events.jsonl` and the session's `events.cbor`).
-pub(crate) fn extension_stderr_log_path(state_dir: &Path, session_id: &str, name: &str) -> PathBuf {
-    state_dir
+pub(crate) fn extension_stderr_log_path(
+    sessions_dir: &Path,
+    session_id: &str,
+    name: &str,
+) -> PathBuf {
+    sessions_dir
         .join(session_id)
         .join("extensions")
         .join(format!("{name}.log"))

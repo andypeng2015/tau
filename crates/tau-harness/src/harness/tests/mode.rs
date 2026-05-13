@@ -8,7 +8,8 @@ fn embedded_mode_returns_agent_response_and_persists_history() {
         .expect("should succeed")
         .response;
     assert!(!r.is_empty(), "response should not be empty: {r:?}");
-    let store = open_session_store(&sp).expect("reopen");
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    let store = open_session_store(&sessions_dir).expect("reopen");
     let branch = store.session("s1").expect("session").current_branch();
     assert!(
         branch.len() >= 2,
@@ -21,7 +22,7 @@ fn embedded_mode_returns_agent_response_and_persists_history() {
     // the raw agent frame, and a `published` line capturing the
     // enriched copy the harness committed. This is what
     // cache/cost-analysis tooling reads.
-    let jsonl = std::fs::read_to_string(sp.join("s1").join("events.jsonl"))
+    let jsonl = std::fs::read_to_string(sessions_dir.join("s1").join("events.jsonl"))
         .expect("events.jsonl should exist for session s1");
     let parsed: Vec<serde_json::Value> = jsonl
         .lines()
@@ -77,7 +78,7 @@ fn daemon_mode_accepts_later_clients() {
     assert_eq!(r2, "again", "second cycle should echo our submission");
 
     server.join().expect("join").expect("daemon clean exit");
-    let store = open_session_store(&sp).expect("reopen");
+    let store = open_session_store(tau_config::settings::sessions_dir_of(&sp)).expect("reopen");
     let branch = store.session("s1").expect("session").current_branch();
     // System AGENTS.md preamble + 2 × (user, tool.req, tool.res, agent).
     assert_eq!(

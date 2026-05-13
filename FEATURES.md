@@ -22,7 +22,7 @@ hidden `tau ext <name>` subcommands; you can replace any of them by editing
 ### Persisted event log
 
 Every protocol event in a session is appended to
-`<state_dir>/<session_id>/events.cbor` (length-prefixed CBOR stream). The
+`<state_dir>/sessions/<session_id>/events.cbor` (length-prefixed CBOR stream). The
 in-memory [`SessionTree`] is rebuilt from the log on resume, so the on-disk
 record and the live view cannot drift. Because the log is a stream of typed
 events rather than a flat transcript, sessions branch into a tree: rewinding

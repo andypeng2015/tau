@@ -6,14 +6,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tau_core::list_session_metas;
 
-pub(crate) fn spawn_session_cleanup(state_dir: PathBuf, retention: Option<Duration>) {
+pub(crate) fn spawn_session_cleanup(sessions_dir: PathBuf, retention: Option<Duration>) {
     let Some(retention) = retention else {
         return;
     };
 
     if let Err(error) = std::thread::Builder::new()
         .name("tau-session-cleanup".to_owned())
-        .spawn(move || cleanup_old_sessions(state_dir, retention))
+        .spawn(move || cleanup_old_sessions(sessions_dir, retention))
     {
         tracing::warn!(
             target: "tau_harness::session_cleanup",
@@ -23,14 +23,14 @@ pub(crate) fn spawn_session_cleanup(state_dir: PathBuf, retention: Option<Durati
     }
 }
 
-pub(crate) fn cleanup_old_sessions(state_dir: PathBuf, retention: Duration) {
+pub(crate) fn cleanup_old_sessions(sessions_dir: PathBuf, retention: Duration) {
     let cutoff = unix_now().saturating_sub(retention.as_secs());
-    let metas = match list_session_metas(&state_dir) {
+    let metas = match list_session_metas(&sessions_dir) {
         Ok(metas) => metas,
         Err(error) => {
             tracing::warn!(
                 target: "tau_harness::session_cleanup",
-                state_dir = %state_dir.display(),
+                sessions_dir = %sessions_dir.display(),
                 %error,
                 "failed to list session metadata for cleanup"
             );
@@ -43,7 +43,7 @@ pub(crate) fn cleanup_old_sessions(state_dir: PathBuf, retention: Duration) {
             continue;
         }
 
-        let path = state_dir.join(session_id.as_str());
+        let path = sessions_dir.join(session_id.as_str());
         if let Err(error) = fs::remove_dir_all(&path) {
             tracing::warn!(
                 target: "tau_harness::session_cleanup",

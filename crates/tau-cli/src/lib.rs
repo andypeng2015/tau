@@ -304,8 +304,8 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 run_chat(&session_id, attach, session_status)
             }
 
-            cli::Command::SessionList { state_dir } => {
-                for line in tau_session_inspect::session_list_lines(state_dir)? {
+            cli::Command::SessionList { sessions_dir } => {
+                for line in tau_session_inspect::session_list_lines(sessions_dir)? {
                     println!("{line}");
                 }
                 Ok(())
@@ -313,9 +313,9 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
 
             cli::Command::SessionShow {
                 session_id,
-                state_dir,
+                sessions_dir,
             } => {
-                for line in tau_session_inspect::session_lines(state_dir, &session_id)? {
+                for line in tau_session_inspect::session_lines(sessions_dir, &session_id)? {
                     println!("{line}");
                 }
                 Ok(())

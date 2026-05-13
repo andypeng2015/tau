@@ -301,6 +301,7 @@ impl Harness {
         eager_session_id: &str,
     ) -> Result<Self, HarnessError> {
         let state_dir = state_dir.into();
+        let sessions_dir = tau_config::settings::sessions_dir_of(&state_dir);
         let (tx, rx) = mpsc::channel();
         let mut bus =
             EventBus::with_subscription_policy(Box::new(DefaultSubscriptionPolicy::with_store(
@@ -310,7 +311,7 @@ impl Harness {
         // (loaded below via `store.load_session`); other sessions
         // load on first access. Avoids a startup walk over every
         // historical session dir.
-        let store = SessionStore::open_lazy(&state_dir)?;
+        let store = SessionStore::open_lazy(&sessions_dir)?;
 
         let own_pid = std::process::id();
         let mut next_iid = instance_id_factory();
@@ -360,7 +361,7 @@ impl Harness {
             models_error,
         } = load_model_list(&dirs);
         crate::session_cleanup::spawn_session_cleanup(
-            state_dir.clone(),
+            sessions_dir.clone(),
             harness_settings.session_retention(),
         );
         let selected_params = selected_model
@@ -441,10 +442,10 @@ impl Harness {
         // Debug log lives next to the eager-init session's events file
         // so the session dir stays self-contained: `events.cbor` +
         // `events.jsonl` + `meta.json` + `lock`.
-        let _ = harness.enable_debug_log(&state_dir.join(eager_session_id))?;
+        let _ = harness.enable_debug_log(&sessions_dir.join(eager_session_id))?;
         // Record cwd in meta.json so `-r` (resume most recent for this
         // cwd) can find this session even before it has any log entries.
-        // Also acquires the flock on `<state_dir>/<eager_session_id>/lock`.
+        // Also acquires the flock on `<sessions_dir>/<eager_session_id>/lock`.
         harness
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
@@ -503,6 +504,7 @@ impl Harness {
         let startup_started_at = Instant::now();
         tracing::debug!(target: "tau_harness::startup", eager_session_id, "constructing harness from config");
         let state_dir = state_dir.into();
+        let sessions_dir = tau_config::settings::sessions_dir_of(&state_dir);
         let (tx, rx) = mpsc::channel();
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening policy store");
         let policy_store = PolicyStore::open(policy_store_path_from(&state_dir))?;
@@ -511,7 +513,7 @@ impl Harness {
             DefaultSubscriptionPolicy::with_store(policy_store),
         ));
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening session store");
-        let store = SessionStore::open_lazy(&state_dir)?;
+        let store = SessionStore::open_lazy(&sessions_dir)?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session store opened");
 
         let mut extensions = Vec::new();
@@ -526,7 +528,7 @@ impl Harness {
             };
 
             let log_path =
-                extension_stderr_log_path(&state_dir, eager_session_id, &ext_config.name);
+                extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name);
             let (conn_id, child_pid) =
                 spawn_supervised(ext_config, kind.clone(), Some(log_path), &mut bus, &tx)?;
             tracing::debug!(target: "tau_harness::startup", extension = %ext_config.name, pid = child_pid, elapsed_ms = startup_started_at.elapsed().as_millis(), "extension spawned");
@@ -561,7 +563,7 @@ impl Harness {
         } = load_model_list(&dirs);
         tracing::debug!(target: "tau_harness::startup", selected_model = ?selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "model list loaded");
         crate::session_cleanup::spawn_session_cleanup(
-            state_dir.clone(),
+            sessions_dir.clone(),
             harness_settings.session_retention(),
         );
         let selected_params = selected_model
@@ -639,11 +641,11 @@ impl Harness {
             dirs,
         };
 
-        let _ = harness.enable_debug_log(&state_dir.join(eager_session_id))?;
+        let _ = harness.enable_debug_log(&sessions_dir.join(eager_session_id))?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "debug event log enabled");
         // Record cwd in meta.json so `-r` (resume most recent for this
         // cwd) can find this session even before it has any log entries.
-        // Also acquires the flock on `<state_dir>/<eager_session_id>/lock`.
+        // Also acquires the flock on `<sessions_dir>/<eager_session_id>/lock`.
         harness
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
@@ -2024,7 +2026,7 @@ impl Harness {
         );
 
         let log_path = extension_stderr_log_path(
-            &self.dirs_state_dir(),
+            &self.sessions_dir(),
             self.current_session_id.as_str(),
             &config.name,
         );
@@ -2665,7 +2667,7 @@ impl Harness {
 
         // Send the new debug log to the new session's dir, so each
         // session is self-contained.
-        let _ = self.enable_debug_log(&self.dirs_state_dir().join(new_session_id.as_str()));
+        let _ = self.enable_debug_log(&self.sessions_dir().join(new_session_id.as_str()));
         self.start_session_init(new_session_id.clone(), reason);
         let session_status = match reason {
             tau_proto::SessionStartReason::Initial | tau_proto::SessionStartReason::New => {
@@ -2677,18 +2679,18 @@ impl Harness {
             None,
             Event::HarnessSessionDir(tau_proto::HarnessSessionDir {
                 session_id: new_session_id.clone(),
-                path: self.dirs_state_dir().join(new_session_id.as_str()),
+                path: self.sessions_dir().join(new_session_id.as_str()),
                 status: session_status,
             }),
         );
         Ok(())
     }
 
-    fn dirs_state_dir(&self) -> PathBuf {
-        // The harness doesn't currently store the state dir directly;
+    fn sessions_dir(&self) -> PathBuf {
+        // The harness doesn't currently store the sessions dir directly;
         // derive it from the session store's location. SessionStore
-        // exposes its root via the existing `state_dir()` accessor.
-        self.store.state_dir().to_path_buf()
+        // exposes its root via the `sessions_dir()` accessor.
+        self.store.sessions_dir().to_path_buf()
     }
 
     pub(crate) fn start_session_init(
