@@ -1025,7 +1025,7 @@ fn shell_tool_multiline_display_uses_short_args_and_text_payload() {
 }
 
 #[test]
-fn shell_tool_long_display_args_are_truncated_to_twenty_chars() {
+fn shell_tool_long_display_args_are_middle_shortened() {
     let args = CborValue::Map(vec![
         (
             CborValue::Text("command".to_owned()),
@@ -1038,7 +1038,7 @@ fn shell_tool_long_display_args_are_truncated_to_twenty_chars() {
     ]);
 
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
-    assert_eq!(output.display.args, "printf 1234567890123");
+    assert_eq!(output.display.args, "printf 123┄1234567890");
     assert_eq!(output.display.payload, None);
 }
 

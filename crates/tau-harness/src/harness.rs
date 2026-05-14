@@ -4417,13 +4417,23 @@ fn build_tool_args_display(
 }
 
 fn shell_command_args(command: &str) -> String {
-    command
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .take(20)
-        .collect()
+    shorten_shell_command_line(command.lines().next().unwrap_or_default())
+}
+
+fn shorten_shell_command_line(line: &str) -> String {
+    const EDGE_CHARS: usize = 10;
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= EDGE_CHARS * 2 {
+        return line.to_owned();
+    }
+
+    let head: String = chars.iter().take(EDGE_CHARS).copied().collect();
+    let tail: String = chars
+        .iter()
+        .skip(chars.len() - EDGE_CHARS)
+        .copied()
+        .collect();
+    format!("{head}┄{tail}")
 }
 
 fn shell_command_payload(command: &str) -> Option<tau_proto::ToolDisplayPayload> {
