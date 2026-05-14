@@ -698,7 +698,18 @@ fn stream_with_dispatch(
                     *transport_taken = tau_proto::AgentBackendTransport::Websocket;
                     return Ok(state);
                 }
-                Err(error) if should_disable_ws(&error) => {
+                Err(responses::pool::WsTurnError::HttpFallbackRecommended(error)) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        session_id,
+                        "WS chain unavailable ({error}); falling back to HTTP for this session",
+                    );
+                    ws_disabled.insert(session_id.to_owned());
+                    *transport_taken = tau_proto::AgentBackendTransport::HttpSse;
+                    return backend.stream_http(request, on_update);
+                }
+                Err(error) if should_disable_ws_error(&error) => {
+                    let error = error.into_llm_error();
                     tracing::warn!(
                         target: LOG_TARGET,
                         session_id,
@@ -707,7 +718,7 @@ fn stream_with_dispatch(
                     ws_disabled.insert(session_id.to_owned());
                     // Fall through to the HTTP path below.
                 }
-                Err(other) => return Err(other),
+                Err(other) => return Err(other.into_llm_error()),
             }
         }
     }
@@ -725,6 +736,13 @@ fn stream_with_dispatch(
 ///   documented policy ("Don't loop on a hostile server" in
 ///   `TODO-codex-websocket.md` §3) and avoids burning the next prompt on
 ///   another doomed upgrade.
+fn should_disable_ws_error(error: &responses::pool::WsTurnError) -> bool {
+    match error {
+        responses::pool::WsTurnError::HttpFallbackRecommended(_) => false,
+        responses::pool::WsTurnError::Other(error) => should_disable_ws(error),
+    }
+}
+
 fn should_disable_ws(error: &common::LlmError) -> bool {
     match error {
         common::LlmError::HttpStatus(426, _) => true,
