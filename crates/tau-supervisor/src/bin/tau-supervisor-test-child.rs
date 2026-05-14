@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 writer.write_frame(&Frame::Event(Event::ToolRegister(ToolRegister {
                     tool: ToolSpec {
                         name: tau_proto::ToolName::new("echo"),
+                        model_visible_name: None,
                         description: Some("Echo test payloads".to_owned()),
                         tool_type: tau_proto::ToolType::Function,
                         parameters: None,

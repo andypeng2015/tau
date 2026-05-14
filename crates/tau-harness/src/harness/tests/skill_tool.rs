@@ -742,3 +742,98 @@ fn gather_tool_definitions_respects_role_tools_profile() {
     assert!(!defs.iter().any(|d| d.name == "shell"));
     assert!(!defs.iter().any(|d| d.name == "skill"));
 }
+
+#[test]
+fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
+    let td = TempDir::new().expect("tempdir");
+    let config_dir = td.path().join("config");
+    let state_dir = td.path().join("state");
+    std::fs::create_dir_all(&config_dir).expect("mkdir config");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    std::fs::write(
+        config_dir.join("harness.json5"),
+        r#"{
+            toolsProfiles: {
+                specialized: {
+                    shell: false,
+                    gpt_shell: true,
+                },
+            },
+        }"#,
+    )
+    .expect("write harness");
+    std::fs::write(
+        config_dir.join("models.json5"),
+        r#"{
+            defaultRoles: {
+                smart: { toolsProfile: "specialized" },
+            },
+        }"#,
+    )
+    .expect("write models");
+
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir),
+        state_dir: Some(state_dir.clone()),
+    };
+    let mut h = echo_harness_with_dirs("s1", state_dir, dirs).expect("start");
+    let tool_events = connect_test_tool(&mut h, "conn-gpt-shell");
+    h.registry.register(
+        "conn-gpt-shell",
+        ToolSpec {
+            name: ToolName::new("gpt_shell"),
+            model_visible_name: Some(ToolName::new("shell")),
+            description: Some("specialized shell".to_owned()),
+            tool_type: tau_proto::ToolType::Function,
+            parameters: None,
+            format: None,
+            enabled_by_default: false,
+            side_effects: ToolSideEffects::Pure,
+        },
+    );
+
+    let defs = h.gather_tool_definitions();
+    assert!(
+        defs.iter().any(|d| {
+            d.name == "gpt_shell"
+                && d.model_visible_name
+                    .as_ref()
+                    .is_some_and(|name| name == "shell")
+        }),
+        "expected aliased tool definition; got: {defs:?}"
+    );
+    assert!(!defs.iter().any(|d| d.name == "shell"));
+
+    let cid = h.default_conversation_id.clone();
+    h.execute_agent_tool_call(
+        &cid,
+        &AgentToolCall {
+            id: "call-alias".into(),
+            name: "shell".into(),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+            display: None,
+        },
+    )
+    .expect("execute aliased tool call");
+
+    let routed = tool_events.lock().expect("tool events");
+    assert!(
+        routed.iter().any(|frame| matches!(
+            &frame.frame,
+            Frame::Event(Event::ToolInvoke(invoke))
+                if invoke.call_id.as_str() == "call-alias" && invoke.tool_name == "gpt_shell"
+        )),
+        "expected internal tool invoke; got: {routed:?}"
+    );
+
+    let events = h.store.session_events("s1").expect("session events");
+    assert!(
+        events.iter().any(|entry| matches!(
+            &entry.event,
+            Event::ToolRequest(request)
+                if request.call_id.as_str() == "call-alias" && request.tool_name == "shell"
+        )),
+        "expected persisted visible tool name; got: {events:?}"
+    );
+}

@@ -871,6 +871,7 @@ fn tools_drift_invalidates_chain_anchor() {
         "test-ext",
         ToolSpec {
             name: ToolName::new("late_tool"),
+            model_visible_name: None,
             description: Some("appeared between turns".to_owned()),
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1146,6 +1147,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1295,6 +1297,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1653,6 +1656,7 @@ fn delegate_ext_agent_query_keeps_tool_choice_auto() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1818,6 +1822,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1831,6 +1836,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         "conn-websearch",
         ToolSpec {
             name: tau_proto::ToolName::new("websearch"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -1971,6 +1977,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2058,6 +2065,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2140,6 +2148,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2153,6 +2162,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         "conn-websearch",
         ToolSpec {
             name: tau_proto::ToolName::new("websearch"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2310,6 +2320,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2532,6 +2543,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2678,6 +2690,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2810,6 +2823,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -2991,6 +3005,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -3180,6 +3195,7 @@ fn tool_events_carry_owning_conversation_originator() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,

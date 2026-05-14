@@ -311,6 +311,7 @@ mod tests {
     fn tool(name: &str) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new(name),
+            model_visible_name: None,
             description: None,
             tool_type: tau_proto::ToolType::Function,
             parameters: None,

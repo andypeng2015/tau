@@ -442,11 +442,12 @@ fn convert_message(msg: &ConversationMessage, out: &mut Vec<ApiMessage>) {
 }
 
 fn convert_tool_definition(tool: &ToolDefinition) -> serde_json::Value {
+    let model_visible_name = tool.model_visible_name.as_ref().unwrap_or(&tool.name);
     match tool.tool_type {
         tau_proto::ToolType::Function => serde_json::json!({
             "type": "function",
             "function": {
-                "name": tool.name.as_str(),
+                "name": model_visible_name.as_str(),
                 "description": tool.description,
                 "parameters": tool.parameters,
             }
@@ -455,7 +456,7 @@ fn convert_tool_definition(tool: &ToolDefinition) -> serde_json::Value {
             let mut custom = serde_json::Map::new();
             custom.insert(
                 "name".to_owned(),
-                serde_json::Value::String(tool.name.as_str().to_owned()),
+                serde_json::Value::String(model_visible_name.as_str().to_owned()),
             );
             if let Some(description) = &tool.description {
                 custom.insert(

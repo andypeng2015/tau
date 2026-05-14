@@ -241,6 +241,7 @@ fn provider_can_register_tool_and_receive_invocations() {
         &tool_id,
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: Some("Echo a payload".to_owned()),
             tool_type: ToolType::Function,
             parameters: None,
@@ -294,6 +295,7 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
         "conn-a",
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: Some("Echo".to_owned()),
             tool_type: ToolType::Function,
             parameters: None,
@@ -308,6 +310,7 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
         "conn-b",
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: Some("Echo from another provider".to_owned()),
             tool_type: ToolType::Function,
             parameters: None,
@@ -345,6 +348,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         &first_id,
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: None,
             tool_type: ToolType::Function,
             parameters: None,
@@ -357,6 +361,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         &second_id,
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: None,
             tool_type: ToolType::Function,
             parameters: None,
@@ -369,6 +374,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         &first_id,
         ToolSpec {
             name: tau_proto::ToolName::new("demo_upper"),
+            model_visible_name: None,
             description: None,
             tool_type: ToolType::Function,
             parameters: None,
@@ -404,6 +410,7 @@ fn register_events_map_cleanly_to_registry_state() {
         ToolRegister {
             tool: ToolSpec {
                 name: tau_proto::ToolName::new("echo"),
+                model_visible_name: None,
                 description: Some("Echo".to_owned()),
                 tool_type: ToolType::Function,
                 parameters: None,

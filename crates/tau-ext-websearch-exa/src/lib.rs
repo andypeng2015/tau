@@ -199,6 +199,7 @@ fn ack_log_event(id: LogEventId, tx: &mpsc::Sender<Frame>) {
 fn tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
+        model_visible_name: None,
         description: Some(
             "Search the web via Exa's free-tier hosted MCP. Returns clean, ready-to-use \
              text content (titles, URLs, highlights) from top-ranked pages. Works best with a \

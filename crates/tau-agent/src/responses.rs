@@ -732,11 +732,12 @@ fn parse_phase_from_item(item: &serde_json::Value) -> Option<tau_proto::MessageP
 }
 
 fn convert_tool_definition(tool: &tau_proto::ToolDefinition) -> serde_json::Value {
+    let model_visible_name = tool.model_visible_name.as_ref().unwrap_or(&tool.name);
     match tool.tool_type {
         tau_proto::ToolType::Function => {
             let mut wire = serde_json::json!({
                 "type": "function",
-                "name": encode_tool_name(&tool.name),
+                "name": encode_tool_name(model_visible_name),
                 "strict": serde_json::Value::Null,
             });
             if let Some(ref desc) = tool.description {
@@ -750,7 +751,7 @@ fn convert_tool_definition(tool: &tau_proto::ToolDefinition) -> serde_json::Valu
         tau_proto::ToolType::Custom => {
             let mut wire = serde_json::json!({
                 "type": "custom",
-                "name": encode_tool_name(&tool.name),
+                "name": encode_tool_name(model_visible_name),
             });
             if let Some(ref desc) = tool.description {
                 wire["description"] = serde_json::Value::String(desc.clone());

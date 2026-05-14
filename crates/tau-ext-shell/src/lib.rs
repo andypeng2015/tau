@@ -66,6 +66,7 @@ where
     #[cfg(any(test, feature = "echo-agent"))]
     let echo_tool = Some(ToolSpec {
         name: tau_proto::ToolName::new(ECHO_TOOL_NAME),
+        model_visible_name: None,
         description: Some("Echo the provided payload unchanged".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: None,
@@ -78,6 +79,7 @@ where
     let tools = echo_tool.into_iter().chain([
         ToolSpec {
             name: tau_proto::ToolName::new(READ_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Reads a file. Defaults to reading the whole file in one call — \
                  output is capped at 2000 lines / 50 KB, and if the cap is hit \
@@ -114,6 +116,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Write content to a file, creating it if it does not exist. \
                  Returns the path, bytes written, and a `diff` object \
@@ -142,6 +145,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Edit a file using exact text replacement. Each edit's oldText must match \
                  a unique, non-overlapping region of the original file. All edits are matched \
@@ -190,6 +194,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
                     .to_owned(),
@@ -205,6 +210,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(GREP_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Search file contents for a pattern using ripgrep. Patterns are literal by default; \
                  regex metacharacters like `|` require `regex: true`. Returns matching lines \
@@ -253,6 +259,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(FIND_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Search for files by glob pattern. Returns only file paths (directories are \
                  never included, even with '**/*') relative to the search directory. Respects \
@@ -285,6 +292,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(LS_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "List directory contents. Returns entries sorted alphabetically, with '/' suffix \
                  for directories. Includes dotfiles. Output is truncated at `limit` entries or 50KB."
@@ -310,6 +318,7 @@ where
         },
         ToolSpec {
             name: tau_proto::ToolName::new(SHELL_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Execute a shell command via `sh -c`. Returns stdout, stderr, \
                  and exit status. Prefer the dedicated `read`/`write`/`edit`/\

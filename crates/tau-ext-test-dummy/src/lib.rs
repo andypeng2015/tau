@@ -90,6 +90,7 @@ where
         )
         .register_tool(ToolSpec {
             name: tau_proto::ToolName::new(RESTART_TEST_DUMMY_TOOL_NAME),
+            model_visible_name: None,
             description: Some(
                 "Test-only tool that randomly restarts the dummy extension or returns an error"
                     .to_owned(),

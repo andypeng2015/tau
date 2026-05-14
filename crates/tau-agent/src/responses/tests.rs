@@ -382,6 +382,7 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
     };
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
+        model_visible_name: None,
         description: Some("run shell commands".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: None,
@@ -436,6 +437,7 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
     let config = chain_test_config();
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
+        model_visible_name: None,
         description: None,
         tool_type: tau_proto::ToolType::Function,
         parameters: None,
@@ -826,6 +828,7 @@ fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output
     let config = chain_test_config();
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("apply_patch"),
+        model_visible_name: None,
         description: Some("Apply a patch to files".to_owned()),
         tool_type: tau_proto::ToolType::Custom,
         parameters: None,

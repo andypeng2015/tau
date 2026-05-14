@@ -143,6 +143,7 @@ fn build_request_sets_parallel_tool_calls_when_tools_offered() {
     };
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
+        model_visible_name: None,
         description: None,
         tool_type: tau_proto::ToolType::Function,
         parameters: None,
@@ -196,6 +197,43 @@ fn build_request_omits_parallel_tool_calls_without_tools() {
     assert!(!object.contains_key("parallel_tool_calls"));
 }
 
+#[test]
+fn build_request_uses_model_visible_tool_name_when_present() {
+    let config = OpenAiConfig {
+        base_url: "https://api.openai.com/v1".into(),
+        api_key: "test".into(),
+        model_id: "gpt-5".into(),
+        supports_reasoning_effort: false,
+        supports_verbosity: false,
+        supports_prompt_cache_key: false,
+        prompt_cache_retention: None,
+        supports_llama_cpp_cache: false,
+    };
+    let tool = tau_proto::ToolDefinition {
+        name: tau_proto::ToolName::new("gpt_shell"),
+        model_visible_name: Some(tau_proto::ToolName::new("shell")),
+        description: None,
+        tool_type: tau_proto::ToolType::Function,
+        parameters: None,
+        format: None,
+    };
+    let request = PromptPayload {
+        system_prompt: "system",
+        messages: &[],
+        tools: std::slice::from_ref(&tool),
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request, true)).expect("serialize");
+
+    assert_eq!(body["tools"][0]["function"]["name"], "shell");
+}
+
 /// `ToolChoice::None` must serialize as `tool_choice: "none"` while
 /// the `tools` array stays declared. This is valid when a caller
 /// intentionally wants a different wire request. Cache-sharing side
@@ -215,6 +253,7 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
     };
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
+        model_visible_name: None,
         description: None,
         tool_type: tau_proto::ToolType::Function,
         parameters: None,

@@ -309,6 +309,7 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
         "conn-delegate",
         ToolSpec {
             name: ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,
@@ -414,6 +415,7 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
         "conn-delegate",
         ToolSpec {
             name: ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,

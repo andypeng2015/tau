@@ -21,6 +21,7 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
         "conn-delegate",
         ToolSpec {
             name: tau_proto::ToolName::new("delegate"),
+            model_visible_name: None,
             description: None,
             parameters: None,
             tool_type: tau_proto::ToolType::Function,

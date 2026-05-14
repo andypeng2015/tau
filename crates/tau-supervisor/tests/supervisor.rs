@@ -80,6 +80,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
         Frame::Event(Event::ToolRegister(ToolRegister {
             tool: tau_proto::ToolSpec {
                 name: tau_proto::ToolName::new("echo"),
+                model_visible_name: None,
                 description: Some("Echo test payloads".to_owned()),
                 tool_type: tau_proto::ToolType::Function,
                 parameters: None,

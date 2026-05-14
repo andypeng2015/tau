@@ -24,6 +24,7 @@ impl Harness {
             HARNESS_CONNECTION_ID,
             tau_proto::ToolSpec {
                 name: ToolName::new("skill"),
+                model_visible_name: None,
                 description: Some(
                     "Discover and load skills — short, focused playbooks for \
                      specific tasks. The user has likely curated skills for \

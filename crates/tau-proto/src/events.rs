@@ -1095,6 +1095,8 @@ pub enum ToolFormat {
 pub struct ToolSpec {
     pub name: ToolName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_visible_name: Option<ToolName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Whether this is a JSON-schema function tool or a freeform custom tool.
     #[serde(default, skip_serializing_if = "ToolType::is_default")]
@@ -2433,6 +2435,8 @@ pub struct ConversationMessage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: ToolName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_visible_name: Option<ToolName>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Whether this is a JSON-schema function tool or a freeform custom tool.

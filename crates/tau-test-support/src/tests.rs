@@ -213,6 +213,7 @@ fn deterministic_agent_and_tool_complete_one_vertical_slice() {
         message_prefix: None,
         tools: vec![ToolDefinition {
             name: tau_proto::ToolName::new("echo"),
+            model_visible_name: None,
             description: None,
             tool_type: tau_proto::ToolType::Function,
             parameters: None,

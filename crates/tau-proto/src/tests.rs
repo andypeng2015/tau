@@ -5,6 +5,7 @@ fn representative_events() -> Vec<Event> {
         Event::ToolRegister(ToolRegister {
             tool: ToolSpec {
                 name: ToolName::new("echo"),
+                model_visible_name: None,
                 description: Some("Echo a payload".to_owned()),
                 tool_type: ToolType::Function,
                 parameters: None,
@@ -75,6 +76,7 @@ fn representative_events() -> Vec<Event> {
             message_prefix: None,
             tools: vec![ToolDefinition {
                 name: ToolName::new("read"),
+                model_visible_name: None,
                 description: Some("Read a file".to_owned()),
                 tool_type: ToolType::Function,
                 parameters: None,
@@ -493,6 +495,7 @@ fn tool_spec_enabled_by_default_defaults_true_when_omitted() {
 
     let disabled = ToolSpec {
         name: ToolName::new("echo"),
+        model_visible_name: None,
         description: Some("Echo a payload".to_owned()),
         tool_type: ToolType::Function,
         parameters: None,

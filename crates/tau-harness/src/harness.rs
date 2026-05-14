@@ -1626,6 +1626,9 @@ impl Harness {
             Event::ToolResult(mut result) => {
                 if let Some(cid) = self.tool_conversations.get(&result.call_id).cloned() {
                     let call_id = result.call_id.to_string();
+                    if let Some(tool_name) = self.pending_tool_names.get(&result.call_id).cloned() {
+                        result.tool_name = tool_name;
+                    }
                     // Collapse byte-identical large results into a
                     // pointer back to the first call_id that produced
                     // this content on this conversation's branch. See
@@ -1655,6 +1658,9 @@ impl Harness {
             Event::ToolError(mut error) => {
                 if let Some(cid) = self.tool_conversations.get(&error.call_id).cloned() {
                     let call_id = error.call_id.to_string();
+                    if let Some(tool_name) = self.pending_tool_names.get(&error.call_id).cloned() {
+                        error.tool_name = tool_name;
+                    }
                     self.dedup_tool_error(&cid, &mut error);
                     self.publish_for_conversation_from(
                         &cid,
@@ -3795,12 +3801,54 @@ impl Harness {
             .filter(|spec| self.is_tool_enabled_for_current_role(spec))
             .map(|spec| ToolDefinition {
                 name: spec.name.clone(),
+                model_visible_name: spec.model_visible_name.clone(),
                 description: spec.description.clone(),
                 tool_type: spec.tool_type,
                 parameters: spec.parameters.clone(),
                 format: spec.format.clone(),
             })
             .collect()
+    }
+
+    fn tool_model_visible_name<'a>(&self, spec: &'a tau_proto::ToolSpec) -> &'a ToolName {
+        spec.model_visible_name.as_ref().unwrap_or(&spec.name)
+    }
+
+    fn has_registered_tool_name(&self, requested_name: &ToolName) -> bool {
+        for spec in self.registry.all_tools() {
+            if spec.name == *requested_name || self.tool_model_visible_name(spec) == requested_name
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn resolve_enabled_tool_name_for_current_role(
+        &self,
+        requested_name: &ToolName,
+    ) -> Option<(ToolName, ToolName)> {
+        let mut visible_match: Option<&tau_proto::ToolSpec> = None;
+        for spec in self.registry.all_tools() {
+            if !self.is_tool_enabled_for_current_role(spec) {
+                continue;
+            }
+            if spec.name == *requested_name {
+                return Some((
+                    spec.name.clone(),
+                    self.tool_model_visible_name(spec).clone(),
+                ));
+            }
+            if self.tool_model_visible_name(spec) == requested_name && visible_match.is_none() {
+                visible_match = Some(spec);
+            }
+        }
+        visible_match.map(|spec| {
+            (
+                spec.name.clone(),
+                self.tool_model_visible_name(spec).clone(),
+            )
+        })
     }
 
     fn current_tools_profile(&self) -> Option<&tau_config::settings::ToolsProfile> {
@@ -3816,13 +3864,6 @@ impl Harness {
         self.current_tools_profile()
             .and_then(|profile| profile.get(&spec.name).copied())
             .unwrap_or(spec.enabled_by_default)
-    }
-
-    fn is_tool_name_enabled_for_current_role(&self, name: &ToolName) -> bool {
-        self.registry
-            .resolve_provider(name.as_str())
-            .map(|provider| self.is_tool_enabled_for_current_role(&provider.tool))
-            .unwrap_or(true)
     }
 
     fn maybe_emit_cache_miss_diagnostic(
@@ -4474,7 +4515,14 @@ impl Harness {
             }
         };
 
-        if !self.is_tool_name_enabled_for_current_role(&tool_name) {
+        let Some((internal_tool_name, visible_tool_name)) =
+            self.resolve_enabled_tool_name_for_current_role(&tool_name)
+        else {
+            let message = if self.has_registered_tool_name(&tool_name) {
+                "tool is not enabled for the current role"
+            } else {
+                "tool is not available"
+            };
             let call_id: ToolCallId = call.id.clone();
             self.tool_conversations.insert(call_id.clone(), cid.clone());
             self.pending_tool_names
@@ -4493,7 +4541,7 @@ impl Harness {
                 Event::ToolError(ToolError {
                     call_id: call_id.clone(),
                     tool_name,
-                    message: "tool is not enabled for the current role".to_owned(),
+                    message: message.to_owned(),
                     details: None,
                     display: None,
                     originator: tau_proto::PromptOriginator::User,
@@ -4502,10 +4550,10 @@ impl Harness {
             self.on_tool_call_complete(call_id.as_str());
             self.clear_tool_call_tracking(call_id.as_str());
             return Ok(());
-        }
+        };
 
         // Handle harness-owned tools directly.
-        if tool_name.as_str() == "skill" {
+        if internal_tool_name.as_str() == "skill" {
             return self.handle_skill_tool_call(cid, call);
         }
 
@@ -4516,16 +4564,23 @@ impl Harness {
         // log and folds it into the SessionTree via `apply_event`.
         self.tool_conversations.insert(call_id.clone(), cid.clone());
         self.pending_tool_names
-            .insert(call_id.clone(), tool_name.clone());
+            .insert(call_id.clone(), visible_tool_name.clone());
         self.bump_tools_started_for(cid);
-        let request = ToolRequest {
+        let published_request = ToolRequest {
             call_id: call_id.clone(),
-            tool_name: tool_name.clone(),
+            tool_name: visible_tool_name.clone(),
             tool_type: call.tool_type,
             arguments: call.arguments.clone(),
             originator: tau_proto::PromptOriginator::User,
         };
-        self.publish_for_conversation(cid, Event::ToolRequest(request.clone()));
+        self.publish_for_conversation(cid, Event::ToolRequest(published_request));
+        let request = ToolRequest {
+            call_id: call_id.clone(),
+            tool_name: internal_tool_name.clone(),
+            tool_type: call.tool_type,
+            arguments: call.arguments.clone(),
+            originator: tau_proto::PromptOriginator::User,
+        };
 
         match self
             .registry
@@ -4535,10 +4590,10 @@ impl Harness {
                 self.pending_tool_providers
                     .insert(call_id.clone(), route.provider_connection_id);
             }
-            Err(ToolRouteError::NoProvider { tool_name }) => {
+            Err(ToolRouteError::NoProvider { tool_name: _ }) => {
                 let error = ToolError {
                     call_id: call_id.clone(),
-                    tool_name,
+                    tool_name: visible_tool_name,
                     message: "no live provider available".to_owned(),
                     details: None,
                     display: None,
