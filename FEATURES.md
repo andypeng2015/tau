@@ -258,9 +258,9 @@ alongside the delegate's task name.
 
 ### `std-websearch-exa` — opt-in web search
 
-Proxies a single `websearch_exa` tool to Exa's hosted `web_search_exa` MCP
-endpoint. Disable in `harness.json5` when not needed; supply an API key via
-config.
+Proxies a single Exa-backed search tool, advertised to models as
+`web_search`, to Exa's hosted `web_search_exa` MCP endpoint. Disable in
+`harness.json5` when not needed; supply an API key via config.
 
 
 ## CLI / UI

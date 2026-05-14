@@ -1,7 +1,8 @@
 # tau-ext-websearch-exa
 
-A tau extension that registers a `websearch_exa` tool, proxying agent
-search requests to Exa's keyless free-tier hosted MCP at
+A tau extension that registers a `websearch_exa` tool, advertised to
+models as `web_search`, proxying agent search requests to Exa's
+keyless free-tier hosted MCP at
 <https://mcp.exa.ai/mcp>.
 
 The free tier currently allows ~1000 requests/month per IP with no
@@ -11,7 +12,8 @@ your own `exa-mcp-server` and point the extension at it.
 
 ## What it does
 
-On each `tool.invoke` for `websearch_exa`, the extension:
+On each model call to `web_search` (internally dispatched as
+`websearch_exa`), the extension:
 
 1. Re-encodes the agent's CBOR arguments (`query`, optional
    `num_results`) into a JSON-RPC `tools/call` envelope for Exa's
@@ -30,7 +32,7 @@ On each `tool.invoke` for `websearch_exa`, the extension:
 
 ```json
 {
-  "name": "websearch_exa",
+  "name": "web_search",
   "parameters": {
     "type": "object",
     "properties": {

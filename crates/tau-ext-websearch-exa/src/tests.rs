@@ -2,7 +2,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::thread;
 
-use tau_proto::{EventName, ToolInvoke};
+use tau_proto::ToolInvoke;
 
 use super::*;
 
@@ -107,7 +107,18 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
     // The hello/subscribe/ready messages are filtered out by the
     // test-side `EventReader` wrapper; only the tool register survives.
     let event = reader.read_event().expect("read").expect("register");
-    assert_eq!(event.name(), EventName::TOOL_REGISTER);
+    let Event::ToolRegister(register) = event else {
+        panic!("expected ToolRegister, got {event:?}");
+    };
+    assert_eq!(register.tool.name.as_str(), TOOL_NAME);
+    assert_eq!(
+        register
+            .tool
+            .model_visible_name
+            .as_ref()
+            .map(|name| name.as_str()),
+        Some(MODEL_VISIBLE_TOOL_NAME)
+    );
 }
 
 #[test]

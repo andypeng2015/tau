@@ -1,7 +1,7 @@
 //! Web-search extension backed by Exa's keyless free-tier MCP at
 //! <https://mcp.exa.ai/mcp>.
 //!
-//! Registers a single `websearch-exa` tool. On each `ToolInvoke` the
+//! Registers a single `web_search` tool. On each `ToolInvoke` the
 //! extension proxies the call to Exa's hosted `web_search_exa` tool
 //! over its Streamable-HTTP MCP transport (HTTP POST returning a
 //! `text/event-stream` body with one `message` SSE event), unwraps the
@@ -29,6 +29,9 @@ pub const LOG_TARGET: &str = "websearch-exa";
 /// `ToolName` newtype only accepts `[a-zA-Z0-9_]+`, so we use an
 /// underscore between the two halves.
 pub const TOOL_NAME: &str = "websearch_exa";
+
+/// Tool name advertised to models.
+pub const MODEL_VISIBLE_TOOL_NAME: &str = "web_search";
 
 /// Default Exa MCP endpoint. Override via the extension's
 /// `config.endpoint` field if you want to point at a self-hosted MCP
@@ -199,7 +202,7 @@ fn ack_log_event(id: LogEventId, tx: &mpsc::Sender<Frame>) {
 fn tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
-        model_visible_name: None,
+        model_visible_name: Some(tau_proto::ToolName::new(MODEL_VISIBLE_TOOL_NAME)),
         description: Some(
             "Search the web via Exa's free-tier hosted MCP. Returns clean, ready-to-use \
              text content (titles, URLs, highlights) from top-ranked pages. Works best with a \
