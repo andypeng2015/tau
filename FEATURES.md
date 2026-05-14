@@ -114,15 +114,15 @@ Defaults are normally selected through agent roles in `models.json5`:
 
 ```json5
 defaultRoles: {
-  default: { model: "openai/gpt-5.5", effort: "medium" },
-  smart: {},
+  smart: { model: "openai/gpt-5.5", effort: "medium" },
   deep: { effort: "xhigh", thinkingSummary: "detailed" },
   rush: { effort: "low", fastMode: true },
 },
 ```
 
-`/model <role>` switches roles; `/role <role> <setting> <value>` edits or
-creates a persisted role override. See [`docs/agent-roles.md`](docs/agent-roles.md).
+`/model <role>` switches roles; `/role <role> <setting> <value>` edits role
+settings, with built-in/configured role overrides persisted. See
+[`docs/agent-roles.md`](docs/agent-roles.md).
 
 In the UI: `/effort medium`, `/verbosity low`, `/thinking-summary
 concise`. Shift+Tab cycles **effort** specifically; the other knobs

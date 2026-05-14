@@ -187,7 +187,7 @@ fn models_default_roles_merge_with_built_ins() {
         dir.join("models.json5"),
         r#"{
             defaultRoles: {
-                default: { model: "openai/gpt-5.5" },
+                smart: { model: "openai/gpt-5.5" },
                 custom: { effort: "medium" },
                 deep: { model: "openai/gpt-5.5" },
             },
@@ -197,10 +197,20 @@ fn models_default_roles_merge_with_built_ins() {
 
     let m = load_models_in(&dirs_with_config(dir)).expect("load");
     assert!(m.default_roles.contains_key("smart"));
+    assert!(m.default_roles.contains_key("deep"));
     assert!(m.default_roles.contains_key("rush"));
+    assert!(!m.default_roles.contains_key("default"));
     assert_eq!(
         m.default_roles["custom"].effort,
         Some(tau_proto::Effort::Medium)
+    );
+    assert_eq!(
+        m.default_roles["smart"]
+            .model
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("openai/gpt-5.5")
     );
 
     let deep = &m.default_roles["deep"];
@@ -209,7 +219,7 @@ fn models_default_roles_merge_with_built_ins() {
         Some("openai/gpt-5.5")
     );
     assert_eq!(deep.effort, Some(tau_proto::Effort::XHigh));
-    assert_eq!(deep.verbosity, Some(tau_proto::Verbosity::High));
+    assert_eq!(deep.verbosity, None);
     assert_eq!(
         deep.thinking_summary,
         Some(tau_proto::ThinkingSummary::Detailed)

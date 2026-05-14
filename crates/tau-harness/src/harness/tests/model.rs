@@ -159,6 +159,103 @@ fn fresh_install_picks_middle_effort_when_no_history() {
     );
 }
 
+/// A stale saved `default` role is not migrated. When it is no longer
+/// available, startup falls back to the `smart` role instead.
+#[test]
+fn load_model_list_falls_back_to_smart_role() {
+    let td = TempDir::new().expect("tempdir");
+    let config_dir = td.path().join("config");
+    let state_dir = td.path().join("state");
+    std::fs::create_dir_all(&config_dir).expect("mkdir config");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir.clone()),
+        state_dir: Some(state_dir.clone()),
+    };
+
+    std::fs::write(
+        config_dir.join("models.json5"),
+        r#"{
+            defaultRoles: {
+                smart: { model: "local/smart" },
+                deep: { model: "local/deep" },
+            },
+            providers: {
+                local: {
+                    models: [{ id: "deep" }, { id: "smart" }],
+                },
+            },
+        }"#,
+    )
+    .expect("write models");
+    std::fs::write(
+        state_dir.join("harness.json5"),
+        r#"{
+            "last_selected_role": "default",
+            "role_overrides": {
+                "default": { "model": "local/deep" }
+            }
+        }"#,
+    )
+    .expect("write state");
+
+    let loaded = load_model_list(&dirs);
+    assert!(!loaded.role_overrides.contains_key("default"));
+    assert!(!loaded.roles.contains_key("default"));
+    assert_eq!(loaded.selected_role.as_deref(), Some("smart"));
+    assert_eq!(
+        loaded.selected.as_ref().map(ToString::to_string).as_deref(),
+        Some("local/smart")
+    );
+}
+
+/// Role settings stand on their own: a non-smart role with no model or
+/// effort uses the first available model and the model-default effort,
+/// not smart's configured model or effort.
+#[test]
+fn role_missing_fields_use_model_defaults() {
+    let td = TempDir::new().expect("tempdir");
+    let config_dir = td.path().join("config");
+    let state_dir = td.path().join("state");
+    std::fs::create_dir_all(&config_dir).expect("mkdir config");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir.clone()),
+        state_dir: Some(state_dir.clone()),
+    };
+
+    std::fs::write(
+        config_dir.join("models.json5"),
+        r#"{
+            defaultRoles: {
+                smart: { model: "local/smart", effort: "high" },
+                plain: {},
+            },
+            providers: {
+                local: {
+                    models: [{ id: "aaa" }, { id: "smart" }],
+                },
+            },
+        }"#,
+    )
+    .expect("write models");
+    std::fs::write(
+        state_dir.join("harness.json5"),
+        r#"{
+            "last_selected_role": "plain"
+        }"#,
+    )
+    .expect("write state");
+
+    let loaded = load_model_list(&dirs);
+    let selected = loaded.selected.as_ref().expect("selected model");
+    assert_eq!(loaded.selected_role.as_deref(), Some("plain"));
+    assert_eq!(selected.to_string(), "local/aaa");
+
+    let params = selected_params_for_role(&loaded.model_registry, &loaded.roles, "plain", selected);
+    assert_eq!(params.effort, tau_proto::Effort::Low);
+}
+
 /// First-time users default to low verbosity when the provider supports
 /// the knob, keeping model replies concise unless the user opts into
 /// more detail. Providers without verbosity support stay pinned to the

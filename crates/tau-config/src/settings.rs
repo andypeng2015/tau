@@ -384,6 +384,8 @@ pub struct ExtensionEntry {
 // Model registry
 // ---------------------------------------------------------------------------
 
+const BASE_AGENT_ROLE: &str = "smart";
+
 /// Top-level model configuration (mirrors Pi's models.json).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -391,15 +393,14 @@ pub struct ModelRegistry {
     /// Named providers, keyed by [`ProviderName`].
     pub providers: HashMap<ProviderName, ProviderConfig>,
     /// Named agent roles. Each role is a partial set of model settings;
-    /// missing fields inherit from `default`, then from hardcoded fallbacks.
+    /// missing fields use hardcoded fallbacks for the selected model.
     #[serde(rename = "defaultRoles", default = "default_agent_roles")]
     pub default_roles: HashMap<String, AgentRole>,
 }
 
 fn default_agent_roles() -> HashMap<String, AgentRole> {
     let mut default_roles = HashMap::new();
-    default_roles.insert("default".to_owned(), AgentRole::default());
-    default_roles.insert("smart".to_owned(), AgentRole::default());
+    default_roles.insert(BASE_AGENT_ROLE.to_owned(), AgentRole::default());
     default_roles.insert(
         "deep".to_owned(),
         AgentRole {
@@ -438,7 +439,7 @@ fn merge_default_agent_roles(roles: &mut HashMap<String, AgentRole>) {
 }
 
 /// Partial agent-role settings loaded from `models.json5` and persisted
-/// to state. `None` means "inherit" for every field.
+/// to state. `None` means "use the selected model's fallback" for every field.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentRole {

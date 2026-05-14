@@ -9,6 +9,8 @@ use tau_proto::{ModelId, ModelParams};
 
 use crate::settings::{load_harness_settings_or_warn, load_models_or_warn};
 
+const BASE_AGENT_ROLE: &str = "smart";
+
 /// Loaded model list plus the inputs used to build it. The two
 /// `*_error` fields hold the parse error (if any) from the
 /// corresponding config file — the harness emits them as
@@ -40,14 +42,19 @@ pub(crate) fn load_model_list(dirs: &tau_config::settings::TauDirs) -> LoadedMod
         }
     }
     available.sort();
-    let role_overrides = load_role_overrides(dirs);
+    let mut role_overrides = load_role_overrides(dirs);
     let mut roles = model_registry.default_roles.clone();
+    role_overrides.retain(|name, _| roles.contains_key(name));
     for (name, role) in &role_overrides {
         roles.insert(name.clone(), role.clone());
     }
     let selected_role = load_last_selected_role(dirs)
         .filter(|role| roles.contains_key(role))
-        .or_else(|| roles.contains_key("default").then(|| "default".to_owned()))
+        .or_else(|| {
+            roles
+                .contains_key(BASE_AGENT_ROLE)
+                .then(|| BASE_AGENT_ROLE.to_owned())
+        })
         .or_else(|| roles.keys().next().cloned());
     let selected = selected_role
         .as_ref()
@@ -82,11 +89,6 @@ pub(crate) fn model_for_role(
     let model = roles
         .get(role)
         .and_then(|r| r.model.clone())
-        .or_else(|| {
-            (role != "default")
-                .then(|| roles.get("default")?.model.clone())
-                .flatten()
-        })
         .or_else(|| available.first().cloned())?;
     available.contains(&model).then_some(model)
 }
@@ -101,28 +103,19 @@ pub(crate) fn selected_params_for_role(
     let allowed_verbosity = verbosities_for_model(registry, model);
     let allowed_thinking = thinking_summaries_for_model(registry, model);
     let current = roles.get(role);
-    let default = (role != "default").then(|| roles.get("default")).flatten();
     let effort = current
         .and_then(|r| r.effort)
-        .or_else(|| default.and_then(|r| r.effort))
         .unwrap_or_else(|| middle_effort(&allowed_effort));
     let verbosity = current
         .and_then(|r| r.verbosity)
-        .or_else(|| default.and_then(|r| r.verbosity))
         .unwrap_or_else(|| default_verbosity(&allowed_verbosity));
     let thinking_summary = current
         .and_then(|r| r.thinking_summary)
-        .or_else(|| default.and_then(|r| r.thinking_summary))
         .unwrap_or_else(|| default_thinking_summary(&allowed_thinking));
     let service_tier = current
         .and_then(|r| r.fast_mode)
-        .or_else(|| default.and_then(|r| r.fast_mode))
         .map(|enabled| enabled.then_some(tau_proto::ServiceTier::Fast))
-        .unwrap_or_else(|| {
-            current
-                .and_then(|r| r.service_tier)
-                .or_else(|| default.and_then(|r| r.service_tier))
-        });
+        .unwrap_or_else(|| current.and_then(|r| r.service_tier));
 
     ModelParams {
         effort: clamp_effort(effort, &allowed_effort),
