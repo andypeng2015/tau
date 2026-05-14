@@ -180,6 +180,116 @@ struct ThinkingBlockEntry {
     text: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RoleCompletionDetails {
+    model: Option<String>,
+    effort: Option<String>,
+    verbosity: Option<String>,
+    thinking_summary: Option<String>,
+    fast_mode: Option<bool>,
+}
+
+impl RoleCompletionDetails {
+    fn from_description(description: &str) -> Self {
+        let mut details = Self {
+            model: None,
+            effort: None,
+            verbosity: None,
+            thinking_summary: None,
+            fast_mode: Some(false),
+        };
+
+        if description == "no model" {
+            details.fast_mode = None;
+            return details;
+        }
+
+        for part in description.split(',').map(str::trim) {
+            if part == "fast" {
+                details.fast_mode = Some(true);
+                continue;
+            }
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            match key {
+                "model" => details.model = Some(value.to_owned()),
+                "effort" => details.effort = Some(value.to_owned()),
+                "verbosity" => details.verbosity = Some(value.to_owned()),
+                "thinking-summary" => details.thinking_summary = Some(value.to_owned()),
+                _ => {}
+            }
+        }
+
+        details
+    }
+
+    fn short_description(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(model) = self.model.as_deref() {
+            parts.push(model.to_owned());
+        }
+        if let Some(effort) = self.effort.as_deref() {
+            parts.push(format!("e={effort}"));
+        }
+        if let Some(verbosity) = self.verbosity.as_deref() {
+            parts.push(format!("v={verbosity}"));
+        }
+        if let Some(thinking_summary) = self.thinking_summary.as_deref() {
+            parts.push(format!("ts={thinking_summary}"));
+        }
+        if self.fast_mode == Some(true) {
+            parts.push("fast".to_owned());
+        }
+        if parts.is_empty() {
+            "no model".to_owned()
+        } else {
+            parts.join(" ")
+        }
+    }
+
+    fn current_description(&self, field: &str) -> String {
+        match field {
+            "model" => self.model.as_deref().unwrap_or("unset").to_owned(),
+            "effort" => self.effort.as_deref().unwrap_or("unset").to_owned(),
+            "verbosity" => self.verbosity.as_deref().unwrap_or("unset").to_owned(),
+            "thinking-summary" => self
+                .thinking_summary
+                .as_deref()
+                .unwrap_or("unset")
+                .to_owned(),
+            "fast-mode" => match self.fast_mode {
+                Some(true) => "on".to_owned(),
+                Some(false) => "off".to_owned(),
+                None => "unset".to_owned(),
+            },
+            _ => "unset".to_owned(),
+        }
+    }
+}
+
+fn role_value_completion(setting: &str, value: &str) -> tau_cli_term::CompletionItem {
+    let description = match (setting, value) {
+        ("effort", "off") => "disable reasoning effort",
+        ("effort", "minimal") => "minimum reasoning effort",
+        ("effort", "low") => "light reasoning effort",
+        ("effort", "medium") => "balanced reasoning effort",
+        ("effort", "high") => "strong reasoning effort",
+        ("effort", "xhigh") => "maximum reasoning effort",
+        ("verbosity", "low") => "terse responses",
+        ("verbosity", "medium") => "normal responses",
+        ("verbosity", "high") => "detailed responses",
+        ("thinking-summary", "off") => "hide thinking summaries",
+        ("thinking-summary", "auto") => "provider default summaries",
+        ("thinking-summary", "concise") => "short thinking summaries",
+        ("thinking-summary", "detailed") => "detailed thinking summaries",
+        ("fast-mode", "on") => "use fast service tier",
+        ("fast-mode", "off") => "use default service tier",
+        _ => "",
+    };
+    tau_cli_term::CompletionItem::new(value, description)
+}
+
 struct TokenStatsBlockEntry {
     block_id: tau_cli_term::BlockId,
     usage: tau_proto::AgentTokenUsage,
@@ -1428,39 +1538,59 @@ impl EventRenderer {
             }
             Event::HarnessModelsAvailable(_models) => {}
             Event::HarnessRolesAvailable(roles) => {
-                let items: Vec<tau_cli_term::CompletionItem> = roles
+                let model_items: Vec<tau_cli_term::CompletionItem> = roles
                     .roles
                     .iter()
                     .map(|r| tau_cli_term::CompletionItem::new(&r.name, &r.description))
+                    .collect();
+                let role_items: Vec<(tau_cli_term::CompletionItem, RoleCompletionDetails)> = roles
+                    .roles
+                    .iter()
+                    .map(|r| {
+                        let details = RoleCompletionDetails::from_description(&r.description);
+                        (
+                            tau_cli_term::CompletionItem::new(&r.name, details.short_description()),
+                            details,
+                        )
+                    })
                     .collect();
                 if let Ok(mut available) = self.roles_available.lock() {
                     *available = roles.roles.iter().map(|r| r.name.clone()).collect();
                 }
                 self.completion_data
-                    .set_arg_completions(tau_cli_term::CommandName::new("/model"), items.clone());
+                    .set_arg_completions(tau_cli_term::CommandName::new("/model"), model_items);
                 let completer: tau_cli_term::ArgCompleter = std::sync::Arc::new(move |args| {
                     fn matches(value: &str, needle: &str) -> bool {
                         needle.is_empty() || value.starts_with(needle) || value.contains(needle)
                     }
                     match args.len() {
-                        1 => items
+                        1 => role_items
                             .iter()
-                            .filter(|item| matches(&item.value, args[0]))
-                            .cloned()
+                            .filter(|(item, _)| matches(&item.value, args[0]))
+                            .map(|(item, _)| item.clone())
                             .collect(),
                         2 => {
-                            let current = items
+                            let details = role_items
                                 .iter()
-                                .find(|item| item.value == args[0])
-                                .map(|item| item.description.as_str())
-                                .unwrap_or("new role");
+                                .find(|(item, _)| item.value == args[0])
+                                .map(|(_, details)| details.clone())
+                                .unwrap_or(RoleCompletionDetails {
+                                    model: None,
+                                    effort: None,
+                                    verbosity: None,
+                                    thinking_summary: None,
+                                    fast_mode: None,
+                                });
                             [
                                 ("delete", "delete this in-memory/persisted role".to_owned()),
-                                ("model", format!("current: {current}")),
-                                ("effort", format!("current: {current}")),
-                                ("verbosity", format!("current: {current}")),
-                                ("thinking-summary", format!("current: {current}")),
-                                ("fast-mode", format!("current: {current}")),
+                                ("model", details.current_description("model")),
+                                ("effort", details.current_description("effort")),
+                                ("verbosity", details.current_description("verbosity")),
+                                (
+                                    "thinking-summary",
+                                    details.current_description("thinking-summary"),
+                                ),
+                                ("fast-mode", details.current_description("fast-mode")),
                             ]
                             .into_iter()
                             .filter(|(value, _)| matches(value, args[1]))
@@ -1471,22 +1601,22 @@ impl EventRenderer {
                             "effort" => ["off", "minimal", "low", "medium", "high", "xhigh"]
                                 .into_iter()
                                 .filter(|value| matches(value, args[2]))
-                                .map(tau_cli_term::CompletionItem::plain)
+                                .map(|value| role_value_completion(args[1], value))
                                 .collect(),
                             "verbosity" => ["low", "medium", "high"]
                                 .into_iter()
                                 .filter(|value| matches(value, args[2]))
-                                .map(tau_cli_term::CompletionItem::plain)
+                                .map(|value| role_value_completion(args[1], value))
                                 .collect(),
                             "thinking-summary" => ["off", "auto", "concise", "detailed"]
                                 .into_iter()
                                 .filter(|value| matches(value, args[2]))
-                                .map(tau_cli_term::CompletionItem::plain)
+                                .map(|value| role_value_completion(args[1], value))
                                 .collect(),
                             "fast-mode" => ["on", "off"]
                                 .into_iter()
                                 .filter(|value| matches(value, args[2]))
-                                .map(tau_cli_term::CompletionItem::plain)
+                                .map(|value| role_value_completion(args[1], value))
                                 .collect(),
                             _ => Vec::new(),
                         },
@@ -1590,5 +1720,43 @@ impl EventRenderer {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RoleCompletionDetails, role_value_completion};
+
+    #[test]
+    fn role_details_abbreviate_description() {
+        let details = RoleCompletionDetails::from_description(
+            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off",
+        );
+
+        assert_eq!(
+            details.short_description(),
+            "codex-dpcpw/gpt-5.5 e=xhigh v=medium ts=off"
+        );
+    }
+
+    #[test]
+    fn role_details_report_single_current_field() {
+        let details = RoleCompletionDetails::from_description(
+            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off, fast",
+        );
+
+        assert_eq!(details.current_description("model"), "codex-dpcpw/gpt-5.5");
+        assert_eq!(details.current_description("effort"), "xhigh");
+        assert_eq!(details.current_description("verbosity"), "medium");
+        assert_eq!(details.current_description("thinking-summary"), "off");
+        assert_eq!(details.current_description("fast-mode"), "on");
+    }
+
+    #[test]
+    fn role_values_have_descriptions() {
+        let item = role_value_completion("thinking-summary", "detailed");
+
+        assert_eq!(item.value, "detailed");
+        assert_eq!(item.description, "detailed thinking summaries");
     }
 }
