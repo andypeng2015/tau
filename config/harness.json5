@@ -6,6 +6,16 @@
   // Optional named per-role tool overlays. Each entry maps tool name to
   // enabled/disabled and overrides that tool's `enabled_by_default` hint.
   // toolsProfiles: {
+  //   // Built in by default:
+  //   // gpt: {
+  //   //   apply_patch: true,
+  //   //   edit: false,
+  //   //   find: false,
+  //   //   grep: false,
+  //   //   ls: false,
+  //   //   read: false,
+  //   //   write: false,
+  //   // },
   //   read_only: {
   //     shell: false,
   //     write: false,

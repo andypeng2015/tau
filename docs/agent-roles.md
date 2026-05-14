@@ -38,6 +38,16 @@ Tool profiles themselves live in `harness.json5` under `toolsProfiles`:
 ```json5
 {
   toolsProfiles: {
+    // Built in by default: prefer patch-style file mutation for GPT-family models.
+    gpt: {
+      apply_patch: true,
+      edit: false,
+      find: false,
+      grep: false,
+      ls: false,
+      read: false,
+      write: false,
+    },
     full: {},
     read_only: {
       shell: false,
@@ -49,7 +59,9 @@ Tool profiles themselves live in `harness.json5` under `toolsProfiles`:
 ```
 
 When a role selects `toolsProfile`, each listed tool name overrides that
-tool's extension-provided `enabled_by_default` setting.
+tool's extension-provided `enabled_by_default` setting. Tau includes a built-in
+`gpt` profile that enables `apply_patch` and disables direct file/search tools
+(`edit`, `write`, `read`, `grep`, `find`, and `ls`).
 
 Missing fields use Tau's hardcoded defaults for the selected model.
 

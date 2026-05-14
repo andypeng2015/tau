@@ -124,6 +124,18 @@ fn harness_settings_user_override_wins_over_built_in() {
 }
 
 #[test]
+fn harness_settings_built_in_gpt_tools_profile() {
+    let s = HarnessSettings::built_in();
+    assert_eq!(s.tools_profiles["gpt"]["apply_patch"], true);
+    assert_eq!(s.tools_profiles["gpt"]["edit"], false);
+    assert_eq!(s.tools_profiles["gpt"]["find"], false);
+    assert_eq!(s.tools_profiles["gpt"]["grep"], false);
+    assert_eq!(s.tools_profiles["gpt"]["ls"], false);
+    assert_eq!(s.tools_profiles["gpt"]["read"], false);
+    assert_eq!(s.tools_profiles["gpt"]["write"], false);
+}
+
+#[test]
 fn harness_settings_load_tools_profiles() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
@@ -131,6 +143,9 @@ fn harness_settings_load_tools_profiles() {
         dir.join("harness.json5"),
         r#"{
                 toolsProfiles: {
+                    gpt: {
+                        edit: true,
+                    },
                     read_only: {
                         shell: false,
                         write: false,
@@ -143,6 +158,13 @@ fn harness_settings_load_tools_profiles() {
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     assert!(!s.tools_profiles["read_only"]["shell"]);
     assert!(!s.tools_profiles["read_only"]["write"]);
+    assert!(s.tools_profiles["gpt"]["apply_patch"]);
+    assert!(s.tools_profiles["gpt"]["edit"]);
+    assert!(!s.tools_profiles["gpt"]["find"]);
+    assert!(!s.tools_profiles["gpt"]["grep"]);
+    assert!(!s.tools_profiles["gpt"]["ls"]);
+    assert!(!s.tools_profiles["gpt"]["read"]);
+    assert!(!s.tools_profiles["gpt"]["write"]);
 }
 
 #[test]

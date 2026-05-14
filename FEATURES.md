@@ -122,7 +122,9 @@ defaultRoles: {
 
 Roles can also select a named `toolsProfile`. Profiles live in
 `harness.json5` under `toolsProfiles` and map tool names to booleans,
-overriding each tool's extension-declared `enabled_by_default` hint.
+overriding each tool's extension-declared `enabled_by_default` hint. Tau ships
+a built-in `gpt` profile that enables `apply_patch` while disabling direct
+file/search tools (`edit`, `write`, `read`, `grep`, `find`, and `ls`).
 
 `/model <role>` switches roles; `/role <role> <setting> <value>` edits role
 settings, with built-in/configured role overrides persisted. See

@@ -277,6 +277,30 @@ pub type ToolsProfile = HashMap<ToolName, bool>;
 /// All named tools-profiles loaded from `harness.json5`.
 pub type ToolsProfiles = HashMap<String, ToolsProfile>;
 
+fn default_tools_profiles() -> ToolsProfiles {
+    HashMap::from([(
+        "gpt".to_owned(),
+        HashMap::from([
+            (ToolName::new("apply_patch"), true),
+            (ToolName::new("edit"), false),
+            (ToolName::new("find"), false),
+            (ToolName::new("grep"), false),
+            (ToolName::new("ls"), false),
+            (ToolName::new("read"), false),
+            (ToolName::new("write"), false),
+        ]),
+    )])
+}
+
+fn merge_default_tools_profiles(profiles: &mut ToolsProfiles) {
+    for (name, built_in_profile) in default_tools_profiles() {
+        let profile = profiles.entry(name).or_default();
+        for (tool_name, enabled) in built_in_profile {
+            profile.entry(tool_name).or_insert(enabled);
+        }
+    }
+}
+
 /// Harness/agent settings loaded from `harness.json5`.
 ///
 /// Has no `Default` impl on purpose — the baseline lives in
@@ -330,7 +354,9 @@ impl HarnessSettings {
     /// The fully-populated baseline that ships with tau, parsed from
     /// the embedded `built-in.harness.json5`.
     pub fn built_in() -> Self {
-        parse_built_in("built-in.harness.json5", BUILT_IN_HARNESS_JSON5)
+        let mut s: Self = parse_built_in("built-in.harness.json5", BUILT_IN_HARNESS_JSON5);
+        merge_default_tools_profiles(&mut s.tools_profiles);
+        s
     }
 
     #[must_use]
@@ -892,11 +918,13 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
-    load_json5_layered_with_builtin(
+    let mut settings: HarnessSettings = load_json5_layered_with_builtin(
         BUILT_IN_HARNESS_JSON5,
         dirs.config_dir.as_deref(),
         "harness",
-    )
+    )?;
+    merge_default_tools_profiles(&mut settings.tools_profiles);
+    Ok(settings)
 }
 
 /// Loads the model registry from `models.json5` with `models.d/*.json5`
