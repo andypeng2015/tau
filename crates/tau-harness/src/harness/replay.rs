@@ -94,9 +94,9 @@ impl Harness {
                 .send_to(client_id, None, Frame::Event(selected_event));
         }
         let context_event = Event::HarnessContextUsageChanged(HarnessContextUsageChanged {
-            input_tokens: self.context_input_tokens,
-            cached_tokens: self.context_cached_tokens,
-            percent_used: self.context_percent_used,
+            input_tokens: self.current_session_state.context_input_tokens,
+            cached_tokens: self.current_session_state.context_cached_tokens,
+            percent_used: self.current_session_state.context_percent_used,
         });
         if selector_matches_event(selectors, &context_event) {
             let _ = self

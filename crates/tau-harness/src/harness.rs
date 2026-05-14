@@ -67,6 +67,22 @@ mod skill_tool;
 /// Connection ID used for harness-owned tools (e.g. the `skill` tool).
 pub(crate) const HARNESS_CONNECTION_ID: &str = "__harness__";
 
+#[derive(Debug, Default)]
+pub(crate) struct CurrentSessionState {
+    /// Input tokens consumed by the most recent agent response, if
+    /// the provider reported it. `None` until the first usage report
+    /// for the current model.
+    pub(crate) context_input_tokens: Option<u64>,
+    /// Cached input tokens consumed by the most recent agent
+    /// response, if the provider reported them.
+    pub(crate) context_cached_tokens: Option<u64>,
+    /// Percentage of the selected model's context window currently
+    /// used. `None` when the model's context window is unknown.
+    pub(crate) context_percent_used: Option<u8>,
+    /// Current-session token usage totals.
+    pub(crate) token_usage: TokenUsageStats,
+}
+
 pub(crate) struct Harness {
     /// Sender side of the harness's central event channel. Cloned into
     /// each per-connection reader thread so they can feed
@@ -198,18 +214,10 @@ pub(crate) struct Harness {
     /// reseeded on every `UiModelSelect` from
     /// [`selected_params_for_model`].
     pub(crate) selected_params: tau_proto::ModelParams,
-    /// Input tokens consumed by the most recent agent response, if
-    /// the provider reported it. `None` until the first usage report
-    /// for the current model.
-    pub(crate) context_input_tokens: Option<u64>,
-    /// Cached input tokens consumed by the most recent agent
-    /// response, if the provider reported them.
-    pub(crate) context_cached_tokens: Option<u64>,
-    /// Percentage of the selected model's context window currently
-    /// used. `None` when the model's context window is unknown.
-    pub(crate) context_percent_used: Option<u8>,
-    /// Current-session token usage totals.
-    pub(crate) token_usage: TokenUsageStats,
+    /// State that belongs to exactly the currently bound session.
+    /// Keep session-scoped counters here instead of as top-level
+    /// harness fields, so `/new` resets them with one assignment.
+    pub(crate) current_session_state: CurrentSessionState,
     /// Provider/model for each prompt sent to the agent, used to
     /// attribute the corresponding finished response even if the user
     /// switches models while it is in flight.
@@ -437,10 +445,7 @@ impl Harness {
             available_models,
             selected_model,
             selected_params,
-            context_input_tokens: None,
-            context_cached_tokens: None,
-            context_percent_used: None,
-            token_usage: TokenUsageStats::default(),
+            current_session_state: CurrentSessionState::default(),
             prompt_models: std::collections::HashMap::new(),
             prompt_fingerprints: std::collections::HashMap::new(),
             model_registry,
@@ -654,10 +659,7 @@ impl Harness {
             available_models,
             selected_model,
             selected_params,
-            context_input_tokens: None,
-            context_cached_tokens: None,
-            context_percent_used: None,
-            token_usage: TokenUsageStats::default(),
+            current_session_state: CurrentSessionState::default(),
             prompt_models: std::collections::HashMap::new(),
             prompt_fingerprints: std::collections::HashMap::new(),
             model_registry,
@@ -1738,9 +1740,9 @@ impl Harness {
                         &model,
                     );
                     save_harness_state(&self.dirs, Some(&model), self.selected_params);
-                    self.context_input_tokens = None;
-                    self.context_cached_tokens = None;
-                    self.context_percent_used = None;
+                    self.current_session_state.context_input_tokens = None;
+                    self.current_session_state.context_cached_tokens = None;
+                    self.current_session_state.context_percent_used = None;
                     let context_window = model_context_window(&self.model_registry, &model);
                     let effort_levels = efforts_for_model(&self.model_registry, &model);
                     let verbosity_levels = verbosities_for_model(&self.model_registry, &model);
@@ -1756,9 +1758,9 @@ impl Harness {
                     self.publish_event(
                         None,
                         Event::HarnessContextUsageChanged(HarnessContextUsageChanged {
-                            input_tokens: self.context_input_tokens,
-                            cached_tokens: self.context_cached_tokens,
-                            percent_used: self.context_percent_used,
+                            input_tokens: self.current_session_state.context_input_tokens,
+                            cached_tokens: self.current_session_state.context_cached_tokens,
+                            percent_used: self.current_session_state.context_percent_used,
                         }),
                     );
                     self.publish_event(
@@ -2889,10 +2891,7 @@ impl Harness {
         // before `SessionStarted` so clients recreating status UI for
         // the new session do not inherit the previous transcript's
         // cumulative totals.
-        self.context_input_tokens = None;
-        self.context_cached_tokens = None;
-        self.context_percent_used = None;
-        self.token_usage = TokenUsageStats::default();
+        self.current_session_state = CurrentSessionState::default();
 
         // Rebind the default conversation to the new session and drop
         // any side conversations that were tied to the old one. Without
@@ -3315,7 +3314,7 @@ impl Harness {
         // Publish SessionPromptCreated — both the agent and UI see it.
         let model = self.selected_model.clone();
         if let Some(model) = model.as_ref() {
-            self.token_usage.start_request(model);
+            self.current_session_state.token_usage.start_request(model);
             self.prompt_models
                 .insert(session_prompt_id.clone(), model.clone());
         }
@@ -3455,14 +3454,18 @@ impl Harness {
             let sent_tokens = response.input_tokens.unwrap_or(0);
             let cached_tokens = response.cached_tokens.unwrap_or(0);
             let received_tokens = response.output_tokens.unwrap_or(0);
-            self.token_usage.add_sent(model, sent_tokens, cached_tokens);
-            self.token_usage.add_received(model, received_tokens);
+            self.current_session_state
+                .token_usage
+                .add_sent(model, sent_tokens, cached_tokens);
+            self.current_session_state
+                .token_usage
+                .add_received(model, received_tokens);
             response.token_usage = Some(AgentTokenUsage {
                 model: Some(model.clone()),
                 prompt_sent_tokens: sent_tokens,
                 prompt_cached_tokens: cached_tokens,
                 response_received_tokens: received_tokens,
-                stats: self.token_usage.clone(),
+                stats: self.current_session_state.token_usage.clone(),
             });
         }
         // Stamp the live-header `display` descriptor on each tool
@@ -3679,15 +3682,15 @@ impl Harness {
             (Some(w), Some(tokens)) => Some(context_percent_used(tokens, w)),
             _ => None,
         };
-        if self.context_input_tokens == input_tokens
-            && self.context_cached_tokens == cached_tokens
-            && self.context_percent_used == percent_used
+        if self.current_session_state.context_input_tokens == input_tokens
+            && self.current_session_state.context_cached_tokens == cached_tokens
+            && self.current_session_state.context_percent_used == percent_used
         {
             return;
         }
-        self.context_input_tokens = input_tokens;
-        self.context_cached_tokens = cached_tokens;
-        self.context_percent_used = percent_used;
+        self.current_session_state.context_input_tokens = input_tokens;
+        self.current_session_state.context_cached_tokens = cached_tokens;
+        self.current_session_state.context_percent_used = percent_used;
         self.publish_event(
             None,
             Event::HarnessContextUsageChanged(HarnessContextUsageChanged {
