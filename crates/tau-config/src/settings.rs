@@ -404,7 +404,6 @@ fn default_agent_roles() -> HashMap<String, AgentRole> {
         "deep".to_owned(),
         AgentRole {
             effort: Some(tau_proto::Effort::XHigh),
-            verbosity: Some(tau_proto::Verbosity::High),
             thinking_summary: Some(tau_proto::ThinkingSummary::Detailed),
             ..AgentRole::default()
         },
@@ -413,7 +412,6 @@ fn default_agent_roles() -> HashMap<String, AgentRole> {
         "rush".to_owned(),
         AgentRole {
             effort: Some(tau_proto::Effort::Low),
-            verbosity: Some(tau_proto::Verbosity::Low),
             thinking_summary: Some(tau_proto::ThinkingSummary::Off),
             ..AgentRole::default()
         },
