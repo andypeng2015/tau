@@ -5,6 +5,7 @@ use tau_proto::{CborValue, Event, ToolError, ToolProgress, ToolResult};
 use crate::config::ShellConfig;
 use crate::display::{ToolFailure, ToolOutput};
 
+pub(crate) mod apply_patch;
 pub(crate) mod edit;
 pub(crate) mod find;
 pub(crate) mod grep;
@@ -18,6 +19,7 @@ pub const ECHO_TOOL_NAME: &str = "echo";
 pub const READ_TOOL_NAME: &str = "read";
 pub const WRITE_TOOL_NAME: &str = "write";
 pub const EDIT_TOOL_NAME: &str = "edit";
+pub const APPLY_PATCH_TOOL_NAME: &str = "apply_patch";
 pub const SHELL_TOOL_NAME: &str = "shell";
 pub const GREP_TOOL_NAME: &str = "grep";
 pub const FIND_TOOL_NAME: &str = "find";
@@ -49,6 +51,9 @@ pub(crate) fn execute_tool(
     }
     if invoke.tool_name == EDIT_TOOL_NAME {
         return wrap_pure(invoke, error_details, edit::edit_file);
+    }
+    if invoke.tool_name == APPLY_PATCH_TOOL_NAME {
+        return wrap_pure(invoke, error_details, apply_patch::apply_patch);
     }
     if invoke.tool_name == GREP_TOOL_NAME {
         return wrap_pure(invoke, error_details, grep::run_grep);

@@ -136,7 +136,7 @@ fn build_request_first_turn_replays_full_history_without_chain() {
     assert_eq!(body["store"], false);
     assert!(
         body.as_object()
-            .unwrap()
+            .expect("request body is an object")
             .get("previous_response_id")
             .is_none()
     );
@@ -228,7 +228,7 @@ fn build_request_chain_with_oob_index_falls_back_to_full_replay() {
     assert_eq!(body["store"], false);
     assert!(
         body.as_object()
-            .unwrap()
+            .expect("request body is an object")
             .get("previous_response_id")
             .is_none()
     );
@@ -588,7 +588,11 @@ fn build_request_omits_phase_when_unsupported() {
         .find(|i| i["role"].as_str() == Some("assistant"))
         .expect("assistant message");
     assert!(
-        assistant_item.as_object().unwrap().get("phase").is_none(),
+        assistant_item
+            .as_object()
+            .expect("assistant item is an object")
+            .get("phase")
+            .is_none(),
         "phase must not be sent when the backend doesn't advertise support"
     );
 }
@@ -747,7 +751,10 @@ fn build_request_omits_include_when_encrypted_reasoning_unsupported() {
     };
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
     assert!(
-        body.as_object().unwrap().get("include").is_none(),
+        body.as_object()
+            .expect("request body is an object")
+            .get("include")
+            .is_none(),
         "include must be omitted when the provider doesn't advertise support"
     );
 }
@@ -1211,9 +1218,7 @@ fn apply_event_error_top_level_code_is_propagated() {
                 "missing (type=...) suffix in {body:?}",
             );
             assert!(
-                !crate::common::is_account_limit_body(&body)
-                    .then_some(())
-                    .is_none(),
+                crate::common::is_account_limit_body(&body),
                 "is_account_limit_body must classify this body as a cap"
             );
         }

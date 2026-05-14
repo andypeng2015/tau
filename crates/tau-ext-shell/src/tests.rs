@@ -3,7 +3,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::{fs, thread};
 
-use tau_proto::{CborValue, EventName, Frame, FrameReader, FrameWriter, Message, ToolInvoke};
+use tau_proto::{
+    CborValue, EventName, Frame, FrameReader, FrameWriter, Message, ToolDisplayPayload, ToolInvoke,
+};
 use tempfile::TempDir;
 
 use super::*;
@@ -17,7 +19,8 @@ use crate::tools::ls::run_ls;
 use crate::tools::read::{read_file, slice_lines};
 use crate::tools::shell::{command_details_value, run_command};
 use crate::tools::{
-    EDIT_TOOL_NAME, FIND_TOOL_NAME, LS_TOOL_NAME, READ_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME,
+    APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, FIND_TOOL_NAME, LS_TOOL_NAME, READ_TOOL_NAME,
+    SHELL_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use crate::truncate::{MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, truncate_head, truncate_tail};
 
@@ -136,6 +139,7 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
         EventName::TOOL_REGISTER, // read
         EventName::TOOL_REGISTER, // write
         EventName::TOOL_REGISTER, // edit
+        EventName::TOOL_REGISTER, // apply_patch
         EventName::TOOL_REGISTER, // grep
         EventName::TOOL_REGISTER, // find
         EventName::TOOL_REGISTER, // ls
@@ -467,6 +471,398 @@ fn extension_writes_file_creates_directories() {
         fs::read_to_string(&file_path).expect("read back"),
         "deep content"
     );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_updates_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("patch.txt");
+    fs::write(&file_path, "before\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n@@\n-before\n+after\n*** End Patch",
+        file_path.display()
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-1".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    let Event::ToolResult(result) = result else {
+        panic!("expected tool result");
+    };
+    assert_eq!(result.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "after\n"
+    );
+    assert_eq!(
+        result.result,
+        CborValue::Text(format!(
+            "Success. Updated the following files:\nM {}",
+            file_path.display()
+        ))
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_reports_context_mismatch_without_writing() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("patch.txt");
+    fs::write(&file_path, "before\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n@@\n-missing\n+after\n*** End Patch",
+        file_path.display()
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-2".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert!(error.message.contains("Failed to find expected lines"));
+    assert!(
+        error.details.is_none(),
+        "apply_patch errors should not echo patch text"
+    );
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "before\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_move_renames_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let src = tempdir.path().join("old.txt");
+    let dst = tempdir.path().join("new.txt");
+    fs::write(&src, "before\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n*** Move to: {}\n@@\n-before\n+after\n*** End Patch",
+        src.display(),
+        dst.display()
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-3".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    assert!(matches!(result, Event::ToolResult(_)));
+    assert!(!src.exists(), "source path should be removed after move");
+    assert_eq!(fs::read_to_string(&dst).expect("read back"), "after\n");
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_applies_multiple_operations() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let add_path = tempdir.path().join("nested/new.txt");
+    let modify_path = tempdir.path().join("modify.txt");
+    let delete_path = tempdir.path().join("delete.txt");
+    fs::write(&modify_path, "line1\nline2\n").expect("write modify");
+    fs::write(&delete_path, "obsolete\n").expect("write delete");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: {}\n+created\n*** Delete File: {}\n*** Update File: {}\n@@\n-line2\n+changed\n*** End Patch",
+        add_path.display(),
+        delete_path.display(),
+        modify_path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-4".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    let Event::ToolResult(result) = result else {
+        panic!("expected tool result");
+    };
+    assert_eq!(result.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert_eq!(
+        fs::read_to_string(&add_path).expect("read added"),
+        "created\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&modify_path).expect("read modified"),
+        "line1\nchanged\n"
+    );
+    assert!(!delete_path.exists(), "deleted path should be removed");
+    assert_eq!(
+        result.result,
+        CborValue::Text(format!(
+            "Success. Updated the following files:\nA {}\nM {}\nD {}",
+            add_path.display(),
+            modify_path.display(),
+            delete_path.display(),
+        ))
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_applies_multiple_chunks() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let target_path = tempdir.path().join("multi.txt");
+    fs::write(&target_path, "line1\nline2\nline3\nline4\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n@@\n-line2\n+changed2\n@@\n-line4\n+changed4\n*** End Patch",
+        target_path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-5".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    assert!(matches!(result, Event::ToolResult(_)));
+    assert_eq!(
+        fs::read_to_string(&target_path).expect("read back"),
+        "line1\nchanged2\nline3\nchanged4\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_failure_after_partial_success_leaves_changes() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let created_path = tempdir.path().join("created.txt");
+    let missing_path = tempdir.path().join("missing.txt");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: {}\n+hello\n*** Update File: {}\n@@\n-old\n+new\n*** End Patch",
+        created_path.display(),
+        missing_path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-5b".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert!(error.message.contains("Failed to read file to update"));
+    assert!(
+        error.details.is_none(),
+        "apply_patch errors should not echo patch text"
+    );
+    let display = error.display.expect("error display");
+    assert_eq!(
+        display.payload,
+        Some(ToolDisplayPayload::Text {
+            text: format!(
+                "Partial changes applied before failure:\nA {}",
+                created_path.display()
+            ),
+        })
+    );
+    assert_eq!(
+        fs::read_to_string(&created_path).expect("created file should remain"),
+        "hello\n"
+    );
+    assert!(!missing_path.exists());
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_requires_existing_file_for_update() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let missing_path = tempdir.path().join("missing.txt");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n@@\n-old\n+new\n*** End Patch",
+        missing_path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-6".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert!(error.message.contains("Failed to read file to update"));
+    assert!(
+        error.details.is_none(),
+        "apply_patch errors should not echo patch text"
+    );
+    assert!(
+        error
+            .message
+            .contains(missing_path.to_string_lossy().as_ref())
+    );
+    assert!(!missing_path.exists());
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_add_overwrites_existing_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("duplicate.txt");
+    fs::write(&path, "old content\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: {}\n+new content\n*** End Patch",
+        path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-7".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    assert!(matches!(result, Event::ToolResult(_)));
+    assert_eq!(
+        fs::read_to_string(&path).expect("read back"),
+        "new content\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn extension_apply_patch_update_appends_trailing_newline() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("no_newline.txt");
+    fs::write(&path, "no newline at end").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n@@\n-no newline at end\n+first line\n+second line\n*** End Patch",
+        path.display(),
+    );
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-patch-8".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    assert!(matches!(result, Event::ToolResult(_)));
+    let contents = fs::read_to_string(&path).expect("read back");
+    assert!(contents.ends_with('\n'));
+    assert_eq!(contents, "first line\nsecond line\n");
 
     writer
         .write_frame(&disconnect_frame(None))

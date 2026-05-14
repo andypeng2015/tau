@@ -51,10 +51,7 @@ where
     let mut pending: HashMap<String, (tau_proto::ToolCallId, tau_proto::ToolName)> = HashMap::new();
     let mut next_query_id: u64 = 0;
 
-    loop {
-        let Some(frame) = reader.read_frame()? else {
-            break;
-        };
+    while let Some(frame) = reader.read_frame()? {
         let (log_id, inner) = frame.peel_log();
         match inner {
             Frame::Event(Event::ToolInvoke(invoke)) => {
@@ -313,19 +310,22 @@ mod tests {
 
     #[test]
     fn rejects_non_map_arguments() {
-        let err = parse_args(&CborValue::Text("nope".to_owned())).unwrap_err();
+        let err = parse_args(&CborValue::Text("nope".to_owned()))
+            .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("arguments must be an object"), "got: {err}");
     }
 
     #[test]
     fn rejects_missing_prompt() {
-        let err = parse_args(&args(&[("task_name", text("audit"))])).unwrap_err();
+        let err = parse_args(&args(&[("task_name", text("audit"))]))
+            .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("prompt"), "got: {err}");
     }
 
     #[test]
     fn rejects_missing_task_name() {
-        let err = parse_args(&args(&[("prompt", text("do the thing"))])).unwrap_err();
+        let err = parse_args(&args(&[("prompt", text("do the thing"))]))
+            .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("task_name"), "got: {err}");
     }
 
@@ -335,7 +335,7 @@ mod tests {
             ("task_name", text("audit")),
             ("prompt", text("   \n")),
         ]))
-        .unwrap_err();
+        .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("`prompt` must not be empty"), "got: {err}");
     }
 
@@ -345,7 +345,7 @@ mod tests {
             ("task_name", text("")),
             ("prompt", text("do the thing")),
         ]))
-        .unwrap_err();
+        .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("`task_name` must not be empty"), "got: {err}");
     }
 
@@ -355,7 +355,7 @@ mod tests {
             ("task_name", text("audit")),
             ("prompt", CborValue::Integer(42.into())),
         ]))
-        .unwrap_err();
+        .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("`prompt` must be a string"), "got: {err}");
     }
 
@@ -365,7 +365,7 @@ mod tests {
             ("task_name", CborValue::Bool(false)),
             ("prompt", text("do the thing")),
         ]))
-        .unwrap_err();
+        .expect_err("parse_args should reject invalid arguments");
         assert!(err.contains("`task_name` must be a string"), "got: {err}");
     }
 }

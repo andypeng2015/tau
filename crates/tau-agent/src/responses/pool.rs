@@ -514,7 +514,7 @@ mod tests {
                 .expect("turn ok");
         }
 
-        let state = server.lock().unwrap();
+        let state = server.lock().expect("server state lock");
         assert_eq!(
             state.upgrade_count, 2,
             "expected one upgrade per distinct session_id (alternating A/B/A — reuses A's socket)"
@@ -543,12 +543,12 @@ mod tests {
             run_turn(&mut pool, &config, session, &mut on_update);
         }
         assert_eq!(pool.len(), 2);
-        assert_eq!(server.lock().unwrap().upgrade_count, 3);
+        assert_eq!(server.lock().expect("server state lock").upgrade_count, 3);
 
         // Touching A again must re-upgrade (its old socket got
         // evicted on C's release).
         run_turn(&mut pool, &config, "a", &mut on_update);
-        assert_eq!(server.lock().unwrap().upgrade_count, 4);
+        assert_eq!(server.lock().expect("server state lock").upgrade_count, 4);
     }
 
     /// Connections older than `MAX_CONNECTION_AGE` must be
@@ -563,7 +563,7 @@ mod tests {
 
         // First turn opens connection #1.
         run_turn(&mut pool, &config, "session-aged", &mut on_update);
-        assert_eq!(server.lock().unwrap().upgrade_count, 1);
+        assert_eq!(server.lock().expect("server state lock").upgrade_count, 1);
 
         // Forcibly age the cached connection past the threshold.
         let key = PoolKey::for_request(&config, "session-aged");
@@ -577,7 +577,7 @@ mod tests {
         // Next turn must reopen rather than send on the stale socket.
         run_turn(&mut pool, &config, "session-aged", &mut on_update);
         assert_eq!(
-            server.lock().unwrap().upgrade_count,
+            server.lock().expect("server state lock").upgrade_count,
             2,
             "aged-out connection should have been replaced"
         );
@@ -950,7 +950,7 @@ mod tests {
         };
         let conn_idx;
         {
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock().expect("server state lock");
             s.upgrade_count += 1;
             conn_idx = s.turns_per_connection.len();
             s.turns_per_connection.push(0);
@@ -967,7 +967,7 @@ mod tests {
                     let parsed: serde_json::Value =
                         serde_json::from_str(text.as_str()).unwrap_or(serde_json::Value::Null);
                     let fault_now = {
-                        let mut s = state.lock().unwrap();
+                        let mut s = state.lock().expect("server state lock");
                         s.requests.push(parsed.clone());
                         s.turns_per_connection[conn_idx] += 1;
                         s.fault

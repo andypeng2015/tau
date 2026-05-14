@@ -107,10 +107,7 @@ where
         .ready_message("test dummy tools ready")
         .run(&mut writer)?;
 
-    loop {
-        let Some(frame) = reader.read_frame()? else {
-            break;
-        };
+    while let Some(frame) = reader.read_frame()? {
         let (_, inner) = frame.peel_log();
         match inner {
             Frame::Message(Message::InterceptRequest(req)) => {

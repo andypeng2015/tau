@@ -141,8 +141,8 @@ fn harness_settings_load_tools_profiles() {
     .expect("write");
 
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
-    assert_eq!(s.tools_profiles["read_only"]["shell"], false);
-    assert_eq!(s.tools_profiles["read_only"]["write"], false);
+    assert!(!s.tools_profiles["read_only"]["shell"]);
+    assert!(!s.tools_profiles["read_only"]["write"]);
 }
 
 #[test]

@@ -88,7 +88,8 @@ fn sleep_or_abort_targeted_cancel_for_other_spid_does_not_abort() {
         canceled_spids: &mut canceled,
     };
 
-    tx.send(cancel_event(Some("other-spid"))).unwrap();
+    tx.send(cancel_event(Some("other-spid")))
+        .expect("send cancel event");
     let outcome = ctx.sleep_or_abort(Duration::from_millis(50), "current-spid");
     assert!(matches!(outcome, SleepOutcome::Elapsed));
     assert!(
@@ -109,7 +110,8 @@ fn sleep_or_abort_targeted_cancel_for_current_spid_aborts() {
         canceled_spids: &mut canceled,
     };
 
-    tx.send(cancel_event(Some("current-spid"))).unwrap();
+    tx.send(cancel_event(Some("current-spid")))
+        .expect("send cancel event");
     let outcome = ctx.sleep_or_abort(Duration::from_secs(5), "current-spid");
     assert!(matches!(outcome, SleepOutcome::Aborted));
     assert_eq!(
@@ -133,7 +135,7 @@ fn sleep_or_abort_broadcast_cancel_aborts() {
         canceled_spids: &mut canceled,
     };
 
-    tx.send(cancel_event(None)).unwrap();
+    tx.send(cancel_event(None)).expect("send cancel event");
     let outcome = ctx.sleep_or_abort(Duration::from_secs(5), "current-spid");
     assert!(matches!(outcome, SleepOutcome::Aborted));
     assert_eq!(deferred.len(), 1);

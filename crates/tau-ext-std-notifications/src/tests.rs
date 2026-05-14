@@ -337,12 +337,11 @@ fn idle_timeout_requests_summary_then_falls_back() {
     let payload: serde_json::Value =
         serde_json::from_str(&osc.value).expect("fallback payload is JSON");
     assert_eq!(payload["urgency"], "normal");
-    assert_eq!(
+    assert!(
         payload["title"]
             .as_str()
             .expect("title is a string")
             .starts_with("Agent idle: "),
-        true,
         "title should start with `Agent idle: `, got {:?}",
         payload["title"],
     );

@@ -1,7 +1,7 @@
 //! Filesystem and shell tool extension.
 //!
-//! Provides `read`, `write`, `edit`, `grep`, `find`, `ls`, and
-//! `shell` tools.
+//! Provides `read`, `write`, `edit`, `apply_patch`, `grep`, `find`,
+//! `ls`, and `shell` tools.
 //!
 //! The `echo` tool is available under `cfg(test)` or the
 //! `echo-agent` cargo feature for harness-side echo-agent tests.
@@ -34,8 +34,8 @@ use crate::semaphore::Semaphore;
 #[cfg(any(test, feature = "echo-agent"))]
 use crate::tools::ECHO_TOOL_NAME;
 use crate::tools::{
-    EDIT_TOOL_NAME, FIND_TOOL_NAME, GREP_TOOL_NAME, LS_TOOL_NAME, READ_TOOL_NAME, SHELL_TOOL_NAME,
-    WRITE_TOOL_NAME, execute_tool,
+    APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, FIND_TOOL_NAME, GREP_TOOL_NAME, LS_TOOL_NAME,
+    READ_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME, execute_tool,
 };
 
 /// Runs the extension on stdin/stdout.
@@ -186,6 +186,21 @@ where
             })),
             format: None,
             enabled_by_default: true,
+            side_effects: ToolSideEffects::Mutating,
+        },
+        ToolSpec {
+            name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            description: Some(
+                "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+                    .to_owned(),
+            ),
+            tool_type: tau_proto::ToolType::Custom,
+            parameters: None,
+            format: Some(tau_proto::ToolFormat::Grammar {
+                syntax: tau_proto::ToolGrammarSyntax::Lark,
+                definition: crate::tools::apply_patch::APPLY_PATCH_LARK_GRAMMAR.to_owned(),
+            }),
+            enabled_by_default: false,
             side_effects: ToolSideEffects::Mutating,
         },
         ToolSpec {
