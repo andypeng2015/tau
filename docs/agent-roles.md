@@ -22,12 +22,10 @@ Roles live in `models.json5` under `defaultRoles`:
     smart: {},
     deep: {
       effort: "xhigh",
-      verbosity: "high",
       thinkingSummary: "detailed",
     },
     rush: {
       effort: "low",
-      verbosity: "low",
       thinkingSummary: "off",
     },
   },
@@ -36,7 +34,7 @@ Roles live in `models.json5` under `defaultRoles`:
 
 Missing fields inherit from the `default` role. Fields still missing after that use Tau's hardcoded defaults for the selected model.
 
-Tau ships built-in `default`, `smart`, `deep`, and `rush` roles. `smart` inherits `default`; `deep` asks for higher reasoning/verbosity; `rush` asks for lower reasoning/verbosity and Fast mode.
+Tau ships built-in `default`, `smart`, `deep`, and `rush` roles. `smart` inherits `default`; `deep` asks for higher reasoning with detailed thinking summaries; `rush` asks for lower reasoning and Fast mode. Both inherit the default low verbosity unless overridden.
 
 
 ## Selecting a role

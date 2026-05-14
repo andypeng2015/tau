@@ -9,13 +9,11 @@
     // Deeper reasoning defaults.
     deep: {
       effort: "xhigh",
-      verbosity: "high",
       thinkingSummary: "detailed",
     },
     // Fast, cheaper everyday defaults.
     rush: {
       effort: "low",
-      verbosity: "low",
       thinkingSummary: "off",
     },
   },

@@ -116,8 +116,8 @@ Defaults are normally selected through agent roles in `models.json5`:
 defaultRoles: {
   default: { model: "openai/gpt-5.5", effort: "medium" },
   smart: {},
-  deep: { effort: "xhigh", verbosity: "high", thinkingSummary: "detailed" },
-  rush: { effort: "low", verbosity: "low", fastMode: true },
+  deep: { effort: "xhigh", thinkingSummary: "detailed" },
+  rush: { effort: "low", fastMode: true },
 },
 ```
 
