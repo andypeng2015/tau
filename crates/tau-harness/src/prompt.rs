@@ -198,7 +198,10 @@ pub(crate) fn assemble_conversation_from(
                 });
             }
             SessionEntry::ToolActivity(activity) => match &activity.outcome {
-                ToolActivityOutcome::Requested { arguments } => {
+                ToolActivityOutcome::Requested {
+                    tool_type,
+                    arguments,
+                } => {
                     // Tool use goes into the preceding assistant message.
                     // If there's no assistant message yet, create one.
                     let needs_new = messages
@@ -215,6 +218,7 @@ pub(crate) fn assemble_conversation_from(
                         last.content.push(ContentBlock::ToolUse {
                             id: activity.call_id.clone(),
                             name: activity.tool_name.clone().into(),
+                            tool_type: *tool_type,
                             input: arguments.clone(),
                         });
                     }
@@ -350,6 +354,7 @@ mod tests {
         tree.apply_event(&Event::ToolRequest(ToolRequest {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new("shell"),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Null,
             originator: tau_proto::PromptOriginator::User,
         }));

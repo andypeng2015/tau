@@ -3796,7 +3796,9 @@ impl Harness {
             .map(|spec| ToolDefinition {
                 name: spec.name.clone(),
                 description: spec.description.clone(),
+                tool_type: spec.tool_type,
                 parameters: spec.parameters.clone(),
+                format: spec.format.clone(),
             })
             .collect()
     }
@@ -4481,6 +4483,7 @@ impl Harness {
             let request = ToolRequest {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
+                tool_type: call.tool_type,
                 arguments: call.arguments.clone(),
                 originator: tau_proto::PromptOriginator::User,
             };
@@ -4518,6 +4521,7 @@ impl Harness {
         let request = ToolRequest {
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
+            tool_type: call.tool_type,
             arguments: call.arguments.clone(),
             originator: tau_proto::PromptOriginator::User,
         };
@@ -4592,6 +4596,7 @@ impl Harness {
             Event::ToolRequest(ToolRequest {
                 call_id: call_id_owned.clone(),
                 tool_name: placeholder.clone(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: arguments.clone(),
                 originator: tau_proto::PromptOriginator::User,
             }),

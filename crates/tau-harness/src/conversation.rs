@@ -312,7 +312,9 @@ mod tests {
         ToolDefinition {
             name: ToolName::new(name),
             description: None,
+            tool_type: tau_proto::ToolType::Function,
             parameters: None,
+            format: None,
         }
     }
 

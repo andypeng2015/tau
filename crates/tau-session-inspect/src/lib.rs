@@ -163,7 +163,7 @@ pub fn format_session_entry(entry: &SessionEntry) -> String {
             format!("agent: {body}")
         }
         SessionEntry::ToolActivity(a) => match &a.outcome {
-            ToolActivityOutcome::Requested { arguments } => {
+            ToolActivityOutcome::Requested { arguments, .. } => {
                 if a.tool_name.as_str() == "skill" {
                     match cbor_map_text(arguments, "action") {
                         Some("search") => {

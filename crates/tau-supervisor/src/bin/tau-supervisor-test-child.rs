@@ -32,7 +32,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     tool: ToolSpec {
                         name: tau_proto::ToolName::new("echo"),
                         description: Some("Echo test payloads".to_owned()),
+                        tool_type: tau_proto::ToolType::Function,
                         parameters: None,
+                        format: None,
                         enabled_by_default: true,
                         side_effects: tau_proto::ToolSideEffects::Pure,
                     },

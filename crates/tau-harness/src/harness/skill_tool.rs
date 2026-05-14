@@ -40,6 +40,7 @@ impl Harness {
                      `action: load` once you have an exact skill name."
                         .to_owned(),
                 ),
+                tool_type: tau_proto::ToolType::Function,
                 parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -64,6 +65,7 @@ impl Harness {
                     },
                     "required": ["action"]
                 })),
+                format: None,
                 enabled_by_default: true,
                 side_effects: tau_proto::ToolSideEffects::Pure,
             },
@@ -97,6 +99,7 @@ impl Harness {
             Event::ToolRequest(ToolRequest {
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
+                tool_type: call.tool_type,
                 arguments: call.arguments.clone(),
                 originator: tau_proto::PromptOriginator::User,
             }),

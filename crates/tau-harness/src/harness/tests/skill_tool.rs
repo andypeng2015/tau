@@ -71,6 +71,7 @@ fn skill_tool_reads_file_content() {
     let call = AgentToolCall {
         id: "call-skill".into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
                 CborValue::Text("action".to_owned()),
@@ -120,6 +121,7 @@ fn skill_tool_returns_error_for_unknown_skill() {
     let call = AgentToolCall {
         id: "call-missing".into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
                 CborValue::Text("action".to_owned()),
@@ -216,6 +218,7 @@ fn skill_load_unknown_attaches_split_name_search_suggestions() {
     let call = AgentToolCall {
         id: "call-miss".into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
                 CborValue::Text("action".to_owned()),
@@ -379,6 +382,7 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
     let call_search = |query: &str, search_content: bool, id: &str| AgentToolCall {
         id: id.into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
                 CborValue::Text("action".to_owned()),
@@ -533,6 +537,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
     let call_search_array = |terms: &[&str], id: &str| AgentToolCall {
         id: id.into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
                 CborValue::Text("action".to_owned()),
@@ -625,6 +630,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
         &AgentToolCall {
             id: "call-empty".into(),
             name: "skill".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![
                 (
                     CborValue::Text("action".to_owned()),
@@ -660,6 +666,7 @@ fn skill_tool_unknown_action_returns_error() {
     let call = AgentToolCall {
         id: "call-bogus".into(),
         name: "skill".into(),
+        tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![(
             CborValue::Text("action".to_owned()),
             CborValue::Text("invoke".to_owned()),

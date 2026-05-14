@@ -6,7 +6,9 @@ fn representative_events() -> Vec<Event> {
             tool: ToolSpec {
                 name: ToolName::new("echo"),
                 description: Some("Echo a payload".to_owned()),
+                tool_type: ToolType::Function,
                 parameters: None,
+                format: None,
                 enabled_by_default: true,
                 side_effects: ToolSideEffects::Pure,
             },
@@ -14,6 +16,7 @@ fn representative_events() -> Vec<Event> {
         Event::ToolRequest(ToolRequest {
             call_id: "call-1".into(),
             tool_name: ToolName::new("echo"),
+            tool_type: ToolType::Function,
             arguments: CborValue::Text("hello".to_owned()),
             originator: PromptOriginator::User,
         }),
@@ -73,7 +76,9 @@ fn representative_events() -> Vec<Event> {
             tools: vec![ToolDefinition {
                 name: ToolName::new("read"),
                 description: Some("Read a file".to_owned()),
+                tool_type: ToolType::Function,
                 parameters: None,
+                format: None,
             }],
             tools_ref: None,
             model: None,
@@ -489,7 +494,9 @@ fn tool_spec_enabled_by_default_defaults_true_when_omitted() {
     let disabled = ToolSpec {
         name: ToolName::new("echo"),
         description: Some("Echo a payload".to_owned()),
+        tool_type: ToolType::Function,
         parameters: None,
+        format: None,
         enabled_by_default: false,
         side_effects: ToolSideEffects::Pure,
     };

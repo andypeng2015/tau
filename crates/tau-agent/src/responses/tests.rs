@@ -383,7 +383,9 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
         description: Some("run shell commands".to_owned()),
+        tool_type: tau_proto::ToolType::Function,
         parameters: None,
+        format: None,
     };
     let messages = [user_text("summarize")];
     let previous_response = Some(PreviousResponse {
@@ -435,7 +437,9 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
         description: None,
+        tool_type: tau_proto::ToolType::Function,
         parameters: None,
+        format: None,
     };
     let request = PromptPayload {
         system_prompt: "sys",
@@ -605,6 +609,7 @@ fn build_request_stamps_phase_on_pre_tool_call_text_flush() {
             ContentBlock::ToolUse {
                 id: "call-1".into(),
                 name: "shell".into(),
+                tool_type: tau_proto::ToolType::Function,
                 input: tau_proto::CborValue::Null,
             },
             ContentBlock::Text {
@@ -807,6 +812,159 @@ fn build_request_replays_reasoning_item_as_top_level_input() {
         reasoning["encrypted_content"], "OPAQUE-BLOB",
         "the opaque blob must round-trip verbatim — the harness must not parse fields out"
     );
+}
+
+#[test]
+fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output() {
+    let config = chain_test_config();
+    let tool = tau_proto::ToolDefinition {
+        name: tau_proto::ToolName::new("apply_patch"),
+        description: Some("Apply a patch to files".to_owned()),
+        tool_type: tau_proto::ToolType::Custom,
+        parameters: None,
+        format: Some(tau_proto::ToolFormat::Grammar {
+            syntax: tau_proto::ToolGrammarSyntax::Regex,
+            definition: "(?s).+".to_owned(),
+        }),
+    };
+    let messages = vec![
+        ConversationMessage {
+            role: ConversationRole::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "call-patch".into(),
+                name: "apply_patch".into(),
+                tool_type: tau_proto::ToolType::Custom,
+                input: tau_proto::CborValue::Text("*** Begin Patch\n*** End Patch".into()),
+            }],
+            phase: None,
+        },
+        ConversationMessage {
+            role: ConversationRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-patch".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+            phase: None,
+        },
+    ];
+    let request = PromptPayload {
+        system_prompt: "sys",
+        messages: &messages,
+        tools: std::slice::from_ref(&tool),
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::Auto,
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let tools = body["tools"].as_array().expect("tools");
+    assert_eq!(tools[0]["type"], "custom");
+    assert_eq!(tools[0]["name"], "apply_patch");
+    assert_eq!(tools[0]["format"]["type"], "grammar");
+    assert_eq!(tools[0]["format"]["syntax"], "regex");
+    assert_eq!(tools[0]["format"]["definition"], "(?s).+");
+
+    let input = body["input"].as_array().expect("input");
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[0]["call_id"], "call-patch");
+    assert_eq!(input[0]["input"], "*** Begin Patch\n*** End Patch");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[1]["call_id"], "call-patch");
+    assert_eq!(input[1]["output"], "ok");
+}
+
+#[test]
+fn apply_event_accumulates_custom_tool_input_deltas() {
+    use crate::common::StreamState;
+
+    let mut state = StreamState::new();
+    let added = serde_json::json!({
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "custom_tool_call",
+            "call_id": "call_patch",
+            "name": "apply_patch",
+        }
+    });
+    apply_event(&mut state, &added, &mut |_, _| {}).expect("added");
+    let delta = serde_json::json!({
+        "type": "response.custom_tool_call_input.delta",
+        "output_index": 0,
+        "delta": "*** Begin Patch"
+    });
+    apply_event(&mut state, &delta, &mut |_, _| {}).expect("delta");
+    let done = serde_json::json!({
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+            "type": "custom_tool_call",
+            "call_id": "call_patch",
+            "name": "apply_patch",
+            "input": "*** Begin Patch"
+        }
+    });
+    apply_event(&mut state, &done, &mut |_, _| {}).expect("done");
+
+    assert_eq!(state.tool_calls.len(), 1);
+    assert_eq!(state.tool_calls[0].tool_type, tau_proto::ToolType::Custom);
+    assert_eq!(state.tool_calls[0].id, "call_patch");
+    assert_eq!(state.tool_calls[0].name, "apply_patch");
+    assert_eq!(state.tool_calls[0].arguments_json, "*** Begin Patch");
+}
+
+#[test]
+fn build_request_chain_keeps_custom_tool_output_type_from_prior_history() {
+    let config = chain_test_config();
+    let messages = vec![
+        ConversationMessage {
+            role: ConversationRole::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "call-custom".into(),
+                name: "apply_patch".into(),
+                tool_type: tau_proto::ToolType::Custom,
+                input: tau_proto::CborValue::Text("patch body".into()),
+            }],
+            phase: None,
+        },
+        ConversationMessage {
+            role: ConversationRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-custom".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+            phase: None,
+        },
+    ];
+    let request = PromptPayload {
+        system_prompt: "sys",
+        messages: &messages,
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::Auto,
+        previous_response: Some(PreviousResponse {
+            id: "resp_prev",
+            message_index: 1,
+        }),
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let input = body["input"].as_array().expect("input");
+    assert_eq!(
+        input.len(),
+        1,
+        "only the trailing tool result should be replayed"
+    );
+    assert_eq!(input[0]["type"], "custom_tool_call_output");
+    assert_eq!(input[0]["call_id"], "call-custom");
 }
 
 /// On the Codex Responses stream, `response.output_item.done` is the

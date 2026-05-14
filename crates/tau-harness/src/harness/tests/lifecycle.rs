@@ -193,6 +193,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
         tool_calls: vec![AgentToolCall {
             id: "c1".into(),
             name: "shell".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
             display: None,
         }],
@@ -310,6 +311,8 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
             name: ToolName::new("delegate"),
             description: None,
             parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },
@@ -335,6 +338,7 @@ fn empty_tool_name_does_not_panic_and_surfaces_error() {
             // Intentionally an empty raw string to exercise the
             // `Invalid` arm of `ToolNameMaybe`.
             name: "".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
             display: None,
         }],
@@ -412,6 +416,8 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
             name: ToolName::new("delegate"),
             description: None,
             parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },
@@ -436,12 +442,14 @@ fn empty_tool_call_id_is_normalized_to_synthetic_id() {
             AgentToolCall {
                 id: "".into(),
                 name: "".into(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
                 display: None,
             },
             AgentToolCall {
                 id: "".into(),
                 name: "".into(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
                 display: None,
             },

@@ -219,6 +219,7 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
             tool_calls: vec![AgentToolCall {
                 id: "call-1".into(),
                 name: ToolNameMaybe::from_raw("shell"),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Null,
                 display: None,
             }],
@@ -876,6 +877,7 @@ fn sub_agent_prompts_and_responses_are_ignored() {
             tool_calls: vec![AgentToolCall {
                 id: "delegate-call".into(),
                 name: ToolNameMaybe::from_raw("delegate"),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Null,
                 display: None,
             }],

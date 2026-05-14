@@ -211,6 +211,7 @@ fn tool_spec() -> ToolSpec {
              profiles or company pages."
                 .to_owned(),
         ),
+        tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
             "properties": {
@@ -227,6 +228,7 @@ fn tool_spec() -> ToolSpec {
             },
             "required": ["query"]
         })),
+        format: None,
         enabled_by_default: true,
         side_effects: ToolSideEffects::Pure,
     }

@@ -159,6 +159,7 @@ fn new_session_clears_session_ui_state() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-1".into(),
             name: "read".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![(
                 CborValue::Text("path".into()),
                 CborValue::Text("src/lib.rs".into()),
@@ -1017,6 +1018,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-1".into(),
             name: "read".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![(
                 CborValue::Text("path".into()),
                 CborValue::Text("src/main.rs".into()),
@@ -1092,6 +1094,7 @@ fn show_tools_summarize_turn_summarizes_tool_batch() {
             tau_proto::AgentToolCall {
                 id: "call-1".into(),
                 name: "read".into(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Null,
                 display: Some(tau_proto::ToolDisplay {
                     args: "src/main.rs".into(),
@@ -1103,6 +1106,7 @@ fn show_tools_summarize_turn_summarizes_tool_batch() {
             tau_proto::AgentToolCall {
                 id: "call-2".into(),
                 name: "grep".into(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Null,
                 display: Some(tau_proto::ToolDisplay {
                     args: "foo".into(),
@@ -1180,6 +1184,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-1".into(),
             name: "read".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Null,
             display: Some(tau_proto::ToolDisplay {
                 args: "src/main.rs".into(),
@@ -1226,6 +1231,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-2".into(),
             name: "grep".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Null,
             display: Some(tau_proto::ToolDisplay {
                 args: "foo".into(),
@@ -1290,6 +1296,7 @@ fn show_tools_compact_hides_payload_body() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-1".into(),
             name: "read".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Null,
             display: Some(tau_proto::ToolDisplay {
                 args: "src/main.rs".into(),
@@ -1351,6 +1358,7 @@ fn show_tools_off_hides_tool_blocks() {
         tool_calls: vec![tau_proto::AgentToolCall {
             id: "call-1".into(),
             name: "read".into(),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Null,
             display: None,
         }],

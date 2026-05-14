@@ -94,11 +94,13 @@ where
                 "Test-only tool that randomly restarts the dummy extension or returns an error"
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false,
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         })

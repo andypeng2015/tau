@@ -6,6 +6,7 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         call_id: "call_HC8dStLuLeEjHCxFZsBx6jfV".into(),
         tool_name: tau_proto::ToolName::new("skill"),
         outcome: ToolActivityOutcome::Requested {
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![
                 (
                     CborValue::Text("action".to_owned()),
@@ -27,6 +28,7 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         call_id: "call_search".into(),
         tool_name: tau_proto::ToolName::new("skill"),
         outcome: ToolActivityOutcome::Requested {
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![
                 (
                     CborValue::Text("action".to_owned()),
@@ -48,6 +50,7 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         call_id: "call_ugly".into(),
         tool_name: tau_proto::ToolName::new("read"),
         outcome: ToolActivityOutcome::Requested {
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![(
                 CborValue::Text("path".to_owned()),
                 CborValue::Text("foo.txt".to_owned()),

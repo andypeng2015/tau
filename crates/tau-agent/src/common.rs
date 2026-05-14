@@ -196,6 +196,7 @@ pub struct StreamState {
 pub struct ToolCallAccumulator {
     pub id: String,
     pub name: String,
+    pub tool_type: tau_proto::ToolType,
     pub arguments_json: String,
 }
 
@@ -235,12 +236,19 @@ impl StreamState {
             .into_iter()
             .filter(|tc| !tc.name.is_empty())
             .map(|tc| {
-                let args: serde_json::Value =
-                    serde_json::from_str(&tc.arguments_json).unwrap_or(serde_json::Value::Null);
+                let arguments = match tc.tool_type {
+                    tau_proto::ToolType::Function => {
+                        let args: serde_json::Value = serde_json::from_str(&tc.arguments_json)
+                            .unwrap_or(serde_json::Value::Null);
+                        json_to_cbor(&args)
+                    }
+                    tau_proto::ToolType::Custom => CborValue::Text(tc.arguments_json),
+                };
                 AgentToolCall {
                     id: tc.id.into(),
                     name: tc.name.into(),
-                    arguments: json_to_cbor(&args),
+                    tool_type: tc.tool_type,
+                    arguments,
                     display: None,
                 }
             })

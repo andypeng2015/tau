@@ -1,7 +1,7 @@
 use tau_proto::{
     AgentResponseFinished, CborValue, ClientKind, ConnectionId, Event, EventName, EventSelector,
-    Frame, ToolRegister, ToolRequest, ToolResult, ToolSideEffects, ToolSpec, UiNavigateTree,
-    UiPromptSubmitted,
+    Frame, ToolRegister, ToolRequest, ToolResult, ToolSideEffects, ToolSpec, ToolType,
+    UiNavigateTree, UiPromptSubmitted,
 };
 use tempfile::TempDir;
 
@@ -210,6 +210,24 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
 }
 
 #[test]
+fn requested_tool_activity_defaults_missing_tool_type_for_old_sessions() {
+    let outcome: ToolActivityOutcome = serde_json::from_value(serde_json::json!({
+        "Requested": {
+            "arguments": null
+        }
+    }))
+    .expect("deserialize old requested outcome");
+
+    assert_eq!(
+        outcome,
+        ToolActivityOutcome::Requested {
+            tool_type: ToolType::Function,
+            arguments: CborValue::Null,
+        }
+    );
+}
+
+#[test]
 fn provider_can_register_tool_and_receive_invocations() {
     let mut bus = EventBus::new();
     let mut registry = ToolRegistry::new();
@@ -224,7 +242,9 @@ fn provider_can_register_tool_and_receive_invocations() {
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
             description: Some("Echo a payload".to_owned()),
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -238,6 +258,7 @@ fn provider_can_register_tool_and_receive_invocations() {
             ToolRequest {
                 call_id: "call-1".into(),
                 tool_name: tau_proto::ToolName::new("echo"),
+                tool_type: ToolType::Function,
                 arguments: CborValue::Text("hello".to_owned()),
                 originator: tau_proto::PromptOriginator::User,
             },
@@ -274,7 +295,9 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
             description: Some("Echo".to_owned()),
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -286,7 +309,9 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
             description: Some("Echo from another provider".to_owned()),
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -321,7 +346,9 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
             description: None,
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -331,7 +358,9 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         ToolSpec {
             name: tau_proto::ToolName::new("echo"),
             description: None,
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -341,7 +370,9 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
         ToolSpec {
             name: tau_proto::ToolName::new("demo_upper"),
             description: None,
+            tool_type: ToolType::Function,
             parameters: None,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -374,7 +405,9 @@ fn register_events_map_cleanly_to_registry_state() {
             tool: ToolSpec {
                 name: tau_proto::ToolName::new("echo"),
                 description: Some("Echo".to_owned()),
+                tool_type: ToolType::Function,
                 parameters: None,
+                format: None,
                 enabled_by_default: true,
                 side_effects: ToolSideEffects::Pure,
             },

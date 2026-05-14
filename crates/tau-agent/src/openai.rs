@@ -159,6 +159,7 @@ pub fn chat_completion_stream(
                     state.tool_calls.push(ToolCallAccumulator {
                         id: String::new(),
                         name: String::new(),
+                        tool_type: tau_proto::ToolType::Function,
                         arguments_json: String::new(),
                     });
                 }
@@ -167,12 +168,23 @@ pub fn chat_completion_stream(
                 if let Some(id) = tc.id {
                     acc.id = id;
                 }
+                if matches!(tc.r#type.as_deref(), Some("custom")) || tc.custom.is_some() {
+                    acc.tool_type = tau_proto::ToolType::Custom;
+                }
                 if let Some(function) = tc.function {
                     if let Some(name) = function.name {
                         acc.name = name;
                     }
                     if let Some(args) = function.arguments {
                         acc.arguments_json.push_str(&args);
+                    }
+                }
+                if let Some(custom) = tc.custom {
+                    if let Some(name) = custom.name {
+                        acc.name = name;
+                    }
+                    if let Some(input) = custom.input {
+                        acc.arguments_json.push_str(&input);
                     }
                 }
             }
@@ -191,7 +203,7 @@ struct CompletionRequest {
     model: String,
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<ApiTool>,
+    tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
     /// Explicit per OpenAI Chat Completions; default is `true` server-side
@@ -237,44 +249,11 @@ struct ApiMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<ApiToolCall>>,
+    tool_calls: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ApiToolCall {
-    id: String,
-    r#type: String,
-    function: ApiFunction,
-}
-
-#[derive(Serialize)]
-struct ApiFunction {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    arguments: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<serde_json::Value>,
-}
-
-#[derive(Serialize)]
-struct ApiTool {
-    r#type: String,
-    function: ApiToolFunction,
-}
-
-#[derive(Serialize)]
-struct ApiToolFunction {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<serde_json::Value>,
 }
 
 fn build_request(
@@ -298,7 +277,7 @@ fn build_request(
         convert_message(msg, &mut messages);
     }
 
-    let tools: Vec<ApiTool> = request.tools.iter().map(convert_tool_definition).collect();
+    let tools: Vec<serde_json::Value> = request.tools.iter().map(convert_tool_definition).collect();
     let tool_choice = match (request.tool_choice, tools.is_empty()) {
         // Harness-forced no-tools-this-turn: send explicit `none` even
         // with tools declared so the cache prefix matches the parent
@@ -401,21 +380,36 @@ fn convert_message(msg: &ConversationMessage, out: &mut Vec<ApiMessage>) {
                         text_parts.push(text.clone());
                     }
                     ContentBlock::ToolUse {
-                        id, name, input, ..
+                        id,
+                        name,
+                        tool_type,
+                        input,
                     } => {
-                        let args_json = cbor_to_json(input);
-                        tool_calls.push(ApiToolCall {
-                            id: id.to_string(),
-                            r#type: "function".to_owned(),
-                            function: ApiFunction {
-                                name: name.as_str().to_owned(),
-                                arguments: Some(
-                                    serde_json::to_string(&args_json).unwrap_or_default(),
-                                ),
-                                description: None,
-                                parameters: None,
-                            },
-                        });
+                        let tool_call = match tool_type {
+                            tau_proto::ToolType::Function => {
+                                let args_json = cbor_to_json(input);
+                                serde_json::json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name.as_str(),
+                                        "arguments": serde_json::to_string(&args_json).unwrap_or_default(),
+                                    }
+                                })
+                            }
+                            tau_proto::ToolType::Custom => serde_json::json!({
+                                "id": id,
+                                "type": "custom",
+                                "custom": {
+                                    "name": name.as_str(),
+                                    "input": match input {
+                                        tau_proto::CborValue::Text(text) => text.clone(),
+                                        other => serde_json::to_string(&cbor_to_json(other)).unwrap_or_default(),
+                                    },
+                                }
+                            }),
+                        };
+                        tool_calls.push(tool_call);
                     }
                     ContentBlock::ToolResult { .. } => {}
                     // Reasoning items are Codex-Responses specific; the
@@ -447,14 +441,54 @@ fn convert_message(msg: &ConversationMessage, out: &mut Vec<ApiMessage>) {
     }
 }
 
-fn convert_tool_definition(tool: &ToolDefinition) -> ApiTool {
-    ApiTool {
-        r#type: "function".to_owned(),
-        function: ApiToolFunction {
-            name: tool.name.as_str().to_owned(),
-            description: tool.description.clone(),
-            parameters: tool.parameters.clone(),
-        },
+fn convert_tool_definition(tool: &ToolDefinition) -> serde_json::Value {
+    match tool.tool_type {
+        tau_proto::ToolType::Function => serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": tool.name.as_str(),
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+        }),
+        tau_proto::ToolType::Custom => {
+            let mut custom = serde_json::Map::new();
+            custom.insert(
+                "name".to_owned(),
+                serde_json::Value::String(tool.name.as_str().to_owned()),
+            );
+            if let Some(description) = &tool.description {
+                custom.insert(
+                    "description".to_owned(),
+                    serde_json::Value::String(description.clone()),
+                );
+            }
+            if let Some(format) = &tool.format {
+                custom.insert("format".to_owned(), serialize_tool_format(format));
+            }
+            serde_json::json!({
+                "type": "custom",
+                "custom": custom,
+            })
+        }
+    }
+}
+
+fn serialize_tool_format(format: &tau_proto::ToolFormat) -> serde_json::Value {
+    match format {
+        tau_proto::ToolFormat::Text => serde_json::json!({
+            "type": "text",
+        }),
+        tau_proto::ToolFormat::Grammar { syntax, definition } => serde_json::json!({
+            "type": "grammar",
+            "grammar": {
+                "syntax": match syntax {
+                    tau_proto::ToolGrammarSyntax::Lark => "lark",
+                    tau_proto::ToolGrammarSyntax::Regex => "regex",
+                },
+                "definition": definition,
+            }
+        }),
     }
 }
 
@@ -488,13 +522,22 @@ struct StreamDelta {
 struct StreamToolCall {
     index: Option<u32>,
     id: Option<String>,
+    #[serde(rename = "type")]
+    r#type: Option<String>,
     function: Option<StreamFunction>,
+    custom: Option<StreamCustom>,
 }
 
 #[derive(Deserialize)]
 struct StreamFunction {
     name: Option<String>,
     arguments: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamCustom {
+    name: Option<String>,
+    input: Option<String>,
 }
 
 #[derive(Deserialize)]

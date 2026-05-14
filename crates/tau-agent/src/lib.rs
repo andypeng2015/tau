@@ -1157,6 +1157,7 @@ where
                         AgentToolCall {
                             id: call_id.into(),
                             name: "read".into(),
+                            tool_type: tau_proto::ToolType::Function,
                             arguments: CborValue::Map(vec![(
                                 CborValue::Text("path".to_owned()),
                                 CborValue::Text(path.trim().to_owned()),
@@ -1167,6 +1168,7 @@ where
                         AgentToolCall {
                             id: call_id.into(),
                             name: "shell".into(),
+                            tool_type: tau_proto::ToolType::Function,
                             arguments: CborValue::Map(vec![(
                                 CborValue::Text("command".to_owned()),
                                 CborValue::Text(cmd.trim().to_owned()),
@@ -1177,6 +1179,7 @@ where
                         AgentToolCall {
                             id: call_id.into(),
                             name: "echo".into(),
+                            tool_type: tau_proto::ToolType::Function,
                             arguments: CborValue::Text(user_text),
                             display: None,
                         }

@@ -67,7 +67,9 @@ where
     let echo_tool = Some(ToolSpec {
         name: tau_proto::ToolName::new(ECHO_TOOL_NAME),
         description: Some("Echo the provided payload unchanged".to_owned()),
+        tool_type: tau_proto::ToolType::Function,
         parameters: None,
+        format: None,
         enabled_by_default: true,
         side_effects: ToolSideEffects::Pure,
     });
@@ -87,6 +89,7 @@ where
                  actually read, and the file's `total_lines`."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -105,6 +108,7 @@ where
                 },
                 "required": ["path"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -117,6 +121,7 @@ where
                  (every line is an Add when the file is being created)."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -131,6 +136,7 @@ where
                 },
                 "required": ["path", "content"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },
@@ -144,6 +150,7 @@ where
                  previous contents."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -177,6 +184,7 @@ where
                 },
                 "required": ["path", "edits"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },
@@ -189,6 +197,7 @@ where
                  `limit` matches or 50KB. Long lines are truncated to 500 chars."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -223,6 +232,7 @@ where
                 },
                 "required": ["pattern"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -235,6 +245,7 @@ where
                  if you want to see directory entries."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -253,6 +264,7 @@ where
                 },
                 "required": ["pattern"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -263,6 +275,7 @@ where
                  for directories. Includes dotfiles. Output is truncated at `limit` entries or 50KB."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -276,6 +289,7 @@ where
                     }
                 }
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Pure,
         },
@@ -288,6 +302,7 @@ where
                  those tools can't do."
                     .to_owned(),
             ),
+            tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -302,6 +317,7 @@ where
                 },
                 "required": ["command"]
             })),
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },

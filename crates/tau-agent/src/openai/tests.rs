@@ -144,7 +144,9 @@ fn build_request_sets_parallel_tool_calls_when_tools_offered() {
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
         description: None,
+        tool_type: tau_proto::ToolType::Function,
         parameters: None,
+        format: None,
     };
     let request = PromptPayload {
         system_prompt: "system",
@@ -214,7 +216,9 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
     let tool = tau_proto::ToolDefinition {
         name: tau_proto::ToolName::new("shell"),
         description: None,
+        tool_type: tau_proto::ToolType::Function,
         parameters: None,
+        format: None,
     };
     let request = PromptPayload {
         system_prompt: "system",

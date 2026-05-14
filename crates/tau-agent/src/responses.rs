@@ -251,6 +251,7 @@ pub(crate) fn apply_event(
                     state.tool_calls.push(ToolCallAccumulator {
                         id: String::new(),
                         name: String::new(),
+                        tool_type: tau_proto::ToolType::Function,
                         arguments_json: String::new(),
                     });
                 }
@@ -259,22 +260,54 @@ pub(crate) fn apply_event(
                     .push_str(delta);
             }
         }
+        "response.custom_tool_call_input.delta" => {
+            let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
+            if let Some(delta) = event["delta"].as_str() {
+                while state.tool_calls.len() <= output_index {
+                    state.tool_calls.push(ToolCallAccumulator {
+                        id: String::new(),
+                        name: String::new(),
+                        tool_type: tau_proto::ToolType::Custom,
+                        arguments_json: String::new(),
+                    });
+                }
+                let call = &mut state.tool_calls[output_index];
+                call.tool_type = tau_proto::ToolType::Custom;
+                call.arguments_json.push_str(delta);
+            }
+        }
         "response.output_item.added" | "response.output_item.done" => {
             if let Some(item) = event.get("item") {
-                if item["type"].as_str() == Some("function_call") {
+                let tool_type = match item["type"].as_str() {
+                    Some("function_call") => Some(tau_proto::ToolType::Function),
+                    Some("custom_tool_call") => Some(tau_proto::ToolType::Custom),
+                    _ => None,
+                };
+                if let Some(tool_type) = tool_type {
                     let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                     while state.tool_calls.len() <= output_index {
                         state.tool_calls.push(ToolCallAccumulator {
                             id: String::new(),
                             name: String::new(),
+                            tool_type,
                             arguments_json: String::new(),
                         });
                     }
+                    state.tool_calls[output_index].tool_type = tool_type;
                     if let Some(id) = item["call_id"].as_str() {
                         state.tool_calls[output_index].id = id.to_owned();
                     }
                     if let Some(name) = item["name"].as_str() {
                         state.tool_calls[output_index].name = name.to_owned();
+                    }
+                    if state.tool_calls[output_index].arguments_json.is_empty() {
+                        let final_input = match tool_type {
+                            tau_proto::ToolType::Function => item["arguments"].as_str(),
+                            tau_proto::ToolType::Custom => item["input"].as_str(),
+                        };
+                        if let Some(final_input) = final_input {
+                            state.tool_calls[output_index].arguments_json = final_input.to_owned();
+                        }
                     }
                 }
                 // Capture reasoning items only on `output_item.done`,
@@ -508,28 +541,23 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         };
 
     let mut input = Vec::new();
+    // Track call_id -> tool type across the *full* conversation, not
+    // just the sliced suffix for this request. On a chained turn the
+    // suffix often contains only the user-side tool result while the
+    // matching assistant-side ToolUse lives before the chain anchor.
+    // If we only scan `input_messages`, we lose that linkage and can
+    // mis-emit a custom tool result as `function_call_output`.
+    let mut tool_types_by_call_id = collect_tool_types(request.messages);
     for msg in input_messages {
-        convert_message(msg, config.supports_phase, &mut input);
+        convert_message(
+            msg,
+            config.supports_phase,
+            &mut tool_types_by_call_id,
+            &mut input,
+        );
     }
 
-    let tools: Vec<serde_json::Value> = request
-        .tools
-        .iter()
-        .map(|t| {
-            let mut tool = serde_json::json!({
-                "type": "function",
-                "name": encode_tool_name(&t.name),
-                "strict": serde_json::Value::Null,
-            });
-            if let Some(ref desc) = t.description {
-                tool["description"] = serde_json::Value::String(desc.clone());
-            }
-            if let Some(ref params) = t.parameters {
-                tool["parameters"] = params.clone();
-            }
-            tool
-        })
-        .collect();
+    let tools: Vec<serde_json::Value> = request.tools.iter().map(convert_tool_definition).collect();
 
     let tool_choice = match (request.tool_choice, tools.is_empty()) {
         // Harness-forced no-tools-this-turn: explicit `none` works
@@ -703,6 +731,68 @@ fn parse_phase_from_item(item: &serde_json::Value) -> Option<tau_proto::MessageP
     }
 }
 
+fn convert_tool_definition(tool: &tau_proto::ToolDefinition) -> serde_json::Value {
+    match tool.tool_type {
+        tau_proto::ToolType::Function => {
+            let mut wire = serde_json::json!({
+                "type": "function",
+                "name": encode_tool_name(&tool.name),
+                "strict": serde_json::Value::Null,
+            });
+            if let Some(ref desc) = tool.description {
+                wire["description"] = serde_json::Value::String(desc.clone());
+            }
+            if let Some(ref params) = tool.parameters {
+                wire["parameters"] = params.clone();
+            }
+            wire
+        }
+        tau_proto::ToolType::Custom => {
+            let mut wire = serde_json::json!({
+                "type": "custom",
+                "name": encode_tool_name(&tool.name),
+            });
+            if let Some(ref desc) = tool.description {
+                wire["description"] = serde_json::Value::String(desc.clone());
+            }
+            if let Some(ref format) = tool.format {
+                wire["format"] = serialize_tool_format(format);
+            }
+            wire
+        }
+    }
+}
+
+fn collect_tool_types(
+    messages: &[ConversationMessage],
+) -> std::collections::HashMap<String, tau_proto::ToolType> {
+    let mut tool_types_by_call_id = std::collections::HashMap::new();
+    for msg in messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolUse { id, tool_type, .. } = block {
+                tool_types_by_call_id.insert(id.as_str().to_owned(), *tool_type);
+            }
+        }
+    }
+    tool_types_by_call_id
+}
+
+fn serialize_tool_format(format: &tau_proto::ToolFormat) -> serde_json::Value {
+    match format {
+        tau_proto::ToolFormat::Text => serde_json::json!({
+            "type": "text",
+        }),
+        tau_proto::ToolFormat::Grammar { syntax, definition } => serde_json::json!({
+            "type": "grammar",
+            "syntax": match syntax {
+                tau_proto::ToolGrammarSyntax::Lark => "lark",
+                tau_proto::ToolGrammarSyntax::Regex => "regex",
+            },
+            "definition": definition,
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool name encoding
 // ---------------------------------------------------------------------------
@@ -727,6 +817,7 @@ fn encode_tool_name(name: &str) -> String {
 fn convert_message(
     msg: &ConversationMessage,
     supports_phase: bool,
+    tool_types_by_call_id: &mut std::collections::HashMap<String, tau_proto::ToolType>,
     out: &mut Vec<serde_json::Value>,
 ) {
     match msg.role {
@@ -760,8 +851,12 @@ fn convert_message(
                         } else {
                             content.clone()
                         };
+                        let output_type = match tool_types_by_call_id.get(tool_use_id.as_str()) {
+                            Some(tau_proto::ToolType::Custom) => "custom_tool_call_output",
+                            _ => "function_call_output",
+                        };
                         out.push(serde_json::json!({
-                            "type": "function_call_output",
+                            "type": output_type,
                             "call_id": tool_use_id,
                             "output": output,
                         }));
@@ -808,7 +903,10 @@ fn convert_message(
                         text_parts.push(text.clone());
                     }
                     ContentBlock::ToolUse {
-                        id, name, input, ..
+                        id,
+                        name,
+                        tool_type,
+                        input,
                     } => {
                         // Emit any pending text first.
                         if !text_parts.is_empty() {
@@ -827,20 +925,44 @@ fn convert_message(
                             out.push(item);
                             text_parts.clear();
                         }
-                        let args_json = cbor_to_json(input);
                         let id_str = id.as_str();
-                        let fc_id = if id_str.starts_with("fc_") {
-                            id_str.to_owned()
-                        } else {
-                            format!("fc_{id_str}")
-                        };
-                        out.push(serde_json::json!({
-                            "type": "function_call",
-                            "id": fc_id,
-                            "call_id": id_str,
-                            "name": encode_tool_name(name.as_str()),
-                            "arguments": serde_json::to_string(&args_json).unwrap_or_default(),
-                        }));
+                        tool_types_by_call_id.insert(id_str.to_owned(), *tool_type);
+                        match tool_type {
+                            tau_proto::ToolType::Function => {
+                                let args_json = cbor_to_json(input);
+                                let fc_id = if id_str.starts_with("fc_") {
+                                    id_str.to_owned()
+                                } else {
+                                    format!("fc_{id_str}")
+                                };
+                                out.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "id": fc_id,
+                                    "call_id": id_str,
+                                    "name": encode_tool_name(name.as_str()),
+                                    "arguments": serde_json::to_string(&args_json).unwrap_or_default(),
+                                }));
+                            }
+                            tau_proto::ToolType::Custom => {
+                                let custom_id = if id_str.starts_with("ctc_") {
+                                    id_str.to_owned()
+                                } else {
+                                    format!("ctc_{id_str}")
+                                };
+                                let input = match input {
+                                    tau_proto::CborValue::Text(text) => text.clone(),
+                                    other => serde_json::to_string(&cbor_to_json(other))
+                                        .unwrap_or_default(),
+                                };
+                                out.push(serde_json::json!({
+                                    "type": "custom_tool_call",
+                                    "id": custom_id,
+                                    "call_id": id_str,
+                                    "name": encode_tool_name(name.as_str()),
+                                    "input": input,
+                                }));
+                            }
+                        }
                     }
                     ContentBlock::ToolResult { .. } => {}
                     ContentBlock::Reasoning { item } => {

@@ -1058,14 +1058,54 @@ pub struct HarnessEffortsAvailable {
 // ---------------------------------------------------------------------------
 
 /// Tool metadata used during registration and invocation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolType {
+    #[default]
+    Function,
+    Custom,
+}
+
+impl ToolType {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::Function)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGrammarSyntax {
+    Lark,
+    Regex,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolFormat {
+    Text,
+    Grammar {
+        syntax: ToolGrammarSyntax,
+        definition: String,
+    },
+}
+
+/// Tool metadata used during registration and invocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: ToolName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether this is a JSON-schema function tool or a freeform custom tool.
+    #[serde(default, skip_serializing_if = "ToolType::is_default")]
+    pub tool_type: ToolType,
     /// JSON Schema describing the tool's input parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<serde_json::Value>,
+    /// Optional freeform/custom input format. `None` means provider-default
+    /// unconstrained text for custom tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ToolFormat>,
     /// Whether this tool should be advertised to the agent when no
     /// role-level `toolsProfile` overrides its default.
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
@@ -1147,6 +1187,8 @@ pub struct ToolUnregister {
 pub struct ToolRequest {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
+    #[serde(default, skip_serializing_if = "ToolType::is_default")]
+    pub tool_type: ToolType,
     pub arguments: CborValue,
     /// Who started the prompt that produced this tool call. The
     /// harness stamps this from the call's owning conversation so
@@ -2063,6 +2105,8 @@ pub struct AgentToolCall {
     /// dispatch time and rejects `Invalid` with a synthetic
     /// `ToolError` while letting sibling calls run.
     pub name: ToolNameMaybe,
+    #[serde(default, skip_serializing_if = "ToolType::is_default")]
+    pub tool_type: ToolType,
     pub arguments: CborValue,
     /// Pre-rendered live-header descriptor stamped by the harness
     /// before publishing so UIs can render the running block (e.g.
@@ -2296,6 +2340,8 @@ pub enum ContentBlock {
         /// Same untrusted-LLM-output contract as
         /// `AgentToolCall::name`. See [`ToolNameMaybe`].
         name: ToolNameMaybe,
+        #[serde(default, skip_serializing_if = "ToolType::is_default")]
+        tool_type: ToolType,
         input: CborValue,
     },
     ToolResult {
@@ -2389,9 +2435,16 @@ pub struct ToolDefinition {
     pub name: ToolName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether this is a JSON-schema function tool or a freeform custom tool.
+    #[serde(default, skip_serializing_if = "ToolType::is_default")]
+    pub tool_type: ToolType,
     /// JSON Schema describing the tool's input parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<serde_json::Value>,
+    /// Optional freeform/custom input format. `None` means provider-default
+    /// unconstrained text for custom tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ToolFormat>,
 }
 
 // ---------------------------------------------------------------------------

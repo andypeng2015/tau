@@ -23,6 +23,8 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
             name: tau_proto::ToolName::new("delegate"),
             description: None,
             parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
             enabled_by_default: true,
             side_effects: ToolSideEffects::Mutating,
         },
@@ -70,6 +72,7 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
         tool_calls: vec![AgentToolCall {
             id: "main-call".into(),
             name: ToolNameMaybe::from_raw("delegate"),
+            tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
             display: None,
         }],

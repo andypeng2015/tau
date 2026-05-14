@@ -15,11 +15,13 @@ fn into_tool_calls_drops_nameless_accumulator_artifacts() {
             ToolCallAccumulator {
                 id: String::new(),
                 name: String::new(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments_json: String::from("{\"stray\": \"delta\"}"),
             },
             ToolCallAccumulator {
                 id: "call_real".into(),
                 name: "shell".into(),
+                tool_type: tau_proto::ToolType::Function,
                 arguments_json: "{\"command\":\"ls\"}".into(),
             },
         ],

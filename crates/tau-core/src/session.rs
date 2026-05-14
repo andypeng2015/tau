@@ -11,7 +11,9 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tau_proto::{ConnectionId, Event, LogEventId, SessionId, ToolCallId, ToolName, UnixMicros};
+use tau_proto::{
+    ConnectionId, Event, LogEventId, SessionId, ToolCallId, ToolName, ToolType, UnixMicros,
+};
 
 /// Default starting `LogEventId` for a tree with no events.
 const FIRST_EVENT_ID: u64 = 0;
@@ -72,6 +74,8 @@ pub struct ToolActivityRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToolActivityOutcome {
     Requested {
+        #[serde(default, skip_serializing_if = "ToolType::is_default")]
+        tool_type: ToolType,
         arguments: tau_proto::CborValue,
     },
     Result {
@@ -349,6 +353,7 @@ impl SessionTree {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),
                     outcome: ToolActivityOutcome::Requested {
+                        tool_type: request.tool_type,
                         arguments: request.arguments.clone(),
                     },
                 }),
