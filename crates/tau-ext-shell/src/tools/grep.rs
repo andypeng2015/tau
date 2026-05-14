@@ -20,13 +20,17 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
     let pattern = argument_text(arguments, "pattern")?;
     let path = optional_argument_text(arguments, "path");
     let glob = optional_argument_text(arguments, "glob");
-    let ignore_case = optional_argument_bool(arguments, "ignoreCase").unwrap_or(false);
+    let ignore_case = optional_argument_bool(arguments, "ignoreCase")
+        .map_err(ToolFailure::from)?
+        .unwrap_or(false);
     // Literal matching is the default. Most callers are searching for
     // an exact string and regex metacharacters in that string (`[`,
     // `(`, `.`, `?`, `+`, `*`, `|`, `{`, `\`) would otherwise either
     // fail to parse or silently match something unintended. Regex
     // users opt in explicitly with `regex: true`.
-    let regex = optional_argument_bool(arguments, "regex").unwrap_or(false);
+    let regex = optional_argument_bool(arguments, "regex")
+        .map_err(ToolFailure::from)?
+        .unwrap_or(false);
     let context = optional_argument_int(arguments, "context").map(|v| v.max(0) as usize);
     let limit = optional_argument_int(arguments, "limit")
         .map(|v| v.max(1) as usize)

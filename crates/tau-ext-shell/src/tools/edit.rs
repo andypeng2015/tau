@@ -61,7 +61,7 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
 
     // Sort by start position (descending) so we can apply from end to start
     // without invalidating earlier offsets.
-    replacements.sort_by(|a, b| b.0.cmp(&a.0));
+    replacements.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
     // Check for overlapping ranges.
     for pair in replacements.windows(2) {

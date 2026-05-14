@@ -8,7 +8,9 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::agents::{discover_agents_files_from, discover_agents_files_from_roots};
-use crate::argument::{cbor_map_int, cbor_map_text, optional_argument_text};
+use crate::argument::{
+    cbor_map_int, cbor_map_text, optional_argument_bool, optional_argument_text,
+};
 use crate::tools::find::run_find;
 use crate::tools::grep::{RipgrepError, classify_ripgrep_stderr, grep_result_map, run_grep};
 use crate::tools::ls::run_ls;
@@ -1200,6 +1202,18 @@ fn command_details_value_records_stdout_and_stderr_stats() {
     assert_eq!(cbor_int_field(&details, "stderr_bytes"), Some(5));
 }
 
+#[test]
+fn optional_argument_bool_rejects_present_non_bool_values() {
+    let args = CborValue::Map(vec![(
+        CborValue::Text("ignoreCase".to_owned()),
+        CborValue::Text("True".to_owned()),
+    )]);
+
+    let err = optional_argument_bool(&args, "ignoreCase").expect_err("non-bool should fail");
+
+    assert_eq!(err, "argument `ignoreCase` must be a boolean");
+}
+
 fn grep_args(pattern: &str, path: &str, extra: Vec<(CborValue, CborValue)>) -> CborValue {
     let mut entries = vec![
         (
@@ -1213,6 +1227,24 @@ fn grep_args(pattern: &str, path: &str, extra: Vec<(CborValue, CborValue)>) -> C
     ];
     entries.extend(extra);
     CborValue::Map(entries)
+}
+
+#[test]
+fn run_grep_rejects_string_bool_argument() {
+    let tempdir = TempDir::new().expect("tempdir");
+    fs::write(tempdir.path().join("a.txt"), "alpha\n").expect("write a");
+
+    let args = grep_args(
+        "alpha",
+        &tempdir.path().display().to_string(),
+        vec![(
+            CborValue::Text("ignoreCase".to_owned()),
+            CborValue::Text("True".to_owned()),
+        )],
+    );
+    let err = run_grep(&args).expect_err("string bool should fail");
+
+    assert_eq!(err.message, "argument `ignoreCase` must be a boolean");
 }
 
 #[test]

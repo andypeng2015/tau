@@ -336,10 +336,7 @@ where
     //
     // Other subscribed events (SessionStarted) come wrapped as
     // `Message::LogEvent` and require an `Ack` after processing.
-    loop {
-        let Some(frame) = reader.read_frame()? else {
-            break;
-        };
+    while let Some(frame) = reader.read_frame()? {
         let (log_id, inner) = frame.peel_log();
         match inner {
             Frame::Message(Message::Configure(msg)) => {

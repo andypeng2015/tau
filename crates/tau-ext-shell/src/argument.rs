@@ -14,13 +14,22 @@ pub(crate) fn optional_argument_int(arguments: &CborValue, key: &str) -> Option<
     cbor_map_int(arguments, key)
 }
 
-pub(crate) fn optional_argument_bool(arguments: &CborValue, key: &str) -> Option<bool> {
+pub(crate) fn optional_argument_bool(
+    arguments: &CborValue,
+    key: &str,
+) -> Result<Option<bool>, String> {
     match arguments {
-        CborValue::Map(entries) => entries.iter().find_map(|(k, v)| match (k, v) {
-            (CborValue::Text(k), CborValue::Bool(b)) if k == key => Some(*b),
-            _ => None,
-        }),
-        _ => None,
+        CborValue::Map(entries) => entries
+            .iter()
+            .find_map(|(k, v)| match k {
+                CborValue::Text(k) if k == key => Some(match v {
+                    CborValue::Bool(b) => Ok(Some(*b)),
+                    _ => Err(format!("argument `{key}` must be a boolean")),
+                }),
+                _ => None,
+            })
+            .unwrap_or(Ok(None)),
+        _ => Ok(None),
     }
 }
 
