@@ -8,25 +8,6 @@ use std::time::Duration;
 
 use tau_proto::{CborValue, ToolDisplay, ToolDisplayPayload, ToolDisplayStatus, cbor_field};
 
-/// Format the context-usage chip for the status bar. Three cases:
-/// - context window known → `" ctx:{percent}%/{window}"` (e.g. `"
-///   ctx:6%/200k"`)
-/// - window unknown but token count reported → `" ctx:{tokens}/?"`
-/// - nothing known yet → empty string (chip suppressed)
-pub(crate) fn format_context_chip(
-    input_tokens: Option<u64>,
-    percent: Option<u8>,
-    window: Option<u64>,
-) -> String {
-    match (window, percent, input_tokens) {
-        (Some(w), Some(p), _) => format!(" ctx:{p}%/{}", format_token_count(w)),
-        // Window not configured — fall back to raw token count so the
-        // user can see usage exists and add `contextWindow` to fix it.
-        (None, _, Some(t)) => format!(" ctx:{}/?", format_token_count(t)),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn format_token_stats_line(
     usage: &tau_proto::AgentTokenUsage,

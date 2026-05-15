@@ -5,16 +5,16 @@ use tau_cli_term::TermHandle;
 use tau_cli_term_raw::{Color, Term};
 use tau_proto::{
     AgentResponseFinished, AgentResponseUpdated, CborValue, Event, ExtAgentsMdAvailable,
-    ExtensionReady, HarnessModelSelected, SessionPromptCreated, SessionPromptQueued,
-    SessionStartReason, SessionStarted, ToolResult, UiPromptSubmitted,
+    ExtensionReady, HarnessContextUsageChanged, HarnessModelSelected, HarnessVerbosityChanged,
+    SessionPromptCreated, SessionPromptQueued, SessionStartReason, SessionStarted, ToolResult,
+    UiPromptSubmitted, Verbosity,
 };
 
 use super::chat::{DraftSlot, should_send_draft_snapshot};
 use super::event_renderer::EventRenderer;
 use super::tool_render::{
-    ToolStatus, build_osc1337_set_user_var, cache_hit_percent, format_context_chip,
-    format_token_stats_line, render_token_stats_block, render_tool_display, streaming_block,
-    synthesize_fallback_display,
+    ToolStatus, build_osc1337_set_user_var, cache_hit_percent, format_token_stats_line,
+    render_token_stats_block, render_tool_display, streaming_block, synthesize_fallback_display,
 };
 
 /// Writer that feeds bytes into a vt100::Parser. Bytes are
@@ -271,8 +271,45 @@ fn new_session_preserves_model_status() {
     sync(&handle);
 
     assert!(vt.screen_contains(80, "test/model"));
-    assert!(vt.screen_contains(80, " s2"));
+    assert!(!vt.screen_contains(80, " s2"));
     assert!(!vt.screen_contains(80, "no model selected"));
+}
+
+#[test]
+fn model_status_shows_only_role_or_model_identity() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::HarnessModelSelected(HarnessModelSelected {
+        model: Some("test/model".into()),
+        context_window: Some(200_000),
+        role: Some("smart".into()),
+    }));
+    renderer.handle(&Event::HarnessVerbosityChanged(HarnessVerbosityChanged {
+        level: Verbosity::High,
+    }));
+    renderer.handle(&Event::HarnessContextUsageChanged(
+        HarnessContextUsageChanged {
+            input_tokens: Some(12_000),
+            cached_tokens: None,
+            percent_used: Some(6),
+        },
+    ));
+    renderer.handle(&Event::SessionStarted(SessionStarted {
+        session_id: "tau-agent-test".into(),
+        reason: SessionStartReason::New,
+    }));
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "smart"));
+    assert!(!vt.screen_contains(80, "test/model"));
+    assert!(!vt.screen_contains(80, "v=high"));
+    assert!(!vt.screen_contains(80, "ctx:"));
+    assert!(!vt.screen_contains(80, "tau-agent-test"));
 }
 
 #[test]
@@ -1726,25 +1763,6 @@ fn build_osc1337_set_user_var_encodes_value_and_respects_tmux() {
         wrapped,
         "\x1bPtmux;\x1b\x1b]1337;SetUserVar=user-notification=aGVsbG8=\x07\x1b\\",
     );
-}
-
-#[test]
-fn format_context_chip_picks_format_by_known_fields() {
-    // Both window and percent known → percent/window chip.
-    assert_eq!(
-        format_context_chip(Some(12_000), Some(6), Some(200_000)),
-        " ctx:6%/200k",
-    );
-    // Window unknown, tokens reported → tokens/? fallback.
-    assert_eq!(format_context_chip(Some(12_000), None, None), " ctx:12k/?",);
-    // Window known but no usage report yet still shows the percent
-    // (which the harness initialized to 0 on model select).
-    assert_eq!(
-        format_context_chip(None, Some(0), Some(200_000)),
-        " ctx:0%/200k",
-    );
-    // Nothing known → empty.
-    assert_eq!(format_context_chip(None, None, None), "");
 }
 
 #[test]

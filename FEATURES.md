@@ -139,10 +139,9 @@ level (e.g. `/effort xhigh` on a mini model, `/verbosity high` on a
 provider that doesn't support it) degrades and surfaces a
 `HarnessInfo` notice rather than silently dropping the field.
 
-The status bar renders effort always; Fast mode, non-default verbosity,
-and thinking-summary are appended as `, fast` / `, v=<level>` /
-`, ts=<level>` so a fresh session stays compact and only grows when the
-user changes a knob.
+The status bar renders only the selected agent role, falling back to the
+model id when no role is selected. Model knobs and context usage stay out
+of the bar to keep it compact.
 
 ### Prompt input caching
 

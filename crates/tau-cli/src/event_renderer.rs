@@ -11,10 +11,10 @@ use crate::build_banner;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
     build_osc1337_set_user_var, build_tool_summary_display, extension_status_block, extract_diff,
-    format_context_chip, format_tool_call, render_compaction_block, render_diff_tool_block,
-    render_harness_info, render_shell_block, render_token_stats_block, render_tool_block,
-    render_tool_display, session_status_block, streaming_block, synthesize_fallback_display,
-    system_loaded_block, system_status_block, ui_dir_block,
+    format_tool_call, render_compaction_block, render_diff_tool_block, render_harness_info,
+    render_shell_block, render_token_stats_block, render_tool_block, render_tool_display,
+    session_status_block, streaming_block, synthesize_fallback_display, system_loaded_block,
+    system_status_block, ui_dir_block,
 };
 
 pub(crate) struct EventRenderer {
@@ -946,45 +946,7 @@ impl EventRenderer {
                     .map(str::to_owned)
                     .unwrap_or_else(|| model.to_string());
                 themed.push(role_style, identity);
-
-                // Build the `(params)` chip from only the *interesting*
-                // knobs — anything at its implied default is omitted, so
-                // `default (medium)` collapses to just `default`. `Off`
-                // is the type default for `Effort` but means "no
-                // reasoning", which is worth surfacing; default
-                // verbosity adds no information.
-                let mut parts: Vec<String> = Vec::new();
-                match self.current_params.effort {
-                    tau_proto::Effort::Off => parts.push("none".into()),
-                    tau_proto::Effort::Medium => {}
-                    e => parts.push(e.to_string()),
-                }
-                if let Some(service_tier) = self.current_params.service_tier {
-                    parts.push(service_tier.as_str().into());
-                }
-                if !self.current_params.verbosity.is_default() {
-                    parts.push(format!("v={}", self.current_params.verbosity));
-                }
-                if self.current_params.thinking_summary != tau_proto::ThinkingSummary::Auto
-                    && self.current_params.thinking_summary != tau_proto::ThinkingSummary::Off
-                {
-                    parts.push(format!("ts={}", self.current_params.thinking_summary));
-                }
-                let params_chip = if parts.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ({})", parts.join(", "))
-                };
-                let context = format_context_chip(
-                    self.current_context_input_tokens,
-                    self.current_context_percent,
-                    self.current_context_window,
-                );
-                themed.push(status_style, format!("{params_chip}{context}"));
             }
-        }
-        if let Some(session_id) = &self.current_session_id {
-            themed.push(status_style, format!(" {session_id}"));
         }
         let full_render_count = self.handle.full_render_count();
         if self.last_full_render_count < full_render_count {
