@@ -350,14 +350,10 @@ fn parse_read_line_count(value: Option<i64>) -> Result<Option<usize>, ToolFailur
 
 pub(crate) fn format_read_range(start_line: Option<usize>, line_count: Option<usize>) -> String {
     match (start_line, line_count) {
-        (None, None) => "all lines".to_owned(),
-        (Some(start), None) => format!("from line {start}"),
-        (None, Some(count)) => format!("first {count} lines"),
-        (Some(start), Some(1)) => format!("line {start}"),
-        (Some(start), Some(count)) => {
-            let end = start.saturating_add(count).saturating_sub(1);
-            format!("lines {start}-{end}")
-        }
+        (None, None) => "..".to_owned(),
+        (Some(start), None) => format!("{start}.."),
+        (None, Some(count)) => format!("1..{}", 1usize.saturating_add(count)),
+        (Some(start), Some(count)) => format!("{start}..{}", start.saturating_add(count)),
     }
 }
 

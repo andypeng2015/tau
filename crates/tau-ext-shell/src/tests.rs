@@ -2180,7 +2180,7 @@ fn read_file_honors_start_line_and_line_count() {
     ]);
     let output = read_file(&args).expect("read");
     let result = output.result;
-    assert_eq!(output.display.args, format!("{} lines 2-4", path.display()));
+    assert_eq!(output.display.args, format!("{} 2..5", path.display()));
     assert_eq!(
         cbor_map_text(&result, "path"),
         Some(path.to_string_lossy().as_ref())
@@ -2198,11 +2198,11 @@ fn read_file_honors_start_line_and_line_count() {
 
 #[test]
 fn format_read_range_reports_requested_ranges() {
-    assert_eq!(format_read_range(None, None), "all lines");
-    assert_eq!(format_read_range(Some(11), None), "from line 11");
-    assert_eq!(format_read_range(None, Some(100)), "first 100 lines");
-    assert_eq!(format_read_range(Some(11), Some(1)), "line 11");
-    assert_eq!(format_read_range(Some(11), Some(90)), "lines 11-100");
+    assert_eq!(format_read_range(None, None), "..");
+    assert_eq!(format_read_range(Some(11), None), "11..");
+    assert_eq!(format_read_range(None, Some(100)), "1..101");
+    assert_eq!(format_read_range(Some(11), Some(1)), "11..12");
+    assert_eq!(format_read_range(Some(11), Some(90)), "11..101");
 }
 
 #[test]
