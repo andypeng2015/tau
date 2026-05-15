@@ -404,6 +404,31 @@ fn write_new_file_reports_created_without_model_diff() {
 }
 
 #[test]
+fn write_invalid_utf8_original_reports_changed_without_ui_diff() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("invalid.bin");
+    fs::write(&file_path, [0xff, 0xfe, b'a']).expect("write fixture");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(file_path.display().to_string()),
+        ),
+        (
+            CborValue::Text("content".to_owned()),
+            CborValue::Text(String::new()),
+        ),
+    ]);
+    let output = write_file(&args).expect("write");
+
+    assert_eq!(cbor_int_field(&output.result, "bytes_written"), Some(0));
+    assert_eq!(cbor_bool_field(&output.result, "created"), Some(false));
+    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
+    assert!(output.display.payload.is_none());
+    assert_eq!(fs::read(&file_path).expect("read back"), b"");
+}
+
+#[test]
 fn edit_self_replacement_counts_without_diff() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
@@ -1341,7 +1366,7 @@ fn edit_restricts_matches_to_line_range() {
                             CborValue::Integer(2.into()),
                         ),
                         (
-                            CborValue::Text("end_line".to_owned()),
+                            CborValue::Text("end_line_exclusive".to_owned()),
                             CborValue::Integer(3.into()),
                         ),
                     ])]),
@@ -2036,6 +2061,8 @@ fn read_file_honors_start_line_and_line_count() {
     assert_eq!(cbor_int_field(&result, "start_line"), Some(2));
     assert_eq!(cbor_int_field(&result, "line_count"), Some(3));
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(5));
+    assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(true));
+    assert_eq!(cbor_map_text(&result, "line_ending"), Some("lf"));
 }
 
 #[test]
@@ -2062,6 +2089,8 @@ fn read_file_reports_empty_file_as_zero_lines() {
     assert_eq!(cbor_int_field(&result, "start_line"), Some(1));
     assert_eq!(cbor_int_field(&result, "line_count"), Some(0));
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(0));
+    assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(false));
+    assert_eq!(cbor_map_text(&result, "line_ending"), Some("none"));
 }
 
 #[test]
@@ -2083,6 +2112,8 @@ fn read_file_reports_no_trailing_newline_as_one_line() {
     assert_eq!(cbor_int_field(&result, "start_line"), Some(1));
     assert_eq!(cbor_int_field(&result, "line_count"), Some(1));
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(1));
+    assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(false));
+    assert_eq!(cbor_map_text(&result, "line_ending"), Some("none"));
 }
 
 #[test]
@@ -2136,11 +2167,59 @@ fn read_file_truncates_large_output() {
     let result = read_file(&args).expect("read").result;
     let content = cbor_map_text(&result, "line-numbered content").expect("content field");
     assert!(content.contains("line 1\n"));
-    assert!(content.contains("[Showing lines 1-"));
+    assert!(content.contains("[Showing lines 1-2000 of 3000"));
     assert!(content.contains("Use start_line and line_count to continue reading."));
     assert_eq!(cbor_int_field(&result, "start_line"), Some(1));
-    assert_eq!(cbor_int_field(&result, "line_count"), Some(3000));
+    assert_eq!(cbor_int_field(&result, "line_count"), Some(2000));
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(3000));
+}
+
+#[test]
+fn read_file_truncation_notice_uses_source_line_numbers() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("big-slice.txt");
+    let lines: Vec<String> = (1..=2105).map(|i| format!("line {i}")).collect();
+    std::fs::write(&path, lines.join("\n")).expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        ),
+        (
+            CborValue::Text("start_line".to_owned()),
+            CborValue::Integer(100.into()),
+        ),
+    ]);
+    let result = read_file(&args).expect("read").result;
+    let content = cbor_map_text(&result, "line-numbered content").expect("content field");
+
+    assert!(content.contains("100 line 100"));
+    assert!(content.contains("2099 line 2099"));
+    assert!(content.contains("[Showing lines 100-2099 of 2105"));
+    assert_eq!(cbor_int_field(&result, "start_line"), Some(100));
+    assert_eq!(cbor_int_field(&result, "line_count"), Some(2000));
+    assert_eq!(cbor_int_field(&result, "total_lines"), Some(2105));
+}
+
+#[test]
+fn read_file_reports_crlf_line_endings() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("crlf.txt");
+    std::fs::write(&path, "one\r\ntwo\r\n").expect("write");
+
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Text(path.display().to_string()),
+    )]);
+    let result = read_file(&args).expect("read").result;
+
+    assert_eq!(
+        cbor_map_text(&result, "line-numbered content"),
+        Some("1 one\n2 two")
+    );
+    assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(true));
+    assert_eq!(cbor_map_text(&result, "line_ending"), Some("crlf"));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use tau_proto::CborValue;
 
 use crate::argument::{argument_text, optional_argument_int};
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
-use crate::truncate::truncate_head_with_notice;
+use crate::truncate::truncate_head_plain;
 
 pub(crate) fn read_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     let path = argument_text(arguments, "path").map_err(ToolFailure::from)?;
@@ -23,10 +23,9 @@ pub(crate) fn read_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
     let sliced = stream_slice_lines(&path_buf, start_line, line_count)
         .map_err(|error| ToolFailure::from(error.to_string()).with_args(display_args.clone()))?;
     let total_lines = sliced.total_lines;
-    let truncated = truncate_head_with_notice(
-        &sliced.content,
-        "Use start_line and line_count to continue reading.",
-    );
+    let truncated = truncate_read_content(&sliced.content, start_line, total_lines);
+    let returned_line_count = truncated.line_count;
+    debug_assert!(returned_line_count <= sliced.line_count);
     let mut entries = vec![
         (
             CborValue::Text("path".to_owned()),
@@ -42,11 +41,19 @@ pub(crate) fn read_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
         ),
         (
             CborValue::Text("line_count".to_owned()),
-            CborValue::Integer((sliced.line_count as i64).into()),
+            CborValue::Integer((returned_line_count as i64).into()),
         ),
         (
             CborValue::Text("total_lines".to_owned()),
             CborValue::Integer((total_lines as i64).into()),
+        ),
+        (
+            CborValue::Text("ends_with_newline".to_owned()),
+            CborValue::Bool(sliced.ends_with_newline),
+        ),
+        (
+            CborValue::Text("line_ending".to_owned()),
+            CborValue::Text(sliced.line_ending.clone()),
         ),
     ];
     if truncated.was_truncated {
@@ -71,9 +78,38 @@ pub(crate) struct ReadSlice {
     pub(crate) content: String,
     pub(crate) start_line: usize,
     pub(crate) line_count: usize,
+    pub(crate) ends_with_newline: bool,
+    pub(crate) line_ending: String,
     /// Total lines in the source. For [`stream_slice_lines`] this is
     /// computed by scanning the rest of the file after the slice ends.
     pub(crate) total_lines: usize,
+}
+
+struct TruncatedRead {
+    content: String,
+    was_truncated: bool,
+    total_bytes: usize,
+    line_count: usize,
+}
+
+fn truncate_read_content(content: &str, start_line: usize, total_lines: usize) -> TruncatedRead {
+    let mut truncated = truncate_head_plain(content);
+    let line_count = truncated.content.lines().count();
+    if truncated.was_truncated {
+        let end_line = start_line.saturating_add(line_count).saturating_sub(1);
+        truncated.content.push_str(&format!(
+            "\n\n[Showing lines {start_line}-{end_line} of {total_lines} ({} bytes total). \
+             Use start_line and line_count to continue reading.]",
+            truncated.total_bytes
+        ));
+    }
+
+    TruncatedRead {
+        content: truncated.content,
+        was_truncated: truncated.was_truncated,
+        total_bytes: truncated.total_bytes,
+        line_count,
+    }
 }
 
 /// Stream `[start_line, start_line+count)` from `path` without
@@ -95,6 +131,10 @@ fn stream_slice_lines(
     let mut buf = String::new();
     let take = line_count.unwrap_or(usize::MAX);
 
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    let mut ends_with_newline = false;
+
     loop {
         buf.clear();
         let n = reader.read_line(&mut buf)?;
@@ -102,6 +142,12 @@ fn stream_slice_lines(
             break;
         }
         total_lines += 1;
+        ends_with_newline = buf.ends_with('\n');
+        if buf.ends_with("\r\n") {
+            saw_crlf = true;
+        } else if buf.ends_with('\n') {
+            saw_lf = true;
+        }
         // 1-based index of this line is `total_lines`. Inside slice
         // window if it's >= start_line and we haven't kept enough yet.
         if total_lines >= start_line && kept < take {
@@ -121,8 +167,19 @@ fn stream_slice_lines(
         content,
         start_line,
         line_count: kept,
+        ends_with_newline,
+        line_ending: line_ending_label(saw_lf, saw_crlf).to_owned(),
         total_lines,
     })
+}
+
+fn line_ending_label(saw_lf: bool, saw_crlf: bool) -> &'static str {
+    match (saw_lf, saw_crlf) {
+        (false, false) => "none",
+        (true, false) => "lf",
+        (false, true) => "crlf",
+        (true, true) => "mixed",
+    }
 }
 
 fn parse_read_start_line(value: Option<i64>) -> Result<usize, ToolFailure> {
@@ -173,6 +230,8 @@ pub(crate) fn slice_lines(input: &str, start_line: usize, line_count: Option<usi
             .join("\n"),
         start_line,
         line_count: end_idx.saturating_sub(start_idx),
+        ends_with_newline: input.ends_with('\n'),
+        line_ending: line_ending_label(input.contains('\n'), input.contains("\r\n")).to_owned(),
         total_lines,
     }
 }

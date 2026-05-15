@@ -88,8 +88,9 @@ where
                  resume past a previous truncation, or to fetch a specific \
                  known slice of a file you already know is large. Each returned \
                  `line-numbered content` line is prefixed by its 1-based line number and a space. \
-                 The result returns `path`, `line-numbered content`, the `start_line` and \
-                 `line_count` actually read, and the file's `total_lines`."
+                 The result returns `path`, `line-numbered content`, the `start_line`, \
+                 `line_count` returned, the file's `total_lines`, `ends_with_newline`, \
+                 and `line_ending` (`lf`, `crlf`, `mixed`, or `none`)."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -119,9 +120,9 @@ where
             name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
             model_visible_name: None,
             description: Some(
-                "Write content to a file, creating it if it does not exist. \
-                 Returns the path, bytes written, whether the file was created, \
-                 and whether the contents changed."
+                "Write content to a file, creating it and any missing parent directories \
+                 if they do not exist. Returns the path, bytes written, whether the file \
+                 was created, and whether filesystem contents changed."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -149,7 +150,7 @@ where
             description: Some(
                 "Edit a file using exact text replacement. Each edit is matched against \
                  the original file, optionally restricted to start_line (inclusive) and \
-                 end_line (exclusive), and replaces the first matches in that range up \
+                 end_line_exclusive (exclusive), and replaces the first matches in that range up \
                  to max_matches. Replacement ranges from all edits must not overlap. \
                  Returns the path, the number of replacements, and a `diff` object \
                  summarizing the change against the previous contents."
@@ -187,7 +188,7 @@ where
                                     "minimum": 1,
                                     "description": "Optional 1-based inclusive start line for searching this edit. Defaults to line 1."
                                 },
-                                "end_line": {
+                                "end_line_exclusive": {
                                     "type": "integer",
                                     "minimum": 1,
                                     "description": "Optional 1-based exclusive end line for searching this edit. Defaults to the end of the file."

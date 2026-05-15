@@ -25,26 +25,30 @@ pub(crate) fn write_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailur
 
     let created = !path_buf.exists();
 
-    // Best-effort read of the existing file so the UI can show a diff.
-    // If the file doesn't exist (or can't be decoded as utf-8), treat
-    // the baseline as empty — every line of `content` becomes an add.
-    let original = fs::read_to_string(&path_buf).unwrap_or_default();
+    // Read as bytes for correct change detection. The UI diff is text-only,
+    // so it is omitted when the previous contents are not valid UTF-8.
+    let original_bytes = fs::read(&path_buf).unwrap_or_default();
+    let new_bytes = content.as_bytes();
+    let changed = created || original_bytes != new_bytes;
+    let original_text = String::from_utf8(original_bytes).ok();
 
     let bytes_written = content.len();
     fs::write(&path_buf, &content)
         .map_err(|error| ToolFailure::from(error.to_string()).with_args(display_args.clone()))?;
 
-    let diff = compute_diff(&original, &content);
+    let diff = original_text
+        .as_deref()
+        .map(|original| compute_diff(original, &content));
 
     let display = tau_proto::ToolDisplay {
         args: display_args.clone(),
         status: ToolDisplayStatus::Success,
         status_text: "ok".to_owned(),
-        payload: Some(ToolDisplayPayload::Diff(diff.clone())),
+        payload: diff.clone().map(ToolDisplayPayload::Diff),
         ..Default::default()
     };
     Ok(ToolOutput {
-        result: write_result_value(display_args, bytes_written, created, &diff),
+        result: write_result_value(display_args, bytes_written, created, changed),
         display,
     })
 }
@@ -53,7 +57,7 @@ fn write_result_value(
     path: String,
     bytes_written: usize,
     created: bool,
-    diff: &tau_proto::DiffSummary,
+    changed: bool,
 ) -> CborValue {
     CborValue::Map(vec![
         (CborValue::Text("path".to_owned()), CborValue::Text(path)),
@@ -67,7 +71,7 @@ fn write_result_value(
         ),
         (
             CborValue::Text("changed".to_owned()),
-            CborValue::Bool(!diff.hunks.is_empty()),
+            CborValue::Bool(changed),
         ),
     ])
 }

@@ -34,11 +34,16 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
             .ok_or_else(|| with_args(ToolFailure::new("each edit must have a string newText")))?;
         let max_matches = parse_optional_count(edit, "max_matches", 1, &with_args)?;
         let start_line = parse_optional_line(edit, "start_line", 1, &with_args)?;
-        let end_line = parse_optional_line(edit, "end_line", line_starts.len() + 1, &with_args)?;
+        let end_line = parse_optional_line(
+            edit,
+            "end_line_exclusive",
+            line_starts.len() + 1,
+            &with_args,
+        )?;
 
         if end_line < start_line {
             return Err(with_args(ToolFailure::new(
-                "end_line must be greater than or equal to start_line",
+                "end_line_exclusive must be greater than or equal to start_line",
             )));
         }
 
