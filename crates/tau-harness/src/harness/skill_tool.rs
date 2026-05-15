@@ -31,40 +31,31 @@ impl Harness {
                      workflows they care about, so reach for this tool early: \
                      before tackling any request that touches a tool, command, \
                      framework, or domain you are not deeply familiar with — or \
-                     anything the user might have an opinionated way of doing — \
-                     run `search` first. Most skills are NOT pre-advertised in \
-                     <available_skills>, so a missing entry there is no reason \
-                     to skip the search. When a task could plausibly map to \
-                     several names (\"commit\", \"git commit\", \"version \
-                     control\"), pass them all as a `query` array — hits are \
-                     merged and ranked by how many terms matched. Use \
-                     `action: load` once you have an exact skill name."
+                     anything the user might have an opinionated way of doing. \
+                     Most skills are NOT pre-advertised in <available_skills>, so \
+                     a missing entry there is no reason to skip this tool. Pass \
+                     one query string, or an array of plausible terms \
+                     (\"commit\", \"git commit\", \"version control\"). If the \
+                     search resolves to one skill, or one single-term match has \
+                     exactly that skill name, the full skill is loaded; otherwise \
+                     matching skill names and descriptions are returned."
                         .to_owned(),
                 ),
                 tool_type: tau_proto::ToolType::Function,
                 parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": ["load", "search"],
-                            "description": "Which subcommand to run."
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "(action=load) Exact skill name to load."
-                        },
                         "query": {
                             "type": ["string", "array"],
                             "items": {"type": "string"},
-                            "description": "(action=search) One or more keywords matched case-insensitively against skill names and descriptions. Single string or array of strings."
+                            "description": "One or more keywords matched case-insensitively against skill names and descriptions. Single string or array of strings."
                         },
                         "search_content": {
                             "type": "boolean",
-                            "description": "(action=search) When true, also search the skill body. Default false."
+                            "description": "When true, also search the skill body. Default false."
                         }
                     },
-                    "required": ["action"]
+                    "required": ["query"]
                 })),
                 format: None,
                 enabled_by_default: true,
@@ -75,11 +66,12 @@ impl Harness {
 
     /// Handle the harness-owned `skill` tool call inline.
     ///
-    /// Dispatches on the required `action` argument:
-    /// - `load`: read skill body by exact name (returns name + content).
-    /// - `search`: case-insensitive substring match across skill names and
-    ///   descriptions; with `search_content: true`, also greps skill bodies.
-    ///   Returns a list of `{name, description}` hits.
+    /// Searches by `query`, then auto-loads when the result is unambiguous:
+    /// - one total match loads that skill;
+    /// - one single-term query with an exact skill-name match loads that skill;
+    /// - otherwise returns `{name, description}` matches.
+    ///
+    /// Legacy `action: load/search` calls are still accepted.
     pub(crate) fn handle_skill_tool_call(
         &mut self,
         cid: &ConversationId,
@@ -109,22 +101,9 @@ impl Harness {
         let action = cbor_map_text(&call.arguments, "action");
         let result_event = match action {
             Some("load") => self.handle_skill_load(&call_id, &tool_name, &call.arguments),
-            Some("search") => self.handle_skill_search(&call_id, &tool_name, &call.arguments),
+            Some("search") | None => self.handle_skill_query(&call_id, &tool_name, &call.arguments),
             Some(other) => {
-                let message =
-                    format!("unknown skill action: {other:?} (expected \"load\" or \"search\")");
-                Event::ToolError(tau_proto::ToolError {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    display: Some(skill_error_display("", &message)),
-                    message,
-                    details: None,
-                    originator: tau_proto::PromptOriginator::User,
-                })
-            }
-            None => {
-                let message =
-                    "missing required argument: action (\"load\" or \"search\")".to_owned();
+                let message = format!("unknown skill action: {other:?}");
                 Event::ToolError(tau_proto::ToolError {
                     call_id: call_id.clone(),
                     tool_name: tool_name.clone(),
@@ -163,6 +142,10 @@ impl Harness {
                 originator: tau_proto::PromptOriginator::User,
             });
         };
+        self.read_skill_by_name(call_id, tool_name, name)
+    }
+
+    fn read_skill_by_name(&self, call_id: &ToolCallId, tool_name: &ToolName, name: &str) -> Event {
         let Some(skill) = self.discovered_skills.get(name) else {
             // Same agent that asked for `dpc-rust-code-style` very likely
             // wanted one of the skills containing "rust" or "style", so
@@ -228,7 +211,7 @@ impl Harness {
         }
     }
 
-    fn handle_skill_search(
+    fn handle_skill_query(
         &self,
         call_id: &ToolCallId,
         tool_name: &ToolName,
@@ -249,6 +232,39 @@ impl Harness {
         };
         let search_content = cbor_map_bool(arguments, "search_content").unwrap_or(false);
         let hits = self.search_discovered_skills(&needles, search_content);
+
+        if let Some(name) = self.skill_name_to_auto_load(&needles, &hits) {
+            return self.read_skill_by_name(call_id, tool_name, &name);
+        }
+
+        self.skill_search_result(call_id, tool_name, &needles, search_content, hits)
+    }
+
+    fn skill_name_to_auto_load(
+        &self,
+        needles: &[String],
+        hits: &[(usize, String, String)],
+    ) -> Option<String> {
+        if hits.len() == 1 {
+            return Some(hits[0].1.clone());
+        }
+        if needles.len() == 1 {
+            let needle = &needles[0];
+            if let Some((_, name, _)) = hits.iter().find(|(_, name, _)| name == needle) {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+    fn skill_search_result(
+        &self,
+        call_id: &ToolCallId,
+        tool_name: &ToolName,
+        needles: &[String],
+        search_content: bool,
+        hits: Vec<(usize, String, String)>,
+    ) -> Event {
         let scope_label = if search_content { " [content]" } else { "" };
         let queries_label = needles.join(" ");
         let display_args = format!("search: {queries_label}{scope_label}");
@@ -493,14 +509,14 @@ fn skill_load_not_found_details(
     ])
 }
 
-/// Parse the `query` argument of a `skill` tool call's `search` action
-/// into one-or-more lowercased search needles. Accepts either a single
-/// string (one needle) or an array of strings (multiple needles whose
-/// hits are merged and ranked by hit-count). Returns a user-facing
-/// error message string on missing/empty/malformed input.
+/// Parse the `query` argument of a `skill` tool call into one-or-more
+/// lowercased search needles. Accepts either a single string (one
+/// needle) or an array of strings (multiple needles whose hits are
+/// merged and ranked by hit-count). Returns a user-facing error message
+/// string on missing/empty/malformed input.
 fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, String> {
     let CborValue::Map(entries) = arguments else {
-        return Err("missing required argument: query (action=search)".to_owned());
+        return Err("missing required argument: query".to_owned());
     };
     let raw = entries
         .iter()
@@ -508,7 +524,7 @@ fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, St
             CborValue::Text(k) if k == "query" => Some(v),
             _ => None,
         })
-        .ok_or_else(|| "missing required argument: query (action=search)".to_owned())?;
+        .ok_or_else(|| "missing required argument: query".to_owned())?;
 
     let needles: Vec<String> = match raw {
         CborValue::Text(s) => vec![s.to_lowercase()],
@@ -523,7 +539,7 @@ fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, St
             out
         }
         _ => {
-            return Err("query must be a string or an array of strings (action=search)".to_owned());
+            return Err("query must be a string or an array of strings".to_owned());
         }
     };
 

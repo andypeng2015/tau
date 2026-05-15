@@ -1,22 +1,11 @@
 # Skills
 
-Skills are short, focused playbooks that teach the agent how to handle a tool, workflow, framework, or project convention. Tau discovers skills at session start, advertises a small relevant subset in the system prompt, and exposes the rest through the `skill` tool.
+Tau discovers Markdown skills at session start, advertises only the small set that should be immediately visible, and lets the agent discover or load the rest with the `skill` tool.
 
 
-## File layout
+## Discovery
 
-A skill is a Markdown file with YAML frontmatter. The common layout is:
-
-```text
-.agents/skills/<skill-name>/SKILL.md
-```
-
-Tau also accepts root-level Markdown files inside a skills directory, but `SKILL.md` inside a named directory is preferred because it gives the skill a stable base directory for related files.
-
-
-## Discovery scope
-
-Tau currently scans these skills directories, in priority order:
+Tau scans, in priority order:
 
 1. `<cwd>/.agents/skills`
 2. `<cwd>/.agents.local/skills`
@@ -27,64 +16,41 @@ Tau currently scans these skills directories, in priority order:
 
 The first skill with a given name wins. Later duplicates are ignored and reported as collisions.
 
-Project-scoped skills (`<cwd>/.agents/skills` and `<cwd>/.agents.local/skills`) default to being advertised to the agent at session start. User-scoped skills default to staying hidden until searched. A skill can override either default with an explicit `advertise:` header.
+Preferred layout:
 
-
-## Frontmatter
-
-Supported headers are top-level YAML scalar values. Strings, booleans, and numbers are accepted; lists, maps, and `null` are ignored.
-
-```markdown
----
-name: rust-workspace
-description: How to work in this Rust workspace
-advertise: true
----
-# Instructions
-
-Run `cargo clippy --all-targets` after Rust edits.
+```text
+.agents/skills/<skill-name>/SKILL.md
 ```
 
-Headers:
+The frontmatter fields Tau reads are:
 
-- `name`: Optional. Defaults to the parent directory name. Must use lowercase ASCII letters, digits, and hyphens only; it must not start or end with a hyphen or contain `--`.
-- `description`: Required. A concise one-line summary used for prompt advertisement and search.
-- `advertise`: Optional. `true`, `True`, `TRUE`, and `1` advertise the skill immediately. Any other explicit value, including `false`, keeps it out of the initial prompt. If omitted, the directory scope default applies.
+- `name`: Optional. Defaults to the parent directory name. Must be lowercase ASCII letters, digits, and hyphens only.
+- `description`: Required. Used in prompt advertisements and search results.
+- `advertise`: Optional. `true`, `True`, `TRUE`, and `1` force prompt advertisement. Any other explicit value keeps the skill hidden from the initial prompt.
 
-
-## The initial prompt
-
-Advertised skills appear in the system prompt as `<available_skills>` entries containing only the skill name and description. The full skill body is not loaded until the agent calls the `skill` tool with `action: load`.
-
-This keeps prompt size bounded while still making project-relevant skills immediately visible.
+Project-scoped skills default to advertised. User-scoped skills default to hidden until searched. `advertise:` overrides the scope default.
 
 
-## Search and load
+## Prompt advertisement
 
-The `skill` tool has two actions:
+Advertised skills appear in `<available_skills>` with only name and description. Tau does not include the skill body until the agent calls `skill`.
 
-- `search`: Finds skills by case-insensitive substring match against names and descriptions.
-- `load`: Loads a skill by exact name and returns the Markdown body with frontmatter stripped.
+This keeps normal session context small while still surfacing project-local instructions that are likely relevant immediately.
 
-Example search:
+
+## The `skill` tool
+
+The agent calls `skill` with a `query` string or an array of query strings:
 
 ```json
-{
-  "action": "search",
-  "query": ["rust", "style"]
-}
+{ "query": ["rust", "style"] }
 ```
 
-Multiple query terms are merged. Results include `hit_count` and are sorted by highest hit count, then by name.
+Tau matches query terms case-insensitively against skill names and descriptions, merges the hits, and sorts by `hit_count` descending then by name. By default, Tau does not read skill bodies during search; `search_content: true` also searches body text.
 
-By default, search does not read skill bodies. Set `search_content: true` to include body text:
+If the query is unambiguous, Tau returns the full skill body with frontmatter stripped:
 
-```json
-{
-  "action": "search",
-  "query": "clippy",
-  "search_content": true
-}
-```
+- exactly one matching skill was found; or
+- the query has one term and one match has exactly that skill name, even if other skills also matched.
 
-If `load` names an unknown skill, Tau returns an error with suggestions based on the requested name split on `-` and `_`.
+Otherwise Tau returns matching skill names, descriptions, and hit counts. This supports large, inter-connected skill libraries: agents can cheaply search broad terms, follow names mentioned by other skills, and load full bodies only when needed instead of spending context on every possible instruction up front.

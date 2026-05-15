@@ -5305,7 +5305,8 @@ fn build_tool_args_display(
             _ => String::new(),
         },
         "skill" => match cbor_text_field(arguments, "action").as_deref() {
-            Some("search") => {
+            Some("load") => cbor_text_field(arguments, "name").unwrap_or_default(),
+            _ => {
                 let query = cbor_text_field(arguments, "query").unwrap_or_default();
                 let scope = if cbor_bool_field(arguments, "search_content").unwrap_or(false) {
                     " [content]"
@@ -5314,9 +5315,6 @@ fn build_tool_args_display(
                 };
                 format!("search: {query}{scope}")
             }
-            // Default to load semantics for `action: "load"` and for
-            // legacy / malformed calls without an action.
-            _ => cbor_text_field(arguments, "name").unwrap_or_default(),
         },
         _ => return None,
     };

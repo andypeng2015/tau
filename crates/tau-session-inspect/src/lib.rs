@@ -174,22 +174,20 @@ pub fn format_session_entry(entry: &SessionEntry) -> String {
             ToolActivityOutcome::Requested { arguments, .. } => {
                 if a.tool_name.as_str() == "skill" {
                     match cbor_map_text(arguments, "action") {
-                        Some("search") => {
-                            let query = cbor_map_text(arguments, "query").unwrap_or_default();
-                            if query.is_empty() {
-                                "tool.request skill search".to_owned()
-                            } else {
-                                format!("tool.request skill search {query}")
-                            }
-                        }
-                        // Treat anything else (incl. legacy missing
-                        // `action`) as a load.
-                        _ => {
+                        Some("load") => {
                             let name = cbor_map_text(arguments, "name").unwrap_or_default();
                             if name.is_empty() {
                                 "tool.request skill".to_owned()
                             } else {
                                 format!("tool.request skill {name}")
+                            }
+                        }
+                        _ => {
+                            let query = cbor_map_text(arguments, "query").unwrap_or_default();
+                            if query.is_empty() {
+                                "tool.request skill search".to_owned()
+                            } else {
+                                format!("tool.request skill search {query}")
                             }
                         }
                     }

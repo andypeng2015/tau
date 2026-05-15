@@ -385,10 +385,6 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
         tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![
             (
-                CborValue::Text("action".to_owned()),
-                CborValue::Text("search".to_owned()),
-            ),
-            (
                 CborValue::Text("query".to_owned()),
                 CborValue::Text(query.to_owned()),
             ),
@@ -447,14 +443,33 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
             })
             .expect("tool result display")
     };
+    let read_loaded_name = |h: &Harness, call_id: &str| -> String {
+        let events = h.store.session_events("s1").expect("events");
+        let result = events
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                Event::ToolResult(r) if r.call_id.as_str() == call_id => Some(r.result.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        let CborValue::Map(top) = result else {
+            panic!("result must be a map")
+        };
+        top.into_iter()
+            .find_map(|(k, v)| match (k, v) {
+                (CborValue::Text(k), CborValue::Text(v)) if k == "name" => Some(v),
+                _ => None,
+            })
+            .expect("loaded skill name")
+    };
 
     // Description match: KW only appears in zqx-alpha's description.
     seed_tools_running(&mut h, &cid, vec!["call-1".into()]);
     h.handle_skill_tool_call(&cid, &call_search(KW, false, "call-1"))
         .expect("search 1");
-    assert_eq!(read_matches(&h, "call-1"), vec!["zqx-alpha"]);
+    assert_eq!(read_loaded_name(&h, "call-1"), "zqx-alpha");
     let display = read_display(&h, "call-1");
-    assert_eq!(display.stats.matches, Some(1));
     assert_eq!(display.stats.lines, Some(1));
     assert!(display.stats.bytes.is_some_and(|bytes| 0 < bytes));
 
@@ -482,7 +497,7 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
     seed_tools_running(&mut h, &cid, vec!["call-4".into()]);
     h.handle_skill_tool_call(&cid, &call_search("ZQX-ALPHA", false, "call-4"))
         .expect("search 4");
-    assert_eq!(read_matches(&h, "call-4"), vec!["zqx-alpha"]);
+    assert_eq!(read_loaded_name(&h, "call-4"), "zqx-alpha");
 }
 
 #[test]
@@ -558,21 +573,15 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
         id: id.into(),
         name: "skill".into(),
         tool_type: tau_proto::ToolType::Function,
-        arguments: CborValue::Map(vec![
-            (
-                CborValue::Text("action".to_owned()),
-                CborValue::Text("search".to_owned()),
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("query".to_owned()),
+            CborValue::Array(
+                terms
+                    .iter()
+                    .map(|t| CborValue::Text((*t).to_owned()))
+                    .collect(),
             ),
-            (
-                CborValue::Text("query".to_owned()),
-                CborValue::Array(
-                    terms
-                        .iter()
-                        .map(|t| CborValue::Text((*t).to_owned()))
-                        .collect(),
-                ),
-            ),
-        ]),
+        )]),
         display: None,
     };
 
@@ -632,15 +641,27 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
          gamma matches none and must be filtered out",
     );
 
-    // A single-element array must behave the same as a single string —
-    // the per-term matcher is unchanged.
+    // A single matching skill is loaded directly.
     seed_tools_running(&mut h, &cid, vec!["call-single".into()]);
     h.handle_skill_tool_call(&cid, &call_search_array(&[T2], "call-single"))
         .expect("single in array");
-    assert_eq!(
-        read_match_records(&h, "call-single"),
-        vec![("zqx-alpha".to_owned(), 1)],
-    );
+    let events = h.store.session_events("s1").expect("events");
+    let loaded_name = events
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.event {
+            Event::ToolResult(r) if r.call_id.as_str() == "call-single" => Some(r.result.clone()),
+            _ => None,
+        })
+        .and_then(|result| match result {
+            CborValue::Map(entries) => entries.into_iter().find_map(|(k, v)| match (k, v) {
+                (CborValue::Text(k), CborValue::Text(v)) if k == "name" => Some(v),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("loaded skill name");
+    assert_eq!(loaded_name, "zqx-alpha");
 
     // Empty array should error rather than silently returning every
     // skill — the agent passing `[]` is almost always a bug.
@@ -651,16 +672,10 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
             id: "call-empty".into(),
             name: "skill".into(),
             tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("action".to_owned()),
-                    CborValue::Text("search".to_owned()),
-                ),
-                (
-                    CborValue::Text("query".to_owned()),
-                    CborValue::Array(Vec::new()),
-                ),
-            ]),
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("query".to_owned()),
+                CborValue::Array(Vec::new()),
+            )]),
             display: None,
         },
     )
@@ -673,6 +688,78 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
         )
     });
     assert!(saw_error, "empty query array must produce a ToolError");
+}
+
+#[test]
+fn skill_tool_loads_exact_single_term_match_even_with_other_hits() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+
+    let make_skill = |name: &str, description: &str| {
+        let dir = td.path().join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            format!("---\nname: {name}\ndescription: {description}\n---\nbody for {name}"),
+        )
+        .expect("write skill");
+        path
+    };
+    let exact_path = make_skill("zqxexact", "the exact skill");
+    let other_path = make_skill("zqxother", "mentions zqxexact too");
+
+    let mut h = echo_harness(&sp).expect("start");
+    h.discovered_skills.clear();
+    for (name, desc, path) in [
+        ("zqxexact", "the exact skill", exact_path),
+        ("zqxother", "mentions zqxexact too", other_path),
+    ] {
+        h.discovered_skills.insert(
+            tau_proto::SkillName::from(name),
+            DiscoveredSkill {
+                source_id: "skills".into(),
+                description: desc.to_owned(),
+                file_path: path,
+                add_to_prompt: false,
+            },
+        );
+    }
+
+    let cid = h.default_conversation_id.clone();
+    seed_tools_running(&mut h, &cid, vec!["call-exact".into()]);
+    h.handle_skill_tool_call(
+        &cid,
+        &AgentToolCall {
+            id: "call-exact".into(),
+            name: "skill".into(),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("query".to_owned()),
+                CborValue::Text("zqxexact".to_owned()),
+            )]),
+            display: None,
+        },
+    )
+    .expect("skill call");
+
+    let events = h.store.session_events("s1").expect("events");
+    let loaded_name = events
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.event {
+            Event::ToolResult(r) if r.call_id.as_str() == "call-exact" => Some(r.result.clone()),
+            _ => None,
+        })
+        .and_then(|result| match result {
+            CborValue::Map(entries) => entries.into_iter().find_map(|(k, v)| match (k, v) {
+                (CborValue::Text(k), CborValue::Text(v)) if k == "name" => Some(v),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("loaded skill name");
+    assert_eq!(loaded_name, "zqxexact");
 }
 
 #[test]
