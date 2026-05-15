@@ -112,7 +112,7 @@ fn stream_slice_lines(
             if kept > 0 {
                 content.push('\n');
             }
-            content.push_str(trimmed);
+            content.push_str(&format!("{total_lines} {trimmed}"));
             kept += 1;
         }
     }
@@ -165,7 +165,12 @@ pub(crate) fn slice_lines(input: &str, start_line: usize, line_count: Option<usi
         None => total_lines,
     };
     ReadSlice {
-        content: all_lines[start_idx..end_idx].join("\n"),
+        content: all_lines[start_idx..end_idx]
+            .iter()
+            .enumerate()
+            .map(|(index, line)| format!("{} {line}", start_idx + index + 1))
+            .collect::<Vec<_>>()
+            .join("\n"),
         start_line,
         line_count: end_idx.saturating_sub(start_idx),
         total_lines,

@@ -304,7 +304,7 @@ fn extension_reads_file() {
     assert_eq!(result.tool_name, READ_TOOL_NAME);
     assert_eq!(
         optional_argument_text(&result.result, "content"),
-        Some("hello from file".to_owned())
+        Some("1 hello from file".to_owned())
     );
 
     writer
@@ -949,7 +949,7 @@ fn edit_read_failure_reports_short_reason() {
 }
 
 #[test]
-fn edit_errors_use_short_reasons() {
+fn edit_rejects_empty_old_text() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\nworld\n").expect("write");
@@ -971,7 +971,7 @@ fn edit_errors_use_short_reasons() {
                     CborValue::Array(vec![CborValue::Map(vec![
                         (
                             CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("missing".to_owned()),
+                            CborValue::Text("".to_owned()),
                         ),
                         (
                             CborValue::Text("newText".to_owned()),
@@ -990,10 +990,7 @@ fn edit_errors_use_short_reasons() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(
-        error.message,
-        "oldText match count mismatch: expected 1, found 0; no changes written"
-    );
+    assert_eq!(error.message, "oldText must not be empty");
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -1002,7 +999,7 @@ fn edit_errors_use_short_reasons() {
 }
 
 #[test]
-fn edit_errors_include_path_details() {
+fn edit_rejects_negative_max_matches_with_path_args() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\nworld\n").expect("write");
@@ -1024,11 +1021,15 @@ fn edit_errors_include_path_details() {
                     CborValue::Array(vec![CborValue::Map(vec![
                         (
                             CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("missing".to_owned()),
+                            CborValue::Text("hello".to_owned()),
                         ),
                         (
                             CborValue::Text("newText".to_owned()),
                             CborValue::Text("x".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("max_matches".to_owned()),
+                            CborValue::Integer((-1).into()),
                         ),
                     ])]),
                 ),
@@ -1043,13 +1044,11 @@ fn edit_errors_include_path_details() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
+    assert_eq!(error.message, "max_matches must not be negative");
     assert_eq!(
-        error.message,
-        "oldText match count mismatch: expected 1, found 0; no changes written"
+        error.display.expect("display").args,
+        file_path.display().to_string()
     );
-    let details = error.details.expect("details");
-    let path = cbor_map_text(&details, "path").expect("path");
-    assert_eq!(path, file_path.display().to_string());
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -1058,7 +1057,64 @@ fn edit_errors_include_path_details() {
 }
 
 #[test]
-fn edit_can_replace_expected_multiple_matches() {
+fn edit_can_replace_up_to_max_matches() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "one fish two fish three fish\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(file_path.display().to_string()),
+                ),
+                (
+                    CborValue::Text("edits".to_owned()),
+                    CborValue::Array(vec![CborValue::Map(vec![
+                        (
+                            CborValue::Text("oldText".to_owned()),
+                            CborValue::Text("fish".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("newText".to_owned()),
+                            CborValue::Text("cat".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("max_matches".to_owned()),
+                            CborValue::Integer(2.into()),
+                        ),
+                    ])]),
+                ),
+            ]),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    let Event::ToolResult(result) = result else {
+        panic!("expected tool result");
+    };
+    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(2));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "one cat two cat three fish\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_defaults_to_replacing_first_match() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "one fish two fish\n").expect("write");
@@ -1085,10 +1141,6 @@ fn edit_can_replace_expected_multiple_matches() {
                         (
                             CborValue::Text("newText".to_owned()),
                             CborValue::Text("cat".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("expected_matches".to_owned()),
-                            CborValue::Integer(2.into()),
                         ),
                     ])]),
                 ),
@@ -1102,7 +1154,7 @@ fn edit_can_replace_expected_multiple_matches() {
     assert!(matches!(result, Event::ToolResult(_)));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "one cat two cat\n"
+        "one cat two fish\n"
     );
 
     writer
@@ -1112,68 +1164,7 @@ fn edit_can_replace_expected_multiple_matches() {
 }
 
 #[test]
-fn edit_reports_actual_match_count_without_writing() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "one fish two fish\n").expect("write");
-
-    let (mut reader, mut writer) = spawn_extension();
-    drain_startup(&mut reader);
-
-    writer
-        .write_event(&Event::ToolInvoke(ToolInvoke {
-            call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("fish".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("cat".to_owned()),
-                        ),
-                    ])]),
-                ),
-            ]),
-            originator: tau_proto::PromptOriginator::User,
-        }))
-        .expect("invoke");
-    writer.flush().expect("flush");
-
-    let error = reader.read_event().expect("read").expect("error");
-    let Event::ToolError(error) = error else {
-        panic!("expected tool error");
-    };
-    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(
-        error.message,
-        "oldText match count mismatch: expected 1, found 2; no changes written"
-    );
-    let details = error.details.expect("details");
-    assert_eq!(cbor_map_text(&details, "oldText"), Some("fish"));
-    assert_eq!(cbor_map_int(&details, "expected_matches"), Some(1));
-    assert_eq!(cbor_map_int(&details, "actual_matches"), Some(2));
-    assert_eq!(
-        fs::read_to_string(&file_path).expect("read back"),
-        "one fish two fish\n"
-    );
-
-    writer
-        .write_frame(&disconnect_frame(None))
-        .expect("disconnect");
-    writer.flush().expect("flush");
-}
-
-#[test]
-fn edit_reports_zero_applied_for_expected_zero_matches() {
+fn edit_reports_zero_replacements_for_no_matches() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\n").expect("write");
@@ -1201,9 +1192,66 @@ fn edit_reports_zero_applied_for_expected_zero_matches() {
                             CborValue::Text("newText".to_owned()),
                             CborValue::Text("x".to_owned()),
                         ),
+                    ])]),
+                ),
+            ]),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let result = reader.read_event().expect("read").expect("result");
+    let Event::ToolResult(result) = result else {
+        panic!("expected tool result");
+    };
+    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(0));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_restricts_matches_to_line_range() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "fish\nfish\nfish\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolInvoke(ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: CborValue::Map(vec![
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(file_path.display().to_string()),
+                ),
+                (
+                    CborValue::Text("edits".to_owned()),
+                    CborValue::Array(vec![CborValue::Map(vec![
                         (
-                            CborValue::Text("expected_matches".to_owned()),
-                            CborValue::Integer(0.into()),
+                            CborValue::Text("oldText".to_owned()),
+                            CborValue::Text("fish".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("newText".to_owned()),
+                            CborValue::Text("cat".to_owned()),
+                        ),
+                        (
+                            CborValue::Text("start_line".to_owned()),
+                            CborValue::Integer(2.into()),
+                        ),
+                        (
+                            CborValue::Text("end_line".to_owned()),
+                            CborValue::Integer(3.into()),
                         ),
                     ])]),
                 ),
@@ -1217,10 +1265,10 @@ fn edit_reports_zero_applied_for_expected_zero_matches() {
     let Event::ToolResult(result) = result else {
         panic!("expected tool result");
     };
-    assert_eq!(cbor_map_int(&result.result, "edits_applied"), Some(0),);
+    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(1));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "hello\n"
+        "fish\ncat\nfish\n"
     );
 
     writer
@@ -1854,7 +1902,7 @@ fn truncate_tail_limits_by_bytes() {
 #[test]
 fn slice_lines_returns_requested_window() {
     let sliced = slice_lines("a\nb\nc\nd", 2, Some(2));
-    assert_eq!(sliced.content, "b\nc");
+    assert_eq!(sliced.content, "2 b\n3 c");
     assert_eq!(sliced.start_line, 2);
     assert_eq!(sliced.line_count, 2);
 }
@@ -1892,7 +1940,7 @@ fn read_file_honors_start_line_and_line_count() {
     assert_eq!(output.display.args, format!("{} 2..4", path.display()));
     assert_eq!(
         cbor_map_text(&result, "content"),
-        Some("line 2\nline 3\nline 4")
+        Some("2 line 2\n3 line 3\n4 line 4")
     );
     assert_eq!(cbor_int_field(&result, "start_line"), Some(2));
     assert_eq!(cbor_int_field(&result, "line_count"), Some(3));
@@ -1937,7 +1985,7 @@ fn read_file_reports_no_trailing_newline_as_one_line() {
     )]);
     let result = read_file(&args).expect("read").result;
 
-    assert_eq!(cbor_map_text(&result, "content"), Some("text"));
+    assert_eq!(cbor_map_text(&result, "content"), Some("1 text"));
     assert_eq!(cbor_int_field(&result, "start_line"), Some(1));
     assert_eq!(cbor_int_field(&result, "line_count"), Some(1));
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(1));

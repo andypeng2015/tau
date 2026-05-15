@@ -86,9 +86,10 @@ where
                  the result is truncated and includes a continuation hint. \
                  Prefer one full read. Pass `start_line`/`line_count` only to \
                  resume past a previous truncation, or to fetch a specific \
-                 known slice of a file you already know is large. The result \
-                 returns `path`, `content`, the `start_line` and `line_count` \
-                 actually read, and the file's `total_lines`."
+                 known slice of a file you already know is large. Each returned \
+                 content line is prefixed by its 1-based line number and a space. \
+                 The result returns `path`, `content`, the `start_line` and \
+                 `line_count` actually read, and the file's `total_lines`."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -147,11 +148,12 @@ where
             name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             model_visible_name: None,
             description: Some(
-                "Edit a file using exact text replacement. Each edit's oldText must match \
-                 a unique, non-overlapping region of the original file. All edits are matched \
-                 against the original content, not incrementally. Returns the path, the number \
-                 of edits applied, and a `diff` object summarizing the change against the \
-                 previous contents."
+                "Edit a file using exact text replacement. Each edit is matched against \
+                 the original file, optionally restricted to start_line (inclusive) and \
+                 end_line (exclusive), and replaces the first matches in that range up \
+                 to max_matches. Replacement ranges from all edits must not overlap. \
+                 Returns the path, the number of replacements, and a `diff` object \
+                 summarizing the change against the previous contents."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -170,16 +172,26 @@ where
                             "properties": {
                                 "oldText": {
                                     "type": "string",
-                                    "description": "Exact text to find, matched verbatim. Must be unique in the file. Embed real newlines directly — do NOT use backslash-n escape sequences."
+                                    "description": "Exact text to find, matched verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
                                 },
                                 "newText": {
                                     "type": "string",
                                     "description": "Replacement text, written verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
                                 },
-                                "expected_matches": {
+                                "max_matches": {
                                     "type": "integer",
                                     "minimum": 0,
-                                    "description": "Expected number of matches for oldText. Defaults to 1. Use a value greater than 1 to replace all matching, non-overlapping occurrences with newText."
+                                    "description": "Maximum number of matches to replace for this edit. Defaults to 1. Matches are replaced from the start of the selected range."
+                                },
+                                "start_line": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Optional 1-based inclusive start line for searching this edit. Defaults to line 1."
+                                },
+                                "end_line": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Optional 1-based exclusive end line for searching this edit. Defaults to the end of the file."
                                 }
                             },
                             "required": ["oldText", "newText"]
