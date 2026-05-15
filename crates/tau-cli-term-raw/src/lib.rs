@@ -1585,10 +1585,17 @@ fn layout_id_list(
 
 /// Result of laying out all content.
 struct LayoutAll {
-    /// All rendered lines (history + live area).
+    /// All rendered lines without rubber (log + fixed area).
     all_lines: Vec<Vec<Cell>>,
     /// Source block/zone for each rendered line.
     line_sources: Vec<LineSource>,
+    /// Index in `all_lines` where the fixed area starts.
+    ///
+    /// Lines before this are scrollable log content. Lines from this point on
+    /// are the prompt/status/suggestions area. Rubber rows may be inserted at
+    /// this boundary to absorb visible log shrinkage without moving the fixed
+    /// area upward.
+    log_end: usize,
     /// Index in `all_lines` where the live area starts (after history).
     live_start: usize,
     /// Absolute cursor row in `all_lines`.
@@ -1597,15 +1604,24 @@ struct LayoutAll {
     cursor_col: usize,
 }
 
+struct ViewPlan {
+    viewport_start: usize,
+    rubber_height: usize,
+    render_lines: Vec<Vec<Cell>>,
+    cursor_row: usize,
+}
+
 /// Renderer-side model of the terminal content Tau believes it owns.
 ///
-/// `known_lines[..viewport_start]` are in terminal scrollback,
-/// `known_lines[viewport_start..]` are currently visible. Full redraws are only
-/// needed when the scrollback prefix changes, or when the desired viewport
-/// moves upward and would need to pull rows back from scrollback.
+/// `known_lines[..viewport_start]` are scrollable log rows in terminal
+/// scrollback, `known_lines[viewport_start..]` are represented on-screen above
+/// the fixed prompt/status area. `rubber_height` is temporary blank space
+/// inserted between those two areas to absorb visible shrinkage before pulling
+/// rows back from scrollback.
 #[derive(Default)]
 struct TerminalModel {
     viewport_start: usize,
+    rubber_height: usize,
     known_lines: Vec<Vec<Cell>>,
     known_sources: Vec<LineSource>,
 }
@@ -1616,17 +1632,74 @@ impl TerminalModel {
     }
 
     fn hidden_prefix_changed(&self, layout: &LayoutAll) -> bool {
-        hidden_lines_changed(&self.known_lines, &layout.all_lines, self.viewport_start)
+        hidden_lines_changed(
+            &self.known_lines,
+            &layout.all_lines[..layout.log_end],
+            self.viewport_start,
+        )
     }
 
     fn changed_hidden_line(&self, layout: &LayoutAll) -> Option<usize> {
-        changed_line_in_range(&self.known_lines, &layout.all_lines, 0..self.viewport_start)
+        changed_line_in_range(
+            &self.known_lines,
+            &layout.all_lines[..layout.log_end],
+            0..self.viewport_start,
+        )
     }
 
-    fn reset_to_layout(&mut self, layout: LayoutAll, height: usize) {
-        self.viewport_start = Self::desired_viewport_start(&layout, height);
-        self.known_lines = layout.all_lines;
-        self.known_sources = layout.line_sources;
+    fn plan_view(&self, layout: &LayoutAll, height: usize) -> ViewPlan {
+        let fixed_height = layout.all_lines.len().saturating_sub(layout.log_end);
+        let log_height = layout.log_end;
+        let mut viewport_start = self.viewport_start.min(log_height);
+        let mut rubber_height = self.rubber_height;
+
+        if fixed_height < height {
+            let occupied = log_height.saturating_sub(viewport_start) + rubber_height + fixed_height;
+            if occupied < height {
+                // Only create rubber after the viewport has overflowed once.
+                // Before that, keep the normal terminal behavior where the
+                // prompt follows the transcript instead of being bottom-pinned.
+                if 0 < self.viewport_start || 0 < rubber_height {
+                    rubber_height += height - occupied;
+                }
+            } else if height < occupied {
+                let overflow = occupied - height;
+                let consume_rubber = rubber_height.min(overflow);
+                rubber_height -= consume_rubber;
+                viewport_start += overflow - consume_rubber;
+            }
+        } else {
+            viewport_start = log_height;
+            rubber_height = 0;
+        }
+
+        viewport_start = viewport_start.min(log_height);
+        let mut render_lines = Vec::with_capacity(layout.all_lines.len() + rubber_height);
+        render_lines.extend_from_slice(&layout.all_lines[..layout.log_end]);
+        render_lines.extend(std::iter::repeat_with(Vec::new).take(rubber_height));
+        render_lines.extend_from_slice(&layout.all_lines[layout.log_end..]);
+
+        let cursor_row = if layout.log_end <= layout.cursor_row {
+            layout.cursor_row + rubber_height
+        } else {
+            layout.cursor_row
+        };
+
+        ViewPlan {
+            viewport_start,
+            rubber_height,
+            render_lines,
+            cursor_row,
+        }
+    }
+
+    fn reset_to_layout(&mut self, layout: LayoutAll, height: usize) -> ViewPlan {
+        let plan = self.plan_view(&layout, height);
+        self.viewport_start = plan.viewport_start;
+        self.rubber_height = plan.rubber_height;
+        self.known_lines = layout.all_lines[..layout.log_end].to_vec();
+        self.known_sources = layout.line_sources[..layout.log_end].to_vec();
+        plan
     }
 }
 
@@ -1655,6 +1728,7 @@ fn layout_all(st: &SharedState) -> LayoutAll {
         &mut all_lines,
         &mut line_sources,
     );
+    let log_end = all_lines.len();
     layout_id_list(
         "above_sticky",
         &st.above_sticky,
@@ -1729,6 +1803,7 @@ fn layout_all(st: &SharedState) -> LayoutAll {
     LayoutAll {
         all_lines,
         line_sources,
+        log_end,
         live_start,
         cursor_row,
         cursor_col,
@@ -1759,15 +1834,15 @@ fn redraw_loop(
             if st.shutdown {
                 // Final render + move cursor below all content.
                 let layout = layout_all(&st);
-                let total = layout.all_lines.len();
-                let visible_start = total.saturating_sub(st.height.max(1));
-                let visible = &layout.all_lines[visible_start..];
-                let cursor_in_visible = layout.cursor_row.saturating_sub(visible_start);
+                let plan = terminal_model.plan_view(&layout, st.height.max(1));
+                let visible_start = plan.viewport_start;
+                let visible = &plan.render_lines[visible_start..];
+                let cursor_in_visible = plan.cursor_row.saturating_sub(visible_start);
                 drop(st);
 
                 screen.set_width(prev_width);
                 let _ = screen.update(&mut writer, visible, (cursor_in_visible, layout.cursor_col));
-                let below = total.saturating_sub(layout.cursor_row + 1);
+                let below = plan.render_lines.len().saturating_sub(plan.cursor_row + 1);
                 for _ in 0..=below {
                     let _ = writer.queue(crossterm::style::Print("\r\n"));
                 }
@@ -1842,49 +1917,32 @@ fn redraw_loop(
             } else {
                 "force_full"
             };
+            let visible_start = TerminalModel::desired_viewport_start(&layout, height);
             mark_full_render(
                 &state,
-                reason,
                 &layout,
-                terminal_model.viewport_start,
-                TerminalModel::desired_viewport_start(&layout, height),
-                height,
-                None,
-                None,
+                FullRenderMark {
+                    reason,
+                    prev_visible_start: terminal_model.viewport_start,
+                    visible_start,
+                    height,
+                    changed_line: None,
+                    previous_source: None,
+                },
             );
-            if let Err(e) = full_render(&mut writer, &mut screen, &layout, width, height) {
+            let plan = terminal_model.plan_view(&layout, height);
+            if let Err(e) = full_render(&mut writer, &mut screen, &layout, &plan, width, height) {
                 tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
             }
             terminal_model.reset_to_layout(layout, height);
         } else {
-            let visible_start = TerminalModel::desired_viewport_start(&layout, height);
-
             screen.set_width(width);
 
             let hidden_prefix_changed = terminal_model.hidden_prefix_changed(&layout);
+            let plan = terminal_model.plan_view(&layout, height);
+            let visible_start = plan.viewport_start;
 
-            if viewport_moved_up(terminal_model.viewport_start, visible_start) {
-                // The desired viewport moved upward (content shrank). Rows that
-                // should re-enter the screen may currently exist only in terminal
-                // scrollback, which cannot be pulled back incrementally.
-                let previous_source = terminal_model
-                    .known_sources
-                    .get(terminal_model.viewport_start)
-                    .cloned();
-                mark_full_render(
-                    &state,
-                    "viewport_moved_up",
-                    &layout,
-                    terminal_model.viewport_start,
-                    visible_start,
-                    height,
-                    Some(visible_start),
-                    previous_source,
-                );
-                if let Err(e) = full_render(&mut writer, &mut screen, &layout, width, height) {
-                    tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
-                }
-            } else if hidden_prefix_changed {
+            if hidden_prefix_changed {
                 // The terminal scrollback contains rows whose logical content
                 // changed. Rebuild it from logical content instead of trying to
                 // patch it incrementally. Rows that are still physically
@@ -1896,36 +1954,39 @@ fn redraw_loop(
                     .cloned();
                 mark_full_render(
                     &state,
-                    "hidden_prefix_changed",
                     &layout,
-                    terminal_model.viewport_start,
-                    visible_start,
-                    height,
-                    changed_line,
-                    previous_source,
+                    FullRenderMark {
+                        reason: "hidden_prefix_changed",
+                        prev_visible_start: terminal_model.viewport_start,
+                        visible_start,
+                        height,
+                        changed_line,
+                        previous_source,
+                    },
                 );
-                if let Err(e) = full_render(&mut writer, &mut screen, &layout, width, height) {
+                if let Err(e) = full_render(&mut writer, &mut screen, &layout, &plan, width, height)
+                {
                     tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
                 }
-            } else if visible_start > terminal_model.viewport_start {
-                // Content pushed lines off the top. Use the
-                // scrolling renderer (Pi-style) which renders
-                // changed lines in order and lets \r\n at the
-                // bottom naturally push content into scrollback.
-                // See README.md.
+            } else if terminal_model.viewport_start < visible_start {
+                // Content pushed log rows off the top. Use the scrolling
+                // renderer (Pi-style). Rubber is part of the virtual tail, so
+                // it shrinks before any extra log row enters scrollback.
                 if let Err(e) = screen.render_scrolling(
                     &mut writer,
-                    &layout.all_lines,
+                    &plan.render_lines,
                     terminal_model.viewport_start,
                     height,
-                    (layout.cursor_row, layout.cursor_col),
+                    (plan.cursor_row, layout.cursor_col),
                 ) {
                     tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "scroll render error");
                 }
             } else {
-                // No overflow — normal differential update.
-                let visible = &layout.all_lines[visible_start..];
-                let cursor_in_visible = layout.cursor_row.saturating_sub(visible_start);
+                // No new scrollback rows — normal differential update. This
+                // includes visible shrinkage: rubber grows instead of moving
+                // the viewport upward.
+                let visible = &plan.render_lines[visible_start..];
+                let cursor_in_visible = plan.cursor_row.saturating_sub(visible_start);
                 if let Err(e) =
                     screen.update(&mut writer, visible, (cursor_in_visible, layout.cursor_col))
                 {
@@ -1964,49 +2025,50 @@ fn changed_line_in_range(
         .find(|idx| prev_all_lines.get(*idx) != all_lines.get(*idx))
 }
 
-fn mark_full_render(
-    state: &Arc<Mutex<SharedState>>,
+struct FullRenderMark {
     reason: &'static str,
-    layout: &LayoutAll,
     prev_visible_start: usize,
     visible_start: usize,
     height: usize,
     changed_line: Option<usize>,
     previous_source: Option<LineSource>,
-) {
+}
+
+fn mark_full_render(state: &Arc<Mutex<SharedState>>, layout: &LayoutAll, mark: FullRenderMark) {
     let full_render_count = {
         let mut st = state.lock().expect("term state mutex poisoned");
         st.full_render_count += 1;
         st.full_render_count
     };
-    let current_source = changed_line
+    let current_source = mark
+        .changed_line
         .and_then(|idx| layout.line_sources.get(idx))
         .cloned();
-    let previous = describe_line_source(previous_source.as_ref());
+    let previous = describe_line_source(mark.previous_source.as_ref());
     let current = describe_line_source(current_source.as_ref());
     tracing::info!(
         target: "tau_cli_term_raw::redraw",
         full_render_count,
-        reason,
-        prev_visible_start,
-        visible_start,
-        height,
+        reason = mark.reason,
+        prev_visible_start = mark.prev_visible_start,
+        visible_start = mark.visible_start,
+        height = mark.height,
         total_lines = layout.all_lines.len(),
-        changed_line,
-        previous_source = ?previous_source,
+        changed_line = mark.changed_line,
+        previous_source = ?mark.previous_source,
         current_source = ?current_source,
-        "full redraw caused by {reason}: {previous} -> {current}"
+        "full redraw caused by {}: {previous} -> {current}", mark.reason
     );
     tracing::trace!(
         target: "tau_cli_term_raw::redraw",
         full_render_count,
-        reason,
-        prev_visible_start,
-        visible_start,
-        height,
+        reason = mark.reason,
+        prev_visible_start = mark.prev_visible_start,
+        visible_start = mark.visible_start,
+        height = mark.height,
         total_lines = layout.all_lines.len(),
-        changed_line,
-        previous_source = ?previous_source,
+        changed_line = mark.changed_line,
+        previous_source = ?mark.previous_source,
         current_source = ?current_source,
         "full render"
     );
@@ -2024,10 +2086,6 @@ fn describe_line_source(source: Option<&LineSource>) -> String {
     }
 }
 
-fn viewport_moved_up(prev_visible_start: usize, visible_start: usize) -> bool {
-    visible_start < prev_visible_start
-}
-
 fn hidden_lines_changed(
     prev_all_lines: &[Vec<Cell>],
     all_lines: &[Vec<Cell>],
@@ -2040,12 +2098,13 @@ fn full_render(
     stdout: &mut impl Write,
     screen: &mut Screen,
     layout: &LayoutAll,
+    plan: &ViewPlan,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
     screen.set_width(width);
 
-    let all_lines = &layout.all_lines;
+    let all_lines = &plan.render_lines;
     let total = all_lines.len();
 
     stdout.queue(terminal::BeginSynchronizedUpdate)?;
@@ -2066,7 +2125,9 @@ fn full_render(
     stdout.flush()?;
 
     // Position the cursor within the live area.
-    let cursor_in_live = layout.cursor_row.saturating_sub(layout.live_start);
+    let cursor_in_live = plan
+        .cursor_row
+        .saturating_sub(layout.live_start + plan.rubber_height);
 
     // After outputting, the cursor is at the last content line.
     // When total >= height, overflow scrolled and the cursor is at
@@ -2079,8 +2140,8 @@ fn full_render(
     };
 
     // The live area starts at this screen row:
-    let viewport_top = total.saturating_sub(height);
-    let live_screen_start = layout.live_start.saturating_sub(viewport_top);
+    let viewport_top = plan.viewport_start;
+    let live_screen_start = (layout.live_start + plan.rubber_height).saturating_sub(viewport_top);
     let cursor_screen_row = live_screen_start + cursor_in_live;
 
     let up = current_screen_row.saturating_sub(cursor_screen_row);
@@ -2092,9 +2153,9 @@ fn full_render(
 
     // Track what's visible on the terminal so the next
     // screen.update() can diff correctly.
-    let visible_start = total.saturating_sub(height);
+    let visible_start = plan.viewport_start;
     let visible_lines = all_lines[visible_start..].to_vec();
-    let cursor_in_visible = layout.cursor_row.saturating_sub(visible_start);
+    let cursor_in_visible = plan.cursor_row.saturating_sub(visible_start);
     screen.reset_to(visible_lines, cursor_in_visible, layout.cursor_col);
 
     Ok(())

@@ -30,13 +30,22 @@ fn run_full_render(
     let layout = LayoutAll {
         all_lines,
         line_sources,
+        log_end: history_lines,
         live_start: history_lines,
         cursor_row,
         cursor_col,
     };
+    let plan = TerminalModel::default().plan_view(&layout, rows as usize);
 
-    full_render(&mut buf, &mut screen, &layout, cols as usize, rows as usize)
-        .expect("full_render should succeed");
+    full_render(
+        &mut buf,
+        &mut screen,
+        &layout,
+        &plan,
+        cols as usize,
+        rows as usize,
+    )
+    .expect("full_render should succeed");
 
     term.process(&buf);
     (term, screen)
@@ -1728,7 +1737,7 @@ fn visible_active_block_removal_does_not_full_redraw_when_viewport_still_moves_d
 }
 
 #[test]
-fn removing_visible_block_that_moves_viewport_up_full_redraws() {
+fn removing_visible_block_that_moves_viewport_up_uses_rubber_without_full_redraw() {
     let buf = SharedBuffer::new();
     let mut parser = vt100::Parser::new(5, 40, 50);
     let (_term, handle, _input_tx) =
@@ -1742,7 +1751,7 @@ fn removing_visible_block_that_moves_viewport_up_full_redraws() {
     handle.push_above_active(active);
     flush_redraws(&handle, &buf, &mut parser);
 
-    assert_full_redraw_after(&handle, &buf, &mut parser, || {
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
         handle.remove_block(active);
     });
 }
@@ -2749,13 +2758,6 @@ fn shift_or_alt_enter_inserts_newline_without_submitting() {
         term.get_next_event().expect("event"),
         Event::Line(line) if line == "line one\nline two"
     ));
-}
-
-#[test]
-fn viewport_moved_up_requires_full_render() {
-    assert!(viewport_moved_up(3, 2));
-    assert!(!viewport_moved_up(2, 2));
-    assert!(!viewport_moved_up(2, 3));
 }
 
 #[test]
