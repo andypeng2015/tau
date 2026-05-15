@@ -89,8 +89,8 @@ where
                  known slice of a file you already know is large. Each returned \
                  `line-numbered content` line is prefixed by its 1-based line number and a space. \
                  The result returns `path`, `line-numbered content`, the `start_line`, \
-                 `line_count` returned, the file's `total_lines`, `ends_with_newline`, \
-                 and `line_ending` (`lf`, `crlf`, `mixed`, or `none`)."
+                 `line_count` returned, the file's `total_lines`, `total_bytes`, `valid_utf8`, \
+                 `ends_with_newline`, and `line_ending` (`lf`, `crlf`, `cr`, `mixed`, or `none`)."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -121,8 +121,9 @@ where
             model_visible_name: None,
             description: Some(
                 "Write content to a file, creating it and any missing parent directories \
-                 if they do not exist. Returns the path, bytes written, whether the file \
-                 was created, and whether filesystem contents changed."
+                 if they do not exist. Follows symlinks and overwrites the symlink target \
+                 instead of replacing the symlink. Returns the path, bytes written, whether \
+                 the file was created, and whether filesystem contents changed."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -149,11 +150,11 @@ where
             model_visible_name: None,
             description: Some(
                 "Edit a file using exact text replacement. Each edit is matched against \
-                 the original file, optionally restricted to start_line (inclusive) and \
-                 end_line_exclusive (exclusive), and replaces the first matches in that range up \
-                 to max_matches. Replacement ranges from all edits must not overlap. \
-                 Returns the path, the number of replacements, and a `diff` object \
-                 summarizing the change against the previous contents."
+                 the original file, optionally restricted to start_line and line_count, \
+                 and replaces the first matches in that range up to max_matches. \
+                 Replacement ranges from all edits must not overlap. Returns the path, \
+                 the number of replacements, and a `diff` object summarizing the change \
+                 against the previous contents."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -180,7 +181,7 @@ where
                                 },
                                 "max_matches": {
                                     "type": "integer",
-                                    "minimum": 0,
+                                    "minimum": 1,
                                     "description": "Maximum number of matches to replace for this edit. Defaults to 1. Matches are replaced from the start of the selected range."
                                 },
                                 "start_line": {
@@ -188,10 +189,10 @@ where
                                     "minimum": 1,
                                     "description": "Optional 1-based inclusive start line for searching this edit. Defaults to line 1."
                                 },
-                                "end_line_exclusive": {
+                                "line_count": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Optional 1-based exclusive end line for searching this edit. Defaults to the end of the file."
+                                    "description": "Optional number of lines to search starting at start_line. Defaults to the rest of the file."
                                 }
                             },
                             "required": ["oldText", "newText"]

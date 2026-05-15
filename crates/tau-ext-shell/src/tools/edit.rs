@@ -15,18 +15,18 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
     let display_args = path_buf.display().to_string();
     let with_args = |f: ToolFailure| f.with_args(display_args.clone());
 
-    let original =
-        fs::read_to_string(&path_buf).map_err(|e| with_args(ToolFailure::from(e.to_string())))?;
+    let original_bytes =
+        fs::read(&path_buf).map_err(|e| with_args(ToolFailure::from(e.to_string())))?;
 
     let edits = argument_array(arguments, "edits").map_err(|e| with_args(ToolFailure::from(e)))?;
     if edits.is_empty() {
         return Err(with_args(ToolFailure::new("edits array must not be empty")));
     }
 
-    let line_starts = line_starts(&original);
+    let line_starts = line_starts(&original_bytes);
 
     // Collect all replacements and validate against the original.
-    let mut replacements: Vec<(usize, usize, &str)> = Vec::new();
+    let mut replacements: Vec<(usize, usize, &[u8])> = Vec::new();
     for edit in edits {
         let old_text = cbor_map_text(edit, "oldText")
             .ok_or_else(|| with_args(ToolFailure::new("each edit must have a string oldText")))?;
@@ -34,33 +34,27 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
             .ok_or_else(|| with_args(ToolFailure::new("each edit must have a string newText")))?;
         let max_matches = parse_optional_count(edit, "max_matches", 1, &with_args)?;
         let start_line = parse_optional_line(edit, "start_line", 1, &with_args)?;
-        let end_line = parse_optional_line(
-            edit,
-            "end_line_exclusive",
-            line_starts.len() + 1,
-            &with_args,
-        )?;
-
-        if end_line < start_line {
-            return Err(with_args(ToolFailure::new(
-                "end_line_exclusive must be greater than or equal to start_line",
-            )));
-        }
+        let end_line =
+            parse_optional_line_count(edit, start_line, line_starts.len() + 1, &with_args)?;
 
         if old_text.is_empty() {
             return Err(with_args(ToolFailure::new("oldText must not be empty")));
         }
 
-        let start_byte = byte_offset_for_line(&line_starts, start_line, original.len());
-        let end_byte = byte_offset_for_line(&line_starts, end_line, original.len());
-        for (start, matched) in original[start_byte..end_byte]
-            .match_indices(old_text)
+        let old_bytes = old_text.as_bytes();
+        let start_byte = byte_offset_for_line(&line_starts, start_line, original_bytes.len());
+        let end_byte = byte_offset_for_line(&line_starts, end_line, original_bytes.len());
+        for start in find_subslice_matches(&original_bytes[start_byte..end_byte], old_bytes)
             .take(max_matches)
         {
             let start = start_byte + start;
-            let end = start + matched.len();
-            replacements.push((start, end, new_text));
+            let end = start + old_bytes.len();
+            replacements.push((start, end, new_text.as_bytes()));
         }
+    }
+
+    if replacements.is_empty() {
+        return Err(with_args(ToolFailure::new("no matches for edit")));
     }
 
     // Sort by start position (descending) so we can apply from end to start
@@ -77,26 +71,39 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
     }
 
     // Apply replacements from end to start.
-    let mut result = original.clone();
+    let mut result = original_bytes.clone();
     for (start, end, new_text) in &replacements {
-        result.replace_range(*start..*end, new_text);
+        result.splice(*start..*end, new_text.iter().copied());
     }
 
-    if result != original {
+    if result != original_bytes {
         fs::write(&path_buf, &result).map_err(|e| with_args(ToolFailure::from(e.to_string())))?;
     }
 
-    let diff = compute_diff(&original, &result);
+    let diff = match (
+        std::str::from_utf8(&original_bytes),
+        std::str::from_utf8(&result),
+    ) {
+        (Ok(original), Ok(result)) => Some(compute_diff(original, result)),
+        _ => None,
+    };
+    let changed = result != original_bytes;
 
     let display = ToolDisplay {
         args: display_args.clone(),
         status: ToolDisplayStatus::Success,
         status_text: "ok".to_owned(),
-        payload: Some(ToolDisplayPayload::Diff(diff.clone())),
+        payload: match diff.clone() {
+            Some(diff) => Some(ToolDisplayPayload::Diff(diff)),
+            None if changed => Some(ToolDisplayPayload::Text {
+                text: "[diff skipped: file is not valid UTF-8]".to_owned(),
+            }),
+            None => None,
+        },
         ..Default::default()
     };
     Ok(ToolOutput {
-        result: edit_result_value(display_args, replacements.len(), &diff),
+        result: edit_result_value(display_args, replacements.len(), changed, diff.as_ref()),
         display,
     })
 }
@@ -108,8 +115,8 @@ fn parse_optional_count(
     with_args: &dyn Fn(ToolFailure) -> ToolFailure,
 ) -> Result<usize, ToolFailure> {
     match cbor_map_int(edit, key) {
-        Some(n) if n < 0 => Err(with_args(ToolFailure::new(format!(
-            "{key} must not be negative"
+        Some(n) if n < 1 => Err(with_args(ToolFailure::new(format!(
+            "{key} must be at least 1"
         )))),
         Some(n) => usize::try_from(n)
             .map_err(|_| with_args(ToolFailure::new(format!("{key} is too large")))),
@@ -133,14 +140,43 @@ fn parse_optional_line(
     }
 }
 
-fn line_starts(input: &str) -> Vec<usize> {
+fn parse_optional_line_count(
+    edit: &CborValue,
+    start_line: usize,
+    default_end_line: usize,
+    with_args: &dyn Fn(ToolFailure) -> ToolFailure,
+) -> Result<usize, ToolFailure> {
+    match cbor_map_int(edit, "line_count") {
+        Some(n) if n < 1 => Err(with_args(ToolFailure::new("line_count must be at least 1"))),
+        Some(n) => {
+            let count = usize::try_from(n)
+                .map_err(|_| with_args(ToolFailure::new("line_count is too large")))?;
+            start_line
+                .checked_add(count)
+                .ok_or_else(|| with_args(ToolFailure::new("line_count is too large")))
+        }
+        None => Ok(default_end_line),
+    }
+}
+
+fn line_starts(input: &[u8]) -> Vec<usize> {
     let mut starts = vec![0];
-    for (index, byte) in input.bytes().enumerate() {
+    for (index, byte) in input.iter().copied().enumerate() {
         if byte == b'\n' && index + 1 < input.len() {
             starts.push(index + 1);
         }
     }
     starts
+}
+
+fn find_subslice_matches<'a>(
+    haystack: &'a [u8],
+    needle: &'a [u8],
+) -> impl Iterator<Item = usize> + 'a {
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(move |(index, window)| (window == needle).then_some(index))
 }
 
 fn byte_offset_for_line(line_starts: &[usize], line: usize, eof: usize) -> usize {
@@ -153,7 +189,8 @@ fn byte_offset_for_line(line_starts: &[usize], line: usize, eof: usize) -> usize
 fn edit_result_value(
     path: String,
     replacements: usize,
-    diff: &tau_proto::DiffSummary,
+    changed: bool,
+    diff: Option<&tau_proto::DiffSummary>,
 ) -> CborValue {
     let mut entries = vec![
         (CborValue::Text("path".to_owned()), CborValue::Text(path)),
@@ -163,11 +200,16 @@ fn edit_result_value(
         ),
         (
             CborValue::Text("changed".to_owned()),
-            CborValue::Bool(!diff.hunks.is_empty()),
+            CborValue::Bool(changed),
         ),
     ];
-    if let Some(unified) = unified_diff(diff) {
-        entries.push((CborValue::Text("diff".to_owned()), CborValue::Text(unified)));
+    if let Some(diff) = diff.and_then(unified_diff) {
+        entries.push((CborValue::Text("diff".to_owned()), CborValue::Text(diff)));
+    } else if changed {
+        entries.push((
+            CborValue::Text("diff".to_owned()),
+            CborValue::Text("[diff skipped: file is not valid UTF-8]".to_owned()),
+        ));
     }
     CborValue::Map(entries)
 }

@@ -1160,7 +1160,7 @@ fn edit_rejects_negative_max_matches_with_path_args() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(error.message, "max_matches must not be negative");
+    assert_eq!(error.message, "max_matches must be at least 1");
     assert_eq!(
         error.display.expect("display").args,
         file_path.display().to_string()
@@ -1170,6 +1170,44 @@ fn edit_rejects_negative_max_matches_with_path_args() {
         .write_frame(&disconnect_frame(None))
         .expect("disconnect");
     writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_rejects_zero_max_matches() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(file_path.display().to_string()),
+        ),
+        (
+            CborValue::Text("edits".to_owned()),
+            CborValue::Array(vec![CborValue::Map(vec![
+                (
+                    CborValue::Text("oldText".to_owned()),
+                    CborValue::Text("hello".to_owned()),
+                ),
+                (
+                    CborValue::Text("newText".to_owned()),
+                    CborValue::Text("x".to_owned()),
+                ),
+                (
+                    CborValue::Text("max_matches".to_owned()),
+                    CborValue::Integer(0.into()),
+                ),
+            ])]),
+        ),
+    ]);
+
+    let error = edit_file(&args).expect_err("max_matches=0 should fail");
+    assert_eq!(error.message, "max_matches must be at least 1");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
 }
 
 #[test]
@@ -1280,7 +1318,7 @@ fn edit_defaults_to_replacing_first_match() {
 }
 
 #[test]
-fn edit_reports_zero_replacements_for_no_matches() {
+fn edit_errors_for_no_matches() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\n").expect("write");
@@ -1316,11 +1354,12 @@ fn edit_reports_zero_replacements_for_no_matches() {
         .expect("invoke");
     writer.flush().expect("flush");
 
-    let result = reader.read_event().expect("read").expect("result");
-    let Event::ToolResult(result) = result else {
-        panic!("expected tool result");
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
     };
-    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(0));
+    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
+    assert!(error.message.contains("no matches for edit"));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "hello\n"
@@ -1366,8 +1405,8 @@ fn edit_restricts_matches_to_line_range() {
                             CborValue::Integer(2.into()),
                         ),
                         (
-                            CborValue::Text("end_line_exclusive".to_owned()),
-                            CborValue::Integer(3.into()),
+                            CborValue::Text("line_count".to_owned()),
+                            CborValue::Integer(1.into()),
                         ),
                     ])]),
                 ),
@@ -2053,7 +2092,11 @@ fn read_file_honors_start_line_and_line_count() {
     ]);
     let output = read_file(&args).expect("read");
     let result = output.result;
-    assert_eq!(output.display.args, format!("{} 2..4", path.display()));
+    assert_eq!(output.display.args, format!("{} lines 2-4", path.display()));
+    assert_eq!(
+        cbor_map_text(&result, "path"),
+        Some(path.to_string_lossy().as_ref())
+    );
     assert_eq!(
         cbor_map_text(&result, "line-numbered content"),
         Some("2 line 2\n3 line 3\n4 line 4")
@@ -2067,10 +2110,35 @@ fn read_file_honors_start_line_and_line_count() {
 
 #[test]
 fn format_read_range_reports_requested_ranges() {
-    assert_eq!(format_read_range(None, None), "..");
-    assert_eq!(format_read_range(Some(11), None), "11..");
-    assert_eq!(format_read_range(None, Some(100)), "..100");
-    assert_eq!(format_read_range(Some(11), Some(90)), "11..100");
+    assert_eq!(format_read_range(None, None), "all lines");
+    assert_eq!(format_read_range(Some(11), None), "from line 11");
+    assert_eq!(format_read_range(None, Some(100)), "first 100 lines");
+    assert_eq!(format_read_range(Some(11), Some(1)), "line 11");
+    assert_eq!(format_read_range(Some(11), Some(90)), "lines 11-100");
+}
+
+#[test]
+fn read_file_errors_when_start_line_is_past_eof() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("small.txt");
+    std::fs::write(&path, "one\ntwo\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        ),
+        (
+            CborValue::Text("start_line".to_owned()),
+            CborValue::Integer(3.into()),
+        ),
+    ]);
+
+    let error = read_file(&args).expect_err("start_line past EOF should fail");
+    assert_eq!(
+        error.message,
+        "start_line 3 is past end of file (total_lines: 2)"
+    );
 }
 
 #[test]
@@ -2220,6 +2288,106 @@ fn read_file_reports_crlf_line_endings() {
     );
     assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(true));
     assert_eq!(cbor_map_text(&result, "line_ending"), Some("crlf"));
+}
+
+#[test]
+fn read_file_reports_cr_only_line_endings() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("cr.txt");
+    std::fs::write(&path, b"one\rtwo\r").expect("write");
+
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Text(path.display().to_string()),
+    )]);
+    let result = read_file(&args).expect("read").result;
+
+    assert_eq!(
+        cbor_map_text(&result, "line-numbered content"),
+        Some("1 one\n2 two")
+    );
+    assert_eq!(cbor_int_field(&result, "total_lines"), Some(2));
+    assert_eq!(cbor_bool_field(&result, "ends_with_newline"), Some(true));
+    assert_eq!(cbor_map_text(&result, "line_ending"), Some("cr"));
+}
+
+#[test]
+fn read_file_handles_invalid_utf8_per_line() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("invalid.bin");
+    std::fs::write(&path, b"abc\xffdef\nsecond\n").expect("write");
+
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Text(path.display().to_string()),
+    )]);
+    let result = read_file(&args).expect("read").result;
+
+    assert_eq!(
+        cbor_map_text(&result, "line-numbered content"),
+        Some("1(non-utf-8)\n2 second")
+    );
+    assert_eq!(cbor_int_field(&result, "line_count"), Some(2));
+    assert_eq!(cbor_bool_field(&result, "valid_utf8"), Some(false));
+    assert_eq!(cbor_int_field(&result, "total_bytes"), Some(15));
+}
+
+#[test]
+fn read_file_truncates_single_long_line() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("longline.txt");
+    std::fs::write(&path, format!("{}\nsecond\n", "x".repeat(60 * 1024))).expect("write");
+
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Text(path.display().to_string()),
+    )]);
+    let result = read_file(&args).expect("read").result;
+    let content = cbor_map_text(&result, "line-numbered content").expect("content");
+
+    assert!(content.starts_with("1(truncated) xxx"));
+    assert!(content.contains("...\n\n[Showing lines 1-1 of 2"));
+    assert!(content.contains(
+        "Line was truncated by byte cap; line-based continuation cannot resume within a line."
+    ));
+    assert_eq!(cbor_int_field(&result, "line_count"), Some(1));
+    assert_eq!(cbor_int_field(&result, "total_bytes"), Some(61448));
+}
+
+#[test]
+fn edit_file_handles_invalid_utf8_bytes_without_diff() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.bin");
+    fs::write(&file_path, b"abc\xffdef\n").expect("write fixture");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(file_path.display().to_string()),
+        ),
+        (
+            CborValue::Text("edits".to_owned()),
+            CborValue::Array(vec![CborValue::Map(vec![
+                (
+                    CborValue::Text("oldText".to_owned()),
+                    CborValue::Text("def".to_owned()),
+                ),
+                (
+                    CborValue::Text("newText".to_owned()),
+                    CborValue::Text("XYZ".to_owned()),
+                ),
+            ])]),
+        ),
+    ]);
+    let result = edit_file(&args).expect("edit").result;
+
+    assert_eq!(fs::read(&file_path).expect("read back"), b"abc\xffXYZ\n");
+    assert_eq!(cbor_int_field(&result, "replacements"), Some(1));
+    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
+    assert_eq!(
+        cbor_map_text(&result, "diff"),
+        Some("[diff skipped: file is not valid UTF-8]")
+    );
 }
 
 #[test]

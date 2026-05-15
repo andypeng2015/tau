@@ -301,7 +301,7 @@ pub(crate) fn cbor_to_text(v: &tau_proto::CborValue) -> String {
                     other => cbor_to_text(other),
                 };
                 let value = cbor_to_text(val);
-                if value.contains('\n') {
+                if value.contains('\n') || key == "line-numbered content" {
                     parts.push(format!("{key}:\n{value}"));
                 } else {
                     parts.push(format!("{key}: {value}"));
@@ -334,6 +334,16 @@ mod tests {
         let prompt = build_system_prompt(&skills, "/tmp/work");
         assert!(prompt.contains("parallel"));
         assert!(prompt.contains("sequentially"));
+    }
+
+    #[test]
+    fn cbor_to_text_puts_line_numbered_content_on_next_line() {
+        let text = cbor_to_text(&CborValue::Map(vec![(
+            CborValue::Text("line-numbered content".to_owned()),
+            CborValue::Text("1 only".to_owned()),
+        )]));
+
+        assert_eq!(text, "line-numbered content:\n1 only");
     }
 
     /// Tool errors must surface their `details` payload to the LLM,
