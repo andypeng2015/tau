@@ -571,10 +571,13 @@ fn session_skill_dirs(
     let mut skill_dirs = Vec::new();
     if let Some(cwd) = cwd {
         skill_dirs.push(cwd.join(".agents").join("skills"));
+        skill_dirs.push(cwd.join(".agents.local").join("skills"));
     }
     if let Some(home) = home {
         skill_dirs.push(home.join(".agents").join("skills"));
+        skill_dirs.push(home.join(".agents.local").join("skills"));
         skill_dirs.push(home.join(".config").join("agents").join("skills"));
+        skill_dirs.push(home.join(".config").join("agents.local").join("skills"));
     }
     skill_dirs
 }

@@ -269,6 +269,40 @@ fn discover_agents_files_from_roots_keeps_home_before_repo_chain() {
 }
 
 #[test]
+fn discover_agents_files_includes_local_agent_dirs_after_regular_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let repo = tempdir.path().join("repo");
+    let nested = repo.join("pkg");
+    fs::create_dir_all(nested.join(".agents.local")).expect("nested local agents dir");
+
+    let repo_agents = repo.join("AGENTS.md");
+    let repo_local_agents = repo.join(".agents.local").join("AGENTS.md");
+    let nested_agents = nested.join("AGENTS.md");
+    let nested_local_agents = nested.join(".agents.local").join("AGENTS.md");
+    fs::create_dir_all(repo.join(".agents.local")).expect("repo local agents dir");
+    fs::write(&repo_agents, "# Repo\n").expect("write repo");
+    fs::write(&repo_local_agents, "# Repo local\n").expect("write repo local");
+    fs::write(&nested_agents, "# Nested\n").expect("write nested");
+    fs::write(&nested_local_agents, "# Nested local\n").expect("write nested local");
+
+    let discovered = discover_agents_files_from(&nested);
+    let paths: Vec<PathBuf> = discovered.iter().map(|f| f.file_path.clone()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            repo_agents.canonicalize().expect("canonical repo"),
+            repo_local_agents
+                .canonicalize()
+                .expect("canonical repo local"),
+            nested_agents.canonicalize().expect("canonical nested"),
+            nested_local_agents
+                .canonicalize()
+                .expect("canonical nested local"),
+        ]
+    );
+}
+
+#[test]
 fn session_skill_dirs_include_config_agents() {
     let cwd = PathBuf::from("/repo");
     let home = PathBuf::from("/home/user");
@@ -277,8 +311,11 @@ fn session_skill_dirs_include_config_agents() {
         session_skill_dirs(Some(cwd.clone()), Some(home.clone())),
         vec![
             cwd.join(".agents").join("skills"),
+            cwd.join(".agents.local").join("skills"),
             home.join(".agents").join("skills"),
+            home.join(".agents.local").join("skills"),
             home.join(".config").join("agents").join("skills"),
+            home.join(".config").join("agents.local").join("skills"),
         ]
     );
 }

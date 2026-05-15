@@ -12,16 +12,17 @@ pub(crate) fn discover_session_agents_files() -> Vec<DiscoveredAgentsFile> {
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join(".agents"));
+        roots.push(home.join(".agents.local"));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        roots.extend(ancestor_dirs(&cwd));
+        roots.extend(ancestor_agents_roots(&cwd));
     }
     discover_agents_files_from_roots(roots)
 }
 
 #[cfg(test)]
 pub(crate) fn discover_agents_files_from(cwd: &Path) -> Vec<DiscoveredAgentsFile> {
-    discover_agents_files_from_roots(ancestor_dirs(cwd))
+    discover_agents_files_from_roots(ancestor_agents_roots(cwd))
 }
 
 pub(crate) fn discover_agents_files_from_roots(
@@ -53,6 +54,15 @@ pub(crate) fn discover_agents_files_from_roots(
     }
 
     discovered
+}
+
+fn ancestor_agents_roots(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for dir in ancestor_dirs(cwd) {
+        dirs.push(dir.clone());
+        dirs.push(dir.join(".agents.local"));
+    }
+    dirs
 }
 
 fn ancestor_dirs(cwd: &Path) -> Vec<PathBuf> {

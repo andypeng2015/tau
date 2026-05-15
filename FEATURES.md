@@ -206,6 +206,15 @@ for testing. The shell command and any wrapper prefix are configurable:
 },
 ```
 
+Tau also discovers project and user agent context from conventional paths. It
+loads `AGENTS.md` from `$HOME/.agents/`, from each current-working-directory
+ancestor, and from matching `.agents.local/AGENTS.md` directories. Skills are
+loaded from `.agents/skills` and `.agents.local/skills` under the current
+working directory, plus `$HOME/.agents*/skills` and
+`$HOME/.config/agents*/skills`. The `.local` variants are intended for
+machine- or user-specific instructions and skills that should usually be added
+to `.gitignore` instead of checked in.
+
 ### `core-agent` — LLM backend
 
 The conversation driver: assembles prompts, streams provider responses, drives
