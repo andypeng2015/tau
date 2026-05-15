@@ -338,6 +338,45 @@ fn build_request_prompt_cache_key_differs_for_extension_originator() {
 }
 
 #[test]
+fn stream_choice_accumulates_reasoning_content_as_thinking() {
+    let mut state = StreamState::new();
+    let choice = StreamChoice {
+        delta: StreamDelta {
+            content: None,
+            reasoning_content: Some("thinking".to_owned()),
+            tool_calls: None,
+        },
+    };
+    let mut updates = Vec::new();
+
+    apply_stream_choice(&mut state, choice, &mut |text, thinking| {
+        updates.push((text.to_owned(), thinking.map(str::to_owned)));
+    });
+
+    assert_eq!(state.text, "");
+    assert_eq!(state.thinking.as_deref(), Some("thinking"));
+    assert_eq!(updates, vec![("".to_owned(), Some("thinking".to_owned()))]);
+}
+
+#[test]
+fn stream_choice_accepts_reasoning_alias() {
+    let chunk: StreamChunk = serde_json::from_value(serde_json::json!({
+        "choices": [{
+            "delta": {
+                "reasoning": "alias thinking"
+            }
+        }]
+    }))
+    .expect("chunk");
+
+    let choice = chunk.choices.into_iter().next().expect("choice");
+    assert_eq!(
+        choice.delta.reasoning_content.as_deref(),
+        Some("alias thinking")
+    );
+}
+
+#[test]
 fn stream_chunk_reads_llama_cpp_cache_stats() {
     let chunk: StreamChunk = serde_json::from_value(serde_json::json!({
         "choices": [],

@@ -327,13 +327,20 @@ impl SessionTree {
             Event::AgentResponseFinished(response) => {
                 // An entry is warranted whenever the turn produced
                 // *some* assistant output that isn't already
-                // captured elsewhere on the tree: visible text or
-                // reasoning items. Tool calls land on
+                // captured elsewhere on the tree: visible text,
+                // displayable thinking, or encrypted reasoning items.
+                // Tool calls land on
                 // `SessionEntry::ToolActivity` via downstream
                 // `ToolRequest` events, so a pure tool-only turn
                 // with no reasoning still produces no `AgentMessage`
                 // — same shape as before this field existed.
-                if response.text.is_some() || !response.reasoning_items.is_empty() {
+                if response.text.is_some()
+                    || response
+                        .thinking
+                        .as_ref()
+                        .is_some_and(|thinking| !thinking.is_empty())
+                    || !response.reasoning_items.is_empty()
+                {
                     Some(self.append_node_at(
                         parent,
                         SessionEntry::AgentMessage {

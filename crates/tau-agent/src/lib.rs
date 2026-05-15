@@ -954,11 +954,12 @@ fn finish_stream<W: Write>(
     let mut state = state;
     let reasoning_items = std::mem::take(&mut state.reasoning_items);
     let tool_calls = state.into_tool_calls();
+    let thinking_empty = thinking.as_ref().is_none_or(|thinking| thinking.is_empty());
     let text = if text_empty {
-        if tool_calls.is_empty() {
-            Some("(agent returned an empty response)".to_owned())
-        } else {
+        if !tool_calls.is_empty() || !thinking_empty {
             None
+        } else {
+            Some("(agent returned an empty response)".to_owned())
         }
     } else {
         Some(text_content)

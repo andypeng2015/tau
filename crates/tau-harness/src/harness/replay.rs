@@ -206,7 +206,13 @@ fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
         | Event::ExtAgentsMdAvailable(_)
         | Event::ExtensionContextReady(_)
         | Event::ExtensionEvent(_) => true,
-        Event::AgentResponseFinished(response) => response.text.is_some(),
+        Event::AgentResponseFinished(response) => {
+            response.text.is_some()
+                || response
+                    .thinking
+                    .as_ref()
+                    .is_some_and(|thinking| !thinking.is_empty())
+        }
         _ => false,
     }
 }

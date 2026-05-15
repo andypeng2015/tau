@@ -39,9 +39,11 @@ pub struct OpenAiConfig {
 /// callback with the accumulated text and (optional) thinking
 /// summary on each content delta. Returns the final state.
 ///
-/// Chat Completions has no `thinking` channel today, so the
-/// `thinking` argument is always `None`. Kept in the signature to
-/// match the Responses path so the agent's update path is uniform.
+/// Some OpenAI-compatible servers, including llama.cpp with reasoning
+/// format enabled, stream model thoughts as `delta.reasoning_content`.
+/// Those deltas are accumulated into Tau's `thinking` channel so a
+/// model that exhausts its token budget mid-think still produces a
+/// visible update instead of looking idle.
 pub fn chat_completion_stream(
     config: &OpenAiConfig,
     request: &PromptPayload<'_>,
@@ -161,55 +163,74 @@ pub fn chat_completion_stream(
             continue;
         };
 
-        // Accumulate text content.
-        if let Some(content) = choice.delta.content {
-            state.text.push_str(&content);
-            on_update(&state.text, None);
-        }
+        apply_stream_choice(&mut state, choice, on_update);
+    }
 
-        // Accumulate tool calls.
-        if let Some(tool_calls) = choice.delta.tool_calls {
-            for tc in tool_calls {
-                let index = tc.index.unwrap_or(0) as usize;
+    Ok(state)
+}
 
-                // Extend the list if needed.
-                while state.tool_calls.len() <= index {
-                    state.tool_calls.push(ToolCallAccumulator {
-                        id: String::new(),
-                        name: String::new(),
-                        tool_type: tau_proto::ToolType::Function,
-                        arguments_json: String::new(),
-                    });
-                }
+fn apply_stream_choice(
+    state: &mut StreamState,
+    choice: StreamChoice,
+    on_update: &mut impl FnMut(&str, Option<&str>),
+) {
+    // Accumulate reasoning content before visible content. llama.cpp
+    // emits Qwen `<think>` blocks this way when `--reasoning-format`
+    // is enabled.
+    if let Some(reasoning_content) = choice.delta.reasoning_content {
+        state
+            .thinking
+            .get_or_insert_with(String::new)
+            .push_str(&reasoning_content);
+        on_update(&state.text, state.thinking.as_deref());
+    }
 
-                let acc = &mut state.tool_calls[index];
-                if let Some(id) = tc.id {
-                    acc.id = id;
+    // Accumulate text content.
+    if let Some(content) = choice.delta.content {
+        state.text.push_str(&content);
+        on_update(&state.text, state.thinking.as_deref());
+    }
+
+    // Accumulate tool calls.
+    if let Some(tool_calls) = choice.delta.tool_calls {
+        for tc in tool_calls {
+            let index = tc.index.unwrap_or(0) as usize;
+
+            // Extend the list if needed.
+            while state.tool_calls.len() <= index {
+                state.tool_calls.push(ToolCallAccumulator {
+                    id: String::new(),
+                    name: String::new(),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments_json: String::new(),
+                });
+            }
+
+            let acc = &mut state.tool_calls[index];
+            if let Some(id) = tc.id {
+                acc.id = id;
+            }
+            if matches!(tc.r#type.as_deref(), Some("custom")) || tc.custom.is_some() {
+                acc.tool_type = tau_proto::ToolType::Custom;
+            }
+            if let Some(function) = tc.function {
+                if let Some(name) = function.name {
+                    acc.name = name;
                 }
-                if matches!(tc.r#type.as_deref(), Some("custom")) || tc.custom.is_some() {
-                    acc.tool_type = tau_proto::ToolType::Custom;
+                if let Some(args) = function.arguments {
+                    acc.arguments_json.push_str(&args);
                 }
-                if let Some(function) = tc.function {
-                    if let Some(name) = function.name {
-                        acc.name = name;
-                    }
-                    if let Some(args) = function.arguments {
-                        acc.arguments_json.push_str(&args);
-                    }
+            }
+            if let Some(custom) = tc.custom {
+                if let Some(name) = custom.name {
+                    acc.name = name;
                 }
-                if let Some(custom) = tc.custom {
-                    if let Some(name) = custom.name {
-                        acc.name = name;
-                    }
-                    if let Some(input) = custom.input {
-                        acc.arguments_json.push_str(&input);
-                    }
+                if let Some(input) = custom.input {
+                    acc.arguments_json.push_str(&input);
                 }
             }
         }
     }
-
-    Ok(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +555,8 @@ struct StreamChoice {
 #[derive(Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    #[serde(default, alias = "reasoning")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 
