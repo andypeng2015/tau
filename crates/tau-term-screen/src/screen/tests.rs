@@ -901,6 +901,172 @@ fn scrollback_rebuilt_after_resize() {
 }
 
 #[test]
+fn scrolling_growth_by_empty_line_still_scrolls_viewport() {
+    let width = 5;
+    let height = 3;
+    let mut term = vt100::Parser::new(height as u16, width as u16, 20);
+    let mut screen = Screen::new(width);
+
+    let initial = plain_cell_lines(&["aaaaa", "bbbbb", "ccccc"]);
+    let mut buf = Vec::new();
+    screen
+        .update(&mut buf, &initial, (2, width))
+        .expect("initial render should succeed");
+    term.process(&buf);
+
+    let all = plain_cell_lines(&["aaaaa", "bbbbb", "ccccc", ""]);
+    let mut buf = Vec::new();
+    screen
+        .render_scrolling(&mut buf, &all, 0, height, (3, 0))
+        .expect("scroll render should succeed");
+    term.process(&buf);
+
+    let visible: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(visible, vec!["bbbbb", "ccccc", ""]);
+
+    term.screen_mut().set_scrollback(1);
+    let scrolled: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(scrolled, vec!["aaaaa", "bbbbb", "ccccc"]);
+}
+
+#[test]
+fn scrolling_empty_line_then_text_line_keeps_order() {
+    let width = 5;
+    let height = 3;
+    let mut term = vt100::Parser::new(height as u16, width as u16, 20);
+    let mut screen = Screen::new(width);
+    let mut prev_visible_start = 0;
+
+    for frame in [
+        &["aaaaa", "bbbbb", "ccccc"][..],
+        &["aaaaa", "bbbbb", "ccccc", ""][..],
+        &["aaaaa", "bbbbb", "ccccc", "", "ddddd"][..],
+    ] {
+        let lines = plain_cell_lines(frame);
+        let visible_start = lines.len().saturating_sub(height);
+        let mut buf = Vec::new();
+        if visible_start > prev_visible_start {
+            screen
+                .render_scrolling(
+                    &mut buf,
+                    &lines,
+                    prev_visible_start,
+                    height,
+                    (visible_start, 0),
+                )
+                .expect("scroll render should succeed");
+        } else {
+            screen
+                .update(&mut buf, &lines[visible_start..], (0, 0))
+                .expect("update should succeed");
+        }
+        term.process(&buf);
+        prev_visible_start = visible_start;
+    }
+
+    let visible: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(visible, vec!["ccccc", "", "ddddd"]);
+
+    term.screen_mut().set_scrollback(2);
+    let scrolled: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(scrolled, vec!["aaaaa", "bbbbb", "ccccc"]);
+}
+
+#[test]
+fn scrolling_changed_view_top_into_scrollback_preserves_new_text() {
+    let width = 5;
+    let height = 3;
+    let mut term = vt100::Parser::new(height as u16, width as u16, 20);
+    let mut screen = Screen::new(width);
+
+    let mut prev_visible_start = 0;
+    for frame in [
+        &["aaaaa", "bbbbb", "ccccc"][..],
+        &["aaaaa", "bbbbb", "ccccc", "ddddd"][..],
+    ] {
+        let lines = plain_cell_lines(frame);
+        let visible_start = lines.len().saturating_sub(height);
+        let mut buf = Vec::new();
+        if visible_start > prev_visible_start {
+            screen
+                .render_scrolling(&mut buf, &lines, prev_visible_start, height, (2, width))
+                .expect("scroll render should succeed");
+        } else {
+            screen
+                .update(&mut buf, &lines[visible_start..], (2, width))
+                .expect("update should succeed");
+        }
+        term.process(&buf);
+        prev_visible_start = visible_start;
+    }
+
+    let lines = plain_cell_lines(&["aaaaa", "BBBBB", "ccccc", "ddddd", "eeeee"]);
+    let mut buf = Vec::new();
+    screen
+        .render_scrolling(&mut buf, &lines, prev_visible_start, height, (2, width))
+        .expect("scroll render should succeed");
+    term.process(&buf);
+
+    let visible: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(visible, vec!["ccccc", "ddddd", "eeeee"]);
+
+    term.screen_mut().set_scrollback(2);
+    let scrolled: Vec<String> = term.screen().rows(0, width as u16).collect();
+    assert_eq!(scrolled, vec!["aaaaa", "BBBBB", "ccccc"]);
+}
+
+#[test]
+fn scrolling_matches_full_render_for_cursor_rows_and_exact_width_lines() {
+    let width = 5;
+    let height = 3;
+
+    for cursor_row in 0..height {
+        let mut term = vt100::Parser::new(height as u16, width as u16, 20);
+        let mut screen = Screen::new(width);
+        let mut prev_visible_start = 0;
+
+        let frames: &[&[&str]] = &[
+            &["aaaaa", "bbbbb", "ccccc"],
+            &["aaaaa", "bbbbb", "ccccc", "ddddd"],
+            &["aaaaa", "bbbbb", "ccccc", "ddddd", "eeeee"],
+        ];
+
+        for frame in frames {
+            let lines = plain_cell_lines(frame);
+            let visible_start = lines.len().saturating_sub(height);
+            let desired_cursor = (cursor_row.min(lines.len() - 1), width);
+            let mut buf = Vec::new();
+            if visible_start > prev_visible_start {
+                screen
+                    .render_scrolling(&mut buf, &lines, prev_visible_start, height, desired_cursor)
+                    .expect("scroll render should succeed");
+            } else {
+                screen
+                    .update(&mut buf, &lines[visible_start..], desired_cursor)
+                    .expect("update should succeed");
+            }
+            term.process(&buf);
+            prev_visible_start = visible_start;
+        }
+
+        let visible: Vec<String> = term.screen().rows(0, width as u16).collect();
+        assert_eq!(
+            visible,
+            vec!["ccccc", "ddddd", "eeeee"],
+            "cursor row {cursor_row}"
+        );
+
+        term.screen_mut().set_scrollback(2);
+        let scrolled: Vec<String> = term.screen().rows(0, width as u16).collect();
+        assert_eq!(
+            scrolled,
+            vec!["aaaaa", "bbbbb", "ccccc"],
+            "cursor row {cursor_row}"
+        );
+    }
+}
+
+#[test]
 fn scrolling_from_exact_width_cursor_with_top_change_keeps_scrollback_order() {
     let width = 5;
     let height = 3;
