@@ -1066,6 +1066,42 @@ fn flush_redraws(handle: &TermHandle, buf: &SharedBuffer, parser: &mut vt100::Pa
     buf.drain_into(parser);
 }
 
+fn plain_block(text: impl Into<String>) -> StyledBlock {
+    StyledBlock::new(StyledText::from(Span::plain(text.into())))
+}
+
+fn assert_no_full_redraw_after(
+    handle: &TermHandle,
+    buf: &SharedBuffer,
+    parser: &mut vt100::Parser,
+    action: impl FnOnce(),
+) {
+    let before = handle.full_render_count();
+    action();
+    flush_redraws(handle, buf, parser);
+    assert_eq!(
+        handle.full_render_count(),
+        before,
+        "operation should not require full redraw"
+    );
+}
+
+fn assert_full_redraw_after(
+    handle: &TermHandle,
+    buf: &SharedBuffer,
+    parser: &mut vt100::Parser,
+    action: impl FnOnce(),
+) {
+    let before = handle.full_render_count();
+    action();
+    flush_redraws(handle, buf, parser);
+    assert_eq!(
+        handle.full_render_count(),
+        before + 1,
+        "operation should require exactly one full redraw"
+    );
+}
+
 #[test]
 fn multiline_buffer_layout_tracks_cursor_after_paste() {
     let buf = SharedBuffer::new();
@@ -1581,6 +1617,264 @@ fn live_block_growth_scrolls_updated_lines_into_scrollback() {
         sb_rows[1].contains("stream 1"),
         "updated line 1 should be in scrollback, got: {sb_rows:?}"
     );
+}
+
+#[test]
+fn visible_history_block_update_does_not_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        ids.push(handle.print_output(plain_block(format!("line {i}"))));
+    }
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.set_block(ids[2], plain_block("line 2 updated"));
+    });
+}
+
+#[test]
+fn hidden_history_block_update_full_redraws() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(handle.print_output(plain_block(format!("line {i}"))));
+    }
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.set_block(ids[0], plain_block("line 0 updated while hidden"));
+    });
+}
+
+#[test]
+fn visible_active_block_update_does_not_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..3 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let active = handle.new_block(plain_block("active"));
+    handle.push_above_active(active);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.set_block(active, plain_block("active updated"));
+    });
+}
+
+#[test]
+fn active_block_finalized_to_history_does_not_full_redraw_when_visible() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..3 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let active = handle.new_block(plain_block("tool done"));
+    handle.push_above_active(active);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(active);
+        handle.print_output(plain_block("tool done"));
+    });
+}
+
+#[test]
+fn visible_active_block_removal_does_not_full_redraw_when_viewport_still_moves_down() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..6 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let active = handle.new_block(plain_block("temporary active"));
+    handle.push_above_active(active);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(active);
+        handle.print_output(plain_block("new output keeps viewport moving"));
+    });
+}
+
+#[test]
+fn removing_visible_block_that_moves_viewport_up_full_redraws() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..6 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let active = handle.new_block(plain_block("temporary active"));
+    handle.push_above_active(active);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(active);
+    });
+}
+
+#[test]
+fn below_status_update_with_scrollback_does_not_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..8 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let status = handle.new_block(plain_block("status 0"));
+    handle.push_below(status);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.set_block(status, plain_block("status 1"));
+    });
+}
+
+#[test]
+fn tool_summary_like_reorder_in_visible_area_does_not_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..4 {
+        handle.print_output(plain_block(format!("line {i}")));
+    }
+    let summary = handle.new_block(plain_block("tools 0/2"));
+    let tool1 = handle.new_block(plain_block("tool one running"));
+    let tool2 = handle.new_block(plain_block("tool two running"));
+    handle.push_above_active(summary);
+    handle.push_above_active(tool1);
+    handle.push_above_active(tool2);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(tool1);
+        handle.set_block(summary, plain_block("tools 1/2"));
+        handle.print_output(plain_block("tool one ok"));
+    });
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(tool2);
+        handle.remove_block(summary);
+        handle.print_output(plain_block("tools 2/2"));
+        handle.print_output(plain_block("tool two ok"));
+    });
+}
+
+#[test]
+fn randomized_visible_block_churn_does_not_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(6, 40, 100);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 6, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    let mut history_ids = Vec::new();
+    for i in 0..5 {
+        history_ids.push(handle.print_output(plain_block(format!("seed {i}"))));
+    }
+    let mut active_ids = Vec::new();
+    flush_redraws(&handle, &buf, &mut parser);
+
+    let mut rng = 0x1234_5678_u64;
+    for step in 0..120 {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        match rng % 5 {
+            0 => {
+                assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+                    history_ids.push(handle.print_output(plain_block(format!("append {step}"))));
+                });
+            }
+            1 => {
+                let id = active_ids
+                    .last()
+                    .copied()
+                    .or_else(|| history_ids.last().copied())
+                    .expect("visible id");
+                assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+                    handle.set_block(id, plain_block(format!("visible update {step}")));
+                });
+            }
+            2 => {
+                if active_ids.len() < 2 {
+                    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+                        let id = handle.new_block(plain_block(format!("active {step}")));
+                        handle.push_above_active(id);
+                        active_ids.push(id);
+                    });
+                }
+            }
+            3 => {
+                if let Some(&id) = active_ids.last() {
+                    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+                        handle.set_block(id, plain_block(format!("active update {step}")));
+                    });
+                }
+            }
+            _ => {
+                if let Some(id) = active_ids.pop() {
+                    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+                        handle.remove_block(id);
+                        history_ids.push(handle.print_output(plain_block(format!(
+                            "active finalized {step}"
+                        ))));
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_hidden_block_updates_each_full_redraw() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(handle.print_output(plain_block(format!("line {i}"))));
+    }
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..5 {
+        assert_full_redraw_after(&handle, &buf, &mut parser, || {
+            handle.set_block(ids[0], plain_block(format!("hidden update {i}")));
+        });
+    }
 }
 
 /// Shift+Enter and Alt+Enter both insert a `\n` at the cursor
