@@ -421,6 +421,40 @@ fn load_from_empty_dirs() {
 }
 
 #[test]
+fn load_from_scoped_dirs_applies_prompt_default_when_advertise_is_omitted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for (name, advertise) in [
+        ("defaulted", ""),
+        ("explicit-hidden", "advertise: false\n"),
+        ("explicit-shown", "advertise: true\n"),
+    ] {
+        let dir = tmp.path().join(name);
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: x\n{advertise}---\n"),
+        )
+        .expect("write");
+    }
+
+    let result = load_skills_from_skill_dirs(&[SkillDir {
+        path: tmp.path().to_owned(),
+        add_to_prompt_by_default: true,
+    }]);
+    let prompt_flag = |name: &str| {
+        result
+            .skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .map(|skill| skill.add_to_prompt)
+    };
+
+    assert_eq!(prompt_flag("defaulted"), Some(true));
+    assert_eq!(prompt_flag("explicit-hidden"), Some(false));
+    assert_eq!(prompt_flag("explicit-shown"), Some(true));
+}
+
+#[test]
 fn load_from_dirs_is_sorted_by_name() {
     let tmp = tempfile::tempdir().expect("tempdir");
     for name in ["zebra", "alpha", "mango", "bravo"] {

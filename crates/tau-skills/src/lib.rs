@@ -27,11 +27,26 @@ pub struct Skill {
     pub file_path: PathBuf,
     /// When true, the skill is listed in the system prompt at session
     /// start so the agent sees its name + description without having
-    /// to search. Opt-in via `advertise: true` in frontmatter; the
-    /// default is false so a large skill library doesn't bloat every
-    /// prompt — agents discover the rest through `skill { action:
+    /// to search. Opt-in via `advertise: true` in frontmatter, or by
+    /// omitting `advertise` in a directory whose scope advertises by
+    /// default. Large user/global skill libraries should keep the
+    /// default false so agents discover them through `skill { action:
     /// "search", query: "…" }`.
     pub add_to_prompt: bool,
+    /// True when the skill file explicitly set `advertise:`. Scoped
+    /// directory defaults only apply when this is false.
+    pub add_to_prompt_explicit: bool,
+}
+
+/// A skill search root plus policy that applies to every skill loaded
+/// from that root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkillDir {
+    pub path: PathBuf,
+    /// When true, skills from this directory are added to the initial
+    /// prompt when their frontmatter omits `advertise:`. Explicit
+    /// `advertise: false` remains a hard opt-out.
+    pub add_to_prompt_by_default: bool,
 }
 
 impl Skill {
@@ -309,17 +324,18 @@ pub fn load_skill_from_content(
 
     // `advertise: true` opts a skill into the system-prompt listing at
     // session start. Accept case-insensitive `true` or `1`; everything
-    // else (including unset) is false.
+    // else is false. Keep whether the header was present so scoped
+    // directory defaults can distinguish unset from explicit false.
     let advertise = fm
         .get("advertise")
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false);
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1");
 
     let skill = Skill {
         name,
         description,
         file_path: file_path.to_owned(),
-        add_to_prompt: advertise,
+        add_to_prompt: advertise.unwrap_or(false),
+        add_to_prompt_explicit: advertise.is_some(),
     };
 
     (Some(skill), diagnostics)
@@ -424,11 +440,28 @@ fn scan_symlink_dir_once(path: &Path, out: &mut Vec<PathBuf>) {
 /// The first skill with a given name wins; collisions produce a diagnostic.
 /// Output skills are sorted by name so successive runs see the same order.
 pub fn load_skills_from_dirs(dirs: &[PathBuf]) -> LoadSkillsResult {
+    let dirs = dirs
+        .iter()
+        .cloned()
+        .map(|path| SkillDir {
+            path,
+            add_to_prompt_by_default: false,
+        })
+        .collect::<Vec<_>>();
+    load_skills_from_skill_dirs(&dirs)
+}
+
+/// Load skills from scoped directories, deduplicating by name.
+///
+/// Directory scope can force skills into the initial prompt, which is
+/// useful for project-local skills that are likely relevant to the
+/// current repository.
+pub fn load_skills_from_skill_dirs(dirs: &[SkillDir]) -> LoadSkillsResult {
     let mut skills_by_name: BTreeMap<String, Skill> = BTreeMap::new();
     let mut all_diagnostics = Vec::new();
 
     for dir in dirs {
-        let paths = discover_skill_paths(dir);
+        let paths = discover_skill_paths(&dir.path);
         for path in paths {
             let content = match fs::read_to_string(&path) {
                 Ok(c) => c,
@@ -445,7 +478,10 @@ pub fn load_skills_from_dirs(dirs: &[PathBuf]) -> LoadSkillsResult {
             let (skill, diags) = load_skill_from_content(&content, &path);
             all_diagnostics.extend(diags);
 
-            if let Some(skill) = skill {
+            if let Some(mut skill) = skill {
+                if !skill.add_to_prompt_explicit {
+                    skill.add_to_prompt |= dir.add_to_prompt_by_default;
+                }
                 if let Some(existing) = skills_by_name.get(&skill.name) {
                     all_diagnostics.push(SkillDiagnostic {
                         path: skill.file_path.clone(),

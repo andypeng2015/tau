@@ -510,7 +510,7 @@ fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
 
     let skill_dirs = session_skill_dirs(std::env::current_dir().ok(), dirs::home_dir());
 
-    let result = tau_skills::load_skills_from_dirs(&skill_dirs);
+    let result = tau_skills::load_skills_from_skill_dirs(&skill_dirs);
     push_skill_diagnostic_events(&mut events, result.diagnostics);
     for skill in result.skills {
         let file_path = skill.file_path.canonicalize().unwrap_or(skill.file_path);
@@ -567,17 +567,35 @@ fn push_skill_diagnostic_events(
 fn session_skill_dirs(
     cwd: Option<std::path::PathBuf>,
     home: Option<std::path::PathBuf>,
-) -> Vec<std::path::PathBuf> {
+) -> Vec<tau_skills::SkillDir> {
     let mut skill_dirs = Vec::new();
     if let Some(cwd) = cwd {
-        skill_dirs.push(cwd.join(".agents").join("skills"));
-        skill_dirs.push(cwd.join(".agents.local").join("skills"));
+        skill_dirs.push(project_skill_dir(cwd.join(".agents").join("skills")));
+        skill_dirs.push(project_skill_dir(cwd.join(".agents.local").join("skills")));
     }
     if let Some(home) = home {
-        skill_dirs.push(home.join(".agents").join("skills"));
-        skill_dirs.push(home.join(".agents.local").join("skills"));
-        skill_dirs.push(home.join(".config").join("agents").join("skills"));
-        skill_dirs.push(home.join(".config").join("agents.local").join("skills"));
+        skill_dirs.push(user_skill_dir(home.join(".agents").join("skills")));
+        skill_dirs.push(user_skill_dir(home.join(".agents.local").join("skills")));
+        skill_dirs.push(user_skill_dir(
+            home.join(".config").join("agents").join("skills"),
+        ));
+        skill_dirs.push(user_skill_dir(
+            home.join(".config").join("agents.local").join("skills"),
+        ));
     }
     skill_dirs
+}
+
+fn project_skill_dir(path: std::path::PathBuf) -> tau_skills::SkillDir {
+    tau_skills::SkillDir {
+        path,
+        add_to_prompt_by_default: true,
+    }
+}
+
+fn user_skill_dir(path: std::path::PathBuf) -> tau_skills::SkillDir {
+    tau_skills::SkillDir {
+        path,
+        add_to_prompt_by_default: false,
+    }
 }

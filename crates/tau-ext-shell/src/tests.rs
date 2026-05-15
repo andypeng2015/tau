@@ -307,8 +307,15 @@ fn session_skill_dirs_include_config_agents() {
     let cwd = PathBuf::from("/repo");
     let home = PathBuf::from("/home/user");
 
+    let dirs = session_skill_dirs(Some(cwd.clone()), Some(home.clone()));
+    let paths: Vec<_> = dirs.iter().map(|dir| dir.path.clone()).collect();
+    let prompt_defaults: Vec<_> = dirs
+        .iter()
+        .map(|dir| dir.add_to_prompt_by_default)
+        .collect();
+
     assert_eq!(
-        session_skill_dirs(Some(cwd.clone()), Some(home.clone())),
+        paths,
         vec![
             cwd.join(".agents").join("skills"),
             cwd.join(".agents.local").join("skills"),
@@ -318,6 +325,63 @@ fn session_skill_dirs_include_config_agents() {
             home.join(".config").join("agents.local").join("skills"),
         ]
     );
+    assert_eq!(
+        prompt_defaults,
+        vec![true, true, false, false, false, false]
+    );
+}
+
+#[test]
+fn project_scoped_skills_are_advertised_by_default() {
+    let temp = TempDir::new().expect("tempdir");
+    let cwd = temp.path().join("repo");
+    let home = temp.path().join("home");
+    let project_skill_dir = cwd.join(".agents").join("skills").join("project-skill");
+    let user_skill_dir = home.join(".agents").join("skills").join("user-skill");
+    fs::create_dir_all(&project_skill_dir).expect("create project skill dir");
+    fs::create_dir_all(&user_skill_dir).expect("create user skill dir");
+    let project_hidden_dir = cwd
+        .join(".agents")
+        .join("skills")
+        .join("project-hidden-skill");
+    fs::create_dir_all(&project_hidden_dir).expect("create hidden project skill dir");
+    fs::write(
+        project_skill_dir.join("SKILL.md"),
+        "---\nname: project-skill\ndescription: Project skill\n---\nbody\n",
+    )
+    .expect("write project skill");
+    fs::write(
+        project_hidden_dir.join("SKILL.md"),
+        "---\nname: project-hidden-skill\ndescription: Hidden project skill\nadvertise: false\n---\nbody\n",
+    )
+    .expect("write hidden project skill");
+    fs::write(
+        user_skill_dir.join("SKILL.md"),
+        "---\nname: user-skill\ndescription: User skill\n---\nbody\n",
+    )
+    .expect("write user skill");
+
+    let result =
+        tau_skills::load_skills_from_skill_dirs(&session_skill_dirs(Some(cwd), Some(home)));
+    let project_skill = result
+        .skills
+        .iter()
+        .find(|skill| skill.name == "project-skill")
+        .expect("project skill");
+    let user_skill = result
+        .skills
+        .iter()
+        .find(|skill| skill.name == "user-skill")
+        .expect("user skill");
+    let project_hidden_skill = result
+        .skills
+        .iter()
+        .find(|skill| skill.name == "project-hidden-skill")
+        .expect("hidden project skill");
+
+    assert!(project_skill.add_to_prompt);
+    assert!(!project_hidden_skill.add_to_prompt);
+    assert!(!user_skill.add_to_prompt);
 }
 
 #[test]
