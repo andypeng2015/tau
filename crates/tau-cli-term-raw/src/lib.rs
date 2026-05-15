@@ -1591,6 +1591,7 @@ fn redraw_loop(
     let mut prev_width = w;
     let mut prev_height = h;
     let mut prev_visible_start: usize = 0;
+    let mut prev_all_lines: Vec<Vec<Cell>> = Vec::new();
 
     loop {
         // Check shutdown before blocking on the channel.
@@ -1681,13 +1682,23 @@ fn redraw_loop(
                 tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
             }
             prev_visible_start = layout.all_lines.len().saturating_sub(height);
+            prev_all_lines = layout.all_lines;
         } else {
             let total = layout.all_lines.len();
             let visible_start = total.saturating_sub(height);
 
             screen.set_width(width);
 
-            if visible_start > prev_visible_start {
+            let hidden_prefix_changed =
+                hidden_lines_changed(&prev_all_lines, &layout.all_lines, prev_visible_start);
+
+            if hidden_prefix_changed {
+                // The terminal scrollback contains rows we can no longer
+                // address incrementally. Rebuild it from logical content.
+                if let Err(e) = full_render(&mut writer, &mut screen, &layout, width, height) {
+                    tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
+                }
+            } else if visible_start > prev_visible_start {
                 // Content pushed lines off the top. Use the
                 // scrolling renderer (Pi-style) which renders
                 // changed lines in order and lets \r\n at the
@@ -1713,6 +1724,7 @@ fn redraw_loop(
                 }
             }
             prev_visible_start = visible_start;
+            prev_all_lines = layout.all_lines;
         }
 
         prev_width = width;
@@ -1734,6 +1746,14 @@ fn redraw_loop(
 /// position cursor. Used on resize and when content grows beyond
 /// the viewport. After rendering, Screen tracks the visible
 /// viewport for subsequent differential updates.
+fn hidden_lines_changed(
+    prev_all_lines: &[Vec<Cell>],
+    all_lines: &[Vec<Cell>],
+    prev_visible_start: usize,
+) -> bool {
+    (0..prev_visible_start).any(|idx| prev_all_lines.get(idx) != all_lines.get(idx))
+}
+
 fn full_render(
     stdout: &mut impl Write,
     screen: &mut Screen,

@@ -1662,3 +1662,27 @@ fn shift_or_alt_enter_inserts_newline_without_submitting() {
         Event::Line(line) if line == "line one\nline two"
     ));
 }
+
+#[test]
+fn hidden_lines_changed_ignores_visible_changes() {
+    let prev = plain_lines(&["old hidden", "visible"]);
+    let next = plain_lines(&["old hidden", "VISIBLE"]);
+
+    assert!(!hidden_lines_changed(&prev, &next, 1));
+}
+
+#[test]
+fn hidden_lines_changed_detects_scrollback_changes() {
+    let prev = plain_lines(&["old hidden", "visible"]);
+    let next = plain_lines(&["new hidden", "visible"]);
+
+    assert!(hidden_lines_changed(&prev, &next, 1));
+}
+
+#[test]
+fn hidden_lines_changed_detects_removed_scrollback_line() {
+    let prev = plain_lines(&["hidden", "visible"]);
+    let next = plain_lines(&["visible"]);
+
+    assert!(hidden_lines_changed(&prev, &next, 1));
+}
