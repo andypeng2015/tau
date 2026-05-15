@@ -308,9 +308,9 @@ fn exa_ok_display(response: &str) -> ToolDisplay {
         .filter(|line| line.starts_with("URL:"))
         .count();
     let results = titles.max(urls);
-    let chip = if results > 0 {
+    let chip = if 0 < results {
         format!(
-            "({results} results, {}L, {}B)",
+            "({results}, {}L, {}B)",
             response.lines().count(),
             response.len()
         )

@@ -1608,7 +1608,7 @@ fn websearch_tool_result_shows_result_count_and_size() {
         ),
         display: Some(tau_proto::ToolDisplay {
             args: String::new(),
-            info_chips: vec!["(2 results, 5L, 73B)".into()],
+            info_chips: vec!["(2, 5L, 73B)".into()],
             status: tau_proto::ToolDisplayStatus::Success,
             status_text: "ok".into(),
             ..Default::default()
@@ -1616,7 +1616,7 @@ fn websearch_tool_result_shows_result_count_and_size() {
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "websearch_exa (2 results, 5L, 73B) ok"));
+    assert!(vt.screen_contains(80, "websearch_exa (2, 5L, 73B) ok"));
 }
 
 #[test]

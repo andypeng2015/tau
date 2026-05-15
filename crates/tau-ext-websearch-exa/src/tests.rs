@@ -156,6 +156,8 @@ fn forwards_query_and_num_results_to_searcher_and_returns_text() {
         panic!("expected Text result");
     };
     assert!(text.contains("Title: hi"));
+    let display = result.display.expect("display");
+    assert_eq!(display.info_chips, vec!["(1, 2L, 25B)".to_owned()]);
 
     let calls = searcher.calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
