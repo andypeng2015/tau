@@ -743,6 +743,52 @@ fn edit_self_replacement_counts_without_diff() {
 }
 
 #[test]
+fn edit_errors_when_any_requested_edit_has_no_matches() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "aa\nbb\n").expect("write fixture");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(file_path.display().to_string()),
+        ),
+        (
+            CborValue::Text("edits".to_owned()),
+            CborValue::Array(vec![
+                CborValue::Map(vec![
+                    (
+                        CborValue::Text("oldText".to_owned()),
+                        CborValue::Text("aa".to_owned()),
+                    ),
+                    (
+                        CborValue::Text("newText".to_owned()),
+                        CborValue::Text("AA".to_owned()),
+                    ),
+                ]),
+                CborValue::Map(vec![
+                    (
+                        CborValue::Text("oldText".to_owned()),
+                        CborValue::Text("missing".to_owned()),
+                    ),
+                    (
+                        CborValue::Text("newText".to_owned()),
+                        CborValue::Text("x".to_owned()),
+                    ),
+                ]),
+            ]),
+        ),
+    ]);
+
+    let error = edit_file(&args).expect_err("missing edit should fail");
+    assert_eq!(error.message, "no matches for edit");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "aa\nbb\n"
+    );
+}
+
+#[test]
 fn extension_writes_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("output.txt");

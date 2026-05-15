@@ -44,12 +44,16 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
         let old_bytes = old_text.as_bytes();
         let start_byte = byte_offset_for_line(&line_starts, start_line, original_bytes.len());
         let end_byte = byte_offset_for_line(&line_starts, end_line, original_bytes.len());
+        let replacements_before = replacements.len();
         for start in find_subslice_matches(&original_bytes[start_byte..end_byte], old_bytes)
             .take(max_matches)
         {
             let start = start_byte + start;
             let end = start + old_bytes.len();
             replacements.push((start, end, new_text.as_bytes()));
+        }
+        if replacements.len() == replacements_before {
+            return Err(with_args(ToolFailure::new("no matches for edit")));
         }
     }
 
