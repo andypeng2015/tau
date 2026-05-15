@@ -508,13 +508,7 @@ fn ack_log_event(id: LogEventId, tx: &mpsc::Sender<Frame>) {
 fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
     let mut events = Vec::new();
 
-    let mut skill_dirs = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        skill_dirs.push(cwd.join(".agents").join("skills"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        skill_dirs.push(home.join(".agents").join("skills"));
-    }
+    let skill_dirs = session_skill_dirs(std::env::current_dir().ok(), dirs::home_dir());
 
     let result = tau_skills::load_skills_from_dirs(&skill_dirs);
     for skill in result.skills {
@@ -542,4 +536,19 @@ fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
         },
     ));
     events
+}
+
+fn session_skill_dirs(
+    cwd: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    let mut skill_dirs = Vec::new();
+    if let Some(cwd) = cwd {
+        skill_dirs.push(cwd.join(".agents").join("skills"));
+    }
+    if let Some(home) = home {
+        skill_dirs.push(home.join(".agents").join("skills"));
+        skill_dirs.push(home.join(".config").join("agents").join("skills"));
+    }
+    skill_dirs
 }

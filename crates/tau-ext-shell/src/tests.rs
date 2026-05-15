@@ -269,6 +269,21 @@ fn discover_agents_files_from_roots_keeps_home_before_repo_chain() {
 }
 
 #[test]
+fn session_skill_dirs_include_config_agents() {
+    let cwd = PathBuf::from("/repo");
+    let home = PathBuf::from("/home/user");
+
+    assert_eq!(
+        session_skill_dirs(Some(cwd.clone()), Some(home.clone())),
+        vec![
+            cwd.join(".agents").join("skills"),
+            home.join(".agents").join("skills"),
+            home.join(".config").join("agents").join("skills"),
+        ]
+    );
+}
+
+#[test]
 fn session_started_emits_ready_after_startup() {
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
