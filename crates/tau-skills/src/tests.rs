@@ -281,6 +281,21 @@ fn parse_frontmatter_crlf_mixed_with_multibyte() {
 }
 
 #[test]
+fn root_md_without_name_uses_file_stem() {
+    let content = "---\ndescription: A standalone skill\n---\n";
+    let path = Path::new("/skills/standalone.md");
+    let (skill, diags) = load_skill_from_content(content, path);
+    let skill = skill.expect("should load");
+    assert_eq!(skill.name, "standalone");
+    assert!(
+        diags
+            .iter()
+            .all(|d| !d.message.contains("does not match parent directory")),
+        "standalone file should not be compared with parent dir: {diags:?}"
+    );
+}
+
+#[test]
 fn skill_base_dir_matches_parent() {
     let content = "---\nname: my-skill\ndescription: x\n---\n";
     let path = Path::new("/skills/my-skill/SKILL.md");
@@ -311,14 +326,20 @@ fn discover_skill_md_in_subdir() {
 fn discover_root_md_files() {
     let tmp = tempfile::tempdir().expect("tempdir");
     fs::write(
-        tmp.path().join("standalone.md"),
-        "---\nname: standalone\ndescription: A standalone skill\n---\n",
+        tmp.path().join("z-standalone.md"),
+        "---\nname: z-standalone\ndescription: A standalone skill\n---\n",
+    )
+    .expect("write");
+    fs::write(
+        tmp.path().join("a-standalone.md"),
+        "---\ndescription: A standalone skill\n---\n",
     )
     .expect("write");
 
     let paths = discover_skill_paths(tmp.path());
-    assert_eq!(paths.len(), 1);
-    assert!(paths[0].ends_with("standalone.md"));
+    assert_eq!(paths.len(), 2);
+    assert!(paths[0].ends_with("a-standalone.md"));
+    assert!(paths[1].ends_with("z-standalone.md"));
 }
 
 #[test]
@@ -411,6 +432,24 @@ fn load_from_dirs_dedup() {
             .iter()
             .any(|d| d.kind == DiagnosticKind::Collision)
     );
+}
+
+#[test]
+fn load_from_dir_collision_winner_is_path_sorted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for (dir, description) in [("z-skill", "Second"), ("a-skill", "First")] {
+        let skill_dir = tmp.path().join(dir);
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: same-name\ndescription: {description}\n---\n"),
+        )
+        .expect("write");
+    }
+
+    let result = load_skills_from_dirs(&[tmp.path().to_owned()]);
+    assert_eq!(result.skills.len(), 1);
+    assert_eq!(result.skills[0].description, "First");
 }
 
 #[test]

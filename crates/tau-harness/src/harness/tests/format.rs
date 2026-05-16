@@ -7,16 +7,10 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         tool_name: tau_proto::ToolName::new("skill"),
         outcome: ToolActivityOutcome::Requested {
             tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("action".to_owned()),
-                    CborValue::Text("load".to_owned()),
-                ),
-                (
-                    CborValue::Text("name".to_owned()),
-                    CborValue::Text("jujutsu".to_owned()),
-                ),
-            ]),
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("query".to_owned()),
+                CborValue::Text("jujutsu".to_owned()),
+            )]),
         },
     });
     assert_eq!(
@@ -29,21 +23,15 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         tool_name: tau_proto::ToolName::new("skill"),
         outcome: ToolActivityOutcome::Requested {
             tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("action".to_owned()),
-                    CborValue::Text("search".to_owned()),
-                ),
-                (
-                    CborValue::Text("query".to_owned()),
-                    CborValue::Text("commit".to_owned()),
-                ),
-            ]),
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("query".to_owned()),
+                CborValue::Text(" commit  git commit ".to_owned()),
+            )]),
         },
     });
     assert_eq!(
         format_session_entry(&skill_search),
-        "tool.request skill search commit"
+        "tool.request skill commit git"
     );
 
     let read_request = SessionEntry::ToolActivity(ToolActivityRecord {
@@ -67,6 +55,16 @@ fn format_session_entry_tree_preview_hides_call_id_and_shows_skill_name() {
         },
     });
     assert_eq!(format_session_entry(&result), "tool.result read -> hello");
+
+    let multibyte_result = SessionEntry::ToolActivity(ToolActivityRecord {
+        call_id: "call_utf8".into(),
+        tool_name: tau_proto::ToolName::new("skill"),
+        outcome: ToolActivityOutcome::Result {
+            result: CborValue::Text("é".repeat(81)),
+        },
+    });
+    let formatted = format_session_entry(&multibyte_result);
+    assert!(formatted.ends_with("..."));
 }
 
 #[test]

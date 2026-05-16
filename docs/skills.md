@@ -24,7 +24,7 @@ Preferred layout:
 
 The frontmatter fields Tau reads are:
 
-- `name`: Optional. Defaults to the parent directory name. Must be lowercase ASCII letters, digits, and hyphens only.
+- `name`: Optional. Defaults to the parent directory name for `SKILL.md`, or to the file stem for a root-level Markdown skill. Must be lowercase ASCII letters, digits, and hyphens only.
 - `description`: Required. Used in prompt advertisements and search results.
 - `advertise`: Optional. `true`, `True`, `TRUE`, and `1` force prompt advertisement. Any other explicit value keeps the skill hidden from the initial prompt.
 
@@ -40,13 +40,13 @@ This keeps normal session context small while still surfacing project-local inst
 
 ## The `skill` tool
 
-The agent calls `skill` with a `query` string or an array of query strings:
+The agent calls `skill` with a `query` string. Whitespace separates terms:
 
 ```json
-{ "query": ["rust", "style"] }
+{ "query": "rust style" }
 ```
 
-Tau trims, lowercases, and deduplicates query terms, then matches them against skill names and descriptions. Hits are merged and sorted by `hit_count` descending then by name. By default, Tau does not read skill bodies during search; `search_content: true` also searches body text.
+Tau trims, lowercases, and deduplicates query terms, then matches them against skill names and descriptions. Hits are merged and sorted by `hit_count` descending then by name. By default, Tau does not read skill bodies during search; `search_content: true` also searches body text with frontmatter stripped.
 
 If the query is unambiguous, Tau returns the full skill body with frontmatter stripped:
 

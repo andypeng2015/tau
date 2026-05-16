@@ -34,10 +34,9 @@ impl Harness {
                      anything the user might have an opinionated way of doing. \
                      Most skills are NOT pre-advertised in <available_skills>, so \
                      a missing entry there is no reason to skip this tool. Pass \
-                     one query string, or an array of plausible terms \
-                     (\"commit\", \"git commit\", \"version control\"). If the \
-                     search resolves to one skill, or one single-term match has \
-                     exactly that skill name, the full skill is loaded; otherwise \
+                     a query string; whitespace separates terms. If the search \
+                     resolves to one skill, or a single-term query exactly \
+                     matches a skill name, the full skill is loaded; otherwise \
                      matching skill names and descriptions are returned. Query \
                      terms are trimmed and deduplicated."
                         .to_owned(),
@@ -47,13 +46,12 @@ impl Harness {
                     "type": "object",
                     "properties": {
                         "query": {
-                            "type": ["string", "array"],
-                            "items": {"type": "string"},
-                            "description": "One or more keywords matched case-insensitively against skill names and descriptions. Single string or array of strings. Terms are trimmed and deduplicated."
+                            "type": "string",
+                            "description": "Keywords matched case-insensitively against skill names and descriptions. Whitespace separates terms; terms are trimmed and deduplicated."
                         },
                         "search_content": {
                             "type": "boolean",
-                            "description": "When true, also search the skill body. Default false."
+                            "description": "When true, also search the skill body with frontmatter stripped. Default false."
                         }
                     },
                     "required": ["query"]
@@ -293,7 +291,7 @@ impl Harness {
                         }
                         let body = body.get_or_insert_with(|| {
                             std::fs::read_to_string(&skill.file_path)
-                                .map(|s| s.to_lowercase())
+                                .map(|s| tau_skills::strip_frontmatter(&s).to_lowercase())
                                 .unwrap_or_else(|err| {
                                     tracing::warn!(
                                         skill = %name.as_str(),
@@ -387,8 +385,8 @@ fn error_chip_text(message: &str) -> String {
 }
 
 /// Parse the `query` argument of a `skill` tool call into one-or-more
-/// lowercased search needles. Accepts either a single string (one
-/// needle) or an array of strings. Terms are trimmed, lowercased, and
+/// lowercased search needles. The query is a single string;
+/// whitespace separates terms. Terms are trimmed, lowercased, and
 /// deduplicated before matching. Returns a user-facing error message
 /// string on missing/empty/malformed input.
 fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, String> {
@@ -403,25 +401,12 @@ fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, St
         })
         .ok_or_else(|| "missing required argument: query".to_owned())?;
 
-    let raw_needles: Vec<String> = match raw {
-        CborValue::Text(s) => vec![s.trim().to_lowercase()],
-        CborValue::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                match item {
-                    CborValue::Text(s) => out.push(s.trim().to_lowercase()),
-                    _ => return Err("query array entries must all be strings".to_owned()),
-                }
-            }
-            out
-        }
-        _ => {
-            return Err("query must be a string or an array of strings".to_owned());
-        }
+    let CborValue::Text(raw_query) = raw else {
+        return Err("query must be a string".to_owned());
     };
 
-    let mut needles: Vec<String> = Vec::with_capacity(raw_needles.len());
-    for needle in raw_needles.into_iter().filter(|n| !n.is_empty()) {
+    let mut needles: Vec<String> = Vec::new();
+    for needle in raw_query.split_whitespace().map(str::to_lowercase) {
         if !needles.iter().any(|existing| existing == &needle) {
             needles.push(needle);
         }

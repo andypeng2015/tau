@@ -38,6 +38,23 @@ fn build_system_prompt_excludes_hidden_skills() {
 }
 
 #[test]
+fn build_system_prompt_escapes_skill_xml_text() {
+    let mut skills = std::collections::HashMap::new();
+    skills.insert(
+        tau_proto::SkillName::from("weird-skill"),
+        DiscoveredSkill {
+            source_id: "skills".into(),
+            description: "Use </description> & <tag> \"quotes\"".to_owned(),
+            file_path: PathBuf::from("/skills/weird-skill/SKILL.md"),
+            add_to_prompt: true,
+        },
+    );
+    let prompt = build_system_prompt(&skills, "/tmp/work");
+    assert!(prompt.contains("Use &lt;/description&gt; &amp; &lt;tag&gt; &quot;quotes&quot;"));
+    assert!(!prompt.contains("Use </description>"));
+}
+
+#[test]
 fn skill_tool_reads_file_content() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
@@ -150,6 +167,7 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
     // eager init.
     const KW: &str = "zqxtoken";
     const BODY_KW: &str = "zqxbody";
+    const YAML_ONLY_KW: &str = "zqxyamlonly";
 
     let alpha_dir = td.path().join("zqx-alpha");
     std::fs::create_dir_all(&alpha_dir).expect("mkdir");
@@ -178,7 +196,9 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
     let gamma_file = gamma_dir.join("SKILL.md");
     std::fs::write(
         &gamma_file,
-        "---\nname: zqx-gamma\ndescription: a different topic\n---\nno keyword references here",
+        format!(
+            "---\nname: zqx-gamma\ndescription: a different topic\nnotes: {YAML_ONLY_KW}\n---\nno keyword references here"
+        ),
     )
     .expect("write gamma");
 
@@ -326,11 +346,18 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
         .expect("search 3");
     assert_eq!(read_matches(&h, "call-3"), vec!["zqx-alpha", "zqx-beta"]);
 
-    // Name match works case-insensitively and ignores padding.
+    // Frontmatter is stripped before content search.
     seed_tools_running(&mut h, &cid, vec!["call-4".into()]);
-    h.handle_skill_tool_call(&cid, &call_search(" ZQX-ALPHA ", false, "call-4"))
+    h.handle_skill_tool_call(&cid, &call_search(YAML_ONLY_KW, true, "call-4"))
         .expect("search 4");
-    assert_eq!(read_loaded_name(&h, "call-4"), "zqx-alpha");
+    let empty: Vec<String> = Vec::new();
+    assert_eq!(read_matches(&h, "call-4"), empty);
+
+    // Name match works case-insensitively and ignores padding.
+    seed_tools_running(&mut h, &cid, vec!["call-5".into()]);
+    h.handle_skill_tool_call(&cid, &call_search(" ZQX-ALPHA ", false, "call-5"))
+        .expect("search 5");
+    assert_eq!(read_loaded_name(&h, "call-5"), "zqx-alpha");
 }
 
 #[test]
@@ -402,18 +429,13 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
     );
 
     let cid = h.default_conversation_id.clone();
-    let call_search_array = |terms: &[&str], id: &str| AgentToolCall {
+    let call_search = |query: &str, id: &str| AgentToolCall {
         id: id.into(),
         name: "skill".into(),
         tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(vec![(
             CborValue::Text("query".to_owned()),
-            CborValue::Array(
-                terms
-                    .iter()
-                    .map(|t| CborValue::Text((*t).to_owned()))
-                    .collect(),
-            ),
+            CborValue::Text(query.to_owned()),
         )]),
         display: None,
     };
@@ -464,7 +486,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
     };
 
     seed_tools_running(&mut h, &cid, vec!["call-multi".into()]);
-    h.handle_skill_tool_call(&cid, &call_search_array(&[T1, T2], "call-multi"))
+    h.handle_skill_tool_call(&cid, &call_search(&format!("{T1} {T2}"), "call-multi"))
         .expect("multi search");
     let records = read_match_records(&h, "call-multi");
     assert_eq!(
@@ -475,11 +497,8 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
     );
 
     seed_tools_running(&mut h, &cid, vec!["call-dedup".into()]);
-    h.handle_skill_tool_call(
-        &cid,
-        &call_search_array(&[" zqxalpha ", "ZQXALPHA"], "call-dedup"),
-    )
-    .expect("dedup search");
+    h.handle_skill_tool_call(&cid, &call_search(" zqxalpha  ZQXALPHA ", "call-dedup"))
+        .expect("dedup search");
     assert_eq!(
         read_match_records(&h, "call-dedup"),
         vec![("zqx-alpha".to_owned(), 1), ("zqx-beta".to_owned(), 1),],
@@ -488,8 +507,8 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
 
     // A single matching skill is loaded directly.
     seed_tools_running(&mut h, &cid, vec!["call-single".into()]);
-    h.handle_skill_tool_call(&cid, &call_search_array(&[T2], "call-single"))
-        .expect("single in array");
+    h.handle_skill_tool_call(&cid, &call_search(T2, "call-single"))
+        .expect("single term");
     let events = h.store.session_events("s1").expect("events");
     let loaded_name = events
         .iter()
@@ -508,8 +527,8 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
         .expect("loaded skill name");
     assert_eq!(loaded_name, "zqx-alpha");
 
-    // Empty array should error rather than silently returning every
-    // skill — the agent passing `[]` is almost always a bug.
+    // Empty query should error rather than silently returning every
+    // skill.
     seed_tools_running(&mut h, &cid, vec!["call-empty".into()]);
     h.handle_skill_tool_call(
         &cid,
@@ -519,7 +538,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(vec![(
                 CborValue::Text("query".to_owned()),
-                CborValue::Array(Vec::new()),
+                CborValue::Text("   ".to_owned()),
             )]),
             display: None,
         },
@@ -532,7 +551,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_hit_count() {
             Event::ToolError(e) if e.call_id.as_str() == "call-empty"
         )
     });
-    assert!(saw_error, "empty query array must produce a ToolError");
+    assert!(saw_error, "empty query must produce a ToolError");
 }
 
 #[test]
@@ -608,16 +627,13 @@ fn skill_tool_loads_exact_single_term_match_even_with_other_hits() {
 }
 
 #[test]
-fn skill_tool_default_display_formats_array_query() {
+fn skill_tool_default_display_formats_query() {
     let display = super::super::build_tool_args_display(
         "skill",
         &CborValue::Map(vec![
             (
                 CborValue::Text("query".to_owned()),
-                CborValue::Array(vec![
-                    CborValue::Text(" git ".to_owned()),
-                    CborValue::Text("commit".to_owned()),
-                ]),
+                CborValue::Text(" git  commit git ".to_owned()),
             ),
             (
                 CborValue::Text("search_content".to_owned()),

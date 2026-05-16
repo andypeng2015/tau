@@ -27,11 +27,8 @@ pub struct Skill {
     pub file_path: PathBuf,
     /// When true, the skill is listed in the system prompt at session
     /// start so the agent sees its name + description without having
-    /// to search. Opt-in via `advertise: true` in frontmatter, or by
-    /// omitting `advertise` in a directory whose scope advertises by
-    /// default. Large user/global skill libraries should keep the
-    /// default false so agents discover them through `skill { action:
-    /// "search", query: "…" }`.
+    /// to search. Use `skill { query: "…" }` to discover/load hidden
+    /// skills.
     pub add_to_prompt: bool,
     /// True when the skill file explicitly set `advertise:`. Scoped
     /// directory defaults only apply when this is false.
@@ -293,14 +290,28 @@ pub fn load_skill_from_content(
         .file_name()
         .and_then(|n| n.to_str())
         .map(str::to_owned);
+    let file_name = file_path.file_name().and_then(|n| n.to_str());
+    let fallback_name = if file_name == Some(SKILL_FILENAME) {
+        parent_dir_name.clone()
+    } else {
+        file_path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned)
+    };
+    let parent_name_for_validation = if file_name == Some(SKILL_FILENAME) {
+        parent_dir_name.as_deref()
+    } else {
+        None
+    };
 
     let name = fm
         .get("name")
         .cloned()
-        .or_else(|| parent_dir_name.clone())
+        .or(fallback_name)
         .unwrap_or_default();
 
-    let name_check = validate_name(&name, parent_dir_name.as_deref(), file_path);
+    let name_check = validate_name(&name, parent_name_for_validation, file_path);
     diagnostics.extend(name_check.diagnostics);
     if name_check.skip {
         return (None, diagnostics);
@@ -367,7 +378,8 @@ fn discover_skill_paths_inner(dir: &Path, is_root: bool, out: &mut Vec<PathBuf>)
         Err(_) => return,
     };
 
-    let children: Vec<fs::DirEntry> = entries.flatten().collect();
+    let mut children: Vec<fs::DirEntry> = entries.flatten().collect();
+    children.sort_by_key(|entry| entry.path());
 
     // Single-pass search: if SKILL.md exists among the children as a regular
     // file, that's this directory's skill and we stop recursing here.
@@ -418,7 +430,8 @@ fn scan_symlink_dir_once(path: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
     };
-    let children: Vec<fs::DirEntry> = entries.flatten().collect();
+    let mut children: Vec<fs::DirEntry> = entries.flatten().collect();
+    children.sort_by_key(|entry| entry.path());
 
     let skill_md = children.iter().find(|e| {
         if e.file_name() != SKILL_FILENAME {

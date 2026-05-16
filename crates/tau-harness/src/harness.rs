@@ -5335,20 +5335,19 @@ fn cbor_query_label(arguments: &tau_proto::CborValue, key: &str) -> String {
         return String::new();
     };
     match value {
-        tau_proto::CborValue::Text(s) => s.trim().to_owned(),
-        tau_proto::CborValue::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                tau_proto::CborValue::Text(s) => {
-                    let s = s.trim();
-                    (!s.is_empty()).then(|| s.to_owned())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        tau_proto::CborValue::Text(s) => normalized_query_label(s),
         _ => String::new(),
     }
+}
+
+fn normalized_query_label(query: &str) -> String {
+    let mut terms = Vec::new();
+    for term in query.split_whitespace().map(str::to_lowercase) {
+        if !terms.iter().any(|existing| existing == &term) {
+            terms.push(term);
+        }
+    }
+    terms.join(" ")
 }
 
 fn shell_command_args(command: &str) -> String {

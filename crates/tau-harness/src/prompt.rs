@@ -50,9 +50,10 @@ pub(crate) fn build_system_prompt(
         );
         for (name, skill) in &prompt_skills {
             prompt.push_str(&format!(
-                "  <skill>\n    <name>{name}</name>\n    \
+                "  <skill>\n    <name>{}</name>\n    \
                  <description>{}</description>\n  </skill>\n",
-                skill.description
+                xml_escape(name.as_str()),
+                xml_escape(&skill.description),
             ));
         }
         prompt.push_str("</available_skills>\n");
@@ -61,6 +62,21 @@ pub(crate) fn build_system_prompt(
     prompt.push_str(&format!("\nCurrent working directory: {cwd}\n"));
 
     prompt
+}
+
+fn xml_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 pub(crate) fn render_agents_context_message<'a>(

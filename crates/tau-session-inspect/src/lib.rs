@@ -185,11 +185,7 @@ pub fn format_session_entry(entry: &SessionEntry) -> String {
             }
             ToolActivityOutcome::Result { result } => {
                 let text = cbor_to_text(result);
-                let preview = if text.len() > 80 {
-                    format!("{}...", &text[..80])
-                } else {
-                    text
-                };
+                let preview = truncate_chars(&text, 80);
                 format!("tool.result {} -> {preview}", a.tool_name)
             }
             ToolActivityOutcome::Error { message, .. } => {
@@ -223,19 +219,28 @@ fn cbor_query_label(map: &CborValue, key: &str) -> String {
         return String::new();
     };
     match value {
-        CborValue::Text(s) => s.trim().to_owned(),
-        CborValue::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                CborValue::Text(s) => {
-                    let s = s.trim();
-                    (!s.is_empty()).then(|| s.to_owned())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+        CborValue::Text(s) => normalized_query_label(s),
         _ => String::new(),
+    }
+}
+
+fn normalized_query_label(query: &str) -> String {
+    let mut terms = Vec::new();
+    for term in query.split_whitespace().map(str::to_lowercase) {
+        if !terms.iter().any(|existing| existing == &term) {
+            terms.push(term);
+        }
+    }
+    terms.join(" ")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
     }
 }
 
