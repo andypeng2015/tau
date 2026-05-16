@@ -113,7 +113,7 @@ providers: {
 Defaults are normally selected through agent roles in `models.json5`:
 
 ```json5
-defaultRoles: {
+roles: {
   smart: { model: "openai/gpt-5.5", effort: "medium", toolsProfile: "full" },
   deep: { effort: "xhigh", thinkingSummary: "detailed" },
   rush: { effort: "low", serviceTier: "fast" },

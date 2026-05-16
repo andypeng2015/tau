@@ -831,7 +831,7 @@ fn gather_tool_definitions_respects_role_tools_profile() {
     std::fs::write(
         config_dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { toolsProfile: "read_only" },
             },
         }"#,
@@ -872,7 +872,7 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
     std::fs::write(
         config_dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { toolsProfile: "specialized" },
             },
         }"#,

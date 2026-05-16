@@ -11,11 +11,11 @@ A role can set:
 - `serviceTier`: `fast` or `flex`
 - `toolsProfile`: name of a tool-availability profile from `harness.json5`
 
-Roles live in `models.json5` under `defaultRoles`:
+Roles live in `models.json5` under `roles`:
 
 ```json5
 {
-  defaultRoles: {
+  roles: {
     smart: {
       model: "openai/gpt-5.3-codex",
       effort: "medium",
@@ -95,8 +95,8 @@ Examples:
 /role temporary delete
 ```
 
-The `<role>` argument completes existing roles, but any new name can be used to create a role for the current run. Add it to `defaultRoles` if it should be available after restart.
+The `<role>` argument completes existing roles, but any new name can be used to create a role for the current run. Add it to `roles` if it should be available after restart.
 
-`/role <role> delete` removes the runtime/persisted role override. It does not edit `defaultRoles` from configuration; built-in or configured roles come back on the next harness start.
+`/role <role> delete` removes the runtime/persisted role override. It does not edit `roles` from configuration; built-in or configured roles come back on the next harness start.
 
 Runtime changes for built-in or configured roles are persisted in `~/.local/state/tau/harness.json5` together with the last selected role.

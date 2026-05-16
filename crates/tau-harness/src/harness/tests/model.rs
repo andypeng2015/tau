@@ -166,7 +166,7 @@ fn configured_role_defaults_ignore_persisted_role_overrides() {
     std::fs::write(
         config_dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { model: "openai/gpt-4.1", effort: "high", verbosity: "medium" },
             },
             providers: {
@@ -283,7 +283,7 @@ fn load_model_list_falls_back_to_smart_role() {
     std::fs::write(
         config_dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { model: "local/smart" },
                 deep: { model: "local/deep" },
             },
@@ -334,7 +334,7 @@ fn role_missing_fields_use_model_defaults() {
     std::fs::write(
         config_dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { model: "local/smart", effort: "high" },
                 plain: {},
             },

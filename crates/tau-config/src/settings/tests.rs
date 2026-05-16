@@ -127,15 +127,15 @@ fn harness_settings_user_override_wins_over_built_in() {
 #[test]
 fn harness_settings_built_in_gpt_tools_profile() {
     let s = HarnessSettings::built_in();
-    assert_eq!(s.tools_profiles["gpt"]["apply_patch"], true);
-    assert_eq!(s.tools_profiles["gpt"]["edit"], false);
-    assert_eq!(s.tools_profiles["gpt"]["find"], false);
-    assert_eq!(s.tools_profiles["gpt"]["gpt_shell"], true);
-    assert_eq!(s.tools_profiles["gpt"]["grep"], false);
-    assert_eq!(s.tools_profiles["gpt"]["ls"], false);
-    assert_eq!(s.tools_profiles["gpt"]["read"], false);
-    assert_eq!(s.tools_profiles["gpt"]["shell"], false);
-    assert_eq!(s.tools_profiles["gpt"]["write"], false);
+    assert!(s.tools_profiles["gpt"]["apply_patch"]);
+    assert!(!s.tools_profiles["gpt"]["edit"]);
+    assert!(!s.tools_profiles["gpt"]["find"]);
+    assert!(s.tools_profiles["gpt"]["gpt_shell"]);
+    assert!(!s.tools_profiles["gpt"]["grep"]);
+    assert!(!s.tools_profiles["gpt"]["ls"]);
+    assert!(!s.tools_profiles["gpt"]["read"]);
+    assert!(!s.tools_profiles["gpt"]["shell"]);
+    assert!(!s.tools_profiles["gpt"]["write"]);
 }
 
 #[test]
@@ -229,13 +229,13 @@ fn models_load_with_providers() {
 }
 
 #[test]
-fn models_default_roles_merge_with_built_ins() {
+fn models_roles_merge_with_built_ins() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
         dir.join("models.json5"),
         r#"{
-            defaultRoles: {
+            roles: {
                 smart: { model: "openai/gpt-5.5", toolsProfile: "full" },
                 custom: { effort: "medium", toolsProfile: "read_only" },
                 deep: { model: "openai/gpt-5.5" },
@@ -280,6 +280,31 @@ fn models_default_roles_merge_with_built_ins() {
     assert_eq!(
         deep.thinking_summary,
         Some(tau_proto::ThinkingSummary::Detailed)
+    );
+}
+
+#[test]
+fn models_default_roles_alias_still_loads() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("models.json5"),
+        r#"{
+            defaultRoles: {
+                custom: { effort: "medium", toolsProfile: "read_only" },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let m = load_models_in(&dirs_with_config(dir)).expect("load");
+    assert_eq!(
+        m.default_roles["custom"].effort,
+        Some(tau_proto::Effort::Medium)
+    );
+    assert_eq!(
+        m.default_roles["custom"].tools_profile.as_deref(),
+        Some("read_only")
     );
 }
 

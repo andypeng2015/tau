@@ -437,7 +437,11 @@ pub struct ModelRegistry {
     pub providers: HashMap<ProviderName, ProviderConfig>,
     /// Named agent roles. Each role is a partial set of model settings;
     /// missing fields use hardcoded fallbacks for the selected model.
-    #[serde(rename = "defaultRoles", default = "default_agent_roles")]
+    #[serde(
+        rename = "roles",
+        alias = "defaultRoles",
+        default = "default_agent_roles"
+    )]
     pub default_roles: HashMap<String, AgentRole>,
 }
 
