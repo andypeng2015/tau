@@ -28,7 +28,7 @@ mod truncate;
 #[cfg(test)]
 mod tests;
 
-use crate::agents::discover_session_agents_files;
+use crate::agents::{ancestor_dirs, discover_session_agents_files};
 use crate::config::{ExtConfig, ShellConfig};
 use crate::semaphore::Semaphore;
 #[cfg(any(test, feature = "echo-agent"))]
@@ -569,9 +569,17 @@ fn session_skill_dirs(
     home: Option<std::path::PathBuf>,
 ) -> Vec<tau_skills::SkillDir> {
     let mut skill_dirs = Vec::new();
-    if let Some(cwd) = cwd {
-        skill_dirs.push(project_skill_dir(cwd.join(".agents").join("skills")));
-        skill_dirs.push(project_skill_dir(cwd.join(".agents.local").join("skills")));
+    if let Some(cwd) = cwd.as_deref() {
+        for project_dir in project_skill_ancestor_dirs(cwd, home.as_deref()) {
+            push_existing_project_skill_dir(
+                &mut skill_dirs,
+                project_dir.join(".agents").join("skills"),
+            );
+            push_existing_project_skill_dir(
+                &mut skill_dirs,
+                project_dir.join(".agents.local").join("skills"),
+            );
+        }
     }
     if let Some(home) = home {
         skill_dirs.push(user_skill_dir(home.join(".agents").join("skills")));
@@ -584,6 +592,31 @@ fn session_skill_dirs(
         ));
     }
     skill_dirs
+}
+
+fn project_skill_ancestor_dirs(
+    cwd: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    ancestor_dirs(cwd)
+        .into_iter()
+        .filter(|dir| dir.parent().is_some())
+        .filter(|dir| {
+            let Some(home) = home else {
+                return true;
+            };
+            !cwd.starts_with(home) || (dir.starts_with(home) && dir != home)
+        })
+        .collect()
+}
+
+fn push_existing_project_skill_dir(
+    skill_dirs: &mut Vec<tau_skills::SkillDir>,
+    path: std::path::PathBuf,
+) {
+    if path.is_dir() {
+        skill_dirs.push(project_skill_dir(path));
+    }
 }
 
 fn project_skill_dir(path: std::path::PathBuf) -> tau_skills::SkillDir {

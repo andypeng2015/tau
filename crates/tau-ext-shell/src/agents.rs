@@ -65,7 +65,7 @@ fn ancestor_agents_roots(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn ancestor_dirs(cwd: &Path) -> Vec<PathBuf> {
+pub(crate) fn ancestor_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let mut current = cwd.to_path_buf();
     loop {

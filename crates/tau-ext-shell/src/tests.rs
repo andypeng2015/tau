@@ -304,8 +304,11 @@ fn discover_agents_files_includes_local_agent_dirs_after_regular_paths() {
 
 #[test]
 fn session_skill_dirs_include_config_agents() {
-    let cwd = PathBuf::from("/repo");
-    let home = PathBuf::from("/home/user");
+    let temp = TempDir::new().expect("tempdir");
+    let cwd = temp.path().join("repo");
+    let home = temp.path().join("home");
+    fs::create_dir_all(cwd.join(".agents").join("skills")).expect("cwd agents skills");
+    fs::create_dir_all(cwd.join(".agents.local").join("skills")).expect("cwd local agents skills");
 
     let dirs = session_skill_dirs(Some(cwd.clone()), Some(home.clone()));
     let paths: Vec<_> = dirs.iter().map(|dir| dir.path.clone()).collect();
@@ -328,6 +331,66 @@ fn session_skill_dirs_include_config_agents() {
     assert_eq!(
         prompt_defaults,
         vec![true, true, false, false, false, false]
+    );
+}
+
+#[test]
+fn session_skill_dirs_include_existing_project_ancestors() {
+    let temp = TempDir::new().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let pkg = repo.join("pkg");
+    let cwd = pkg.join("src");
+    let home = temp.path().join("home");
+    let repo_skills = repo.join(".agents").join("skills");
+    let pkg_local_skills = pkg.join(".agents.local").join("skills");
+    fs::create_dir_all(&cwd).expect("cwd");
+    fs::create_dir_all(&repo_skills).expect("repo skills");
+    fs::create_dir_all(&pkg_local_skills).expect("pkg local skills");
+
+    let dirs = session_skill_dirs(Some(cwd), Some(home.clone()));
+    let paths: Vec<_> = dirs.iter().map(|dir| dir.path.clone()).collect();
+
+    assert_eq!(
+        paths,
+        vec![
+            repo_skills,
+            pkg_local_skills,
+            home.join(".agents").join("skills"),
+            home.join(".agents.local").join("skills"),
+            home.join(".config").join("agents").join("skills"),
+            home.join(".config").join("agents.local").join("skills"),
+        ]
+    );
+}
+
+#[test]
+fn session_skill_dirs_do_not_treat_home_agents_as_project_skills() {
+    let temp = TempDir::new().expect("tempdir");
+    let home = temp.path().join("home");
+    let cwd = home.join("repo");
+    let home_skills = home.join(".agents").join("skills");
+    let repo_skills = cwd.join(".agents").join("skills");
+    fs::create_dir_all(&home_skills).expect("home skills");
+    fs::create_dir_all(&repo_skills).expect("repo skills");
+
+    let dirs = session_skill_dirs(Some(cwd), Some(home.clone()));
+    let project_defaults: Vec<_> = dirs
+        .iter()
+        .map(|dir| (dir.path.clone(), dir.add_to_prompt_by_default))
+        .collect();
+
+    assert_eq!(
+        project_defaults,
+        vec![
+            (repo_skills, true),
+            (home_skills, false),
+            (home.join(".agents.local").join("skills"), false),
+            (home.join(".config").join("agents").join("skills"), false),
+            (
+                home.join(".config").join("agents.local").join("skills"),
+                false,
+            ),
+        ]
     );
 }
 
