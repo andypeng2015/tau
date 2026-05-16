@@ -247,6 +247,7 @@ pub(crate) fn run_turn_through_pool(
     pool: &mut WsPool,
     config: &ResponsesConfig,
     session_id: &str,
+    session_prompt_id: &str,
     request: &crate::common::PromptPayload<'_>,
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<crate::common::StreamState, WsTurnError> {
@@ -255,7 +256,7 @@ pub(crate) fn run_turn_through_pool(
     // First attempt: prefer a warm cached connection so the
     // connection-local chain cache stays useful.
     if let Some(mut conn) = pool.checkout(&key, &config.api_key) {
-        match conn.run_turn(config, request, on_update) {
+        match conn.run_turn(config, session_prompt_id, request, on_update) {
             Ok(state) => {
                 pool.release(key, conn);
                 return Ok(state);
@@ -298,7 +299,7 @@ pub(crate) fn run_turn_through_pool(
             "fresh Codex WS socket; stripping previous_response_id from outgoing request",
         );
     }
-    match conn.run_turn(config, &fresh_request, on_update) {
+    match conn.run_turn(config, session_prompt_id, &fresh_request, on_update) {
         Ok(state) => {
             pool.release(key, conn);
             Ok(state)
@@ -483,8 +484,15 @@ mod tests {
                 session_id: &session_id,
                 share_user_cache_key: false,
             };
-            run_turn_through_pool(&mut pool, &config, session, &request, &mut on_update)
-                .expect("turn ok");
+            run_turn_through_pool(
+                &mut pool,
+                &config,
+                session,
+                "sp-test",
+                &request,
+                &mut on_update,
+            )
+            .expect("turn ok");
         }
 
         let state = server.lock().expect("server state lock");
@@ -582,9 +590,15 @@ mod tests {
             share_user_cache_key: false,
         };
 
-        let state =
-            run_turn_through_pool(&mut pool, &config, "session-x", &request, &mut on_update)
-                .expect("turn ok");
+        let state = run_turn_through_pool(
+            &mut pool,
+            &config,
+            "session-x",
+            "sp-test",
+            &request,
+            &mut on_update,
+        )
+        .expect("turn ok");
         assert_eq!(last_text, "hello");
         assert!(
             state.response_id.is_some(),
@@ -625,8 +639,15 @@ mod tests {
             context_items: &real_messages,
             ..prewarm
         };
-        run_turn_through_pool(&mut pool, &config, "session-prewarm", &real, &mut on_update)
-            .expect("turn ok");
+        run_turn_through_pool(
+            &mut pool,
+            &config,
+            "session-prewarm",
+            "sp-test",
+            &real,
+            &mut on_update,
+        )
+        .expect("turn ok");
 
         let s = server.lock().expect("server lock");
         assert_eq!(s.upgrade_count, 1, "prewarm and turn must share one socket");
@@ -683,6 +704,7 @@ mod tests {
             &mut pool,
             &config,
             "session-fresh",
+            "sp-test",
             &request,
             &mut on_update,
         )
@@ -739,6 +761,7 @@ mod tests {
             &mut pool,
             &config,
             "session-compacted",
+            "sp-test",
             &request,
             &mut on_update,
         )
@@ -789,9 +812,15 @@ mod tests {
             session_id: &session_id,
             share_user_cache_key: false,
         };
-        let state1 =
-            run_turn_through_pool(&mut pool, &config, "session-die", &req1, &mut on_update)
-                .expect("first turn ok");
+        let state1 = run_turn_through_pool(
+            &mut pool,
+            &config,
+            "session-die",
+            "sp-test-1",
+            &req1,
+            &mut on_update,
+        )
+        .expect("first turn ok");
         let prev_id = state1.response_id.expect("first turn yielded response_id");
 
         // Turn 2: harness wants to chain via `prev_id`. The cached socket dies
@@ -812,8 +841,15 @@ mod tests {
             session_id: &session_id,
             share_user_cache_key: false,
         };
-        run_turn_through_pool(&mut pool, &config, "session-die", &req2, &mut on_update)
-            .expect("chained reconnect should rebuild WS warmth");
+        run_turn_through_pool(
+            &mut pool,
+            &config,
+            "session-die",
+            "sp-test-2",
+            &req2,
+            &mut on_update,
+        )
+        .expect("chained reconnect should rebuild WS warmth");
 
         let s = server.lock().expect("server lock");
         assert_eq!(
@@ -1076,7 +1112,8 @@ mod tests {
             session_id: &session_id,
             share_user_cache_key: false,
         };
-        run_turn_through_pool(pool, config, session, &request, on_update).expect("turn ok");
+        run_turn_through_pool(pool, config, session, "sp-test", &request, on_update)
+            .expect("turn ok");
     }
 
     fn make_config(base_url: &str, account_id: Option<&str>) -> ResponsesConfig {

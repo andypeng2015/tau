@@ -24,6 +24,7 @@ Tau follows the XDG directories:
   - `meta.json` — session metadata such as cwd, creation time, and last-touched time.
   - `lock` — flock used while the daemon has the session loaded for writing.
   - `events.jsonl` — debug event log for the session.
+  - `debug/provider-requests/*-{request,response}.json` — exact upstream Responses request bodies plus parsed/provider-terminal response captures written by `tau-agent`, keyed by timestamp, `session_prompt_id`, and transport. These include full prompt content, tool results, and model outputs, but not auth headers/API keys.
   - `logs/tau-harness.log` — harness daemon stderr/tracing for the session.
   - `logs/<extension>.log` — stderr for each spawned extension.
 - Runtime: `${XDG_RUNTIME_DIR}/tau/<pid>/` or `/tmp/tau-$USER/<pid>/`
@@ -69,6 +70,7 @@ The command requires the session id and finds the matching running daemon via it
 3. Cross-check with `logs/tau-harness.log` and extension logs for errors or panics.
 4. Check `events.cbor` only when the bug involves replay or persisted session contents.
 5. Check runtime daemon files under `${XDG_RUNTIME_DIR}/tau/` when the bug involves attach/resume, wrong project daemon selection, or socket connection failures.
+6. For provider/cache-shape bugs, inspect `debug/provider-requests/` for the exact request body Tau sent upstream and the response capture it parsed afterward.
 
 Helpful commands:
 
@@ -81,6 +83,11 @@ find ~/.local/state/tau/sessions -maxdepth 1 -mindepth 1 -type d -printf '%T@ %p
 
 # Inspect logs for one session.
 ls -lah ~/.local/state/tau/sessions/<session_id>/logs
+
+# Inspect exact provider request/response captures, if present.
+ls -lah ~/.local/state/tau/sessions/<session_id>/debug/provider-requests
+jq '.previous_response, .body.previous_response_id, .body.input' ~/.local/state/tau/sessions/<session_id>/debug/provider-requests/*-sp-6-*-request.json
+jq '.response_id, .cached_tokens, .provider_terminal_event.response.usage, .agent_response_finished.tool_calls' ~/.local/state/tau/sessions/<session_id>/debug/provider-requests/*-sp-6-*-response.json
 ```
 
 
@@ -126,6 +133,7 @@ Red flags found in past sessions:
 - Internal extension prompts, especially `std-notifications` idle summaries, can create normal `ui.prompt_submitted` / `session.prompt_created` / `agent.prompt_submitted` sequences with originator `{kind: "extension"}`. If they resend full history, cache continuity may collapse and waste many uncached tokens for tiny outputs. Check lines around `extension.agent_query`, `ui.prompt_submitted`, and the following `agent.response_finished`.
 - `harness.context_usage_changed` currently follows all `agent.response_finished` events, including extension-originated prompts. Treat context/token stats carefully if side-channel prompts are present.
 - Large tool outputs in `session.prompt_created` messages can dominate context: repeated large `read` slices, cargo/check output, clippy output, or colorized `jj diff`. Grep for `┄total <n>┄` markers in `events.jsonl` to find compacted large payloads.
+- For exact, uncompacted provider payloads, check `debug/provider-requests/*-{request,response}.json`. Request files are especially useful for cache misses involving `previous_response_id`, multi-tool-call suffixes, tool-use/tool-result ordering, or mismatches between `session.prompt_created` and the serialized upstream `body.input`; response files show Tau's parsed `agent.response_finished` shape plus the raw terminal provider event (`response.completed` / `response.done`) when available.
 - Repeated `agent.response_updated` streaming events are numerous and not useful for aggregate token accounting. Prefer `agent.response_finished`.
 
 Quick checks for side-channel waste:

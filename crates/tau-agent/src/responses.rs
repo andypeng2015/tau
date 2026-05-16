@@ -183,11 +183,12 @@ fn debug_write_provider_request(
 /// mentions `previous_response`; transient 5xx / network errors
 /// surface to the harness retry layer unchanged.
 pub fn responses_stream(
+    session_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<StreamState, LlmError> {
-    let first = responses_stream_once(config, request, on_update);
+    let first = responses_stream_once(session_prompt_id, config, request, on_update);
     if request.previous_response.is_none() {
         return first;
     }
@@ -212,7 +213,7 @@ pub fn responses_stream(
         session_id: request.session_id,
         share_user_cache_key: false,
     };
-    let mut state = responses_stream_once(config, &fallback, on_update)?;
+    let mut state = responses_stream_once(session_prompt_id, config, &fallback, on_update)?;
     state.stale_chain_fallback = true;
     Ok(state)
 }
@@ -270,6 +271,7 @@ fn is_stale_chain_error(error: &LlmError) -> bool {
 }
 
 fn responses_stream_once(
+    session_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     on_update: &mut impl FnMut(&str, Option<&str>),
@@ -277,7 +279,7 @@ fn responses_stream_once(
     let url = format!("{}/codex/responses", config.base_url.trim_end_matches('/'));
 
     maybe_debug_write_provider_request(
-        request.session_id,
+        session_prompt_id,
         config,
         request,
         tau_proto::AgentBackendTransport::HttpSse,
@@ -482,6 +484,7 @@ pub(crate) fn apply_event(
             }
         }
         "response.completed" | "response.done" => {
+            state.provider_terminal_event = Some(event.clone());
             if state.input_tokens.is_none() {
                 state.input_tokens = event
                     .get("response")

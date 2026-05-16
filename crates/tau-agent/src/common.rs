@@ -203,6 +203,10 @@ pub struct StreamState {
     /// Opaque Responses-API input items returned by a standalone
     /// compaction call.
     pub compacted_input_items: Vec<String>,
+    /// Raw terminal provider event for Responses streams (`response.completed`
+    /// / `response.done`), retained for per-session debug captures. Other
+    /// backends leave this empty.
+    pub provider_terminal_event: Option<serde_json::Value>,
     /// A stale `previous_response_id` was rejected and this successful stream
     /// came from the full-replay retry.
     pub stale_chain_fallback: bool,
@@ -272,6 +276,7 @@ impl StreamState {
             thinking: None,
             response_id: None,
             compacted_input_items: Vec::new(),
+            provider_terminal_event: None,
             stale_chain_fallback: false,
             chat_tool_item_indices: Vec::new(),
             chat_message_item_index: None,

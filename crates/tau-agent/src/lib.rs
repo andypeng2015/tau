@@ -480,12 +480,15 @@ impl BackendConfig {
     /// per-prompt `&BackendConfig` cannot reach.
     fn stream_http(
         &self,
+        session_prompt_id: &str,
         request: &common::PromptPayload<'_>,
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<common::StreamState, common::LlmError> {
         match self {
             Self::ChatCompletions(cfg) => openai::chat_completion_stream(cfg, request, on_update),
-            Self::Responses(cfg) => responses::responses_stream(cfg, request, on_update),
+            Self::Responses(cfg) => {
+                responses::responses_stream(session_prompt_id, cfg, request, on_update)
+            }
         }
     }
 
@@ -710,7 +713,9 @@ struct WsRetryState {
     budget: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_with_dispatch(
+    session_prompt_id: &str,
     backend: &BackendConfig,
     request: &common::PromptPayload<'_>,
     ws_pool: &mut responses::pool::WsPool,
@@ -729,6 +734,7 @@ fn stream_with_dispatch(
                 ws_pool,
                 cfg,
                 session_id,
+                session_prompt_id,
                 &ws_request,
                 on_update,
             ) {
@@ -780,7 +786,7 @@ fn stream_with_dispatch(
     }
     *transport_taken = tau_proto::AgentBackendTransport::HttpSse;
     let http_request = request_for_transport(request, tau_proto::AgentBackendTransport::HttpSse);
-    backend.stream_http(&http_request, on_update)
+    backend.stream_http(session_prompt_id, &http_request, on_update)
 }
 
 fn request_for_transport<'a>(
@@ -971,6 +977,7 @@ fn handle_prompt<W: Write>(
                 let _ = writer.flush();
             };
             stream_with_dispatch(
+                session_prompt_id,
                 backend,
                 &request,
                 ws_pool,
@@ -987,8 +994,8 @@ fn handle_prompt<W: Write>(
             let backend_descriptor =
                 backend.descriptor(transport_taken, state.stale_chain_fallback);
             finish_stream(
-                session_prompt_id,
                 &prompt.session_id,
+                session_prompt_id,
                 &prompt.originator,
                 &backend_descriptor,
                 state,
@@ -999,8 +1006,8 @@ fn handle_prompt<W: Write>(
         Err(error) => {
             let backend_descriptor = backend.descriptor(transport_taken, false);
             finish_error(
-                session_prompt_id,
                 &prompt.session_id,
+                session_prompt_id,
                 &prompt.originator,
                 &backend_descriptor,
                 error,
@@ -1053,8 +1060,8 @@ fn handle_compaction_request<W: Write>(
     };
     match result {
         Ok(state) => finish_stream(
-            session_prompt_id,
             &prompt.session_id,
+            session_prompt_id,
             &prompt.originator,
             &backend_descriptor,
             state,
@@ -1062,8 +1069,8 @@ fn handle_compaction_request<W: Write>(
             writer,
         )?,
         Err(error) => finish_error(
-            session_prompt_id,
             &prompt.session_id,
+            session_prompt_id,
             &prompt.originator,
             &backend_descriptor,
             error,
@@ -1150,11 +1157,11 @@ fn maybe_debug_write_provider_response(
 }
 
 fn finish_stream<W: Write>(
-    session_prompt_id: &str,
     session_id: &str,
+    session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
     backend: &tau_proto::AgentBackend,
-    state: common::StreamState,
+    mut state: common::StreamState,
     ws_pool_delta: Option<tau_proto::WsPoolDelta>,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
@@ -1169,6 +1176,7 @@ fn finish_stream<W: Write>(
         output_tokens,
         "agent response token usage"
     );
+    let provider_terminal_event = state.provider_terminal_event.take();
     let usage = state.usage();
     let provider_response_id = state.response_id.clone();
     let mut output_items = state.into_output_items();
@@ -1187,15 +1195,15 @@ fn finish_stream<W: Write>(
         provider_response_id,
         ws_pool_delta,
     };
-    maybe_debug_write_provider_response(session_id, &finished, None);
+    maybe_debug_write_provider_response(session_id, &finished, provider_terminal_event.as_ref());
     writer.write_frame(&Frame::Event(Event::AgentResponseFinished(finished)))?;
     writer.flush()?;
     Ok(())
 }
 
 fn finish_error<W: Write>(
-    session_prompt_id: &str,
     session_id: &str,
+    session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
     backend: &tau_proto::AgentBackend,
     error: common::LlmError,

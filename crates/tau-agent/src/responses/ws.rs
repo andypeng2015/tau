@@ -224,6 +224,7 @@ impl WsConn {
     pub fn run_turn(
         &mut self,
         config: &ResponsesConfig,
+        session_prompt_id: &str,
         request: &PromptPayload<'_>,
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<StreamState, LlmError> {
@@ -256,6 +257,12 @@ impl WsConn {
             } else {
                 request
             };
+            super::maybe_debug_write_provider_request(
+                session_prompt_id,
+                config,
+                request,
+                tau_proto::AgentBackendTransport::Websocket,
+            );
             build_ws_envelope(config, request)
         };
         let state = self.run_envelope(envelope, on_update)?;
