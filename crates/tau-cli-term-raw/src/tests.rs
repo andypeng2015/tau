@@ -8,6 +8,10 @@ fn plain_lines(texts: &[&str]) -> Vec<Vec<Cell>> {
         .collect()
 }
 
+fn line_text(line: &[Cell]) -> String {
+    line.iter().map(|cell| cell.ch).collect()
+}
+
 /// Helper: runs full_render into a vt100 parser and returns it.
 ///
 /// `history_lines` is the number of lines at the top of
@@ -1484,6 +1488,37 @@ fn multiline_buffer_vertical_cursor_motion_uses_visual_lines() {
 
     let down = byte_offset_for_buffer_position(text, 1, 9, width, left_cols);
     assert_eq!(down, text.len());
+}
+
+// Regression guard for prompt-input cursor wrapping. The final-column case is
+// prompt-only cursor behavior, not generic block wrapping behavior.
+#[test]
+fn prompt_input_cursor_uses_last_column_before_line_is_full() {
+    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    st.buffer = "abcdefg".to_owned();
+    st.cursor = st.buffer.len();
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 1, "prompt height");
+    assert_eq!(line_text(&layout.all_lines[0]), "> abcdefg");
+    assert_eq!((layout.cursor_row, layout.cursor_col), (0, 9));
+}
+
+// Commonly broken property: once prompt input fills the last column, the cursor
+// must immediately live on the next visual row at column 0.
+#[test]
+fn prompt_input_cursor_wraps_to_new_line_when_last_column_is_filled() {
+    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    st.buffer = "abcdefgh".to_owned();
+    st.cursor = st.buffer.len();
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 2, "prompt height");
+    assert_eq!(line_text(&layout.all_lines[0]), "> abcdefgh");
+    assert_eq!(line_text(&layout.all_lines[1]), "");
+    assert_eq!((layout.cursor_row, layout.cursor_col), (1, 0));
 }
 
 #[test]
@@ -3211,7 +3246,7 @@ fn trailing_newline_buffer_grows_prompt_height() {
 }
 
 #[test]
-fn exact_width_prompt_end_does_not_add_phantom_row() {
+fn exact_width_prompt_end_grows_prompt_height_for_cursor() {
     let buf = SharedBuffer::new();
     let mut parser = vt100::Parser::new(5, 10, 20);
 
@@ -3225,9 +3260,9 @@ fn exact_width_prompt_end_does_not_add_phantom_row() {
 
     assert_eq!(
         vt100_rows(&parser, 10),
-        vec!["> abc", "abcdefghij", "below     ", "", ""]
+        vec!["> abc", "abcdefghij", "", "below     ", ""]
     );
-    assert_eq!(parser.screen().cursor_position(), (1, 10));
+    assert_eq!(parser.screen().cursor_position(), (2, 0));
 }
 
 #[test]

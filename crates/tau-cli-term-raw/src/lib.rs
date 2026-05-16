@@ -1941,6 +1941,13 @@ fn layout_all(st: &SharedState) -> LayoutAll {
     let left_cols = st.left_prompt.char_count();
     let (buffer_cursor_row, cursor_col) =
         buffer_position_for_byte(&st.buffer, st.cursor, width, left_cols);
+    // Prompt input is special because it owns a visible cursor. When the
+    // cursor sits at the end and the final column has just been filled, it
+    // must appear immediately at column 0 of the next visual row, growing the
+    // prompt height before any further character is typed. This is easy to
+    // overlook and has regressed repeatedly. Do not move this behavior into
+    // general block layout: static blocks have no cursor and must not gain a
+    // phantom trailing row just because their content exactly fills a line.
     while input_lines.len() <= buffer_cursor_row {
         input_lines.push(Vec::new());
     }
@@ -2470,30 +2477,14 @@ fn buffer_position_for_byte(
     width: usize,
     initial_cols: usize,
 ) -> (usize, usize) {
-    use unicode_width::UnicodeWidthChar;
-
     let width = width.max(1);
     let mut pos = initial_buffer_position(initial_cols, width);
-    let mut previous_pos = pos;
-    let mut previous_char = None;
 
     for (byte, ch) in s.char_indices() {
         if byte_pos <= byte {
             break;
         }
-        previous_pos = pos;
-        previous_char = Some(ch);
         advance_buffer_position(&mut pos.0, &mut pos.1, ch, width);
-    }
-
-    if byte_pos == s.len()
-        && let Some(ch) = previous_char
-        && ch != '\n'
-    {
-        let char_width = ch.width().unwrap_or(0);
-        if 0 < char_width && pos.1 == 0 && previous_pos.1 + char_width == width {
-            return (previous_pos.0, width);
-        }
     }
 
     pos
