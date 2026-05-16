@@ -2479,15 +2479,54 @@ fn buffer_position_for_byte(
 ) -> (usize, usize) {
     let width = width.max(1);
     let mut pos = initial_buffer_position(initial_cols, width);
+    let mut pending_exact_wrap = false;
 
     for (byte, ch) in s.char_indices() {
         if byte_pos <= byte {
             break;
         }
-        advance_buffer_position(&mut pos.0, &mut pos.1, ch, width);
+        advance_prompt_cursor_position(&mut pos.0, &mut pos.1, &mut pending_exact_wrap, ch, width);
     }
 
     pos
+}
+
+fn advance_prompt_cursor_position(
+    row: &mut usize,
+    col: &mut usize,
+    pending_exact_wrap: &mut bool,
+    ch: char,
+    width: usize,
+) {
+    use unicode_width::UnicodeWidthChar;
+
+    let width = width.max(1);
+    if ch == '\n' {
+        if *pending_exact_wrap {
+            // A printable character exactly filled the previous visual row, so
+            // the cursor is already at column 0 of this row. An explicit newline
+            // at that byte position should consume that pending wrap, not add a
+            // second blank row.
+            *pending_exact_wrap = false;
+        } else {
+            *row += 1;
+            *col = 0;
+        }
+        return;
+    }
+
+    *pending_exact_wrap = false;
+    let char_width = ch.width().unwrap_or(0);
+    if 0 < *col && width < *col + char_width {
+        *row += 1;
+        *col = 0;
+    }
+    *col += char_width;
+    if width <= *col {
+        *row += *col / width;
+        *col %= width;
+        *pending_exact_wrap = char_width != 0 && *col == 0;
+    }
 }
 
 fn buffer_end_position(s: &str, width: usize, initial_cols: usize) -> (usize, usize) {

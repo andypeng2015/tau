@@ -1521,6 +1521,60 @@ fn prompt_input_cursor_wraps_to_new_line_when_last_column_is_filled() {
     assert_eq!((layout.cursor_row, layout.cursor_col), (1, 0));
 }
 
+// Regression guard for Shift+Enter after an exact-width prompt line.
+// The previous printable character already moved the cursor to the next
+// visual row; the explicit newline must consume that pending wrap, not create
+// an additional phantom blank row below it.
+#[test]
+fn prompt_input_newline_after_filled_line_does_not_add_phantom_row() {
+    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    st.buffer = "abcdefgh\n".to_owned();
+    st.cursor = st.buffer.len();
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 2, "prompt height");
+    assert_eq!(line_text(&layout.all_lines[0]), "> abcdefgh");
+    assert_eq!(line_text(&layout.all_lines[1]), "");
+    assert_eq!((layout.cursor_row, layout.cursor_col), (1, 0));
+}
+
+// After an exact-width line followed by a newline, newly typed text must land
+// on the immediate next row. This catches the bug where the cursor was drawn
+// one row too low while inserted characters appeared on the row above.
+#[test]
+fn prompt_input_text_after_newline_after_filled_line_keeps_cursor_on_text_row() {
+    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    st.buffer = "abcdefgh\nZ".to_owned();
+    st.cursor = st.buffer.len();
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 2, "prompt height");
+    assert_eq!(line_text(&layout.all_lines[0]), "> abcdefgh");
+    assert_eq!(line_text(&layout.all_lines[1]), "Z");
+    assert_eq!((layout.cursor_row, layout.cursor_col), (1, 1));
+}
+
+// Multi-line version of the same regression: every exact-width line ending in
+// an explicit newline used to add one more phantom row, so the cursor drifted
+// farther down with each full line. Cursor accounting and rendered prompt
+// height must stay in lockstep for all lines.
+#[test]
+fn prompt_input_repeated_full_lines_ending_in_newline_do_not_stack_phantom_rows() {
+    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    st.buffer = "abcdefgh\nabcdefghij\n".to_owned();
+    st.cursor = st.buffer.len();
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 3, "prompt height");
+    assert_eq!(line_text(&layout.all_lines[0]), "> abcdefgh");
+    assert_eq!(line_text(&layout.all_lines[1]), "abcdefghij");
+    assert_eq!(line_text(&layout.all_lines[2]), "");
+    assert_eq!((layout.cursor_row, layout.cursor_col), (2, 0));
+}
+
 #[test]
 fn virtual_term_shows_prompt() {
     let buf = SharedBuffer::new();
