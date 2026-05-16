@@ -2065,6 +2065,42 @@ fn removing_visible_block_that_moves_viewport_up_uses_rubber_without_full_redraw
 }
 
 #[test]
+fn full_redraw_after_rubber_discards_rubber_and_pulls_scrollback_into_view() {
+    let buf = SharedBuffer::new();
+    let mut parser = vt100::Parser::new(5, 40, 50);
+    let (_term, handle, _input_tx) =
+        Term::new_virtual(40, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    for i in 0..6 {
+        handle.print_output("test", plain_block(format!("line {i}")));
+    }
+    let active = handle.new_block("test", plain_block("temporary active"));
+    handle.push_above_active(active);
+    flush_redraws(&handle, &buf, &mut parser);
+
+    assert_no_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.remove_block(active);
+    });
+    assert_terminal_rows_match(
+        &mut parser,
+        40,
+        5,
+        &["line 3", "line 4", "line 5", "", "> "],
+    );
+
+    assert_full_redraw_after(&handle, &buf, &mut parser, || {
+        handle.invalidate_screen();
+    });
+    assert_terminal_rows_match(
+        &mut parser,
+        40,
+        5,
+        &["line 2", "line 3", "line 4", "line 5", "> "],
+    );
+}
+
+#[test]
 fn below_status_update_with_scrollback_does_not_full_redraw() {
     let buf = SharedBuffer::new();
     let mut parser = vt100::Parser::new(5, 40, 50);

@@ -1750,7 +1750,6 @@ struct TerminalModel {
 }
 
 impl TerminalModel {
-    #[cfg(test)]
     fn desired_viewport_start(layout: &LayoutAll, height: usize) -> usize {
         layout.all_lines.len().saturating_sub(height)
     }
@@ -1789,6 +1788,11 @@ impl TerminalModel {
             render_lines,
             cursor_row,
         }
+    }
+
+    fn full_redraw_plan(layout: &LayoutAll, height: usize) -> ViewPlan {
+        let plan = Self::build_plan(layout, Self::desired_viewport_start(layout, height), 0);
+        Self::keep_cursor_visible(plan, height)
     }
 
     #[cfg(test)]
@@ -1853,12 +1857,6 @@ impl TerminalModel {
         self.rubber_height = plan.rubber_height;
         self.known_lines = layout.all_lines[..layout.log_end].to_vec();
         self.known_sources = layout.line_sources[..layout.log_end].to_vec();
-    }
-
-    fn reset_to_layout(&mut self, layout: LayoutAll, height: usize) -> ViewPlan {
-        let plan = self.plan_view(&layout, height);
-        self.reset_to_plan(layout, &plan);
-        plan
     }
 }
 
@@ -2074,7 +2072,7 @@ fn redraw_loop(
             } else {
                 "force_full"
             };
-            let plan = terminal_model.plan_view(&layout, height);
+            let plan = TerminalModel::full_redraw_plan(&layout, height);
             let visible_start = plan.viewport_start;
             mark_full_render(
                 &state,
@@ -2096,14 +2094,19 @@ fn redraw_loop(
             screen.set_width(width);
 
             let hidden_prefix_changed = terminal_model.hidden_prefix_changed(&layout);
-            let plan = terminal_model.plan_view(&layout, height);
-            let visible_start = plan.viewport_start;
+            let incremental_plan = terminal_model.plan_view(&layout, height);
+            let incremental_visible_start = incremental_plan.viewport_start;
+            let plan;
 
-            if visible_start < terminal_model.viewport_start {
+            if incremental_visible_start < terminal_model.viewport_start {
                 // The desired viewport moved upward to keep the input cursor
                 // visible. Rows that should re-enter the screen may currently
                 // exist only in terminal scrollback, which cannot be pulled
-                // back incrementally.
+                // back incrementally. Since we are repainting from scratch,
+                // discard any rubber and let past scrollback rows re-enter the
+                // viewport.
+                plan = TerminalModel::full_redraw_plan(&layout, height);
+                let visible_start = plan.viewport_start;
                 mark_full_render(
                     &state,
                     &layout,
@@ -2123,9 +2126,11 @@ fn redraw_loop(
             } else if hidden_prefix_changed {
                 // The terminal scrollback contains rows whose logical content
                 // changed. Rebuild it from logical content instead of trying to
-                // patch it incrementally. Rows that are still physically
-                // visible, including rows that will scroll off during this
-                // render, are handled by the scrolling renderer below.
+                // patch it incrementally. Since we are repainting from scratch,
+                // discard any rubber and let past scrollback rows re-enter the
+                // viewport.
+                plan = TerminalModel::full_redraw_plan(&layout, height);
+                let visible_start = plan.viewport_start;
                 let changed_line = terminal_model.changed_hidden_line(&layout);
                 let previous_source = changed_line
                     .and_then(|idx| terminal_model.known_sources.get(idx))
@@ -2146,7 +2151,8 @@ fn redraw_loop(
                 {
                     tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "full render error");
                 }
-            } else if terminal_model.viewport_start < visible_start {
+            } else if terminal_model.viewport_start < incremental_visible_start {
+                plan = incremental_plan;
                 // Content pushed log rows off the top. Use the scrolling
                 // renderer (Pi-style). Rubber is part of the virtual tail, so
                 // it shrinks before any extra log row enters scrollback.
@@ -2160,6 +2166,7 @@ fn redraw_loop(
                     tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "scroll render error");
                 }
             } else {
+                plan = incremental_plan;
                 // No new scrollback rows — normal differential update. This
                 // includes visible shrinkage: rubber grows instead of moving
                 // the viewport upward.
@@ -2171,7 +2178,7 @@ fn redraw_loop(
                     tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "update error");
                 }
             }
-            terminal_model.reset_to_layout(layout, height);
+            terminal_model.reset_to_plan(layout, &plan);
         }
 
         prev_width = width;
@@ -2191,8 +2198,10 @@ fn redraw_loop(
 
 /// Full re-render: clear screen + scrollback, output all lines,
 /// position cursor. Used on resize and when content grows beyond
-/// the viewport. After rendering, Screen tracks the visible
-/// viewport for subsequent differential updates.
+/// the viewport. Callers should pass a no-rubber plan so a full
+/// repaint can pull scrollback rows back into the viewport. After
+/// rendering, Screen tracks the visible viewport for subsequent
+/// differential updates.
 fn changed_line_in_range(
     prev_all_lines: &[Vec<Cell>],
     all_lines: &[Vec<Cell>],
