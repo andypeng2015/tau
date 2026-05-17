@@ -118,6 +118,7 @@ enum PendingCompactionResume {
 struct PendingCompaction {
     target_cid: ConversationId,
     session_id: SessionId,
+    originator: PromptOriginator,
     resume: PendingCompactionResume,
 }
 
@@ -3204,8 +3205,12 @@ impl Harness {
             .conversations
             .get(cid)
             .and_then(|conv| conv.context_percent_used)
-            .or(self.current_session_state.context_percent_used);
-        current_percent.is_some_and(|p| p >= AUTO_COMPACTION_CONTEXT_PERCENT)
+            .or_else(|| {
+                (cid == &self.default_conversation_id)
+                    .then_some(self.current_session_state.context_percent_used)
+                    .flatten()
+            });
+        current_percent.is_some_and(|p| AUTO_COMPACTION_CONTEXT_PERCENT <= p)
     }
 
     fn selected_model_supports_compaction(&self) -> bool {
@@ -3234,6 +3239,7 @@ impl Harness {
         };
         let target_head = target_conv.head;
         let target_session_id = target_conv.session_id.clone();
+        let target_originator = target_conv.originator.clone();
         let summary_cid = ConversationId::new(format!("compact-{}", self.next_session_prompt_id));
         let conv = Conversation::new(
             summary_cid.clone(),
@@ -3251,6 +3257,7 @@ impl Harness {
             PendingCompaction {
                 target_cid: target_cid.clone(),
                 session_id: target_session_id.clone(),
+                originator: target_originator.clone(),
                 resume,
             },
         );
@@ -3261,6 +3268,7 @@ impl Harness {
             None,
             Event::SessionCompactionStarted(tau_proto::SessionCompactionStarted {
                 session_id: target_session_id,
+                originator: target_originator,
             }),
         );
         if self.pending_intercept.is_some() || !self.deferred_publishes.is_empty() {
@@ -3336,6 +3344,13 @@ impl Harness {
                     return None;
                 }
                 if conv.parent_tool_call_id.is_some() {
+                    return None;
+                }
+                // A compaction summary is also an extension-owned side
+                // conversation, but it is not disposable. Its finished
+                // response is what restores the target conversation from
+                // `Compacting` and drains any queued prompt.
+                if self.pending_compactions.contains_key(cid) {
                     return None;
                 }
                 if !matches!(
@@ -4229,6 +4244,7 @@ impl Harness {
                 None,
                 Event::SessionCompactionFinished(tau_proto::SessionCompactionFinished {
                     session_id: pending.session_id,
+                    originator: pending.originator,
                     outcome: tau_proto::SessionCompactionOutcome::Failed,
                     message: Some("target conversation no longer exists".to_owned()),
                 }),
@@ -4262,6 +4278,7 @@ impl Harness {
                 &pending.target_cid,
                 Event::SessionCompacted(tau_proto::SessionCompacted {
                     session_id: pending.session_id.clone(),
+                    originator: pending.originator.clone(),
                     summary: summary.to_owned(),
                     compacted_input_items: response.compacted_input_items.clone(),
                 }),
@@ -4281,6 +4298,7 @@ impl Harness {
             None,
             Event::SessionCompactionFinished(tau_proto::SessionCompactionFinished {
                 session_id: pending.session_id.clone(),
+                originator: pending.originator.clone(),
                 outcome,
                 message,
             }),

@@ -632,6 +632,7 @@ fn interception_drop_of_session_compacted_is_overridden() {
 
     let compacted = Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
+        originator: tau_proto::PromptOriginator::User,
         summary: "Conversation compacted.".to_owned(),
         compacted_input_items: vec!["{}".to_owned()],
     });

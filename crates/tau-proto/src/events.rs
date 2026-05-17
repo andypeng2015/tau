@@ -2106,6 +2106,10 @@ pub struct SessionPromptPrewarmRequested {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionCompactionStarted {
     pub session_id: SessionId,
+    /// Conversation that owns this compaction. UIs use this to hide
+    /// sub-agent compaction lifecycle blocks from the main transcript.
+    #[serde(default)]
+    pub originator: PromptOriginator,
 }
 
 /// Final status of a provider-side compaction lifecycle.
@@ -2123,6 +2127,10 @@ pub enum SessionCompactionOutcome {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionCompactionFinished {
     pub session_id: SessionId,
+    /// Conversation that owns this compaction. UIs use this to hide
+    /// sub-agent compaction lifecycle blocks from the main transcript.
+    #[serde(default)]
+    pub originator: PromptOriginator,
     pub outcome: SessionCompactionOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -2137,6 +2145,10 @@ pub struct SessionCompactionFinished {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionCompacted {
     pub session_id: SessionId,
+    /// Conversation that owns this durable compaction summary. UIs use
+    /// this to hide sub-agent compaction results from the main transcript.
+    #[serde(default)]
+    pub originator: PromptOriginator,
     pub summary: String,
     /// Canonical opaque Responses-API input items returned by the
     /// provider's compaction endpoint.

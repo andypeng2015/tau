@@ -527,6 +527,7 @@ mod tests {
         ));
         tree.apply_event(&Event::SessionCompacted(tau_proto::SessionCompacted {
             session_id: "session-1".into(),
+            originator: tau_proto::PromptOriginator::User,
             summary: "- User is debugging compaction\n- Keep edits focused".to_owned(),
             compacted_input_items: Vec::new(),
         }));

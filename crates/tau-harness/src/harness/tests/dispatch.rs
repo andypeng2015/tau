@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::{Conversation, ConversationId};
 
 fn assert_delegate_tools_counter(
     progress: &tau_proto::DelegateProgress,
@@ -1247,27 +1248,7 @@ fn user_prompt_auto_compacts_before_submission() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    h.selected_model = Some("test/model".into());
-    h.model_registry.providers.insert(
-        tau_proto::ProviderName::new("test"),
-        tau_config::settings::ProviderConfig {
-            models: vec![tau_config::settings::ModelConfig {
-                id: tau_proto::ModelName::new("model"),
-                name: None,
-                max_output_tokens: None,
-                context_window: Some(1_000),
-                supports_xhigh: None,
-                reasoning_efforts: None,
-                supports_verbosity: None,
-                verbosities: None,
-            }],
-            compat: tau_config::settings::ProviderCompat {
-                supports_compaction: true,
-                ..tau_config::settings::ProviderCompat::default()
-            },
-            ..tau_config::settings::ProviderConfig::default()
-        },
-    );
+    enable_remote_compaction_for_test_model(&mut h);
 
     append_user_message_via_event(&mut h, "s1", "earlier question");
     let cid = h.default_conversation_id.clone();
@@ -1393,27 +1374,7 @@ fn user_prompt_does_not_auto_compact_without_context_percent_signal() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    h.selected_model = Some("test/model".into());
-    h.model_registry.providers.insert(
-        tau_proto::ProviderName::new("test"),
-        tau_config::settings::ProviderConfig {
-            models: vec![tau_config::settings::ModelConfig {
-                id: tau_proto::ModelName::new("model"),
-                name: None,
-                max_output_tokens: None,
-                context_window: Some(10),
-                supports_xhigh: None,
-                reasoning_efforts: None,
-                supports_verbosity: None,
-                verbosities: None,
-            }],
-            compat: tau_config::settings::ProviderCompat {
-                supports_compaction: true,
-                ..tau_config::settings::ProviderCompat::default()
-            },
-            ..tau_config::settings::ProviderConfig::default()
-        },
-    );
+    enable_remote_compaction_for_test_model(&mut h);
 
     let large_text = "earlier context ".repeat(40);
     append_user_message_via_event(&mut h, "s1", &large_text);
@@ -1473,27 +1434,7 @@ fn manual_compact_forces_compaction_without_followup_turn() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    h.selected_model = Some("test/model".into());
-    h.model_registry.providers.insert(
-        tau_proto::ProviderName::new("test"),
-        tau_config::settings::ProviderConfig {
-            models: vec![tau_config::settings::ModelConfig {
-                id: tau_proto::ModelName::new("model"),
-                name: None,
-                max_output_tokens: None,
-                context_window: Some(1_000),
-                supports_xhigh: None,
-                reasoning_efforts: None,
-                supports_verbosity: None,
-                verbosities: None,
-            }],
-            compat: tau_config::settings::ProviderCompat {
-                supports_compaction: true,
-                ..tau_config::settings::ProviderCompat::default()
-            },
-            ..tau_config::settings::ProviderConfig::default()
-        },
-    );
+    enable_remote_compaction_for_test_model(&mut h);
 
     append_user_message_via_event(&mut h, "s1", "earlier question");
     let cid = h.default_conversation_id.clone();
@@ -1580,6 +1521,183 @@ fn manual_compact_forces_compaction_without_followup_turn() {
         Some(SessionEntry::CompactedSummary { summary, input_items })
             if summary == "Conversation compacted." && !input_items.is_empty()
     ));
+
+    h.shutdown().expect("shutdown");
+}
+
+fn enable_remote_compaction_for_test_model(h: &mut Harness) {
+    h.selected_model = Some("test/model".into());
+    h.model_registry.providers.insert(
+        tau_proto::ProviderName::new("test"),
+        tau_config::settings::ProviderConfig {
+            models: vec![tau_config::settings::ModelConfig {
+                id: tau_proto::ModelName::new("model"),
+                name: None,
+                max_output_tokens: None,
+                context_window: Some(1_000),
+                supports_xhigh: None,
+                reasoning_efforts: None,
+                supports_verbosity: None,
+                verbosities: None,
+            }],
+            compat: tau_config::settings::ProviderCompat {
+                supports_compaction: true,
+                ..tau_config::settings::ProviderCompat::default()
+            },
+            ..tau_config::settings::ProviderConfig::default()
+        },
+    );
+}
+
+#[test]
+fn delegate_followup_auto_compacts_from_own_context_signal() {
+    // Sub-agent sessions are normal conversations: if their own
+    // context signal crosses the threshold, they must get a compaction
+    // pass instead of being handicapped behind the main agent.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+
+    let side_cid = ConversationId::new("extq-core-delegate-delegate-1");
+    let originator = tau_proto::PromptOriginator::Extension {
+        name: "core-delegate".into(),
+        query_id: "delegate-1".to_owned(),
+    };
+    let mut side_conv = Conversation::new(
+        side_cid.clone(),
+        "s1".into(),
+        originator.clone(),
+        None,
+        Some("conn-delegate".into()),
+    );
+    side_conv.parent_tool_call_id = Some("call-delegate".into());
+    side_conv.context_input_tokens = Some(950);
+    side_conv.context_percent_used = Some(95);
+    h.conversations.insert(side_cid.clone(), side_conv);
+
+    let baseline_seq = h.event_log.next_seq();
+    assert!(h.should_auto_compact_for_conversation(&side_cid));
+    assert!(h.maybe_start_auto_compaction_for_followup(&side_cid));
+    assert_eq!(h.pending_compactions.len(), 1);
+    assert!(matches!(
+        h.conversations[&side_cid].turn_state,
+        ConversationTurnState::Compacting
+    ));
+
+    let (summary_cid, summary_spid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid != &side_cid).then_some((prompt_cid.clone(), spid.clone()))
+        })
+        .expect("compaction prompt");
+    assert!(h.pending_compactions.contains_key(&summary_cid));
+    let summary_prompt = read_compaction_requested(&h, &summary_spid);
+    assert!(matches!(
+        summary_prompt.originator,
+        tau_proto::PromptOriginator::Extension { ref name, ref query_id }
+            if name.as_str() == HARNESS_CONNECTION_ID && query_id == "auto-compact-extq-core-delegate-delegate-1"
+    ));
+
+    let mut cursor = baseline_seq;
+    let mut started_originator = None;
+    while let Some(entry) = h.event_log.get_next_from(cursor) {
+        cursor = entry.seq + 1;
+        if let Event::SessionCompactionStarted(started) = entry.event {
+            started_originator = Some(started.originator);
+            break;
+        }
+    }
+    assert_eq!(started_originator, Some(originator));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn side_conversation_auto_compaction_ignores_default_context_signal() {
+    // Regression for session fedimint-1hj5h9: a delegate side
+    // conversation must not inherit the main/default context percent.
+    // Otherwise the wrong conversation can enter compaction, and its
+    // summary prompt can wedge the target in `Compacting`.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+
+    let side_cid = ConversationId::new("extq-core-delegate-delegate-1");
+    let mut side_conv = Conversation::new(
+        side_cid.clone(),
+        "s1".into(),
+        tau_proto::PromptOriginator::Extension {
+            name: "core-delegate".into(),
+            query_id: "delegate-1".to_owned(),
+        },
+        None,
+        Some("conn-delegate".into()),
+    );
+    side_conv.parent_tool_call_id = Some("call-delegate".into());
+    h.conversations.insert(side_cid.clone(), side_conv);
+    h.current_session_state.context_percent_used = Some(95);
+
+    assert!(!h.should_auto_compact_for_conversation(&side_cid));
+    assert!(!h.maybe_start_auto_compaction_for_followup(&side_cid));
+    assert!(h.pending_compactions.is_empty());
+    assert!(matches!(
+        h.conversations[&side_cid].turn_state,
+        ConversationTurnState::Idle
+    ));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn incoming_user_prompt_does_not_preempt_compaction_summary() {
+    // A compaction summary conversation is an internal lifecycle for
+    // the default turn, not a disposable extension side query. If an
+    // incoming prompt cancels it, the target conversation stays stuck
+    // in `Compacting` with no prompt left to finish the lifecycle.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    enable_remote_compaction_for_test_model(&mut h);
+
+    append_user_message_via_event(&mut h, "s1", "earlier question");
+    h.current_session_state.context_input_tokens = Some(950);
+    h.current_session_state.context_percent_used = Some(95);
+    let cid = h.default_conversation_id.clone();
+    h.dispatch_user_prompt("s1".into(), "new question".to_owned())
+        .expect("dispatch");
+
+    let (summary_spid, summary_cid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid != &cid).then_some((spid.clone(), prompt_cid.clone()))
+        })
+        .expect("compaction prompt");
+
+    let submission = h
+        .submit_user_prompt("s1".into(), "queued behind compaction".to_owned())
+        .expect("submit");
+    assert_eq!(submission, PromptSubmission::Queued);
+    assert_eq!(h.pending_compactions.len(), 1);
+    assert_eq!(
+        h.prompt_conversations.get(&summary_spid),
+        Some(&summary_cid)
+    );
+    assert!(!h.canceled_prompts.contains(&summary_spid));
+    assert!(matches!(
+        h.conversations[&summary_cid].turn_state,
+        ConversationTurnState::AgentThinking { .. }
+    ));
+    assert!(
+        h.conversations[&cid]
+            .pending_prompts
+            .iter()
+            .any(|prompt| prompt == "queued behind compaction")
+    );
 
     h.shutdown().expect("shutdown");
 }

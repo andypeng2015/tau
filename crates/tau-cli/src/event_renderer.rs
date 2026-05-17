@@ -383,6 +383,9 @@ fn originator_of(event: &Event) -> tau_proto::PromptOriginator {
         Event::AgentPromptSubmitted(s) => s.originator.clone(),
         Event::AgentResponseUpdated(u) => u.originator.clone(),
         Event::AgentResponseFinished(f) => f.originator.clone(),
+        Event::SessionCompactionStarted(started) => started.originator.clone(),
+        Event::SessionCompactionFinished(finished) => finished.originator.clone(),
+        Event::SessionCompacted(compacted) => compacted.originator.clone(),
         _ => tau_proto::PromptOriginator::User,
     }
 }
@@ -706,6 +709,16 @@ impl EventRenderer {
     }
 
     fn handle_compaction_event(&mut self, event: &Event) -> bool {
+        let originator = match event {
+            Event::SessionCompactionStarted(started) => &started.originator,
+            Event::SessionCompactionFinished(finished) => &finished.originator,
+            Event::SessionCompacted(compacted) => &compacted.originator,
+            _ => return false,
+        };
+        if !originator.is_user() {
+            return true;
+        }
+
         match event {
             Event::SessionCompactionStarted(started) => {
                 if let Some(existing) = self.compaction_blocks.remove(&started.session_id) {

@@ -135,12 +135,14 @@ fn late_joining_ui_client_replays_only_final_session_events() {
         None,
         Event::SessionCompactionStarted(tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
         }),
     );
     h.publish_event(
         None,
         Event::SessionCompacted(tau_proto::SessionCompacted {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
             summary: "Conversation compacted.".to_owned(),
             compacted_input_items: vec!["{}".to_owned()],
         }),

@@ -624,6 +624,7 @@ fn session_tree_captures_compacted_summary() {
     }));
     tree.apply_event(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "session-1".into(),
+        originator: tau_proto::PromptOriginator::User,
         summary: "summary text".to_owned(),
         compacted_input_items: Vec::new(),
     }));

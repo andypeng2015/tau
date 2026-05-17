@@ -1190,6 +1190,7 @@ fn compaction_lifecycle_renders_status_line() {
     renderer.handle(&Event::SessionCompactionStarted(
         tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
         },
     ));
     sync(&handle);
@@ -1197,6 +1198,7 @@ fn compaction_lifecycle_renders_status_line() {
 
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
+        originator: tau_proto::PromptOriginator::User,
         summary: "Conversation compacted.".to_owned(),
         compacted_input_items: vec!["{}".to_owned()],
     }));
@@ -1207,6 +1209,7 @@ fn compaction_lifecycle_renders_status_line() {
     renderer.handle(&Event::SessionCompactionFinished(
         tau_proto::SessionCompactionFinished {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
             outcome: tau_proto::SessionCompactionOutcome::Succeeded,
             message: None,
         },
@@ -1227,11 +1230,53 @@ fn replayed_compacted_event_renders_success_status() {
 
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
+        originator: tau_proto::PromptOriginator::User,
         summary: "Conversation compacted.".to_owned(),
         compacted_input_items: vec!["{}".to_owned()],
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "compact ok"));
+}
+
+#[test]
+fn side_conversation_compaction_is_hidden_from_main_transcript() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let originator = tau_proto::PromptOriginator::Extension {
+        name: "core-delegate".into(),
+        query_id: "delegate-1".to_owned(),
+    };
+
+    // Regression: sub-agent compaction lifecycle events are still
+    // delivered to the main UI, but the main transcript must not show
+    // their progress/result blocks.
+    renderer.handle(&Event::SessionCompactionStarted(
+        tau_proto::SessionCompactionStarted {
+            session_id: "s1".into(),
+            originator: originator.clone(),
+        },
+    ));
+    renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
+        session_id: "s1".into(),
+        originator: originator.clone(),
+        summary: "Conversation compacted.".to_owned(),
+        compacted_input_items: vec!["{}".to_owned()],
+    }));
+    renderer.handle(&Event::SessionCompactionFinished(
+        tau_proto::SessionCompactionFinished {
+            session_id: "s1".into(),
+            originator,
+            outcome: tau_proto::SessionCompactionOutcome::Succeeded,
+            message: None,
+        },
+    ));
+
+    sync(&handle);
+    assert!(!vt.screen_contains(80, "compact"));
 }
 
 #[test]
@@ -1246,11 +1291,13 @@ fn failed_compaction_renders_error_status() {
     renderer.handle(&Event::SessionCompactionStarted(
         tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
         },
     ));
     renderer.handle(&Event::SessionCompactionFinished(
         tau_proto::SessionCompactionFinished {
             session_id: "s1".into(),
+            originator: tau_proto::PromptOriginator::User,
             outcome: tau_proto::SessionCompactionOutcome::Failed,
             message: Some("provider unavailable".to_owned()),
         },
