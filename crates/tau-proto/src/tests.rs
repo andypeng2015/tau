@@ -76,10 +76,13 @@ fn representative_events() -> Vec<Event> {
         Event::SessionCompactionStarted(SessionCompactionStarted {
             session_id: "s1".into(),
             originator: PromptOriginator::User,
+            original_input_tokens: None,
         }),
         Event::SessionCompactionFinished(SessionCompactionFinished {
             session_id: "s1".into(),
             originator: PromptOriginator::User,
+            original_input_tokens: None,
+            compacted_input_tokens: None,
             outcome: SessionCompactionOutcome::Succeeded,
             message: None,
         }),
@@ -536,10 +539,13 @@ fn event_defaults_to_transient_marks_progress_kinds() {
         Event::SessionCompactionStarted(SessionCompactionStarted {
             session_id: "s1".into(),
             originator: PromptOriginator::User,
+            original_input_tokens: None,
         }),
         Event::SessionCompactionFinished(SessionCompactionFinished {
             session_id: "s1".into(),
             originator: PromptOriginator::User,
+            original_input_tokens: None,
+            compacted_input_tokens: None,
             outcome: SessionCompactionOutcome::Succeeded,
             message: None,
         }),

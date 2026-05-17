@@ -103,6 +103,55 @@ fn echo_harness_with_dirs(
     )
 }
 
+fn quiet_provider_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, HarnessError> {
+    fn quiet_provider_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
+        fn inner(r: UnixStream, w: UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+            let mut reader = FrameReader::new(BufReader::new(r));
+            let mut writer = FrameWriter::new(BufWriter::new(w));
+
+            writer.write_frame(&Frame::Message(Message::Hello(tau_proto::Hello {
+                protocol_version: tau_proto::PROTOCOL_VERSION,
+                client_name: "tau-quiet-provider".into(),
+                client_kind: tau_proto::ClientKind::Provider,
+            })))?;
+            writer.write_frame(&Frame::Event(Event::ProviderModelsUpdated(
+                tau_proto::ProviderModelsUpdated {
+                    models: vec![tau_proto::ProviderModelInfo {
+                        id: "test/model".into(),
+                        display_name: Some("Test".to_owned()),
+                        context_window: 1_000,
+                        efforts: vec![tau_proto::Effort::Medium],
+                        verbosities: vec![tau_proto::Verbosity::Medium],
+                        thinking_summaries: vec![tau_proto::ThinkingSummary::Auto],
+                        supports_compaction: true,
+                    }],
+                },
+            )))?;
+            writer.write_frame(&Frame::Message(Message::Ready(tau_proto::Ready {
+                message: Some("quiet provider ready".to_owned()),
+            })))?;
+            writer.flush()?;
+
+            while let Some(frame) = reader.read_frame()? {
+                let (_, frame) = frame.peel_log();
+                if matches!(frame, Frame::Message(Message::Disconnect(_))) {
+                    return Ok(());
+                }
+            }
+            Ok(())
+        }
+
+        inner(r, w).map_err(|e| e.to_string())
+    }
+
+    let state_dir = state_dir.into();
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(state_dir.join("config")),
+        state_dir: Some(state_dir.join("runtime")),
+    };
+    Harness::new_with_provider(state_dir, dirs, quiet_provider_runner, Vec::new(), "s1")
+}
+
 struct TestSink {
     events: Arc<Mutex<Vec<RoutedFrame>>>,
 }

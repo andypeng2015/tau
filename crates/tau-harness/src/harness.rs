@@ -147,6 +147,97 @@ fn compaction_items_from_output_items(output_items: &[ContextItem]) -> Vec<Conte
         .collect()
 }
 
+/// Estimate how many prompt/input tokens the compacted replacement window will
+/// occupy when replayed on the next turn.
+///
+/// Tau does not carry a tokenizer in the harness, and the OpenAI standalone
+/// compaction endpoint does not normally report token usage. For UI status we
+/// use the same coarse convention used by many provider dashboards: roughly
+/// four UTF-8 bytes per token, measured over the provider-owned item payloads
+/// that prompt assembly will replay after compaction. This is not a billing
+/// counter; it is a prompt-size estimate for the `compact … ok: #…` chip.
+fn estimate_compacted_input_tokens(replacement_window: &[ContextItem]) -> Option<u64> {
+    const APPROX_BYTES_PER_TOKEN: u64 = 4;
+
+    let bytes: u64 = replacement_window
+        .iter()
+        .map(approx_context_item_provider_bytes)
+        .sum();
+    (bytes > 0).then_some(bytes.div_ceil(APPROX_BYTES_PER_TOKEN).max(1))
+}
+
+fn approx_context_item_provider_bytes(item: &ContextItem) -> u64 {
+    match item {
+        ContextItem::Message(message) => {
+            let content_bytes: u64 = message
+                .content
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text } => text.len() as u64,
+                })
+                .sum();
+            // Small role/item overhead keeps tiny summaries from looking free
+            // without dominating real summaries.
+            content_bytes + 16
+        }
+        ContextItem::ToolCall(call) => {
+            call.call_id.as_str().len() as u64
+                + call.name.as_str().len() as u64
+                + approx_cbor_json_bytes(&call.arguments)
+                + 16
+        }
+        ContextItem::ToolResult(result) => {
+            let status_bytes = match &result.status {
+                tau_proto::ToolResultStatus::Success => 0,
+                tau_proto::ToolResultStatus::Error { message }
+                | tau_proto::ToolResultStatus::Cancelled { reason: message } => {
+                    message.len() as u64
+                }
+            };
+            result.call_id.as_str().len() as u64
+                + status_bytes
+                + approx_cbor_json_bytes(&result.output)
+                + 16
+        }
+        ContextItem::Reasoning(item)
+        | ContextItem::Compaction(item)
+        | ContextItem::UnknownProviderItem(item) => approx_cbor_json_bytes(&item.0),
+    }
+}
+
+fn approx_cbor_json_bytes(value: &CborValue) -> u64 {
+    match value {
+        CborValue::Null => 4,
+        CborValue::Bool(value) => {
+            if *value {
+                4
+            } else {
+                5
+            }
+        }
+        CborValue::Integer(value) => {
+            let value: i128 = (*value).into();
+            value.to_string().len() as u64
+        }
+        CborValue::Float(value) => value.to_string().len() as u64,
+        CborValue::Bytes(bytes) => (bytes.len() as u64).div_ceil(3) * 4,
+        CborValue::Text(text) => text.len() as u64,
+        CborValue::Array(values) => {
+            2 + values.iter().map(approx_cbor_json_bytes).sum::<u64>()
+                + values.len().saturating_sub(1) as u64
+        }
+        CborValue::Map(entries) => {
+            2 + entries
+                .iter()
+                .map(|(key, value)| approx_cbor_json_bytes(key) + approx_cbor_json_bytes(value) + 3)
+                .sum::<u64>()
+                + entries.len().saturating_sub(1) as u64
+        }
+        CborValue::Tag(_, value) => approx_cbor_json_bytes(value),
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -195,6 +286,7 @@ struct PendingCompaction {
     target_cid: ConversationId,
     session_id: SessionId,
     originator: PromptOriginator,
+    original_input_tokens: Option<u64>,
     resume: PendingCompactionResume,
 }
 
@@ -3776,6 +3868,11 @@ impl Harness {
         let target_head = target_conv.head;
         let target_session_id = target_conv.session_id.clone();
         let target_originator = target_conv.originator.clone();
+        let original_input_tokens = target_conv.context_input_tokens.or_else(|| {
+            (target_cid == &self.default_conversation_id)
+                .then_some(self.current_session_state.context_input_tokens)
+                .flatten()
+        });
         let summary_cid = ConversationId::new(format!("compact-{}", self.next_session_prompt_id));
         let conv = Conversation::new(
             summary_cid.clone(),
@@ -3794,6 +3891,7 @@ impl Harness {
                 target_cid: target_cid.clone(),
                 session_id: target_session_id.clone(),
                 originator: target_originator.clone(),
+                original_input_tokens,
                 resume,
             },
         );
@@ -3805,6 +3903,7 @@ impl Harness {
             Event::SessionCompactionStarted(tau_proto::SessionCompactionStarted {
                 session_id: target_session_id,
                 originator: target_originator,
+                original_input_tokens,
             }),
         );
         if self.pending_intercept.is_some() || !self.deferred_publishes.is_empty() {
@@ -4744,6 +4843,8 @@ impl Harness {
                 Event::SessionCompactionFinished(tau_proto::SessionCompactionFinished {
                     session_id: pending.session_id,
                     originator: pending.originator,
+                    original_input_tokens: pending.original_input_tokens,
+                    compacted_input_tokens: None,
                     outcome: tau_proto::SessionCompactionOutcome::Failed,
                     message: Some("target conversation no longer exists".to_owned()),
                 }),
@@ -4761,21 +4862,35 @@ impl Harness {
             self.update_context_usage(None, None);
         }
 
-        let (outcome, message) = if requested_tool_calls {
+        let (outcome, message, compacted_input_tokens) = if requested_tool_calls {
             (
                 tau_proto::SessionCompactionOutcome::Failed,
                 Some("tool call attempted".to_owned()),
+                None,
             )
         } else if !replacement_window.is_empty() {
+            let compacted_input_tokens = response
+                .usage
+                .as_ref()
+                .and_then(|usage| {
+                    (usage.response_received_tokens > 0).then_some(usage.response_received_tokens)
+                })
+                .or_else(|| estimate_compacted_input_tokens(&replacement_window));
             self.publish_for_conversation(
                 &pending.target_cid,
                 Event::SessionCompacted(tau_proto::SessionCompacted {
                     session_id: pending.session_id.clone(),
                     originator: pending.originator.clone(),
+                    original_input_tokens: pending.original_input_tokens,
+                    compacted_input_tokens,
                     replacement_window: replacement_window.clone(),
                 }),
             );
-            (tau_proto::SessionCompactionOutcome::Succeeded, None)
+            (
+                tau_proto::SessionCompactionOutcome::Succeeded,
+                None,
+                compacted_input_tokens,
+            )
         } else {
             let message = text
                 .as_deref()
@@ -4783,13 +4898,19 @@ impl Harness {
                 .filter(|text| !text.is_empty() && *text != "Conversation compacted.")
                 .map(|text| text.strip_prefix("LLM error: ").unwrap_or(text).to_owned())
                 .unwrap_or_else(|| "no compacted window".to_owned());
-            (tau_proto::SessionCompactionOutcome::Failed, Some(message))
+            (
+                tau_proto::SessionCompactionOutcome::Failed,
+                Some(message),
+                None,
+            )
         };
         self.publish_event(
             None,
             Event::SessionCompactionFinished(tau_proto::SessionCompactionFinished {
                 session_id: pending.session_id.clone(),
                 originator: pending.originator.clone(),
+                original_input_tokens: pending.original_input_tokens,
+                compacted_input_tokens,
                 outcome,
                 message,
             }),

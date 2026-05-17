@@ -447,6 +447,8 @@ mod tests {
         tree.apply_event(&Event::SessionCompacted(tau_proto::SessionCompacted {
             session_id: "session-1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: None,
+            compacted_input_tokens: None,
             replacement_window: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
                 content: vec![ContentPart::Text {

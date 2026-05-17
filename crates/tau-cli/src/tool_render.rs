@@ -669,7 +669,8 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
 }
 
 /// Render the provider-side compaction lifecycle as a compact session
-/// status line: `compact …`, then `compact ok` or `compact err: …`.
+/// status line: `compact …`, `compact #226.2k`, or
+/// `compact #226.2k ok: #4.5k`.
 /// Compaction is not a model-visible tool invocation, so this paints the
 /// small lifecycle line directly instead of fabricating a `ToolDisplay`.
 pub(crate) fn render_compaction_block(

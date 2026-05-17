@@ -147,6 +147,7 @@ fn late_joining_ui_client_replays_only_final_session_events() {
         Event::SessionCompactionStarted(tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: None,
         }),
     );
     h.publish_event(
@@ -154,6 +155,8 @@ fn late_joining_ui_client_replays_only_final_session_events() {
         Event::SessionCompacted(tau_proto::SessionCompacted {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: None,
+            compacted_input_tokens: None,
             replacement_window: assistant_output("Conversation compacted."),
         }),
     );

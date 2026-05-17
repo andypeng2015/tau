@@ -798,6 +798,32 @@ impl EventRenderer {
         tau_cli_term::StyledBlock::new(tau_cli_term::StyledText::from(String::new()))
     }
 
+    fn compaction_token_chip(tokens: u64) -> String {
+        format!("#{}", format_token_count(tokens))
+    }
+
+    fn compaction_progress_status(original_input_tokens: Option<u64>) -> String {
+        original_input_tokens
+            .map(Self::compaction_token_chip)
+            .unwrap_or_else(|| tau_proto::PROGRESS_INDICATOR_TEXT.to_owned())
+    }
+
+    fn compaction_success_status(
+        original_input_tokens: Option<u64>,
+        compacted_input_tokens: Option<u64>,
+    ) -> String {
+        match (original_input_tokens, compacted_input_tokens) {
+            (Some(original), Some(compacted)) => format!(
+                "{} ok: {}",
+                Self::compaction_token_chip(original),
+                Self::compaction_token_chip(compacted)
+            ),
+            (Some(original), None) => format!("{} ok", Self::compaction_token_chip(original)),
+            (None, Some(compacted)) => format!("ok: {}", Self::compaction_token_chip(compacted)),
+            (None, None) => "ok".to_owned(),
+        }
+    }
+
     fn compaction_error_status(message: Option<&str>) -> String {
         let label = message
             .map(str::trim)
@@ -808,6 +834,17 @@ impl EventRenderer {
             short.push('…');
         }
         format!("err: {short}")
+    }
+
+    fn compaction_failure_status(
+        original_input_tokens: Option<u64>,
+        message: Option<&str>,
+    ) -> String {
+        let error = Self::compaction_error_status(message);
+        match original_input_tokens {
+            Some(original) => format!("{} {error}", Self::compaction_token_chip(original)),
+            None => error,
+        }
     }
 
     fn handle_compaction_event(&mut self, event: &Event) -> bool {
@@ -828,7 +865,7 @@ impl EventRenderer {
                 }
                 let block = render_compaction_block(
                     &self.theme,
-                    tau_proto::PROGRESS_INDICATOR_TEXT,
+                    Self::compaction_progress_status(started.original_input_tokens),
                     CompactionStatus::Progress,
                 );
                 let id = self.handle.new_block("compaction-progress", block);
@@ -847,7 +884,14 @@ impl EventRenderer {
                 if !self.compaction_blocks.contains_key(&compacted.session_id) {
                     self.handle.print_output(
                         "compaction-result",
-                        render_compaction_block(&self.theme, "ok", CompactionStatus::Success),
+                        render_compaction_block(
+                            &self.theme,
+                            Self::compaction_success_status(
+                                compacted.original_input_tokens,
+                                compacted.compacted_input_tokens,
+                            ),
+                            CompactionStatus::Success,
+                        ),
                     );
                 }
                 true
@@ -857,11 +901,18 @@ impl EventRenderer {
                     self.handle.remove_block(block_id);
                 }
                 let (status_text, status) = match finished.outcome {
-                    tau_proto::SessionCompactionOutcome::Succeeded => {
-                        ("ok".to_owned(), CompactionStatus::Success)
-                    }
+                    tau_proto::SessionCompactionOutcome::Succeeded => (
+                        Self::compaction_success_status(
+                            finished.original_input_tokens,
+                            finished.compacted_input_tokens,
+                        ),
+                        CompactionStatus::Success,
+                    ),
                     tau_proto::SessionCompactionOutcome::Failed => (
-                        Self::compaction_error_status(finished.message.as_deref()),
+                        Self::compaction_failure_status(
+                            finished.original_input_tokens,
+                            finished.message.as_deref(),
+                        ),
                         CompactionStatus::Error,
                     ),
                 };

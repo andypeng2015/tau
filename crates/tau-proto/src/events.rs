@@ -2134,6 +2134,10 @@ pub struct SessionCompactionStarted {
     /// sub-agent compaction lifecycle blocks from the main transcript.
     #[serde(default)]
     pub originator: PromptOriginator,
+    /// Input-token count of the conversation before compaction, if known.
+    /// Renderers use this as the `#…` context-size chip on the live status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_input_tokens: Option<u64>,
 }
 
 /// Final status of a provider-side compaction lifecycle.
@@ -2155,6 +2159,18 @@ pub struct SessionCompactionFinished {
     /// sub-agent compaction lifecycle blocks from the main transcript.
     #[serde(default)]
     pub originator: PromptOriginator,
+    /// Input-token count of the conversation before compaction, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_input_tokens: Option<u64>,
+    /// Prompt/input-token count of the compacted replacement window, if known.
+    ///
+    /// Providers do not always report usage for standalone compaction. When
+    /// exact usage is unavailable, the harness may fill this with its
+    /// documented prompt-size estimate for the provider-owned items that
+    /// will be replayed after compaction. It is UI context-size metadata,
+    /// not a billing counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_input_tokens: Option<u64>,
     pub outcome: SessionCompactionOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -2173,6 +2189,20 @@ pub struct SessionCompacted {
     /// this to hide sub-agent compaction results from the main transcript.
     #[serde(default)]
     pub originator: PromptOriginator,
+    /// Input-token count of the conversation before compaction, if known.
+    /// Stored on the durable event so replayed UIs can render the same status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_input_tokens: Option<u64>,
+    /// Prompt/input-token count of the compacted replacement window, if known.
+    ///
+    /// Providers do not always report usage for standalone compaction. When
+    /// exact usage is unavailable, the harness may fill this with its
+    /// documented prompt-size estimate for the provider-owned items that
+    /// will be replayed after compaction. Stored on the durable event so
+    /// replayed UIs can render the same status. It is UI context-size
+    /// metadata, not a billing counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_input_tokens: Option<u64>,
     pub replacement_window: Vec<ContextItem>,
 }
 

@@ -656,6 +656,8 @@ fn interception_drop_of_session_compacted_is_overridden() {
     let compacted = Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
         originator: tau_proto::PromptOriginator::User,
+        original_input_tokens: None,
+        compacted_input_tokens: None,
         replacement_window: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {

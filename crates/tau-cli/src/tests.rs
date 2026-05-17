@@ -1339,30 +1339,35 @@ fn compaction_lifecycle_renders_status_line() {
         tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: Some(226_200),
         },
     ));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact …"));
+    assert!(vt.screen_contains(80, "compact #226.2k"));
 
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
         originator: tau_proto::PromptOriginator::User,
+        original_input_tokens: Some(226_200),
+        compacted_input_tokens: Some(4_500),
         replacement_window: vec![assistant_message_item("Conversation compacted.")],
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact …"));
+    assert!(vt.screen_contains(80, "compact #226.2k"));
     assert!(!vt.screen_contains(80, "compact ok"));
 
     renderer.handle(&Event::SessionCompactionFinished(
         tau_proto::SessionCompactionFinished {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: Some(226_200),
+            compacted_input_tokens: Some(4_500),
             outcome: tau_proto::SessionCompactionOutcome::Succeeded,
             message: None,
         },
     ));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact ok"));
+    assert!(vt.screen_contains(80, "compact #226.2k ok: #4.5k"));
     assert!(!vt.screen_contains(80, "compact …"));
 }
 
@@ -1378,10 +1383,12 @@ fn replayed_compacted_event_renders_success_status() {
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
         originator: tau_proto::PromptOriginator::User,
+        original_input_tokens: Some(226_200),
+        compacted_input_tokens: Some(4_500),
         replacement_window: vec![assistant_message_item("Conversation compacted.")],
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact ok"));
+    assert!(vt.screen_contains(80, "compact #226.2k ok: #4.5k"));
 }
 
 #[test]
@@ -1461,17 +1468,22 @@ fn side_conversation_compaction_is_hidden_from_main_transcript() {
         tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
             originator: originator.clone(),
+            original_input_tokens: Some(10_000),
         },
     ));
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
         originator: originator.clone(),
+        original_input_tokens: Some(10_000),
+        compacted_input_tokens: Some(1_000),
         replacement_window: vec![assistant_message_item("Conversation compacted.")],
     }));
     renderer.handle(&Event::SessionCompactionFinished(
         tau_proto::SessionCompactionFinished {
             session_id: "s1".into(),
             originator,
+            original_input_tokens: Some(10_000),
+            compacted_input_tokens: Some(1_000),
             outcome: tau_proto::SessionCompactionOutcome::Succeeded,
             message: None,
         },
@@ -1494,18 +1506,21 @@ fn failed_compaction_renders_error_status() {
         tau_proto::SessionCompactionStarted {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: Some(226_200),
         },
     ));
     renderer.handle(&Event::SessionCompactionFinished(
         tau_proto::SessionCompactionFinished {
             session_id: "s1".into(),
             originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: Some(226_200),
+            compacted_input_tokens: None,
             outcome: tau_proto::SessionCompactionOutcome::Failed,
             message: Some("provider unavailable".to_owned()),
         },
     ));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact err: provider unavailable"));
+    assert!(vt.screen_contains(80, "compact #226.2k err: provider unavailable"));
 }
 
 #[test]

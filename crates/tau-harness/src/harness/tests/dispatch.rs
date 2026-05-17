@@ -73,6 +73,32 @@ fn text_part(item: &ContextItem) -> Option<&str> {
     }
 }
 
+fn openai_compaction_summary_item(text: &str) -> ContextItem {
+    ContextItem::Compaction(tau_proto::OpaqueProviderItem(CborValue::Map(vec![
+        (
+            CborValue::Text("type".to_owned()),
+            CborValue::Text("message".to_owned()),
+        ),
+        (
+            CborValue::Text("role".to_owned()),
+            CborValue::Text("assistant".to_owned()),
+        ),
+        (
+            CborValue::Text("content".to_owned()),
+            CborValue::Array(vec![CborValue::Map(vec![
+                (
+                    CborValue::Text("type".to_owned()),
+                    CborValue::Text("output_text".to_owned()),
+                ),
+                (
+                    CborValue::Text("text".to_owned()),
+                    CborValue::Text(text.to_owned()),
+                ),
+            ])]),
+        ),
+    ])))
+}
+
 fn tool_call_id(item: &ContextItem) -> Option<&str> {
     match item {
         ContextItem::ToolCall(call) => Some(call.call_id.as_str()),
@@ -1823,6 +1849,7 @@ fn user_prompt_auto_compacts_before_submission() {
     );
     h.current_session_state.context_input_tokens = Some(950);
     h.current_session_state.context_percent_used = Some(95);
+    let baseline_seq = h.event_log.next_seq();
 
     h.dispatch_user_prompt("s1".into(), "new question".to_owned())
         .expect("dispatch");
@@ -1875,7 +1902,7 @@ fn user_prompt_auto_compacts_before_submission() {
         ))],
 
         stop_reason: tau_proto::ProviderStopReason::EndTurn,
-        usage: match (Some(400), None, None) {
+        usage: match (Some(400), None, Some(40)) {
             (None, None, None) => None,
             (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
@@ -1904,6 +1931,35 @@ fn user_prompt_auto_compacts_before_submission() {
     assert_eq!(h.current_session_state.context_input_tokens, None);
     assert_eq!(h.current_session_state.context_percent_used, None);
 
+    let mut cursor = baseline_seq;
+    let mut started_original_tokens = None;
+    let mut compacted_tokens = None;
+    let mut finished_tokens = None;
+    while let Some(entry) = h.event_log.get_next_from(cursor) {
+        cursor = entry.seq + 1;
+        match entry.event {
+            Event::SessionCompactionStarted(started) => {
+                started_original_tokens = Some(started.original_input_tokens);
+            }
+            Event::SessionCompacted(compacted) => {
+                compacted_tokens = Some((
+                    compacted.original_input_tokens,
+                    compacted.compacted_input_tokens,
+                ));
+            }
+            Event::SessionCompactionFinished(finished) => {
+                finished_tokens = Some((
+                    finished.original_input_tokens,
+                    finished.compacted_input_tokens,
+                ));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(started_original_tokens, Some(Some(950)));
+    assert_eq!(compacted_tokens, Some((Some(950), Some(40))));
+    assert_eq!(finished_tokens, Some((Some(950), Some(40))));
+
     let branch = h.store.session("s1").expect("session").current_branch();
     assert!(matches!(
         branch.get(branch.len().saturating_sub(2)),
@@ -1914,6 +1970,178 @@ fn user_prompt_auto_compacts_before_submission() {
         Some(SessionEntry::UserInput { items })
             if items.iter().any(|item| text_part(item) == Some("new question"))
     ));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn compaction_without_provider_usage_estimates_compacted_tokens_from_replacement_window() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    // Use a provider that advertises compaction but does not auto-answer the
+    // request, so the test owns the no-usage response below.
+    let mut h = quiet_provider_harness(&sp).expect("start");
+
+    enable_remote_compaction_for_test_model(&mut h);
+
+    let cid = h.default_conversation_id.clone();
+    // Manual compaction reads from the conversation head. Seed via the
+    // conversation-aware publisher rather than only folding a durable event.
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "earlier question".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    h.current_session_state.context_input_tokens = Some(950);
+    h.current_session_state.context_percent_used = Some(95);
+    let baseline_seq = h.event_log.next_seq();
+
+    h.handle_compact_request("s1".into());
+
+    let (_summary_cid, summary_spid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid != &cid).then_some((prompt_cid.clone(), spid.clone()))
+        })
+        .expect("compaction prompt");
+
+    // The real OpenAI standalone compaction path returns provider-owned
+    // replacement items but normally no usage block. The harness still needs a
+    // post-compaction context-size chip, so it estimates from the exact items it
+    // will replay as the new prompt prefix.
+    let summary_text = "compacted summary sentence. ".repeat(160);
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: summary_spid,
+        output_items: vec![openai_compaction_summary_item(&summary_text)],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: HARNESS_CONNECTION_ID.into(),
+            query_id: format!("auto-compact-{cid}"),
+        },
+        backend: Some(responses_backend()),
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("summary finished");
+
+    let mut compacted_tokens = None;
+    let mut finished_tokens = None;
+    let mut cursor = baseline_seq;
+    while let Some(entry) = h.event_log.get_next_from(cursor) {
+        cursor = entry.seq + 1;
+        match entry.event {
+            Event::SessionCompacted(compacted) => {
+                compacted_tokens = compacted.compacted_input_tokens;
+            }
+            Event::SessionCompactionFinished(finished) => {
+                finished_tokens = finished.compacted_input_tokens;
+            }
+            _ => {}
+        }
+    }
+
+    let compacted_tokens = compacted_tokens.expect("durable compacted token estimate");
+    assert!(
+        compacted_tokens >= 1_000,
+        "estimate should reflect the summary payload size, got {compacted_tokens}"
+    );
+    assert_eq!(finished_tokens, Some(compacted_tokens));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn failed_compaction_does_not_report_compacted_tokens_from_provider_usage() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+
+    enable_remote_compaction_for_test_model(&mut h);
+
+    let cid = h.default_conversation_id.clone();
+    // Manual compaction reads from the conversation head. Seed via the
+    // conversation-aware publisher rather than only folding a durable event.
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "earlier question".to_owned(),
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    h.current_session_state.context_input_tokens = Some(950);
+    h.current_session_state.context_percent_used = Some(95);
+    let baseline_seq = h.event_log.next_seq();
+
+    h.handle_compact_request("s1".into());
+
+    let (_summary_cid, summary_spid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid != &cid).then_some((prompt_cid.clone(), spid.clone()))
+        })
+        .expect("compaction prompt");
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: summary_spid,
+        output_items: vec![ContextItem::Message(MessageItem {
+            role: ContextRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: "LLM error: no summary available".to_owned(),
+            }],
+            phase: None,
+        })],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        usage: Some(tau_proto::ProviderTokenUsage {
+            model: None,
+            prompt_sent_tokens: 400,
+            prompt_cached_tokens: 0,
+            response_received_tokens: 123,
+            stats: Default::default(),
+        }),
+        originator: tau_proto::PromptOriginator::Extension {
+            name: HARNESS_CONNECTION_ID.into(),
+            query_id: format!("auto-compact-{cid}"),
+        },
+        backend: Some(responses_backend()),
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("summary finished");
+
+    let mut saw_compacted = false;
+    let mut finished_tokens = None;
+    let mut finished_outcome = None;
+    let mut cursor = baseline_seq;
+    while let Some(entry) = h.event_log.get_next_from(cursor) {
+        cursor = entry.seq + 1;
+        match entry.event {
+            Event::SessionCompacted(_) => saw_compacted = true,
+            Event::SessionCompactionFinished(finished) => {
+                finished_tokens = finished.compacted_input_tokens;
+                finished_outcome = Some(finished.outcome);
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        !saw_compacted,
+        "failed compaction must not emit SessionCompacted"
+    );
+    assert_eq!(finished_tokens, None);
+    assert_eq!(
+        finished_outcome,
+        Some(tau_proto::SessionCompactionOutcome::Failed)
+    );
 
     h.shutdown().expect("shutdown");
 }
@@ -2157,15 +2385,15 @@ fn delegate_followup_auto_compacts_from_own_context_signal() {
     ));
 
     let mut cursor = baseline_seq;
-    let mut started_originator = None;
+    let mut started = None;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
         cursor = entry.seq + 1;
-        if let Event::SessionCompactionStarted(started) = entry.event {
-            started_originator = Some(started.originator);
+        if let Event::SessionCompactionStarted(event) = entry.event {
+            started = Some((event.originator, event.original_input_tokens));
             break;
         }
     }
-    assert_eq!(started_originator, Some(originator));
+    assert_eq!(started, Some((originator, Some(950))));
 
     h.shutdown().expect("shutdown");
 }
