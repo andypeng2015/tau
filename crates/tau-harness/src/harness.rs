@@ -400,9 +400,9 @@ pub(crate) struct Harness {
 }
 
 #[cfg(any(test, feature = "echo-agent"))]
-pub(crate) type AgentRunner = fn(UnixStream, UnixStream) -> Result<(), String>;
+pub(crate) type ProviderRunner = fn(UnixStream, UnixStream) -> Result<(), String>;
 
-/// One in-process tool extension to spawn alongside the echo agent during
+/// One in-process tool extension to spawn alongside the echo provider during
 /// tests.
 #[cfg(any(test, feature = "echo-agent"))]
 pub(crate) struct InProcessTool {
@@ -410,9 +410,12 @@ pub(crate) struct InProcessTool {
     pub(crate) runner: fn(UnixStream, UnixStream) -> Result<(), String>,
 }
 
-/// A small echo agent used only by tests and echo-agent helpers.
+/// A small echo provider used only by tests and echo-provider helpers.
 #[cfg(any(test, feature = "echo-agent"))]
-pub(crate) fn run_echo_agent<R, W>(reader: R, writer: W) -> Result<(), Box<dyn std::error::Error>>
+pub(crate) fn run_echo_provider<R, W>(
+    reader: R,
+    writer: W,
+) -> Result<(), Box<dyn std::error::Error>>
 where
     R: std::io::Read,
     W: std::io::Write,
@@ -420,9 +423,10 @@ where
     use std::io::{BufReader, BufWriter};
 
     use tau_proto::{
-        Ack, AgentPromptSubmitted, CborValue, ContentPart, ContextItem, ContextRole, EventName,
-        FrameReader, FrameWriter, Hello, MessageItem, OpaqueProviderItem, PROTOCOL_VERSION, Ready,
-        Subscribe, ToolCallItem, ToolName,
+        Ack, AgentPromptSubmitted, CborValue, ContentPart, ContextItem, ContextRole, Effort,
+        EventName, FrameReader, FrameWriter, Hello, MessageItem, OpaqueProviderItem,
+        PROTOCOL_VERSION, ProviderModelInfo, ProviderModelsUpdated, Ready, Subscribe,
+        ThinkingSummary, ToolCallItem, ToolName, Verbosity,
     };
 
     fn materialize_prompt(
@@ -483,8 +487,8 @@ where
 
     writer.write_frame(&Frame::Message(Message::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
-        client_name: "tau-echo-agent".into(),
-        client_kind: ClientKind::Agent,
+        client_name: "tau-echo-provider".into(),
+        client_kind: ClientKind::Provider,
     })))?;
     writer.write_frame(&Frame::Message(Message::Subscribe(Subscribe {
         selectors: vec![
@@ -493,8 +497,21 @@ where
             EventSelector::Exact(EventName::UI_CANCEL_PROMPT),
         ],
     })))?;
+    writer.write_frame(&Frame::Event(Event::ProviderModelsUpdated(
+        ProviderModelsUpdated {
+            models: vec![ProviderModelInfo {
+                id: "echo/model".into(),
+                display_name: Some("Echo".to_owned()),
+                context_window: 128_000,
+                efforts: vec![Effort::Off],
+                verbosities: vec![Verbosity::Low],
+                thinking_summaries: vec![ThinkingSummary::Off],
+                supports_compaction: true,
+            }],
+        },
+    )))?;
     writer.write_frame(&Frame::Message(Message::Ready(Ready {
-        message: Some("echo agent ready".to_owned()),
+        message: Some("echo provider ready".to_owned()),
     })))?;
     writer.flush()?;
 
@@ -672,10 +689,10 @@ fn instance_id_factory() -> impl FnMut() -> tau_proto::ExtensionInstanceId {
 
 impl Harness {
     #[cfg(any(test, feature = "echo-agent"))]
-    pub(crate) fn new_with_agent(
+    pub(crate) fn new_with_provider(
         state_dir: impl Into<PathBuf>,
         dirs: tau_config::settings::TauDirs,
-        agent_runner: AgentRunner,
+        provider_runner: ProviderRunner,
         tools: Vec<InProcessTool>,
         eager_session_id: &str,
     ) -> Result<Self, HarnessError> {
@@ -696,14 +713,19 @@ impl Harness {
         let mut next_iid = instance_id_factory();
 
         let mut extensions = Vec::new();
-        // Agent
-        let (conn_id, thread) =
-            spawn_in_process("agent", ClientKind::Agent, agent_runner, &mut bus, &tx)?;
+        // Provider
+        let (conn_id, thread) = spawn_in_process(
+            "provider",
+            ClientKind::Provider,
+            provider_runner,
+            &mut bus,
+            &tx,
+        )?;
         extensions.push(ExtensionEntry {
-            name: "agent".to_owned(),
+            name: "provider".to_owned(),
             instance_id: next_iid(),
             connection_id: conn_id,
-            kind: ClientKind::Agent,
+            kind: ClientKind::Provider,
             pid: Some(own_pid),
             in_process_thread: Some(thread),
             supervised_config: None,
@@ -1472,8 +1494,8 @@ impl Harness {
             // see the durable prompt fact, but execution clients do not all race
             // to consume it. The owning provider gets the exact same LogEvent
             // envelope via a directed route so ACK and replay semantics match
-            // the old subscribed-agent path.
-            let execution_kinds = [ClientKind::Agent, ClientKind::Provider];
+            // the subscribed-provider path.
+            let execution_kinds = [ClientKind::Provider];
             let _ =
                 self.bus
                     .publish_from_excluding_kinds(source, log_frame.clone(), &execution_kinds);
@@ -1660,7 +1682,11 @@ impl Harness {
                     self.handle_extension_event(&connection_id, *frame)?;
                 }
                 HarnessEvent::Disconnected { connection_id } => {
+                    let was_provider = self.is_provider_extension(&connection_id);
                     self.handle_disconnect(&connection_id);
+                    if was_provider {
+                        return Err(provider_disconnected_error());
+                    }
                 }
                 HarnessEvent::NewClient(_) => {}
             }
@@ -1765,10 +1791,7 @@ impl Harness {
                     }
                 }
                 HarnessEvent::Disconnected { connection_id } => {
-                    let was_agent = self
-                        .extensions
-                        .get(&connection_id)
-                        .is_some_and(|entry| entry.kind == ClientKind::Agent);
+                    let was_provider = self.is_provider_extension(&connection_id);
                     let was_socket = self
                         .bus
                         .connection(&connection_id)
@@ -1777,8 +1800,8 @@ impl Harness {
                     if was_socket {
                         served_clients += 1;
                     }
-                    if was_agent {
-                        return Err(HarnessError::Participant("agent disconnected".to_owned()));
+                    if was_provider {
+                        return Err(provider_disconnected_error());
                     }
                 }
                 HarnessEvent::NewClient(stream) => {
@@ -2486,6 +2509,12 @@ impl Harness {
         }
     }
 
+    fn is_provider_extension(&self, connection_id: &str) -> bool {
+        self.extensions
+            .get(connection_id)
+            .is_some_and(|entry| entry.kind == ClientKind::Provider)
+    }
+
     fn fail_pending_tool_calls_for_connection(&mut self, connection_id: &str) {
         let failed_call_ids: Vec<ToolCallId> = self
             .pending_tool_providers
@@ -2543,7 +2572,7 @@ impl Harness {
         let Some(config) = entry.supervised_config.clone() else {
             return Ok(());
         };
-        if entry.kind == ClientKind::Agent {
+        if entry.kind == ClientKind::Provider {
             return Ok(());
         }
 
@@ -4835,12 +4864,10 @@ impl Harness {
     /// True iff every configured extension has either reached `Ready`
     /// or dropped permanently.
     ///
-    /// `Disconnected` counts as "no longer blocking": a dead extension
-    /// may be on its way to being respawned, but the old connection is
-    /// gone and should not wedge fresh prompt dispatch.
-    /// Session initialization for a still-live session with a dead
-    /// provider still completes correctly — `handle_disconnect`
-    /// removes the entry from the `waiting_on` set.
+    /// `Disconnected` counts as "no longer blocking": a dead tool extension
+    /// may be on its way to being respawned, but the old connection is gone and
+    /// should not wedge fresh prompt dispatch. Provider disconnects are handled
+    /// as fatal by the event loop before this predicate matters for new work.
     pub(crate) fn extensions_all_ready(&self) -> bool {
         self.extensions.values().all(|e| {
             matches!(
@@ -5264,13 +5291,10 @@ impl Harness {
                     }
                 }
                 HarnessEvent::Disconnected { connection_id } => {
-                    let was_agent = self
-                        .extensions
-                        .get(&connection_id)
-                        .is_some_and(|entry| entry.kind == ClientKind::Agent);
+                    let was_provider = self.is_provider_extension(&connection_id);
                     self.handle_disconnect(&connection_id);
-                    if was_agent {
-                        return Err(HarnessError::Participant("agent disconnected".to_owned()));
+                    if was_provider {
+                        return Err(provider_disconnected_error());
                     }
                 }
                 HarnessEvent::NewClient(_) => {}
@@ -5417,6 +5441,10 @@ impl Harness {
             .find(|e| e.name == name)
             .map(|e| e.connection_id.as_str())
     }
+}
+
+fn provider_disconnected_error() -> HarnessError {
+    HarnessError::Participant("provider disconnected".to_owned())
 }
 
 /// Pre-render the live-header descriptor for a tool call so the

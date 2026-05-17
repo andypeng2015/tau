@@ -136,16 +136,16 @@ fn agent_response_tool_calls(session_prompt_id: &str, call_ids: &[&str]) -> Agen
 fn subscribed_clients_only_receive_matching_events() {
     let mut bus = EventBus::new();
 
-    let (agent_connection, agent_inbox) = memory_connection("agent", ClientKind::Agent);
+    let (provider_connection, provider_inbox) = memory_connection("provider", ClientKind::Provider);
     let (ui_connection, ui_inbox) = memory_connection("ui", ClientKind::Ui);
-    let agent_id = bus.connect(agent_connection);
+    let provider_id = bus.connect(provider_connection);
     let ui_id = bus.connect(ui_connection);
 
     bus.set_subscriptions(
-        &agent_id,
+        &provider_id,
         vec![EventSelector::Exact(EventName::UI_PROMPT_SUBMITTED)],
     )
-    .expect("agent subscriptions should be stored");
+    .expect("provider subscriptions should be stored");
     bus.set_subscriptions(&ui_id, vec![EventSelector::Prefix("tool.".to_owned())])
         .expect("ui subscriptions should be stored");
 
@@ -156,9 +156,9 @@ fn subscribed_clients_only_receive_matching_events() {
         ctx_id: None,
     })));
 
-    assert_eq!(report.delivered_to, vec![agent_id.clone()]);
+    assert_eq!(report.delivered_to, vec![provider_id.clone()]);
     assert_eq!(report.skipped_by_subscription, vec![ui_id.clone()]);
-    assert_eq!(agent_inbox.snapshot().len(), 1);
+    assert_eq!(provider_inbox.snapshot().len(), 1);
     assert!(ui_inbox.snapshot().is_empty());
 }
 
@@ -169,14 +169,16 @@ fn broadcast_can_skip_execution_client_kinds_for_direct_prompt_routing() {
     // without waking every execution client that happens to subscribe.
     let mut bus = EventBus::new();
 
-    let (agent_connection, agent_inbox) = memory_connection("agent", ClientKind::Agent);
-    let (provider_connection, provider_inbox) = memory_connection("provider", ClientKind::Provider);
+    let (observer_connection, observer_inbox) =
+        memory_connection("provider-observer", ClientKind::Provider);
+    let (provider_connection, provider_inbox) =
+        memory_connection("provider-owner", ClientKind::Provider);
     let (ui_connection, ui_inbox) = memory_connection("ui", ClientKind::Ui);
-    let agent_id = bus.connect(agent_connection);
+    let observer_id = bus.connect(observer_connection);
     let provider_id = bus.connect(provider_connection);
     let ui_id = bus.connect(ui_connection);
 
-    for id in [&agent_id, &provider_id, &ui_id] {
+    for id in [&observer_id, &provider_id, &ui_id] {
         bus.set_subscriptions(
             id,
             vec![EventSelector::Exact(EventName::UI_PROMPT_SUBMITTED)],
@@ -192,13 +194,13 @@ fn broadcast_can_skip_execution_client_kinds_for_direct_prompt_routing() {
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
         })),
-        &[ClientKind::Agent, ClientKind::Provider],
+        &[ClientKind::Provider],
     );
 
     assert_eq!(report.delivered_to, vec![ui_id.clone()]);
-    assert!(report.skipped_by_subscription.contains(&agent_id));
+    assert!(report.skipped_by_subscription.contains(&observer_id));
     assert!(report.skipped_by_subscription.contains(&provider_id));
-    assert!(agent_inbox.snapshot().is_empty());
+    assert!(observer_inbox.snapshot().is_empty());
     assert!(provider_inbox.snapshot().is_empty());
     assert_eq!(ui_inbox.snapshot().len(), 1);
 }
@@ -255,16 +257,16 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
 fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
     let mut bus = EventBus::new();
 
-    let (agent_connection, agent_inbox) = memory_connection("agent", ClientKind::Agent);
+    let (provider_connection, provider_inbox) = memory_connection("provider", ClientKind::Provider);
     let (tool_connection, tool_inbox) = memory_connection("tool", ClientKind::Tool);
-    let agent_id = bus.connect(agent_connection);
+    let provider_id = bus.connect(provider_connection);
     let tool_id = bus.connect(tool_connection);
 
     bus.set_subscriptions(
-        &agent_id,
+        &provider_id,
         vec![EventSelector::Prefix("provider.".to_owned())],
     )
-    .expect("agent subscriptions should be stored");
+    .expect("provider subscriptions should be stored");
     bus.set_subscriptions(&tool_id, vec![EventSelector::Prefix("tool.".to_owned())])
         .expect("tool subscriptions should be stored");
 
@@ -281,10 +283,10 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
     let second_report = bus.publish(Frame::Event(Event::AgentResponseFinished(
         agent_response_text("sp-1", "done"),
     )));
-    assert_eq!(second_report.delivered_to, vec![agent_id.clone()]);
+    assert_eq!(second_report.delivered_to, vec![provider_id.clone()]);
 
     assert_eq!(tool_inbox.snapshot().len(), 1);
-    assert_eq!(agent_inbox.snapshot().len(), 1);
+    assert_eq!(provider_inbox.snapshot().len(), 1);
 }
 
 #[test]
@@ -292,9 +294,9 @@ fn provider_can_register_tool_and_receive_invocations() {
     let mut bus = EventBus::new();
     let mut registry = ToolRegistry::new();
 
-    let (agent_connection, agent_inbox) = memory_connection("agent", ClientKind::Agent);
+    let (provider_connection, provider_inbox) = memory_connection("provider", ClientKind::Provider);
     let (tool_connection, tool_inbox) = memory_connection("tool", ClientKind::Tool);
-    let agent_id = bus.connect(agent_connection);
+    let provider_id = bus.connect(provider_connection);
     let tool_id = bus.connect(tool_connection);
 
     let register_report = registry.register(
@@ -315,7 +317,7 @@ fn provider_can_register_tool_and_receive_invocations() {
     let route_report = registry
         .route_tool_request(
             &mut bus,
-            &agent_id,
+            &provider_id,
             ToolRequest {
                 call_id: "call-1".into(),
                 tool_name: tau_proto::ToolName::new("echo"),
@@ -331,11 +333,11 @@ fn provider_can_register_tool_and_receive_invocations() {
         route_report.route_report.delivered_to,
         vec![tool_id.clone()]
     );
-    assert!(agent_inbox.snapshot().is_empty());
+    assert!(provider_inbox.snapshot().is_empty());
 
     let delivered_events = tool_inbox.snapshot();
     assert_eq!(delivered_events.len(), 1);
-    assert_eq!(delivered_events[0].source_id, Some(agent_id));
+    assert_eq!(delivered_events[0].source_id, Some(provider_id));
     assert_eq!(
         delivered_events[0].frame,
         Frame::Event(Event::ToolInvoke(tau_proto::ToolInvoke {

@@ -112,7 +112,7 @@ fn cross_session_prompt_is_rejected() {
 
 #[test]
 fn provider_model_prompt_routes_directly_to_provider_owner() {
-    // Provider-published models should not wake every agent/provider subscriber.
+    // Provider-published models should not wake every provider subscriber.
     // The committed prompt remains visible to observers, while the owner gets a
     // direct LogEvent even without subscribing to session.prompt_created.
     let td = TempDir::new().expect("tempdir");
@@ -121,14 +121,15 @@ fn provider_model_prompt_routes_directly_to_provider_owner() {
 
     let provider_frames =
         connect_test_client(&mut h, "provider-owner", tau_proto::ClientKind::Provider);
-    let agent_frames = connect_test_client(&mut h, "agent-observer", tau_proto::ClientKind::Agent);
+    let provider_observer_frames =
+        connect_test_client(&mut h, "provider-observer", tau_proto::ClientKind::Provider);
     let ui_frames = connect_test_client(&mut h, "ui-observer", tau_proto::ClientKind::Ui);
     let prompt_selector = vec![EventSelector::Exact(
         tau_proto::EventName::SESSION_PROMPT_CREATED,
     )];
     h.bus
-        .set_subscriptions("agent-observer", prompt_selector.clone())
-        .expect("agent observer subscription");
+        .set_subscriptions("provider-observer", prompt_selector.clone())
+        .expect("provider observer subscription");
     h.bus
         .set_subscriptions("ui-observer", prompt_selector)
         .expect("ui observer subscription");
@@ -181,8 +182,11 @@ fn provider_model_prompt_routes_directly_to_provider_owner() {
         "UI observer should still see the committed prompt fact"
     );
     assert!(
-        agent_frames.lock().expect("agent frames").is_empty(),
-        "agent observers should not receive provider-owned prompt execution"
+        provider_observer_frames
+            .lock()
+            .expect("provider observer frames")
+            .is_empty(),
+        "provider observers should not receive provider-owned prompt execution"
     );
 
     h.shutdown().expect("shutdown");

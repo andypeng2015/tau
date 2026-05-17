@@ -45,6 +45,23 @@ fn provider_models(
         .collect()
 }
 
+/// The echo harness publishes `echo/model` during startup so daemon-style tests
+/// exercise the normal provider model route. Tests that assert the
+/// before-any-model-snapshot state clear that startup snapshot first.
+fn clear_startup_echo_models(h: &mut Harness) {
+    let provider_id = h
+        .extension_connection_id("provider")
+        .expect("echo provider")
+        .to_owned();
+    h.handle_extension_event(
+        &provider_id,
+        Frame::Event(Event::ProviderModelsUpdated(ProviderModelsUpdated {
+            models: Vec::new(),
+        })),
+    )
+    .expect("clear startup echo provider models");
+}
+
 /// Provider snapshots are runtime registry input, not just private extension
 /// chatter: the harness must retain metadata/routes and re-emit refreshed UI
 /// state for clients that are already connected.
@@ -107,6 +124,7 @@ fn provider_models_snapshot_updates_available_models() {
 fn provider_models_snapshot_selects_first_model_and_drains_queue() {
     let td = TempDir::new().expect("tempdir");
     let mut h = echo_harness(td.path()).expect("harness");
+    clear_startup_echo_models(&mut h);
     assert!(h.selected_model.is_none());
 
     assert_eq!(
@@ -146,6 +164,7 @@ fn provider_models_snapshot_selects_first_model_and_drains_queue() {
 fn provider_model_metadata_drives_selection_state() {
     let td = TempDir::new().expect("tempdir");
     let mut h = echo_harness(td.path()).expect("harness");
+    clear_startup_echo_models(&mut h);
 
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     h.handle_extension_event(

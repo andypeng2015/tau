@@ -47,7 +47,7 @@ use crate::prompt::build_system_prompt;
 use crate::turn::{PromptSubmission, TurnState};
 
 fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
-    crate::harness::run_echo_agent(r, w).map_err(|e| e.to_string())
+    crate::harness::run_echo_provider(r, w).map_err(|e| e.to_string())
 }
 
 /// Test-only helper that pushes a `UiPromptSubmitted` through the
@@ -91,7 +91,7 @@ fn echo_harness_with_dirs(
     fn shell_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
         tau_ext_shell::run(r, w).map_err(|e| e.to_string())
     }
-    Harness::new_with_agent(
+    Harness::new_with_provider(
         state_dir,
         dirs,
         echo_runner,

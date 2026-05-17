@@ -40,7 +40,6 @@ pub enum EventCategory {
     Ui,
     Shell,
     Session,
-    Agent,
     /// Terminal-output side effects directed at the UI: escape
     /// sequences the UI should write straight through to its
     /// terminal (notifications, OSC user-vars, etc.).
@@ -62,7 +61,6 @@ impl EventCategory {
             Self::Ui => "ui",
             Self::Shell => "shell",
             Self::Session => "session",
-            Self::Agent => "agent",
             Self::Term => "term",
             Self::Other(s) => s.as_str(),
         }
@@ -80,7 +78,6 @@ impl EventCategory {
             "ui" => Self::Ui,
             "shell" => Self::Shell,
             "session" => Self::Session,
-            "agent" => Self::Agent,
             "term" => Self::Term,
             other => Self::Other(other.to_owned()),
         }
@@ -363,7 +360,6 @@ impl std::error::Error for ParseEventNameError {}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
-    Agent,
     Provider,
     Tool,
     Ui,

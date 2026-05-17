@@ -148,13 +148,19 @@ pub fn run_embedded_message_with_options(
     let config =
         resolve_config(None).map_err(|error| HarnessError::Participant(error.to_string()))?;
     let mut harness = Harness::from_config(&config, &state_dir, dirs, session_id)?;
-    let mut outcome = harness.send_user_message(session_id, message, None)?;
+    let mut outcome = match harness.send_user_message(session_id, message, None) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = harness.shutdown();
+            return Err(error);
+        }
+    };
     harness.shutdown()?;
     outcome.lifecycle_messages = harness.lifecycle_messages.clone();
     Ok(outcome)
 }
 
-/// Like [`run_embedded_message_with_trace`] but uses the echo agent and
+/// Like [`run_embedded_message_with_trace`] but uses the echo provider and
 /// the in-process shell tool for testing.
 #[cfg(any(test, feature = "echo-agent"))]
 pub fn run_embedded_message_with_echo(
@@ -163,7 +169,7 @@ pub fn run_embedded_message_with_echo(
     message: &str,
 ) -> Result<InteractionOutcome, HarnessError> {
     fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
-        crate::harness::run_echo_agent(r, w).map_err(|e| e.to_string())
+        crate::harness::run_echo_provider(r, w).map_err(|e| e.to_string())
     }
     let state_dir = state_dir.into();
     let dirs = tau_config::settings::TauDirs {
@@ -171,14 +177,20 @@ pub fn run_embedded_message_with_echo(
         state_dir: Some(state_dir.join("runtime")),
     };
     let mut harness =
-        Harness::new_with_agent(state_dir, dirs, echo_runner, echo_tools(), session_id)?;
-    let mut outcome = harness.send_user_message(session_id, message, None)?;
+        Harness::new_with_provider(state_dir, dirs, echo_runner, echo_tools(), session_id)?;
+    let mut outcome = match harness.send_user_message(session_id, message, None) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = harness.shutdown();
+            return Err(error);
+        }
+    };
     harness.shutdown()?;
     outcome.lifecycle_messages = harness.lifecycle_messages.clone();
     Ok(outcome)
 }
 
-/// In-process tool list used by the echo-agent test helpers. Lives
+/// In-process tool list used by the echo-provider test helpers. Lives
 /// here so the only call site that depends on `tau-ext-shell` is
 /// gated behind the `echo-agent` feature.
 #[cfg(any(test, feature = "echo-agent"))]
@@ -232,8 +244,8 @@ pub fn run_daemon(
     result
 }
 
-/// Like [`run_daemon`] but uses the echo agent for testing. Also enables
-/// the shell extension's `echo` tool so echo-agent–driven tool calls
+/// Like [`run_daemon`] but uses the echo provider for testing. Also enables
+/// the shell extension's `echo` tool so echo-provider-driven tool calls
 /// resolve.
 #[cfg(any(test, feature = "echo-agent"))]
 pub fn run_daemon_with_echo(
@@ -243,14 +255,20 @@ pub fn run_daemon_with_echo(
     options: ServeOptions,
 ) -> Result<(), HarnessError> {
     fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
-        crate::harness::run_echo_agent(r, w).map_err(|e| e.to_string())
+        crate::harness::run_echo_provider(r, w).map_err(|e| e.to_string())
     }
     let socket_path = socket_path.into();
     let state_dir = state_dir.into();
     let listener = bind_listener(&socket_path)?;
-    let dirs = options.dirs.clone().unwrap_or_default();
+    let dirs = options
+        .dirs
+        .clone()
+        .unwrap_or_else(|| tau_config::settings::TauDirs {
+            config_dir: Some(state_dir.join("config")),
+            state_dir: Some(state_dir.join("runtime")),
+        });
     let mut harness =
-        Harness::new_with_agent(state_dir, dirs, echo_runner, echo_tools(), eager_session_id)?;
+        Harness::new_with_provider(state_dir, dirs, echo_runner, echo_tools(), eager_session_id)?;
 
     let tx = harness.tx.clone();
     thread::spawn(move || {

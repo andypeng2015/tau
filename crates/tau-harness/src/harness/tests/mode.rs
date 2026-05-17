@@ -153,7 +153,7 @@ fn traced_daemon_reports_shell_progress() {
     assert!(
         o.lifecycle_messages
             .iter()
-            .any(|m| m == "extension agent ready")
+            .any(|m| m == "extension provider ready")
     );
     assert!(
         o.lifecycle_messages
@@ -174,17 +174,17 @@ fn traced_embedded_reports_lifecycle() {
     assert!(
         o.lifecycle_messages
             .iter()
-            .any(|m| m == "extension agent starting")
+            .any(|m| m == "extension provider starting")
     );
     assert!(
         o.lifecycle_messages
             .iter()
-            .any(|m| m == "extension agent ready")
+            .any(|m| m == "extension provider ready")
     );
     assert!(
         o.lifecycle_messages
             .iter()
-            .any(|m| m == "extension agent exited")
+            .any(|m| m == "extension provider exited")
     );
 }
 
@@ -220,7 +220,7 @@ fn daemon_disconnect_reason_is_reported() {
 fn harness_startup_eagerly_initializes_eager_session() {
     // Guards against the recurring "this looks like redundant work"
     // urge to lazy-ify session init. `echo_harness` calls
-    // `Harness::new_with_agent`, which must eagerly initialize the
+    // `Harness::new_with_provider`, which must eagerly initialize the
     // session before returning — see the design-choice comment in
     // the constructor for why.
     let td = TempDir::new().expect("tempdir");

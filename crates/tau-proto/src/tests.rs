@@ -231,8 +231,8 @@ fn representative_messages() -> Vec<Message> {
     vec![
         Message::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
-            client_name: "agent".into(),
-            client_kind: ClientKind::Agent,
+            client_name: "provider".into(),
+            client_kind: ClientKind::Provider,
         }),
         Message::Subscribe(Subscribe {
             selectors: vec![
@@ -343,8 +343,8 @@ fn multiple_frames_can_share_one_stream() {
 fn message_wire_form_uses_flat_message_tag() {
     let msg = Message::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
-        client_name: "agent".into(),
-        client_kind: ClientKind::Agent,
+        client_name: "provider".into(),
+        client_kind: ClientKind::Provider,
     });
     let json = serde_json::to_value(&msg).expect("serialize");
     assert_eq!(json["message"], "hello");

@@ -804,6 +804,36 @@ fn duplicate_ack_is_ignored() {
 }
 
 #[test]
+fn provider_disconnect_terminates_event_loop() {
+    // Providers are the only prompt executors now. If the selected provider
+    // disconnects, keeping the harness alive would leave any in-flight turn
+    // without an execution client and can wedge the UI. Treat provider exit as
+    // fatal instead of respawning it like a tool extension.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let provider_id = h
+        .extension_connection_id("provider")
+        .expect("provider")
+        .to_owned();
+
+    h.tx.send(HarnessEvent::Disconnected {
+        connection_id: provider_id.into(),
+    })
+    .expect("queue provider disconnect");
+
+    let err = h
+        .run_event_loop(None, false)
+        .expect_err("provider disconnect should terminate harness");
+    assert!(matches!(
+        err,
+        HarnessError::Participant(message) if message == "provider disconnected"
+    ));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
 fn duplicate_tool_result_is_discarded() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
