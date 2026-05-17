@@ -68,7 +68,7 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
         },
     );
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "main-call".into(),
@@ -76,10 +76,10 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -520,7 +520,7 @@ fn deferred_tool_result_persists_after_call_tracking_is_cleared() {
     );
     h.publish_for_conversation(
         &cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-main".into(),
             output_items: vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: call_id.clone(),
@@ -528,7 +528,7 @@ fn deferred_tool_result_persists_after_call_tracking_is_cleared() {
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             })],
-            stop_reason: tau_proto::AgentStopReason::ToolCalls,
+            stop_reason: tau_proto::ProviderStopReason::ToolCalls,
             usage: None,
             originator: tau_proto::PromptOriginator::User,
             backend: None,

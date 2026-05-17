@@ -1,11 +1,11 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId};
 
-fn responses_backend() -> tau_proto::AgentBackend {
-    tau_proto::AgentBackend {
-        kind: tau_proto::AgentBackendKind::Responses,
+fn responses_backend() -> tau_proto::ProviderBackend {
+    tau_proto::ProviderBackend {
+        kind: tau_proto::ProviderBackendKind::Responses,
         base_url: "https://api.example.test".to_owned(),
-        transport: tau_proto::AgentBackendTransport::HttpSse,
+        transport: tau_proto::ProviderBackendTransport::HttpSse,
         stale_chain_fallback: false,
     }
 }
@@ -225,7 +225,7 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
             CborValue::Text("hi".to_owned()),
         ),
     ]);
-    let response = AgentResponseFinished {
+    let response = ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -247,10 +247,10 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
                 arguments: read_args,
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -265,7 +265,7 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
         ws_pool_delta: None,
     };
 
-    h.handle_agent_response_finished(response)
+    h.handle_provider_response_finished(response)
         .expect("finished");
 
     // Right after dispatch, only c1 (Pure) should be in-flight;
@@ -334,7 +334,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
             ),
         ])
     };
-    let response = AgentResponseFinished {
+    let response = ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -356,10 +356,10 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
                 arguments: write_args("c.txt"),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -373,7 +373,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         provider_response_id: None,
         ws_pool_delta: None,
     };
-    h.handle_agent_response_finished(response)
+    h.handle_provider_response_finished(response)
         .expect("finished");
 
     drive_harness_until_call_completes(&mut h, "c1");
@@ -440,7 +440,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
             CborValue::Text("a".to_owned()),
         ),
     ]);
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
@@ -448,10 +448,10 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             arguments: write_args,
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -597,7 +597,7 @@ fn tool_calls_stop_reason_without_tool_items_does_not_wedge_turn() {
 
     h.submit_user_prompt("s1".into(), "hello".to_owned())
         .expect("submit");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-0".into(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -606,7 +606,7 @@ fn tool_calls_stop_reason_without_tool_items_does_not_wedge_turn() {
             }],
             phase: None,
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: None,
         originator: tau_proto::PromptOriginator::User,
         backend: None,
@@ -643,7 +643,7 @@ fn session_prompt_created_uses_refs_for_linear_extension() {
     let spid1 = h.send_prompt_to_agent("s1");
     let prompt1 = read_prompt_created(&h, &spid1);
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -655,10 +655,10 @@ fn session_prompt_created_uses_refs_for_linear_extension() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -698,7 +698,7 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
     let spid1 = h.send_prompt_to_agent("s1");
     let prompt1 = read_prompt_created(&h, &spid1);
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -710,10 +710,10 @@ fn linear_session_prompts_strictly_extend_previous_messages() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -772,7 +772,7 @@ fn response_id_anchors_next_prompt_with_previous_response() {
     let spid1: SessionPromptId = "sp-0".into();
     let prompt1 = read_prompt_created(&h, &spid1);
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -784,10 +784,10 @@ fn response_id_anchors_next_prompt_with_previous_response() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -831,7 +831,7 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -843,10 +843,10 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(1_000), Some(0), None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -864,7 +864,7 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
     let spid2: SessionPromptId = "sp-1".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid2.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -876,10 +876,10 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(1_100), Some(0), None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -902,7 +902,7 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
     let mut diagnostic = None;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
         cursor = entry.seq + 1;
-        if let Event::AgentCacheMissDiagnostic(event) = entry.event {
+        if let Event::ProviderCacheMissDiagnostic(event) = entry.event {
             diagnostic = Some(event);
         }
     }
@@ -930,7 +930,7 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -942,10 +942,10 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(500), Some(0), None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -963,7 +963,7 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
     let spid2: SessionPromptId = "sp-1".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid2,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -975,10 +975,10 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(500), Some(0), None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -997,7 +997,7 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     while let Some(entry) = h.event_log.get_next_from(cursor) {
         cursor = entry.seq + 1;
         assert!(
-            !matches!(entry.event, Event::AgentCacheMissDiagnostic(_)),
+            !matches!(entry.event, Event::ProviderCacheMissDiagnostic(_)),
             "sub-cache-chunk turn must not emit cache miss diagnostic"
         );
     }
@@ -1020,7 +1020,7 @@ fn model_switch_invalidates_chain_anchor() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1032,10 +1032,10 @@ fn model_switch_invalidates_chain_anchor() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1087,7 +1087,7 @@ fn params_drift_invalidates_chain_anchor() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1099,10 +1099,10 @@ fn params_drift_invalidates_chain_anchor() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1149,7 +1149,7 @@ fn system_prompt_drift_invalidates_chain_anchor() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1161,10 +1161,10 @@ fn system_prompt_drift_invalidates_chain_anchor() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1221,7 +1221,7 @@ fn tools_drift_invalidates_chain_anchor() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1233,10 +1233,10 @@ fn tools_drift_invalidates_chain_anchor() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1297,7 +1297,7 @@ fn stable_params_preserve_chain_anchor() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1309,10 +1309,10 @@ fn stable_params_preserve_chain_anchor() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1354,7 +1354,7 @@ fn missing_response_id_leaves_chain_unset() {
         .expect("submit first");
     let spid1: SessionPromptId = "sp-0".into();
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1366,10 +1366,10 @@ fn missing_response_id_leaves_chain_unset() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1416,7 +1416,7 @@ fn queued_prompt_extends_completed_first_prompt() {
         .expect("submit second");
     assert_eq!(second, PromptSubmission::Queued);
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -1428,10 +1428,10 @@ fn queued_prompt_extends_completed_first_prompt() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1563,7 +1563,7 @@ fn user_prompt_auto_compacts_before_submission() {
     let cid = h.default_conversation_id.clone();
     h.publish_for_conversation(
         &cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-old".into(),
             output_items: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
@@ -1575,16 +1575,18 @@ fn user_prompt_auto_compacts_before_submission() {
                 phase: None,
             })],
 
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             usage: match (None, None, None) {
                 (None, None, None) => None,
-                (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
-                    model: None,
-                    prompt_sent_tokens: input_tokens.unwrap_or(0),
-                    prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                    response_received_tokens: output_tokens.unwrap_or(0),
-                    stats: Default::default(),
-                }),
+                (input_tokens, cached_tokens, output_tokens) => {
+                    Some(tau_proto::ProviderTokenUsage {
+                        model: None,
+                        prompt_sent_tokens: input_tokens.unwrap_or(0),
+                        prompt_cached_tokens: cached_tokens.unwrap_or(0),
+                        response_received_tokens: output_tokens.unwrap_or(0),
+                        stats: Default::default(),
+                    })
+                }
             },
             originator: tau_proto::PromptOriginator::User,
             backend: None,
@@ -1636,7 +1638,7 @@ fn user_prompt_auto_compacts_before_submission() {
         "compaction requests should not reuse previous_response_id chaining"
     );
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: summary_spid,
         output_items: vec![ContextItem::Compaction(tau_proto::OpaqueProviderItem(
             CborValue::Map(vec![(
@@ -1645,10 +1647,10 @@ fn user_prompt_auto_compacts_before_submission() {
             )]),
         ))],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(400), None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -1702,7 +1704,7 @@ fn user_prompt_does_not_auto_compact_without_context_percent_signal() {
     let cid = h.default_conversation_id.clone();
     h.publish_for_conversation(
         &cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-old".into(),
             output_items: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
@@ -1714,16 +1716,18 @@ fn user_prompt_does_not_auto_compact_without_context_percent_signal() {
                 phase: None,
             })],
 
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             usage: match (None, None, None) {
                 (None, None, None) => None,
-                (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
-                    model: None,
-                    prompt_sent_tokens: input_tokens.unwrap_or(0),
-                    prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                    response_received_tokens: output_tokens.unwrap_or(0),
-                    stats: Default::default(),
-                }),
+                (input_tokens, cached_tokens, output_tokens) => {
+                    Some(tau_proto::ProviderTokenUsage {
+                        model: None,
+                        prompt_sent_tokens: input_tokens.unwrap_or(0),
+                        prompt_cached_tokens: cached_tokens.unwrap_or(0),
+                        response_received_tokens: output_tokens.unwrap_or(0),
+                        stats: Default::default(),
+                    })
+                }
             },
             originator: tau_proto::PromptOriginator::User,
             backend: None,
@@ -1766,7 +1770,7 @@ fn manual_compact_forces_compaction_without_followup_turn() {
     let cid = h.default_conversation_id.clone();
     h.publish_for_conversation(
         &cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-old".into(),
             output_items: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
@@ -1778,16 +1782,18 @@ fn manual_compact_forces_compaction_without_followup_turn() {
                 phase: None,
             })],
 
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             usage: match (None, None, None) {
                 (None, None, None) => None,
-                (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
-                    model: None,
-                    prompt_sent_tokens: input_tokens.unwrap_or(0),
-                    prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                    response_received_tokens: output_tokens.unwrap_or(0),
-                    stats: Default::default(),
-                }),
+                (input_tokens, cached_tokens, output_tokens) => {
+                    Some(tau_proto::ProviderTokenUsage {
+                        model: None,
+                        prompt_sent_tokens: input_tokens.unwrap_or(0),
+                        prompt_cached_tokens: cached_tokens.unwrap_or(0),
+                        response_received_tokens: output_tokens.unwrap_or(0),
+                        stats: Default::default(),
+                    })
+                }
             },
             originator: tau_proto::PromptOriginator::User,
             backend: None,
@@ -1809,7 +1815,7 @@ fn manual_compact_forces_compaction_without_followup_turn() {
     let summary_prompt = read_compaction_requested(&h, &summary_spid);
     assert!(summary_prompt.previous_response_candidate.is_none());
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: summary_spid,
         output_items: vec![ContextItem::Compaction(tau_proto::OpaqueProviderItem(
             CborValue::Map(vec![(
@@ -1818,10 +1824,10 @@ fn manual_compact_forces_compaction_without_followup_turn() {
             )]),
         ))],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (Some(300), None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2068,7 +2074,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         }),
     );
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
@@ -2076,10 +2082,10 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2129,7 +2135,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: side_spid,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -2141,10 +2147,10 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2233,7 +2239,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         }),
     );
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
@@ -2241,10 +2247,10 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2362,7 +2368,7 @@ fn non_tool_ext_agent_query_inherits_parent_branch() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -2374,10 +2380,10 @@ fn non_tool_ext_agent_query_inherits_parent_branch() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2506,11 +2512,11 @@ fn non_tool_ext_agent_query_preserves_chain_anchor_and_tool_choice() {
 
     // Drive one full main-conv turn through the normal dispatch path
     // so `prompt_fingerprints`/`prompt_models` are populated and
-    // `handle_agent_response_finished` actually mints the anchor.
+    // `handle_provider_response_finished` actually mints the anchor.
     h.submit_user_prompt("s1".into(), "find the bug in foo.rs".to_owned())
         .expect("submit main");
     let main_spid: SessionPromptId = "sp-0".into();
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -2522,10 +2528,10 @@ fn non_tool_ext_agent_query_preserves_chain_anchor_and_tool_choice() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2622,7 +2628,7 @@ fn delegate_ext_agent_query_keeps_tool_choice_auto() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
@@ -2630,10 +2636,10 @@ fn delegate_ext_agent_query_keeps_tool_choice_auto() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2806,7 +2812,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
@@ -2814,10 +2820,10 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2854,7 +2860,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: side_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "websearch-call".into(),
@@ -2862,10 +2868,10 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -2953,7 +2959,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         CborValue::Text("read_only".to_owned()),
         CborValue::Bool(true),
     )]);
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -2969,10 +2975,10 @@ fn read_only_delegate_calls_dispatch_concurrently() {
                 arguments: read_only_args.clone(),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3036,7 +3042,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
             ctx_id: None,
         }),
     );
-    h2.handle_agent_response_finished(AgentResponseFinished {
+    h2.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid2,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -3052,10 +3058,10 @@ fn read_only_delegate_calls_dispatch_concurrently() {
                 arguments: CborValue::Map(Vec::new()),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3136,7 +3142,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
@@ -3144,10 +3150,10 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3189,7 +3195,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: side_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "websearch-call".into(),
@@ -3197,10 +3203,10 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (Some(1234), None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3304,7 +3310,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
@@ -3312,10 +3318,10 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3353,7 +3359,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("outer side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: outer_side_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
@@ -3361,10 +3367,10 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3407,7 +3413,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
                 .then_some(spid.clone())
         })
         .expect("nested side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: nested_side_spid,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -3419,10 +3425,10 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3539,7 +3545,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
@@ -3547,10 +3553,10 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3582,7 +3588,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("outer side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: outer_side_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
@@ -3590,10 +3596,10 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3686,7 +3692,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
@@ -3694,10 +3700,10 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3729,7 +3735,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("side prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: side_spid,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -3741,10 +3747,10 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             phase: None,
         })],
 
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3832,7 +3838,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "top-call".into(),
@@ -3840,10 +3846,10 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3875,7 +3881,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("top prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: top_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "leaf-call".into(),
@@ -3883,10 +3889,10 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -3968,7 +3974,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
 /// other's branch cursor. Before the per-event `folded_node_id`
 /// sync, `commit_event` synced `c.head` from the global
 /// `tree.head()`. A non-folding event on conv-A (e.g. an
-/// `AgentResponseFinished` carrying only tool calls) would overwrite
+/// `ProviderResponseFinished` carrying only tool calls) would overwrite
 /// `c.head[conv-A]` with whatever sibling conv-B last folded — so
 /// conv-A's next `ToolRequest` would graft onto conv-B's branch and
 /// the resulting prompt would walk through unrelated history,
@@ -4006,7 +4012,7 @@ fn tool_call_response_preserves_assistant_text_items() {
     let spid: SessionPromptId = "sp-text-and-tool".into();
     h.prompt_conversations
         .insert(spid.clone(), h.default_conversation_id.clone());
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid.clone(),
         output_items: vec![
             ContextItem::Message(MessageItem {
@@ -4023,7 +4029,7 @@ fn tool_call_response_preserves_assistant_text_items() {
                 arguments: CborValue::Map(Vec::new()),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: None,
         originator: tau_proto::PromptOriginator::User,
         backend: None,
@@ -4036,7 +4042,9 @@ fn tool_call_response_preserves_assistant_text_items() {
     let published = frames
         .iter()
         .find_map(|routed| match peel_inner_event(&routed.frame) {
-            Some(Event::AgentResponseFinished(finished)) if finished.session_prompt_id == spid => {
+            Some(Event::ProviderResponseFinished(finished))
+                if finished.session_prompt_id == spid =>
+            {
                 Some(finished)
             }
             _ => None,
@@ -4093,7 +4101,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -4109,10 +4117,10 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
                 arguments: CborValue::Map(Vec::new()),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -4182,7 +4190,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
     );
 
     // Conv A's agent finishes with a tool call (no text → the
-    // AgentResponseFinished itself does NOT fold a tree node).
+    // ProviderResponseFinished itself does NOT fold a tree node).
     // After the response is processed, the harness emits a
     // ToolRequest for `A-tool` on conv-A's branch. That request must
     // be parented under conv-A's own `UserMessage` (head_a_after_init),
@@ -4192,7 +4200,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid == &cid_a).then_some(spid.clone()))
         .expect("spid A");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid_a,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "A-tool".into(),
@@ -4200,10 +4208,10 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -4297,7 +4305,7 @@ fn tool_events_carry_owning_conversation_originator() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "main-call".into(),
@@ -4305,10 +4313,10 @@ fn tool_events_carry_owning_conversation_originator() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -4340,7 +4348,7 @@ fn tool_events_carry_owning_conversation_originator() {
         .iter()
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("sub prompt id");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: sub_spid,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "sub-call".into(),
@@ -4348,10 +4356,10 @@ fn tool_events_carry_owning_conversation_originator() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),

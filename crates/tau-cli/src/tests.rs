@@ -4,12 +4,12 @@ use std::time::{Duration, Instant};
 use tau_cli_term::TermHandle;
 use tau_cli_term_raw::{Color, Term};
 use tau_proto::{
-    AgentResponseFinished, AgentResponseUpdated, AgentStopReason, CborValue, ContentPart,
-    ContextItem, ContextRole, Effort, Event, ExtAgentsMdAvailable, ExtensionReady,
-    HarnessContextUsageChanged, HarnessEffortChanged, HarnessRoleInfo, HarnessRoleSelected,
-    HarnessRolesAvailable, HarnessVerbosityChanged, MessageItem, ServiceTier, SessionPromptCreated,
-    SessionPromptQueued, SessionStartReason, SessionStarted, ThinkingSummary, ToolCallItem,
-    ToolResult, UiPromptSubmitted, UiRoleUpdateAction, Verbosity,
+    CborValue, ContentPart, ContextItem, ContextRole, Effort, Event, ExtAgentsMdAvailable,
+    ExtensionReady, HarnessContextUsageChanged, HarnessEffortChanged, HarnessRoleInfo,
+    HarnessRoleSelected, HarnessRolesAvailable, HarnessVerbosityChanged, MessageItem,
+    ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason, ServiceTier,
+    SessionPromptCreated, SessionPromptQueued, SessionStartReason, SessionStarted, ThinkingSummary,
+    ToolCallItem, ToolResult, UiPromptSubmitted, UiRoleUpdateAction, Verbosity,
 };
 
 use super::chat::{DraftSlot, is_local_slash_command, should_send_draft_snapshot};
@@ -126,16 +126,16 @@ fn session_prompt_created(session_prompt_id: &str, session_id: &str) -> SessionP
 fn finished_response(
     session_prompt_id: &str,
     output_items: Vec<ContextItem>,
-) -> AgentResponseFinished {
+) -> ProviderResponseFinished {
     let stop_reason = if output_items
         .iter()
         .any(|item| matches!(item, ContextItem::ToolCall(_)))
     {
-        AgentStopReason::ToolCalls
+        ProviderStopReason::ToolCalls
     } else {
-        AgentStopReason::EndTurn
+        ProviderStopReason::EndTurn
     };
-    AgentResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items,
         stop_reason,
@@ -249,7 +249,7 @@ fn new_session_clears_session_ui_state() {
     renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
         "sp-0", "s1",
     )));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![
             assistant_message_item("old response"),
@@ -529,7 +529,7 @@ fn single_prompt_response_cycle() {
     assert!(vt.screen_contains(80, "…"));
 
     // Agent streams response.
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "Hi there!".into(),
         thinking: None,
@@ -539,7 +539,7 @@ fn single_prompt_response_cycle() {
     assert!(vt.screen_contains(80, "Hi there!"));
 
     // Agent finishes.
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("Hi there! How can I help?")],
     )));
@@ -577,7 +577,7 @@ fn thinking_renders_as_separate_block_above_response() {
 
     // Thinking arrives before the response text. Both should be
     // visible simultaneously, with thinking above response.
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: String::new(),
         thinking: Some("planning the answer".into()),
@@ -590,7 +590,7 @@ fn thinking_renders_as_separate_block_above_response() {
         vt.screen_text(80)
     );
 
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "actual answer".into(),
         thinking: Some("planning the answer".into()),
@@ -617,7 +617,7 @@ fn thinking_renders_as_separate_block_above_response() {
     );
 
     // On finish both stick in history.
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("actual answer")],
     )));
@@ -660,13 +660,13 @@ fn set_show_thinking_round_trip_restores_history() {
         },
         ..session_prompt_created("sp-0", "s1")
     }));
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "the_response".into(),
         thinking: Some("the_thinking_text".into()),
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("the_response")],
     )));
@@ -740,7 +740,7 @@ fn thinking_created_while_off_stays_invisible_after_toggle_on() {
         },
         ..session_prompt_created("sp-0", "s1")
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("answer")],
     )));
@@ -774,13 +774,13 @@ fn no_thinking_block_when_summary_absent() {
     renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
         "sp-0", "s1",
     )));
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "hello".into(),
         thinking: None,
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("hello")],
     )));
@@ -828,7 +828,7 @@ fn queued_prompt_renders_after_first_completes() {
     );
 
     // First finishes.
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("response one")],
     )));
@@ -851,7 +851,7 @@ fn queued_prompt_renders_after_first_completes() {
         vt.screen_text(80)
     );
 
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-1".into(),
         text: "response two".into(),
         thinking: None,
@@ -865,7 +865,7 @@ fn queued_prompt_renders_after_first_completes() {
     );
 
     // Second finishes.
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-1",
         vec![assistant_message_item("response two complete")],
     )));
@@ -921,13 +921,13 @@ fn three_queued_prompts_render_sequentially() {
                 ..session_prompt_created("sp-ignore", "s1")
             }));
         }
-        renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+        renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
             session_prompt_id: spid.clone(),
             text: format!("partial-{i}"),
             thinking: None,
             originator: tau_proto::PromptOriginator::User,
         }));
-        renderer.handle(&Event::AgentResponseFinished(finished_response(
+        renderer.handle(&Event::ProviderResponseFinished(finished_response(
             spid.as_ref(),
             vec![assistant_message_item(format!("response-{i}"))],
         )));
@@ -967,7 +967,7 @@ fn streaming_indicator_appends_during_updates() {
     sync(&handle);
     assert!(vt.screen_contains(80, "…"));
 
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "Hello".into(),
         thinking: None,
@@ -976,7 +976,7 @@ fn streaming_indicator_appends_during_updates() {
     sync(&handle);
     assert!(vt.screen_contains(80, "Hello …"));
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("Hello")],
     )));
@@ -1052,7 +1052,7 @@ fn delegate_progress_redraws_live_parent_block() {
         tau_themes::Theme::builtin(),
     );
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-delegate".into(),
@@ -1176,7 +1176,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
         tau_themes::Theme::builtin(),
     );
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-1".into(),
@@ -1232,7 +1232,7 @@ fn finished_response_preserves_message_and_tool_item_order() {
         tau_themes::Theme::builtin(),
     );
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![
             assistant_message_item("before tool"),
@@ -1279,7 +1279,7 @@ fn show_tools_summarize_turn_summarizes_tool_batch() {
     );
     renderer.apply_setting("show-tools", "summarize-turn");
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -1354,7 +1354,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
     );
     renderer.apply_setting("show-tools", "summarize-prompt");
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-1".into(),
@@ -1387,7 +1387,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
     sync(&handle);
     assert!(vt.screen_contains(80, "tools 1/1 (1L, 13B) ok: 1"));
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-1",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-2".into(),
@@ -1438,7 +1438,7 @@ fn show_tools_compact_hides_payload_body() {
     );
     renderer.apply_setting("show-tools", "compact");
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-1".into(),
@@ -1486,7 +1486,7 @@ fn show_tools_off_hides_tool_blocks() {
     );
     renderer.apply_setting("show-tools", "off");
 
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-1".into(),
@@ -1558,13 +1558,13 @@ fn streaming_block_does_not_duplicate_on_finish() {
     renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
         "sp-0", "s1",
     )));
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "hello!".into(),
         thinking: None,
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item("hello!")],
     )));
@@ -1824,7 +1824,7 @@ fn build_osc1337_set_user_var_encodes_value_and_respects_tmux() {
 
 #[test]
 fn format_token_stats_line_formats_short_latencies_as_millis() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 17_341,
         prompt_cached_tokens: 16_896,
         response_received_tokens: 29,
@@ -1838,7 +1838,7 @@ fn format_token_stats_line_formats_short_latencies_as_millis() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 16_000,
         response_received_tokens: 1_341,
         ..Default::default()
@@ -1855,7 +1855,7 @@ fn format_token_stats_line_formats_short_latencies_as_millis() {
 
 #[test]
 fn format_token_stats_line_formats_long_latencies_compactly() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         stats: tau_proto::TokenUsageStats {
             total: tau_proto::TokenUsageCounts {
                 sent_tokens: 1_000,
@@ -1877,7 +1877,7 @@ fn format_token_stats_line_formats_long_latencies_compactly() {
 
 #[test]
 fn format_token_stats_line_uses_previous_turn_for_hit_percent() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 20_100,
         prompt_cached_tokens: 19_000,
         stats: tau_proto::TokenUsageStats {
@@ -1890,7 +1890,7 @@ fn format_token_stats_line_uses_previous_turn_for_hit_percent() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 20_000,
         ..Default::default()
     };
@@ -1901,7 +1901,7 @@ fn format_token_stats_line_uses_previous_turn_for_hit_percent() {
 
 #[test]
 fn format_token_stats_line_shows_zero_hit_when_nothing_could_be_cached() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 1_000,
         stats: tau_proto::TokenUsageStats {
             total: tau_proto::TokenUsageCounts {
@@ -1919,7 +1919,7 @@ fn format_token_stats_line_shows_zero_hit_when_nothing_could_be_cached() {
 
 #[test]
 fn format_token_stats_line_shows_zero_hit_when_no_prompt_sent() {
-    let usage = tau_proto::AgentTokenUsage::default();
+    let usage = tau_proto::ProviderTokenUsage::default();
     let line = format_token_stats_line(&usage, None, None, None);
 
     assert_eq!(line, "Δ0% 0/0 ↑0 ↓0 Σ ↑0/0 ↓0");
@@ -1927,7 +1927,7 @@ fn format_token_stats_line_shows_zero_hit_when_no_prompt_sent() {
 
 #[test]
 fn render_token_stats_block_uses_dedicated_styles() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 1_000,
         prompt_cached_tokens: 900,
         response_received_tokens: 42,
@@ -1942,7 +1942,7 @@ fn render_token_stats_block_uses_dedicated_styles() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 1_000,
         ..Default::default()
     };
@@ -1971,7 +1971,7 @@ fn render_token_stats_block_uses_dedicated_styles() {
 
 #[test]
 fn render_token_stats_block_greys_cache_hit_within_512_rounding_bucket() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 20_100,
         prompt_cached_tokens: 19_456,
         stats: tau_proto::TokenUsageStats {
@@ -1984,7 +1984,7 @@ fn render_token_stats_block_greys_cache_hit_within_512_rounding_bucket() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 19_500,
         ..Default::default()
     };
@@ -2003,7 +2003,7 @@ fn render_token_stats_block_greys_cache_hit_within_512_rounding_bucket() {
 
 #[test]
 fn render_token_stats_block_warns_cache_hit_above_90_percent() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 10_100,
         prompt_cached_tokens: 9_100,
         stats: tau_proto::TokenUsageStats {
@@ -2016,7 +2016,7 @@ fn render_token_stats_block_warns_cache_hit_above_90_percent() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 10_000,
         ..Default::default()
     };
@@ -2035,7 +2035,7 @@ fn render_token_stats_block_warns_cache_hit_above_90_percent() {
 
 #[test]
 fn render_token_stats_block_highlights_cache_hit_at_or_below_90_percent() {
-    let usage = tau_proto::AgentTokenUsage {
+    let usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 10_100,
         prompt_cached_tokens: 9_000,
         stats: tau_proto::TokenUsageStats {
@@ -2048,7 +2048,7 @@ fn render_token_stats_block_highlights_cache_hit_at_or_below_90_percent() {
         },
         ..Default::default()
     };
-    let previous_usage = tau_proto::AgentTokenUsage {
+    let previous_usage = tau_proto::ProviderTokenUsage {
         prompt_sent_tokens: 10_000,
         ..Default::default()
     };
@@ -2120,7 +2120,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     )));
 
     // Agent starts streaming response 1.
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "Hello".into(),
         thinking: None,
@@ -2156,7 +2156,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     }));
 
     // More streaming updates (multi-line, like a real LLM).
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: "Hello!\n\nHow can I help you today?".into(),
         thinking: None,
@@ -2165,7 +2165,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     sync(&handle);
 
     // Response 1 finishes.
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item(
             "Hello!\n\nHow can I help you today?",
@@ -2182,13 +2182,13 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
         "sp-1", "s1",
     )));
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-1".into(),
         text: "Hello again!\n\nHow can I help you?".into(),
         thinking: None,
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-1",
         vec![assistant_message_item(
             "Hello again!\n\nHow can I help you?",
@@ -2205,13 +2205,13 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
         "sp-2", "s1",
     )));
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-2".into(),
         text: "Hi there!\n\nWhat can I help you with?".into(),
         thinking: None,
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-2",
         vec![assistant_message_item(
             "Hi there!\n\nWhat can I help you with?",
@@ -2276,13 +2276,13 @@ fn emoji_in_response_renders_correctly() {
 
     // Response with emoji followed by text on next line.
     let response = "Hello! 👋\n\nHow can I help you today?";
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: response.into(),
         thinking: None,
         originator: tau_proto::PromptOriginator::User,
     }));
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item(response)],
     )));
@@ -2333,7 +2333,7 @@ fn multiple_emoji_no_column_drift() {
 
     // 3 emoji = 6 columns + "end" = 9 columns total.
     let response = "🎉🎊🎈end\nnext line here";
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item(response)],
     )));
@@ -2371,7 +2371,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
     )));
 
     let partial = "stream 0\nstream 1\nstream 2\nstream 3\nPARTIAL ONLY";
-    renderer.handle(&Event::AgentResponseUpdated(AgentResponseUpdated {
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
         session_prompt_id: "sp-0".into(),
         text: partial.into(),
         thinking: None,
@@ -2385,7 +2385,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
     );
 
     let final_text = "final 0\nfinal 1\nfinal 2";
-    renderer.handle(&Event::AgentResponseFinished(finished_response(
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "sp-0",
         vec![assistant_message_item(final_text)],
     )));

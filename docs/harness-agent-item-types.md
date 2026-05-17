@@ -80,7 +80,7 @@ struct UserInputNode {
 
 struct AssistantResponseNode {
     provider_response_id: Option<String>,
-    backend: Option<AgentBackendRef>,
+    backend: Option<ProviderBackendRef>,
     output_items: Vec<ContextItem>,
     usage: Option<TokenUsage>,
 }
@@ -125,7 +125,7 @@ struct SessionPromptCreated {
 struct PreviousResponseCandidate {
     provider_response_id: String,
     next_item_index: usize,
-    backend: AgentBackendRef,
+    backend: ProviderBackendRef,
 }
 ```
 
@@ -146,15 +146,15 @@ enum PersistedTranscriptFact {
     UiPromptSubmitted(UiPromptSubmitted),
     SessionUserMessageInjected(SessionUserMessageInjected),
     SessionPromptSteered(SessionPromptSteered),
-    AgentResponseFinished(AgentResponseFinished),
+    ProviderResponseFinished(ProviderResponseFinished),
     ToolResult(ToolResultFact),
     SessionCompacted(SessionCompacted),
 }
 
-struct AgentResponseFinished {
+struct ProviderResponseFinished {
     session_prompt_id: SessionPromptId,
     originator: PromptOriginator,
-    backend: Option<AgentBackendRef>,
+    backend: Option<ProviderBackendRef>,
     provider_response_id: Option<String>,
     output_items: Vec<ContextItem>,
     usage: Option<TokenUsage>,

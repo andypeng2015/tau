@@ -13,8 +13,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tau_proto::{
-    AgentBackend, AgentTokenUsage, ConnectionId, ContentPart, ContextItem, ContextRole, Event,
-    LogEventId, MessageItem, SessionId, ToolCallId, ToolResultItem, ToolResultStatus, UnixMicros,
+    ConnectionId, ContentPart, ContextItem, ContextRole, Event, LogEventId, MessageItem,
+    ProviderBackend, ProviderTokenUsage, SessionId, ToolCallId, ToolResultItem, ToolResultStatus,
+    UnixMicros,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,9 +50,9 @@ pub enum SessionEntry {
     },
     AssistantResponse {
         provider_response_id: Option<String>,
-        backend: Option<AgentBackend>,
+        backend: Option<ProviderBackend>,
         output_items: Vec<ContextItem>,
-        usage: Option<AgentTokenUsage>,
+        usage: Option<ProviderTokenUsage>,
     },
     ToolResults {
         items: Vec<ToolResultItem>,
@@ -275,7 +276,7 @@ impl SessionTree {
     ///
     /// Returns the id of the node this event produced, or `None` for
     /// events that don't fold (transient lifecycle chatter, an
-    /// `AgentResponseFinished` carrying only tool calls, a
+    /// `ProviderResponseFinished` carrying only tool calls, a
     /// `UiNavigateTree`, etc.). Callers tracking a per-conversation
     /// branch cursor must advance it only when this returns `Some` —
     /// `tree.head()` is the *global* write cursor, so syncing blindly
@@ -333,7 +334,7 @@ impl SessionTree {
                     replacement_window: compacted.replacement_window.clone(),
                 },
             )),
-            Event::AgentResponseFinished(response) => {
+            Event::ProviderResponseFinished(response) => {
                 let node_id = self.append_node_at(
                     parent,
                     SessionEntry::AssistantResponse {
@@ -413,7 +414,7 @@ impl SessionTree {
     /// appending it to the durable log.
     pub fn validate_event(&self, event: &Event) -> Result<(), SessionEventValidationError> {
         match event {
-            Event::AgentResponseFinished(response) => {
+            Event::ProviderResponseFinished(response) => {
                 let mut seen = HashSet::new();
                 for item in &response.output_items {
                     let ContextItem::ToolCall(call) = item else {

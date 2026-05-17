@@ -2,9 +2,8 @@
 //!
 //! The extension owns model publication and Responses execution for the
 //! hardcoded `chatgpt/*` provider namespace. The harness routes prompts for
-//! those models directly here; this crate emits the existing provider execution
-//! events while the protocol type names are still `Agent*` for compatibility
-//! inside Rust.
+//! those models directly here; this crate emits the provider execution events
+//! and uses provider-named protocol payload types throughout Rust.
 
 mod common;
 mod responses;
@@ -18,10 +17,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use backon::BackoffBuilder;
 use tau_proto::{
-    Ack, AgentBackend, AgentBackendKind, AgentBackendTransport, AgentPromptSubmitted,
-    AgentResponseFinished, AgentResponseUpdated, AgentStopReason, ClientKind, ContextItem, Effort,
-    Event, EventName, Frame, FrameReader, FrameWriter, Message, ModelId, ModelName,
-    ProviderModelInfo, ProviderModelsUpdated, ProviderName, ThinkingSummary, Verbosity,
+    Ack, ClientKind, ContextItem, Effort, Event, EventName, Frame, FrameReader, FrameWriter,
+    Message, ModelId, ModelName, ProviderBackend, ProviderBackendKind, ProviderBackendTransport,
+    ProviderModelInfo, ProviderModelsUpdated, ProviderName, ProviderPromptSubmitted,
+    ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason, ThinkingSummary,
+    Verbosity,
 };
 use tau_provider::storage::{self, AuthStore, Credentials, ProviderKind};
 
@@ -274,8 +274,8 @@ fn write_prompt_submitted<W: Write>(
     originator: &tau_proto::PromptOriginator,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
-    writer.write_frame(&Frame::Event(Event::AgentPromptSubmitted(
-        AgentPromptSubmitted {
+    writer.write_frame(&Frame::Event(Event::ProviderPromptSubmitted(
+        ProviderPromptSubmitted {
             session_prompt_id: session_prompt_id.into(),
             originator: originator.clone(),
         },
@@ -294,7 +294,7 @@ fn finish_canceled<W: Write>(
         session_prompt_id,
         "skipping provider request — already canceled by harness",
     );
-    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
+    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
         simple_finished(
             session_prompt_id.into(),
             originator.clone(),
@@ -314,7 +314,7 @@ fn finish_missing_backend<W: Write>(
         Some(model) => format!("cannot resolve provider backend for: {model}"),
         None => "no model specified".to_owned(),
     };
-    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
+    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
         simple_finished(session_prompt_id.into(), prompt.originator.clone(), msg),
     )))?;
     writer.flush()?;
@@ -325,11 +325,11 @@ fn simple_finished(
     session_prompt_id: tau_proto::SessionPromptId,
     originator: tau_proto::PromptOriginator,
     text: impl Into<String>,
-) -> AgentResponseFinished {
-    AgentResponseFinished {
+) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id,
         output_items: vec![common::assistant_text_item(text)],
-        stop_reason: AgentStopReason::EndTurn,
+        stop_reason: ProviderStopReason::EndTurn,
         originator,
         usage: None,
         backend: None,
@@ -338,19 +338,19 @@ fn simple_finished(
     }
 }
 
-fn stop_reason_from_output_items(output_items: &[ContextItem]) -> AgentStopReason {
+fn stop_reason_from_output_items(output_items: &[ContextItem]) -> ProviderStopReason {
     if output_items
         .iter()
         .any(|item| matches!(item, ContextItem::Compaction(_)))
     {
-        AgentStopReason::Compaction
+        ProviderStopReason::Compaction
     } else if output_items
         .iter()
         .any(|item| matches!(item, ContextItem::ToolCall(_)))
     {
-        AgentStopReason::ToolCalls
+        ProviderStopReason::ToolCalls
     } else {
-        AgentStopReason::EndTurn
+        ProviderStopReason::EndTurn
     }
 }
 
@@ -614,8 +614,8 @@ fn emit_retry_banner<W: Write>(
         max_attempts,
         error,
     );
-    let _ = writer.write_frame(&Frame::Event(Event::AgentResponseUpdated(
-        AgentResponseUpdated {
+    let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
+        ProviderResponseUpdated {
             session_prompt_id: session_prompt_id.into(),
             text: banner,
             thinking: None,
@@ -634,7 +634,7 @@ struct StreamDispatchState<'a> {
     ws_pool: &'a mut responses::pool::WsPool,
     ws_disabled: &'a mut HashSet<String>,
     ws_retry: &'a mut WsRetryState,
-    transport_taken: &'a mut AgentBackendTransport,
+    transport_taken: &'a mut ProviderBackendTransport,
 }
 
 fn stream_with_dispatch(
@@ -653,7 +653,7 @@ fn stream_with_dispatch(
     let session_id = request.session_id.as_str();
     let try_ws = config.supports_websocket && !ws_disabled.contains(session_id);
     if try_ws {
-        let ws_request = request_for_transport(request, AgentBackendTransport::Websocket);
+        let ws_request = request_for_transport(request, ProviderBackendTransport::Websocket);
         match responses::pool::run_turn_through_pool(
             ws_pool,
             config,
@@ -664,7 +664,7 @@ fn stream_with_dispatch(
         ) {
             Ok(state) => {
                 ws_retry.failures = 0;
-                *transport_taken = AgentBackendTransport::Websocket;
+                *transport_taken = ProviderBackendTransport::Websocket;
                 return Ok(state);
             }
             Err(error) if should_disable_ws_error(&error) => {
@@ -678,7 +678,7 @@ fn stream_with_dispatch(
             }
             Err(other) => {
                 let error = other.into_llm_error();
-                *transport_taken = AgentBackendTransport::Websocket;
+                *transport_taken = ProviderBackendTransport::Websocket;
                 if error.retry_after().is_some() {
                     ws_retry.failures += 1;
                     if ws_retry.failures <= ws_retry.budget {
@@ -706,14 +706,14 @@ fn stream_with_dispatch(
         }
     }
 
-    *transport_taken = AgentBackendTransport::HttpSse;
-    let http_request = request_for_transport(request, AgentBackendTransport::HttpSse);
+    *transport_taken = ProviderBackendTransport::HttpSse;
+    let http_request = request_for_transport(request, ProviderBackendTransport::HttpSse);
     responses::responses_stream(session_prompt_id, config, &http_request, on_update)
 }
 
 fn request_for_transport<'a>(
     request: &common::PromptPayload<'a>,
-    transport: AgentBackendTransport,
+    transport: ProviderBackendTransport,
 ) -> common::PromptPayload<'a> {
     let previous_response =
         request
@@ -855,7 +855,7 @@ fn handle_prompt<W: Write>(
         failures: 0,
         budget: max_retries_for(&originator).min(WS_RETRY_BUDGET_BEFORE_HTTP_FALLBACK),
     };
-    let mut transport_taken = AgentBackendTransport::HttpSse;
+    let mut transport_taken = ProviderBackendTransport::HttpSse;
     let ws_pool_before = Some(ws_pool.stats());
     let result = with_llm_retry(
         session_prompt_id,
@@ -864,8 +864,8 @@ fn handle_prompt<W: Write>(
         retry_ctx,
         |writer| {
             let mut on_update = |text_so_far: &str, thinking_so_far: Option<&str>| {
-                let _ = writer.write_frame(&Frame::Event(Event::AgentResponseUpdated(
-                    AgentResponseUpdated {
+                let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
+                    ProviderResponseUpdated {
                         session_prompt_id: session_prompt_id.into(),
                         text: text_so_far.to_owned(),
                         thinking: thinking_so_far.map(str::to_owned),
@@ -936,7 +936,7 @@ fn handle_compaction_request<W: Write>(
         share_user_cache_key: prompt.share_user_cache_key,
         session_id: &prompt.session_id,
     };
-    let backend = backend_descriptor(config, AgentBackendTransport::HttpSse, false);
+    let backend = backend_descriptor(config, ProviderBackendTransport::HttpSse, false);
     let result = if config.supports_compaction {
         with_llm_retry(
             session_prompt_id,
@@ -983,11 +983,11 @@ fn handle_compaction_request<W: Write>(
 
 fn backend_descriptor(
     config: &responses::ResponsesConfig,
-    transport: AgentBackendTransport,
+    transport: ProviderBackendTransport,
     stale_chain_fallback: bool,
-) -> AgentBackend {
-    AgentBackend {
-        kind: AgentBackendKind::Responses,
+) -> ProviderBackend {
+    ProviderBackend {
+        kind: ProviderBackendKind::Responses,
         base_url: config.base_url.clone(),
         transport,
         stale_chain_fallback,
@@ -1008,13 +1008,13 @@ fn compute_ws_pool_delta(
 
 fn maybe_debug_write_provider_response(
     session_id: &str,
-    response: &AgentResponseFinished,
+    response: &ProviderResponseFinished,
     provider_terminal_event: Option<&serde_json::Value>,
 ) {
     let Some(backend) = response.backend.as_ref() else {
         return;
     };
-    if !matches!(backend.kind, AgentBackendKind::Responses) {
+    if !matches!(backend.kind, ProviderBackendKind::Responses) {
         return;
     }
     let Some(dir) = responses::debug_provider_request_dir(session_id) else {
@@ -1034,8 +1034,8 @@ fn maybe_debug_write_provider_response(
         .unwrap_or_default()
         .as_micros();
     let transport_label = match backend.transport {
-        AgentBackendTransport::HttpSse => "http-sse",
-        AgentBackendTransport::Websocket => "websocket",
+        ProviderBackendTransport::HttpSse => "http-sse",
+        ProviderBackendTransport::Websocket => "websocket",
     };
     let path = dir.join(format!(
         "{ts}-{}-{transport_label}-response.json",
@@ -1048,7 +1048,7 @@ fn maybe_debug_write_provider_response(
         "backend": backend,
         "provider_response_id": response.provider_response_id,
         "usage": response.usage,
-        "agent_response_finished": response,
+        "provider_response_finished": response,
         "provider_terminal_event": provider_terminal_event,
     });
     if let Err(error) = serde_json::to_vec_pretty(&metadata)
@@ -1068,7 +1068,7 @@ fn finish_stream<W: Write>(
     session_id: &str,
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
-    backend: &AgentBackend,
+    backend: &ProviderBackend,
     mut state: common::StreamState,
     ws_pool_delta: Option<tau_proto::WsPoolDelta>,
     writer: &mut FrameWriter<BufWriter<W>>,
@@ -1093,7 +1093,7 @@ fn finish_stream<W: Write>(
             "(provider returned an empty response)",
         ));
     }
-    let finished = AgentResponseFinished {
+    let finished = ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         stop_reason: stop_reason_from_output_items(&output_items),
         output_items,
@@ -1104,7 +1104,7 @@ fn finish_stream<W: Write>(
         ws_pool_delta,
     };
     maybe_debug_write_provider_response(session_id, &finished, provider_terminal_event.as_ref());
-    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(finished)))?;
+    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(finished)))?;
     writer.flush()?;
     Ok(())
 }
@@ -1113,15 +1113,15 @@ fn finish_error<W: Write>(
     session_id: &str,
     session_prompt_id: &str,
     originator: &tau_proto::PromptOriginator,
-    backend: &AgentBackend,
+    backend: &ProviderBackend,
     error: common::LlmError,
     ws_pool_delta: Option<tau_proto::WsPoolDelta>,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
-    let finished = AgentResponseFinished {
+    let finished = ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: vec![common::assistant_text_item(format!("LLM error: {error}"))],
-        stop_reason: AgentStopReason::Error,
+        stop_reason: ProviderStopReason::Error,
         originator: originator.clone(),
         usage: None,
         backend: Some(backend.clone()),
@@ -1129,7 +1129,7 @@ fn finish_error<W: Write>(
         ws_pool_delta,
     };
     maybe_debug_write_provider_response(session_id, &finished, None);
-    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(finished)))?;
+    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(finished)))?;
     writer.flush()?;
     Ok(())
 }
@@ -1473,16 +1473,16 @@ mod tests {
         let submitted = frames.iter().position(|frame| {
             matches!(
                 frame,
-                Frame::Event(Event::AgentPromptSubmitted(submitted))
+                Frame::Event(Event::ProviderPromptSubmitted(submitted))
                     if submitted.session_prompt_id.as_str() == "sp-1"
             )
         });
         let finished = frames.iter().position(|frame| {
             matches!(
                 frame,
-                Frame::Event(Event::AgentResponseFinished(finished))
+                Frame::Event(Event::ProviderResponseFinished(finished))
                     if finished.session_prompt_id.as_str() == "sp-1"
-                        && finished.stop_reason == AgentStopReason::EndTurn
+                        && finished.stop_reason == ProviderStopReason::EndTurn
             )
         });
         let ack = frames.iter().position(|frame| {

@@ -10,8 +10,8 @@ use tau_proto::{CborValue, ToolDisplay, ToolDisplayPayload, ToolDisplayStatus, c
 
 #[cfg(test)]
 pub(crate) fn format_token_stats_line(
-    usage: &tau_proto::AgentTokenUsage,
-    previous_usage: Option<&tau_proto::AgentTokenUsage>,
+    usage: &tau_proto::ProviderTokenUsage,
+    previous_usage: Option<&tau_proto::ProviderTokenUsage>,
     turn_latency: Option<Duration>,
     total_latency: Option<Duration>,
 ) -> String {
@@ -23,8 +23,8 @@ pub(crate) fn format_token_stats_line(
 
 pub(crate) fn render_token_stats_block(
     theme: &tau_themes::Theme,
-    usage: &tau_proto::AgentTokenUsage,
-    previous_usage: Option<&tau_proto::AgentTokenUsage>,
+    usage: &tau_proto::ProviderTokenUsage,
+    previous_usage: Option<&tau_proto::ProviderTokenUsage>,
     turn_latency: Option<Duration>,
     total_latency: Option<Duration>,
 ) -> tau_cli_term::StyledBlock {
@@ -62,8 +62,8 @@ impl TokenStatsPart {
 }
 
 fn token_stats_parts(
-    usage: &tau_proto::AgentTokenUsage,
-    previous_usage: Option<&tau_proto::AgentTokenUsage>,
+    usage: &tau_proto::ProviderTokenUsage,
+    previous_usage: Option<&tau_proto::ProviderTokenUsage>,
     turn_latency: Option<Duration>,
     total_latency: Option<Duration>,
 ) -> Vec<TokenStatsPart> {

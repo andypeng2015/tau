@@ -327,7 +327,7 @@ pub fn run_daemon_with_config(
 /// `session_prompt_id` the harness allocated for this submission.
 /// Without this, opening a fresh socket against a daemon that has
 /// served a previous prompt would replay that prompt's terminal
-/// `AgentResponseFinished` to the new subscriber and the helper
+/// `ProviderResponseFinished` to the new subscriber and the helper
 /// would return the historical response instead of waiting for the
 /// live one.
 pub fn send_daemon_message_with_trace(
@@ -363,7 +363,7 @@ pub fn send_daemon_message_with_trace(
     let mut lifecycle_messages = Vec::new();
     let mut progress_messages = Vec::new();
     // Counter parsed out of the `SessionPromptCreated` whose `ctx_id`
-    // matches our submit. The terminal `AgentResponseFinished` has a
+    // matches our submit. The terminal `ProviderResponseFinished` has a
     // spid counter `>= our_spid_counter` (equal when no tool calls,
     // higher when tool-result follow-ups bump the counter).
     let mut our_spid_counter: Option<u64> = None;
@@ -397,7 +397,7 @@ pub fn send_daemon_message_with_trace(
                 {
                     our_spid_counter = parse_spid_counter(prompt.session_prompt_id.as_ref());
                 }
-                Frame::Event(Event::AgentResponseFinished(finished))
+                Frame::Event(Event::ProviderResponseFinished(finished))
                     if tool_calls_from_output_items(&finished.output_items).is_empty()
                         && our_spid_counter.is_some_and(|ours| {
                             parse_spid_counter(finished.session_prompt_id.as_ref())

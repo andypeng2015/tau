@@ -1,6 +1,6 @@
 use tau_proto::{
-    AgentResponseFinished, CborValue, ClientKind, ConnectionId, ContentPart, ContextItem,
-    ContextRole, Event, EventName, EventSelector, Frame, MessageItem, PromptOriginator,
+    CborValue, ClientKind, ConnectionId, ContentPart, ContextItem, ContextRole, Event, EventName,
+    EventSelector, Frame, MessageItem, PromptOriginator, ProviderResponseFinished,
     SessionPromptSteered, SessionUserMessageInjected, ToolCallItem, ToolRegister, ToolRequest,
     ToolResult, ToolResultStatus, ToolSideEffects, ToolSpec, ToolType, UiNavigateTree,
     UiPromptSubmitted,
@@ -46,7 +46,7 @@ fn store_agent_message(store: &mut SessionStore, session_id: &str, text: &str) -
         .append_session_event(
             session_id,
             None,
-            Event::AgentResponseFinished(agent_response_text(
+            Event::ProviderResponseFinished(provider_response_text(
                 &format!("sp-{session_id}-{text}"),
                 text,
             )),
@@ -78,11 +78,11 @@ fn user_message_item(text: &str) -> ContextItem {
     })
 }
 
-fn agent_response_text(session_prompt_id: &str, text: &str) -> AgentResponseFinished {
-    AgentResponseFinished {
+fn provider_response_text(session_prompt_id: &str, text: &str) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: vec![assistant_message_item(text)],
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,
@@ -91,8 +91,8 @@ fn agent_response_text(session_prompt_id: &str, text: &str) -> AgentResponseFini
     }
 }
 
-fn agent_response_tool_call(session_prompt_id: &str, call_id: &str) -> AgentResponseFinished {
-    AgentResponseFinished {
+fn provider_response_tool_call(session_prompt_id: &str, call_id: &str) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: call_id.into(),
@@ -100,7 +100,7 @@ fn agent_response_tool_call(session_prompt_id: &str, call_id: &str) -> AgentResp
             tool_type: ToolType::Function,
             arguments: CborValue::Null,
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,
@@ -109,8 +109,11 @@ fn agent_response_tool_call(session_prompt_id: &str, call_id: &str) -> AgentResp
     }
 }
 
-fn agent_response_tool_calls(session_prompt_id: &str, call_ids: &[&str]) -> AgentResponseFinished {
-    AgentResponseFinished {
+fn provider_response_tool_calls(
+    session_prompt_id: &str,
+    call_ids: &[&str],
+) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: call_ids
             .iter()
@@ -123,7 +126,7 @@ fn agent_response_tool_calls(session_prompt_id: &str, call_ids: &[&str]) -> Agen
                 })
             })
             .collect(),
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,
@@ -228,7 +231,7 @@ fn directed_events_ignore_subscriptions_but_still_use_visibility_filters() {
         .send_to(
             &ui_id,
             Some(&tool_id),
-            Frame::Event(Event::AgentResponseFinished(agent_response_text(
+            Frame::Event(Event::ProviderResponseFinished(provider_response_text(
                 "sp-1", "hidden",
             ))),
         )
@@ -280,8 +283,8 @@ fn connection_abstraction_is_transport_independent_for_in_memory_clients() {
     })));
     assert_eq!(first_report.delivered_to, vec![tool_id.clone()]);
 
-    let second_report = bus.publish(Frame::Event(Event::AgentResponseFinished(
-        agent_response_text("sp-1", "done"),
+    let second_report = bus.publish(Frame::Event(Event::ProviderResponseFinished(
+        provider_response_text("sp-1", "done"),
     )));
     assert_eq!(second_report.delivered_to, vec![provider_id.clone()]);
 
@@ -622,11 +625,11 @@ fn next_event_id_is_cached_across_appends_and_reopen() {
     assert_eq!(outcome.id.get(), 16);
 }
 
-/// `AgentResponseFinished.output_items` must survive the session-event
+/// `ProviderResponseFinished.output_items` must survive the session-event
 /// fold intact so prompt assembly can replay the exact assistant item
 /// order and message metadata on later turns.
 #[test]
-fn session_tree_captures_phase_from_agent_response_finished() {
+fn session_tree_captures_phase_from_provider_response_finished() {
     use tau_proto::MessagePhase;
 
     let mut tree = crate::session::SessionTree::from_events("session-1".into(), &[]);
@@ -636,7 +639,7 @@ fn session_tree_captures_phase_from_agent_response_finished() {
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
-    tree.apply_event(&Event::AgentResponseFinished(AgentResponseFinished {
+    tree.apply_event(&Event::ProviderResponseFinished(ProviderResponseFinished {
         session_prompt_id: "sp-1".into(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -645,7 +648,7 @@ fn session_tree_captures_phase_from_agent_response_finished() {
             }],
             phase: Some(MessagePhase::Commentary),
         })],
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,
@@ -871,7 +874,7 @@ fn session_tree_groups_terminal_tool_results_under_assistant_response() {
         .append_session_event(
             "session-1",
             None,
-            Event::AgentResponseFinished(AgentResponseFinished {
+            Event::ProviderResponseFinished(ProviderResponseFinished {
                 session_prompt_id: "sp-tools".into(),
                 output_items: vec![ContextItem::ToolCall(ToolCallItem {
                     call_id: "call-1".into(),
@@ -879,7 +882,7 @@ fn session_tree_groups_terminal_tool_results_under_assistant_response() {
                     tool_type: ToolType::Function,
                     arguments: CborValue::Null,
                 })],
-                stop_reason: tau_proto::AgentStopReason::ToolCalls,
+                stop_reason: tau_proto::ProviderStopReason::ToolCalls,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -936,7 +939,7 @@ fn session_store_rejects_duplicate_tool_call_ids_before_persisting() {
         .append_session_event(
             "session-1",
             None,
-            Event::AgentResponseFinished(AgentResponseFinished {
+            Event::ProviderResponseFinished(ProviderResponseFinished {
                 session_prompt_id: "sp-duplicate".into(),
                 output_items: vec![
                     ContextItem::ToolCall(ToolCallItem {
@@ -952,7 +955,7 @@ fn session_store_rejects_duplicate_tool_call_ids_before_persisting() {
                         arguments: CborValue::Null,
                     }),
                 ],
-                stop_reason: tau_proto::AgentStopReason::ToolCalls,
+                stop_reason: tau_proto::ProviderStopReason::ToolCalls,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -995,7 +998,7 @@ fn session_store_rejects_tool_call_ids_reused_while_round_is_open_before_persist
         .append_session_event(
             "session-1",
             None,
-            Event::AgentResponseFinished(agent_response_tool_call("sp-1", "call-1")),
+            Event::ProviderResponseFinished(provider_response_tool_call("sp-1", "call-1")),
         )
         .expect("first tool call should persist");
 
@@ -1003,7 +1006,7 @@ fn session_store_rejects_tool_call_ids_reused_while_round_is_open_before_persist
         .append_session_event(
             "session-1",
             None,
-            Event::AgentResponseFinished(agent_response_tool_call("sp-2", "call-1")),
+            Event::ProviderResponseFinished(provider_response_tool_call("sp-2", "call-1")),
         )
         .expect_err("call id reused while open should be rejected");
 
@@ -1031,7 +1034,7 @@ fn session_store_rejects_duplicate_terminal_tool_result_before_persisting() {
         .append_session_event(
             "session-1",
             None,
-            Event::AgentResponseFinished(agent_response_tool_calls(
+            Event::ProviderResponseFinished(provider_response_tool_calls(
                 "sp-tools",
                 &["call-1", "call-2"],
             )),

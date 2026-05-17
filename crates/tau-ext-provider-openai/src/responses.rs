@@ -94,7 +94,7 @@ pub struct ResponsesConfig {
     ///    harness can replay verbatim.
     /// 2. The SSE/WS parser captures each `reasoning` output item's full JSON
     ///    on `response.output_item.done` and forwards it as an ordered
-    ///    `ContextItem::Reasoning` in `AgentResponseFinished.output_items`.
+    ///    `ContextItem::Reasoning` in `ProviderResponseFinished.output_items`.
     ///
     /// When off, no `include` field is sent and reasoning items are
     /// not captured. Pi calls this "encrypted reasoning replay"; it's
@@ -124,7 +124,7 @@ pub(crate) fn maybe_debug_write_provider_request(
     session_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
-    transport: tau_proto::AgentBackendTransport,
+    transport: tau_proto::ProviderBackendTransport,
 ) {
     if let Err(error) = debug_write_provider_request(session_prompt_id, config, request, transport)
     {
@@ -151,7 +151,7 @@ fn debug_write_provider_request(
     session_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
-    transport: tau_proto::AgentBackendTransport,
+    transport: tau_proto::ProviderBackendTransport,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(dir) = debug_provider_request_dir(request.session_id) else {
         return Ok(());
@@ -162,17 +162,17 @@ fn debug_write_provider_request(
         .unwrap_or_default()
         .as_micros();
     let transport_label = match transport {
-        tau_proto::AgentBackendTransport::HttpSse => "http-sse",
-        tau_proto::AgentBackendTransport::Websocket => "websocket",
+        tau_proto::ProviderBackendTransport::HttpSse => "http-sse",
+        tau_proto::ProviderBackendTransport::Websocket => "websocket",
     };
     let path = dir.join(format!(
         "{ts}-{session_prompt_id}-{transport_label}-request.json"
     ));
     let body = match transport {
-        tau_proto::AgentBackendTransport::HttpSse => {
+        tau_proto::ProviderBackendTransport::HttpSse => {
             serde_json::to_value(build_request(config, request))?
         }
-        tau_proto::AgentBackendTransport::Websocket => {
+        tau_proto::ProviderBackendTransport::Websocket => {
             serde_json::to_value(build_ws_envelope(config, request))?
         }
     };
@@ -308,7 +308,7 @@ fn responses_stream_once(
         session_prompt_id,
         config,
         request,
-        tau_proto::AgentBackendTransport::HttpSse,
+        tau_proto::ProviderBackendTransport::HttpSse,
     );
     let body = build_request(config, request);
     let body_str = serde_json::to_string(&body).map_err(LlmError::Json)?;

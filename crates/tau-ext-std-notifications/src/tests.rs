@@ -2,8 +2,8 @@ use std::io::Cursor;
 use std::sync::Once;
 
 use tau_proto::{
-    AgentResponseFinished, AgentStopReason, ContentPart, ContextItem, ContextRole, Event,
-    FrameReader, FrameWriter, MessageItem, ToolCallItem, UiPromptSubmitted,
+    ContentPart, ContextItem, ContextRole, Event, FrameReader, FrameWriter, MessageItem,
+    ProviderResponseFinished, ProviderStopReason, ToolCallItem, UiPromptSubmitted,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -134,8 +134,8 @@ fn assistant_finished_response(
     session_prompt_id: &str,
     text: &str,
     originator: tau_proto::PromptOriginator,
-) -> AgentResponseFinished {
-    AgentResponseFinished {
+) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
@@ -144,7 +144,7 @@ fn assistant_finished_response(
             }],
             phase: None,
         })],
-        stop_reason: AgentStopReason::EndTurn,
+        stop_reason: ProviderStopReason::EndTurn,
         originator,
         usage: None,
         backend: None,
@@ -157,11 +157,11 @@ fn tool_call_finished_response(
     session_prompt_id: &str,
     tool_call: ToolCallItem,
     originator: tau_proto::PromptOriginator,
-) -> AgentResponseFinished {
-    AgentResponseFinished {
+) -> ProviderResponseFinished {
+    ProviderResponseFinished {
         session_prompt_id: session_prompt_id.into(),
         output_items: vec![ContextItem::ToolCall(tool_call)],
-        stop_reason: AgentStopReason::ToolCalls,
+        stop_reason: ProviderStopReason::ToolCalls,
         originator,
         usage: None,
         backend: None,
@@ -193,15 +193,13 @@ fn emits_start_and_end_user_var_in_order() {
         }))
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     // Explicit disconnect so the loop exits without waiting on
     // the (otherwise long) idle deadline triggered by the
-    // `AgentResponseFinished`.
+    // `ProviderResponseFinished`.
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
 
@@ -230,11 +228,11 @@ fn emits_start_and_end_user_var_in_order() {
     }
 }
 
-/// Mid-turn `AgentResponseFinished` events (those carrying
+/// Mid-turn `ProviderResponseFinished` events (those carrying
 /// pending tool calls) must NOT trigger the end-of-turn sound.
 /// The agent emits one of those per LLM call when it's looping
 /// through tool use; the *turn* only ends with a final
-/// `AgentResponseFinished` that has empty `tool_calls`.
+/// `ProviderResponseFinished` that has empty `tool_calls`.
 #[test]
 fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
     use tau_proto::CborValue;
@@ -251,16 +249,18 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
     // Mid-turn finish: text=None, tool_calls non-empty. No
     // notification should fire.
     writer
-        .write_event(&Event::AgentResponseFinished(tool_call_finished_response(
-            "sp-0",
-            ToolCallItem {
-                call_id: "call-1".into(),
-                name: tau_proto::ToolName::new("shell"),
-                tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Null,
-            },
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            tool_call_finished_response(
+                "sp-0",
+                ToolCallItem {
+                    call_id: "call-1".into(),
+                    name: tau_proto::ToolName::new("shell"),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments: CborValue::Null,
+                },
+                tau_proto::PromptOriginator::User,
+            ),
+        ))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
@@ -272,7 +272,7 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
     drain_lifecycle(&mut reader);
 
     // We expect the user-submit sound but NO end sound, because
-    // the tool-bearing AgentResponseFinished is mid-turn.
+    // the tool-bearing ProviderResponseFinished is mid-turn.
     let start = reader.read_event().expect("read").expect("start");
     match start {
         Event::Osc1337SetUserVar(osc) => {
@@ -287,7 +287,7 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
     );
 }
 
-/// After AgentResponseFinished we should see the end-sound OSC
+/// After ProviderResponseFinished we should see the end-sound OSC
 /// and then, after the configured idle window expires with no
 /// further input, the text-notification OSC carrying a JSON
 /// payload that mirrors `user-text-notification.sh`. By default
@@ -298,11 +298,9 @@ fn idle_timeout_defaults_to_static_notification() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -361,11 +359,9 @@ fn idle_timeout_requests_summary_when_enabled_then_falls_back() {
         .write_frame(&immediate_idle_agent_summary_config_frame())
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -444,11 +440,9 @@ fn summary_result_populates_notification_body() {
         .write_frame(&immediate_idle_agent_summary_config_frame())
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -520,11 +514,9 @@ fn prompt_draft_extends_idle_deadline() {
 
     // Arm the idle deadline.
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -612,11 +604,9 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
         .write_frame(&immediate_idle_agent_summary_config_frame())
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -712,11 +702,9 @@ fn idle_command_runs_with_title_body_and_env() {
     }));
     writer.write_frame(&configure_frame(cfg)).expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.flush().expect("flush");
 
@@ -809,11 +797,9 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer
         .write_event(&Event::UiPromptSubmitted(UiPromptSubmitted {
@@ -860,7 +846,7 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
 /// chime, since the user isn't seeing them.
 #[test]
 fn sub_agent_prompts_and_responses_are_ignored() {
-    use tau_proto::{AgentPromptSubmitted, CborValue, ToolName};
+    use tau_proto::{CborValue, ProviderPromptSubmitted, ToolName};
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
 
@@ -876,22 +862,24 @@ fn sub_agent_prompts_and_responses_are_ignored() {
 
     // Main agent emits a delegate tool_call (mid-turn).
     writer
-        .write_event(&Event::AgentResponseFinished(tool_call_finished_response(
-            "sp-main",
-            ToolCallItem {
-                call_id: "delegate-call".into(),
-                name: ToolName::new("delegate"),
-                tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Null,
-            },
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            tool_call_finished_response(
+                "sp-main",
+                ToolCallItem {
+                    call_id: "delegate-call".into(),
+                    name: ToolName::new("delegate"),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments: CborValue::Null,
+                },
+                tau_proto::PromptOriginator::User,
+            ),
+        ))
         .expect("write");
 
     // Sub-agent activity — must not clear idle, fire chimes, or
     // touch `waiting_for_final_response`.
     writer
-        .write_event(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
+        .write_event(&Event::ProviderPromptSubmitted(ProviderPromptSubmitted {
             session_prompt_id: "sp-side".into(),
             originator: tau_proto::PromptOriginator::Extension {
                 name: "core-delegate".into(),
@@ -911,23 +899,23 @@ fn sub_agent_prompts_and_responses_are_ignored() {
         }))
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-side",
-            "delegated answer",
-            tau_proto::PromptOriginator::Extension {
-                name: "core-delegate".into(),
-                query_id: "q1".into(),
-            },
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response(
+                "sp-side",
+                "delegated answer",
+                tau_proto::PromptOriginator::Extension {
+                    name: "core-delegate".into(),
+                    query_id: "q1".into(),
+                },
+            ),
+        ))
         .expect("write");
 
     // Main agent finally finishes the user's turn → end sound.
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-main",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-main", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
@@ -980,11 +968,9 @@ fn duplicate_ui_prompt_submitted_during_same_turn_emits_one_start_sound() {
         }))
         .expect("write");
     writer
-        .write_event(&Event::AgentResponseFinished(assistant_finished_response(
-            "sp-0",
-            "done",
-            tau_proto::PromptOriginator::User,
-        )))
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
         .expect("write");
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");

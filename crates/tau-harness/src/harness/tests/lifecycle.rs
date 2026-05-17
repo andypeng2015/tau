@@ -27,7 +27,7 @@ fn unavailable_tool_is_reported_without_crashing() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
@@ -35,7 +35,7 @@ fn unavailable_tool_is_reported_without_crashing() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: None,
         originator: tau_proto::PromptOriginator::User,
         backend: None,
@@ -84,7 +84,7 @@ fn disconnected_tool_completes_pending_call() {
     let cid = h.default_conversation_id.clone();
     h.publish_for_conversation(
         &cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-main".into(),
             output_items: vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: call_id.clone(),
@@ -92,7 +92,7 @@ fn disconnected_tool_completes_pending_call() {
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             })],
-            stop_reason: tau_proto::AgentStopReason::ToolCalls,
+            stop_reason: tau_proto::ProviderStopReason::ToolCalls,
             usage: None,
             originator: tau_proto::PromptOriginator::User,
             backend: None,
@@ -221,7 +221,7 @@ fn disconnected_tool_is_removed_cleanly() {
             ctx_id: None,
         }),
     );
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
@@ -229,7 +229,7 @@ fn disconnected_tool_is_removed_cleanly() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: None,
         originator: tau_proto::PromptOriginator::User,
         backend: None,
@@ -297,7 +297,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
         }),
     );
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
@@ -305,10 +305,10 @@ fn role_disabled_tool_is_reported_without_dispatch() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -436,7 +436,7 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
         }),
     );
 
-    let response = AgentResponseFinished {
+    let response = ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
@@ -444,10 +444,10 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -462,7 +462,7 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
         ws_pool_delta: None,
     };
 
-    h.handle_agent_response_finished(response)
+    h.handle_provider_response_finished(response)
         .expect("invalid tool call must not panic");
 
     // The call must be gone from both the pending queue and the
@@ -544,7 +544,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
         }),
     );
 
-    let response = AgentResponseFinished {
+    let response = ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -560,10 +560,10 @@ fn empty_tool_call_id_rejects_response_before_commit() {
                 arguments: CborValue::Map(Vec::new()),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         usage: match (None, None, None) {
             (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::AgentTokenUsage {
+            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input_tokens.unwrap_or(0),
                 prompt_cached_tokens: cached_tokens.unwrap_or(0),
@@ -579,7 +579,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
     };
 
     let error = h
-        .handle_agent_response_finished(response)
+        .handle_provider_response_finished(response)
         .expect_err("empty call id must reject the response");
     assert!(
         error.to_string().contains("empty call_id"),
@@ -620,7 +620,7 @@ fn cancel_after_agent_thinking_terminalizes_tool_calls_before_dispatch() {
     )
     .expect("cancel");
 
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -636,7 +636,7 @@ fn cancel_after_agent_thinking_terminalizes_tool_calls_before_dispatch() {
                 arguments: CborValue::Null,
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,
@@ -678,7 +678,7 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
     let cid = h.default_conversation_id.clone();
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_conversations.insert("sp-x".into(), cid.clone());
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: "sp-x".into(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
@@ -697,7 +697,7 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
                 arguments: CborValue::Map(Vec::new()),
             }),
         ],
-        stop_reason: tau_proto::AgentStopReason::ToolCalls,
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,

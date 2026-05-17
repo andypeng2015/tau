@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn embedded_mode_returns_agent_response_and_persists_history() {
+fn embedded_mode_returns_provider_response_and_persists_history() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let r = run_embedded_message_with_echo(&sp, "s1", "hello")

@@ -20,8 +20,8 @@ use std::collections::VecDeque;
 
 use tau_core::NodeId;
 use tau_proto::{
-    AgentBackend, ConnectionId, ModelId, ModelParams, PromptOriginator, SessionId, SessionPromptId,
-    ToolCallId, ToolChoice, ToolDefinition,
+    ConnectionId, ModelId, ModelParams, PromptOriginator, ProviderBackend, SessionId,
+    SessionPromptId, ToolCallId, ToolChoice, ToolDefinition,
 };
 
 use crate::dedup::ResultDedupMap;
@@ -275,7 +275,7 @@ pub(crate) struct ChainAnchor {
     /// this verbatim in `previous_response_candidate` so the agent can
     /// decide whether the candidate is compatible with the chosen
     /// transport and provider connection state.
-    pub(crate) backend: AgentBackend,
+    pub(crate) backend: ProviderBackend,
     /// Blake3 fingerprint of `(system_prompt, tools, model_params,
     /// tool_choice)` as observed when the anchor was minted. Codex rejects
     /// (or silently misinterprets) a chained request whose non-input fields

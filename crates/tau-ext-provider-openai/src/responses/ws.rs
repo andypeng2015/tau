@@ -237,7 +237,7 @@ impl WsConn {
                         owned_previous = PreviousResponse {
                             id: &anchor.response_id,
                             next_item_index: anchor.item_count,
-                            transport: Some(tau_proto::AgentBackendTransport::Websocket),
+                            transport: Some(tau_proto::ProviderBackendTransport::Websocket),
                         };
                         chained_request = PromptPayload {
                             previous_response: Some(owned_previous),
@@ -261,7 +261,7 @@ impl WsConn {
                 session_prompt_id,
                 config,
                 request,
-                tau_proto::AgentBackendTransport::Websocket,
+                tau_proto::ProviderBackendTransport::Websocket,
             );
             build_ws_envelope(config, request)
         };

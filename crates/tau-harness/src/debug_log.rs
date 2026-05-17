@@ -80,7 +80,7 @@ impl DebugEventLog {
     }
 
     /// Logs an event the harness committed (broadcast onto the bus).
-    /// Captures the *enriched* payload — for `AgentResponseFinished`
+    /// Captures the *enriched* payload — for `ProviderResponseFinished`
     /// that's the harness-built `token_usage` with model and running
     /// session stats, which the inbound `from_connection` line could
     /// not carry. Together with `log_harness_event`, an offline reader
@@ -157,8 +157,8 @@ fn compact_debug_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use tau_proto::{
-        AgentResponseFinished, AgentResponseUpdated, AgentTokenUsage, Frame, ModelId,
-        PromptOriginator, SessionPromptId,
+        Frame, ModelId, PromptOriginator, ProviderResponseFinished, ProviderResponseUpdated,
+        ProviderTokenUsage, SessionPromptId,
     };
 
     use super::*;
@@ -177,12 +177,12 @@ mod tests {
         let td = tempfile::tempdir().expect("tempdir");
         let mut log = DebugEventLog::open(td.path()).expect("open");
         let model: ModelId = "openai/gpt-5".parse().expect("model id");
-        let event = Event::AgentResponseFinished(AgentResponseFinished {
+        let event = Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: SessionPromptId::from("sp-0"),
             output_items: Vec::new(),
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             originator: PromptOriginator::User,
-            usage: Some(AgentTokenUsage {
+            usage: Some(ProviderTokenUsage {
                 model: Some(model),
                 prompt_sent_tokens: 1000,
                 prompt_cached_tokens: 800,
@@ -216,7 +216,7 @@ mod tests {
     fn published_line_compacts_long_strings() {
         let td = tempfile::tempdir().expect("tempdir");
         let mut log = DebugEventLog::open(td.path()).expect("open");
-        let event = Event::AgentResponseUpdated(AgentResponseUpdated {
+        let event = Event::ProviderResponseUpdated(ProviderResponseUpdated {
             session_prompt_id: SessionPromptId::from("sp-0"),
             text: "x".repeat(101),
             thinking: Some(format!("{}{}{}", "α".repeat(30), "middle", "ω".repeat(30))),
@@ -244,7 +244,7 @@ mod tests {
     fn transient_from_connection_events_are_not_logged_twice() {
         let td = tempfile::tempdir().expect("tempdir");
         let mut log = DebugEventLog::open(td.path()).expect("open");
-        let event = Event::AgentResponseUpdated(AgentResponseUpdated {
+        let event = Event::ProviderResponseUpdated(ProviderResponseUpdated {
             session_prompt_id: SessionPromptId::from("sp-0"),
             text: "partial".to_owned(),
             thinking: None,

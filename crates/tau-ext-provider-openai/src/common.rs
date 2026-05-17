@@ -3,8 +3,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tau_proto::{
-    AgentBackendTransport, AgentTokenUsage, CborValue, ContentPart, ContextItem, ContextRole,
-    MessageItem, OpaqueProviderItem, PromptOriginator, SessionId, ToolCallItem, ToolDefinition,
+    CborValue, ContentPart, ContextItem, ContextRole, MessageItem, OpaqueProviderItem,
+    PromptOriginator, ProviderBackendTransport, ProviderTokenUsage, SessionId, ToolCallItem,
+    ToolDefinition,
 };
 
 /// The parts of a prompt needed by an LLM backend client.
@@ -56,7 +57,7 @@ pub struct PromptPayload<'a> {
 pub struct PreviousResponse<'a> {
     pub id: &'a str,
     pub next_item_index: usize,
-    pub transport: Option<AgentBackendTransport>,
+    pub transport: Option<ProviderBackendTransport>,
 }
 
 /// Transport / protocol error returned from any LLM backend stream.
@@ -160,7 +161,7 @@ fn usage_limit_retry_after(body: &str) -> Option<Duration> {
 
 /// One provider output item as it is incrementally assembled from a
 /// streaming response. This is intentionally item-shaped: final
-/// `AgentResponseFinished.output_items` must be a projection of the
+/// `ProviderResponseFinished.output_items` must be a projection of the
 /// stream's item timeline, not a late re-bucketing of text/reasoning/tool
 /// calls.
 #[derive(Clone, Debug)]
@@ -181,7 +182,7 @@ pub struct MessageAccumulator {
 /// Accumulated streaming state shared by both backends.
 pub struct StreamState {
     /// Concatenated visible assistant text, kept for the existing
-    /// `AgentResponseUpdated.text` wire shape. The durable final output
+    /// `ProviderResponseUpdated.text` wire shape. The durable final output
     /// is assembled from `output_items` instead.
     pub text: String,
     pub output_items: Vec<OutputItemAccumulator>,
@@ -407,14 +408,14 @@ impl StreamState {
         items
     }
 
-    pub fn usage(&self) -> Option<AgentTokenUsage> {
+    pub fn usage(&self) -> Option<ProviderTokenUsage> {
         let input = self.input_tokens.unwrap_or(0);
         let cached = self.cached_tokens.unwrap_or(0);
         let output = self.output_tokens.unwrap_or(0);
         if input == 0 && cached == 0 && output == 0 {
             None
         } else {
-            Some(AgentTokenUsage {
+            Some(ProviderTokenUsage {
                 model: None,
                 prompt_sent_tokens: input,
                 prompt_cached_tokens: cached,

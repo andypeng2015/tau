@@ -386,7 +386,7 @@ where
                     continue;
                 }
                 match inner {
-                    Event::AgentPromptSubmitted(_submitted) => {
+                    Event::ProviderPromptSubmitted(_submitted) => {
                         idle = None;
                     }
                     Event::UiPromptSubmitted(_prompt) => {
@@ -416,8 +416,8 @@ where
                             );
                         }
                     }
-                    Event::AgentResponseFinished(finished) => {
-                        // The agent emits one `AgentResponseFinished`
+                    Event::ProviderResponseFinished(finished) => {
+                        // The provider emits one `ProviderResponseFinished`
                         // per LLM call. When `stop_reason` requests tools,
                         // the harness will run the tools and feed the
                         // results back as a new prompt — the *turn*
@@ -431,7 +431,7 @@ where
                             tracing::trace!(
                                 target: LOG_TARGET,
                                 stop_reason = ?finished.stop_reason,
-                                "skipping mid-turn AgentResponseFinished",
+                                "skipping mid-turn ProviderResponseFinished",
                             );
                             continue;
                         }
@@ -585,9 +585,9 @@ fn sound_event(value: &str) -> Event {
 /// chimes or perturb the idle timer.
 fn is_sub_agent_event(event: &Event) -> bool {
     match event {
-        Event::AgentPromptSubmitted(s) => !s.originator.is_user(),
-        Event::AgentResponseUpdated(u) => !u.originator.is_user(),
-        Event::AgentResponseFinished(f) => !f.originator.is_user(),
+        Event::ProviderPromptSubmitted(s) => !s.originator.is_user(),
+        Event::ProviderResponseUpdated(u) => !u.originator.is_user(),
+        Event::ProviderResponseFinished(f) => !f.originator.is_user(),
         Event::UiPromptSubmitted(p) => !p.originator.is_user(),
         Event::SessionPromptCreated(p) => !p.originator.is_user(),
         _ => false,

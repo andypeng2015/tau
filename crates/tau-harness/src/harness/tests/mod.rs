@@ -16,9 +16,9 @@ use tau_core::{
     RoutedFrame, SessionEntry,
 };
 use tau_proto::{
-    AgentResponseFinished, AgentResponseUpdated, CborValue, ContentPart, ContextItem, ContextRole,
-    Disconnect, Event, EventSelector, ExtAgentQuery, Frame, FrameReader, FrameWriter, Intercept,
-    InterceptAction, InterceptReply, InterceptionPriority, Message, MessageItem,
+    CborValue, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
+    ExtAgentQuery, Frame, FrameReader, FrameWriter, Intercept, InterceptAction, InterceptReply,
+    InterceptionPriority, Message, MessageItem, ProviderResponseFinished, ProviderResponseUpdated,
     SessionCompactionRequested, SessionPromptCreated, SessionPromptId, SessionPromptQueued,
     Subscribe, ToolCallId, ToolCallItem, ToolName, ToolResult, ToolResultItem, ToolResultStatus,
     ToolSideEffects, ToolSpec, UiPromptDraft, UiPromptSubmitted,
@@ -174,7 +174,7 @@ fn seed_assistant_tool_round(
 ) {
     h.publish_for_conversation(
         cid,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-seeded-tools".into(),
             output_items: calls
                 .iter()
@@ -187,7 +187,7 @@ fn seed_assistant_tool_round(
                     })
                 })
                 .collect(),
-            stop_reason: tau_proto::AgentStopReason::ToolCalls,
+            stop_reason: tau_proto::ProviderStopReason::ToolCalls,
             usage: None,
             originator: tau_proto::PromptOriginator::User,
             backend: None,

@@ -64,29 +64,34 @@ impl TokenUsageStats {
     }
 }
 
-/// Usage stats attached to one completed agent response.
+/// Usage stats attached to one completed provider response.
 ///
 /// `model` is `None` until the harness fills it in from the matching
-/// `prompt_models` entry — agents construct `AgentTokenUsage` without
+/// `prompt_models` entry — providers construct `ProviderTokenUsage` without
 /// knowledge of the qualified `provider/model` id.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AgentTokenUsage {
+pub struct ProviderTokenUsage {
+    /// Qualified provider/model id the harness attributes this usage to.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_optional_model_id"
     )]
     pub model: Option<ModelId>,
+    /// Input tokens sent for this response.
     pub prompt_sent_tokens: u64,
+    /// Input tokens the provider reported as cache hits for this response.
     pub prompt_cached_tokens: u64,
+    /// Output tokens received for this response.
     pub response_received_tokens: u64,
+    /// Session-total and per-model token counters after this response.
     pub stats: TokenUsageStats,
 }
 
 /// Deserializer for `Option<ModelId>` that maps a literal `""` to
 /// `None` so persisted session events written before `ModelId` got
-/// strict validation (where the agent's `Default::default()` filled
+/// strict validation (where the provider's `Default::default()` filled
 /// the field with an empty string before the harness rewrote it) keep
 /// replaying instead of failing the whole session log decode.
 fn deserialize_optional_model_id<'de, D>(deserializer: D) -> Result<Option<ModelId>, D::Error>

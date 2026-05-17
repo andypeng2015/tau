@@ -24,9 +24,9 @@ pub(crate) struct EventRenderer {
     completion_data: tau_cli_term::CompletionData,
     theme: tau_themes::Theme,
     /// Per-`session_prompt_id` UI state. An entry is created on
-    /// `SessionPromptCreated` (or `AgentPromptSubmitted` for prompts
+    /// `SessionPromptCreated` (or `ProviderPromptSubmitted` for prompts
     /// without an explicit creation event) and torn down on
-    /// `AgentResponseFinished`. Storing the response block id, thinking
+    /// `ProviderResponseFinished`. Storing the response block id, thinking
     /// block id/text, and dispatch timestamp in one place means every
     /// per-prompt cleanup is a single `prompts.remove(spid)` instead of
     /// four separate `.remove()` calls easy to forget when extending.
@@ -310,14 +310,14 @@ fn role_value_completion(setting: &str, value: &str) -> tau_cli_term::Completion
 
 struct TokenStatsBlockEntry {
     block_id: tau_cli_term::BlockId,
-    usage: tau_proto::AgentTokenUsage,
+    usage: tau_proto::ProviderTokenUsage,
     turn_latency: Option<Duration>,
     total_latency: Option<Duration>,
 }
 
 /// Per-prompt UI state held by [`EventRenderer`]. Lives from the first
 /// event observed for the prompt (`SessionPromptCreated` or
-/// `AgentPromptSubmitted`) through `AgentResponseFinished`.
+/// `ProviderPromptSubmitted`) through `ProviderResponseFinished`.
 #[derive(Default)]
 struct PromptState {
     /// Live agent-response block. `None` until `SessionPromptCreated`
@@ -327,17 +327,17 @@ struct PromptState {
     /// non-empty `thinking`, so backends that don't return reasoning
     /// summaries produce no extra block.
     thinking_block_id: Option<tau_cli_term::BlockId>,
-    /// Latest captured thinking text. Held so `AgentResponseFinished`
+    /// Latest captured thinking text. Held so `ProviderResponseFinished`
     /// can render it into history even when the finish event doesn't
     /// carry its own `thinking` payload.
     thinking_text: Option<String>,
     /// Dispatch timestamp, used to compute end-to-end latency on
-    /// `AgentResponseFinished`.
+    /// `ProviderResponseFinished`.
     started_at: Option<Instant>,
 }
 
 /// Per-tool-call UI state held by [`EventRenderer`]. Created when the
-/// agent's `AgentResponseFinished` enumerates the call (or when a
+/// provider's `ProviderResponseFinished` enumerates the call (or when a
 /// sub-agent's finish marks the call as suppressed) and torn down on
 /// `ToolResult`/`ToolError`.
 #[derive(Default)]
@@ -381,9 +381,9 @@ fn originator_of(event: &Event) -> tau_proto::PromptOriginator {
     match event {
         Event::UiPromptSubmitted(p) => p.originator.clone(),
         Event::SessionPromptCreated(p) => p.originator.clone(),
-        Event::AgentPromptSubmitted(s) => s.originator.clone(),
-        Event::AgentResponseUpdated(u) => u.originator.clone(),
-        Event::AgentResponseFinished(f) => f.originator.clone(),
+        Event::ProviderPromptSubmitted(s) => s.originator.clone(),
+        Event::ProviderResponseUpdated(u) => u.originator.clone(),
+        Event::ProviderResponseFinished(f) => f.originator.clone(),
         Event::SessionCompactionStarted(started) => started.originator.clone(),
         Event::SessionCompactionFinished(finished) => finished.originator.clone(),
         Event::SessionCompacted(compacted) => compacted.originator.clone(),
@@ -1253,14 +1253,14 @@ impl EventRenderer {
             return;
         }
 
-        // Side-conversation `AgentResponseFinished` events get filtered
+        // Side-conversation `ProviderResponseFinished` events get filtered
         // out by `originator_of(event).is_user()` below — but we still
         // need to learn which `call_id`s those side conversations
         // emit, so we can suppress the matching `ToolResult` /
         // `ToolError` / `ToolProgress` (which carry no originator) on
         // their way past. Otherwise sub-agent tool activity would
         // leak into the user's transcript.
-        if let Event::AgentResponseFinished(finished) = event
+        if let Event::ProviderResponseFinished(finished) = event
             && !finished.originator.is_user()
         {
             for call in tool_calls_from_output_items(&finished.output_items) {
@@ -1390,13 +1390,13 @@ impl EventRenderer {
                     .or_default()
                     .response_block_id = Some(id);
             }
-            Event::AgentPromptSubmitted(submitted) => {
+            Event::ProviderPromptSubmitted(submitted) => {
                 self.prompts
                     .entry(submitted.session_prompt_id.to_string())
                     .or_default()
                     .started_at = Some(Instant::now());
             }
-            Event::AgentResponseUpdated(update) => {
+            Event::ProviderResponseUpdated(update) => {
                 let spid = update.session_prompt_id.as_str();
 
                 if update.originator.is_user()
@@ -1466,7 +1466,7 @@ impl EventRenderer {
                     self.handle.redraw();
                 }
             }
-            Event::AgentResponseFinished(finished) => {
+            Event::ProviderResponseFinished(finished) => {
                 let spid = finished.session_prompt_id.as_str();
                 // Drain the whole per-prompt state in one shot — every
                 // field tracked through the stream is consumed here.

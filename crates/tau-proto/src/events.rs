@@ -11,7 +11,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentTokenUsage, CborValue, DiffSummary, ExtensionName, ModelId, SessionId, SessionPromptId,
+    CborValue, DiffSummary, ExtensionName, ModelId, ProviderTokenUsage, SessionId, SessionPromptId,
     SkillName, ToolCallId, ToolName,
 };
 
@@ -1960,9 +1960,9 @@ pub struct SessionUserMessageInjected {
 /// Who initiated the prompt — the human user via the UI, or an
 /// extension via [`ExtAgentQuery`].
 ///
-/// The agent's only obligation is to copy the originator from the
+/// The provider's only obligation is to copy the originator from the
 /// incoming [`SessionPromptCreated`] onto its outgoing
-/// [`AgentResponseFinished`]. The harness reads it on the way back
+/// [`ProviderResponseFinished`]. The harness reads it on the way back
 /// to decide whether the response is a normal turn (route to UI,
 /// keep `default_conversation` advancing) or a side-query reply
 /// (route an [`ExtAgentQueryResult`] to the requesting extension and
@@ -2000,7 +2000,7 @@ pub struct PromptToolsRef {
 /// The harness persisted a normal assistant-generation prompt and
 /// assigned it an ID.
 ///
-/// Carries the assembled conversation context for the agent's normal
+/// Carries the assembled conversation context for the provider's normal
 /// response path.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionPromptCreated {
@@ -2066,7 +2066,7 @@ pub struct SessionPromptCreated {
 /// assigned it an ID.
 ///
 /// Compaction reuses the same prompt-delivery and materialization
-/// scheme as [`SessionPromptCreated`], but it is a distinct agent
+/// scheme as [`SessionPromptCreated`], but it is a distinct provider
 /// operation with its own event name so consumers do not need to infer
 /// alternate semantics from a mode flag on a normal prompt event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2080,7 +2080,7 @@ pub struct SessionCompactionRequested {
 /// Carries the same stable prefix fields as the first real
 /// [`SessionPromptCreated`] but intentionally has no
 /// [`SessionPromptId`], no user task prompt, and no
-/// `previous_response_id`. Agents that support a non-generating
+/// `previous_response_id`. Providers that support a non-generating
 /// upstream call may send it; all others no-op.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionPromptPrewarmRequested {
@@ -2171,7 +2171,7 @@ pub struct PreviousResponseCandidate {
     /// delta call use `context_items[next_item_index..]`.
     pub next_item_index: usize,
     /// Backend that produced `provider_response_id`, when known.
-    pub backend: AgentBackend,
+    pub backend: ProviderBackend,
 }
 
 // ---------------------------------------------------------------------------
@@ -2180,11 +2180,12 @@ pub struct PreviousResponseCandidate {
 
 /// The provider accepted a prompt and began processing it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AgentPromptSubmitted {
+pub struct ProviderPromptSubmitted {
+    /// Prompt id the provider accepted.
     pub session_prompt_id: SessionPromptId,
     /// Echo of [`SessionPromptCreated::originator`]. UIs and other
-    /// extensions filter on `originator.is_user()` so the agent
-    /// starting a side conversation doesn't trigger user-facing
+    /// extensions filter on `originator.is_user()` so provider work for a side
+    /// conversation doesn't trigger user-facing
     /// effects like clearing an idle deadline.
     #[serde(default)]
     pub originator: PromptOriginator,
@@ -2193,8 +2194,10 @@ pub struct AgentPromptSubmitted {
 /// The provider has new accumulated response text for a prompt.
 /// Each update carries the full text so far (replace, not delta).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AgentResponseUpdated {
+pub struct ProviderResponseUpdated {
+    /// Prompt id whose accumulated response changed.
     pub session_prompt_id: SessionPromptId,
+    /// Full response text accumulated so far.
     pub text: String,
     /// Accumulated provider-supplied reasoning summary so far, if the
     /// provider exposed one. Replace, not delta. Persisted with the
@@ -2212,7 +2215,7 @@ pub struct AgentResponseUpdated {
 /// The provider finished processing a prompt.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentStopReason {
+pub enum ProviderStopReason {
     /// The model completed the turn without requesting any tool work.
     #[default]
     EndTurn,
@@ -2224,7 +2227,7 @@ pub enum AgentStopReason {
     Error,
 }
 
-impl AgentStopReason {
+impl ProviderStopReason {
     #[must_use]
     pub const fn requests_tool_calls(self) -> bool {
         matches!(self, Self::ToolCalls)
@@ -2232,33 +2235,37 @@ impl AgentStopReason {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AgentResponseFinished {
+pub struct ProviderResponseFinished {
+    /// Prompt id the provider finished.
     pub session_prompt_id: SessionPromptId,
+    /// Final provider output, including assistant messages, reasoning,
+    /// compaction payloads, and/or requested tool calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_items: Vec<ContextItem>,
-    pub stop_reason: AgentStopReason,
-    /// Echo of [`SessionPromptCreated::originator`]. The agent must
+    /// Why the provider stopped this turn.
+    pub stop_reason: ProviderStopReason,
+    /// Echo of [`SessionPromptCreated::originator`]. The provider must
     /// copy this from the prompt; the harness routes the response
     /// based on it.
     #[serde(default)]
     pub originator: PromptOriginator,
     /// Provider-reported usage for this response, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<AgentTokenUsage>,
+    pub usage: Option<ProviderTokenUsage>,
     /// Which LLM backend handled this turn. Recorded once per turn
     /// (instead of in a trace line) so offline inspection of the
     /// event log can correlate cache-miss / retry patterns with the
     /// backend that produced them — e.g. distinguishing OpenAI
     /// public-API behavior from the ChatGPT Codex Responses backend.
     /// `None` for turns that never reached a backend (e.g. an
-    /// agent-side resolution failure or the in-process echo agent).
+    /// provider-side resolution failure or the in-process echo provider).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend: Option<AgentBackend>,
+    pub backend: Option<ProviderBackend>,
     /// Provider-supplied response id for this turn, when the backend
     /// exposed one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_response_id: Option<String>,
-    /// Per-turn delta of the agent's Codex WS pool counters. `Some(_)`
+    /// Per-turn delta of the provider's Codex WS pool counters. `Some(_)`
     /// only for Responses-backend turns where the WS path was
     /// attempted (i.e. `cfg.supports_websocket` and the per-session
     /// sticky-disable flag was off). `None` for Chat Completions and
@@ -2272,8 +2279,8 @@ pub struct AgentResponseFinished {
     pub ws_pool_delta: Option<WsPoolDelta>,
 }
 
-/// Per-turn delta of the agent's Codex WebSocket pool counters. All
-/// three counters are monotonic-since-process-start in the agent;
+/// Per-turn delta of the provider's Codex WebSocket pool counters. All
+/// three counters are monotonic-since-process-start in the provider;
 /// the harness records the *delta* incurred by a single turn so
 /// offline analysis can attribute cache misses to WS-layer events.
 ///
@@ -2299,21 +2306,28 @@ pub struct WsPoolDelta {
 
 /// Diagnostic emitted when a chained prompt reports unexpectedly low
 /// provider cache reuse. The harness derives it from the original
-/// [`SessionPromptCreated`] plus final [`AgentResponseFinished`]
+/// [`SessionPromptCreated`] plus final [`ProviderResponseFinished`]
 /// token usage so offline analysis can distinguish provider/cache-key
 /// misses from obvious WS chain-strip misses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentCacheMissDiagnostic {
+pub struct ProviderCacheMissDiagnostic {
+    /// Prompt id whose cache behavior looked unexpectedly low.
     pub session_prompt_id: SessionPromptId,
     /// Currently selected model as `"provider/model_id"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
+    /// Previous provider response id the prompt attempted to chain from.
     pub previous_response_id: String,
+    /// Expected provider-visible item index at which new prompt content began.
     pub previous_response_message_index: usize,
+    /// Number of provider-visible prompt items that were expected to be
+    /// cacheable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_prefix_count: Option<usize>,
+    /// Prompt originator copied from the finished provider response.
     #[serde(default)]
     pub originator: PromptOriginator,
+    /// Tool-choice mode used by the request that produced this diagnostic.
     #[serde(default, skip_serializing_if = "ToolChoice::is_default")]
     pub tool_choice: ToolChoice,
     /// Wire `prompt_cache_key` if known to the component emitting the
@@ -2321,20 +2335,26 @@ pub struct AgentCacheMissDiagnostic {
     /// leaves this absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// WebSocket-pool turn delta, when the backend can report one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_pool_delta: Option<WsPoolDelta>,
     /// Hex blake3 fingerprint of the provider-visible request fields
     /// Tau expects to remain stable across a chain.
     pub request_body_fingerprint: String,
+    /// Input tokens reported by the current response.
     pub input_tokens: u64,
+    /// Provider-cache-hit input tokens reported by the current response.
     pub cached_tokens: u64,
+    /// Input tokens reported by the previous chained response.
     pub previous_input_tokens: u64,
+    /// Estimated cacheable prefix tokens after correcting for request growth.
     pub cacheable_input_tokens: u64,
+    /// Corrected cache-hit ratio for the cacheable prefix.
     pub corrected_cache_efficiency: f32,
 }
 
 /// Identifies the LLM backend that handled an
-/// [`AgentResponseFinished`].
+/// [`ProviderResponseFinished`].
 ///
 /// Kind discriminates the provider API shape (Chat Completions vs.
 /// Responses), and `base_url` pins down the specific endpoint —
@@ -2343,14 +2363,16 @@ pub struct AgentCacheMissDiagnostic {
 /// rate-limit behavior, so the base URL is what an offline analysis
 /// needs to tell them apart.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentBackend {
-    pub kind: AgentBackendKind,
+pub struct ProviderBackend {
+    /// Provider API family used for the turn.
+    pub kind: ProviderBackendKind,
+    /// Base URL or origin of the upstream provider endpoint.
     pub base_url: String,
     /// Wire transport the turn was sent over. Defaults to
     /// `HttpSse` for backwards compatibility with sessions recorded
     /// before this field existed.
     #[serde(default)]
-    pub transport: AgentBackendTransport,
+    pub transport: ProviderBackendTransport,
     /// The backend retried a rejected `previous_response_id` as a full replay.
     /// Surfaced here so the harness and offline tools can tell a successful
     /// response still paid the stale-chain recovery cost.
@@ -2358,21 +2380,21 @@ pub struct AgentBackend {
     pub stale_chain_fallback: bool,
 }
 
-/// The provider API shape an [`AgentBackend`] talks.
+/// The provider API shape an [`ProviderBackend`] talks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentBackendKind {
+pub enum ProviderBackendKind {
     ChatCompletions,
     Responses,
 }
 
-/// Transport the agent used to deliver one turn. `HttpSse` covers
+/// Transport the provider used to deliver one turn. `HttpSse` covers
 /// both the Chat Completions path and the HTTP+SSE Responses path
 /// (kind discriminates which API); `Websocket` is the Codex
 /// Responses persistent-WS path.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentBackendTransport {
+pub enum ProviderBackendTransport {
     /// One-shot HTTP request with Server-Sent Events streaming.
     /// Default — covers Chat Completions and the HTTP+SSE Responses
     /// fallback.
@@ -2476,10 +2498,10 @@ pub struct AssistantResponseNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_response_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend: Option<AgentBackend>,
+    pub backend: Option<ProviderBackend>,
     pub output_items: Vec<ContextItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<AgentTokenUsage>,
+    pub usage: Option<ProviderTokenUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2695,13 +2717,13 @@ pub enum Event {
 
     // Provider execution
     #[serde(rename = "provider.prompt_submitted")]
-    AgentPromptSubmitted(AgentPromptSubmitted),
+    ProviderPromptSubmitted(ProviderPromptSubmitted),
     #[serde(rename = "provider.response_updated")]
-    AgentResponseUpdated(AgentResponseUpdated),
+    ProviderResponseUpdated(ProviderResponseUpdated),
     #[serde(rename = "provider.response_finished")]
-    AgentResponseFinished(AgentResponseFinished),
+    ProviderResponseFinished(ProviderResponseFinished),
     #[serde(rename = "provider.cache_miss_diagnostic")]
-    AgentCacheMissDiagnostic(AgentCacheMissDiagnostic),
+    ProviderCacheMissDiagnostic(ProviderCacheMissDiagnostic),
 }
 
 impl Event {
@@ -2771,10 +2793,10 @@ impl Event {
             Self::SessionPromptCreated(_) => EventName::SESSION_PROMPT_CREATED,
             Self::SessionPromptPrewarmRequested(_) => EventName::SESSION_PROMPT_PREWARM_REQUESTED,
             Self::SessionUserMessageInjected(_) => EventName::SESSION_USER_MESSAGE_INJECTED,
-            Self::AgentPromptSubmitted(_) => EventName::PROVIDER_PROMPT_SUBMITTED,
-            Self::AgentResponseUpdated(_) => EventName::PROVIDER_RESPONSE_UPDATED,
-            Self::AgentResponseFinished(_) => EventName::PROVIDER_RESPONSE_FINISHED,
-            Self::AgentCacheMissDiagnostic(_) => EventName::PROVIDER_CACHE_MISS_DIAGNOSTIC,
+            Self::ProviderPromptSubmitted(_) => EventName::PROVIDER_PROMPT_SUBMITTED,
+            Self::ProviderResponseUpdated(_) => EventName::PROVIDER_RESPONSE_UPDATED,
+            Self::ProviderResponseFinished(_) => EventName::PROVIDER_RESPONSE_FINISHED,
+            Self::ProviderCacheMissDiagnostic(_) => EventName::PROVIDER_CACHE_MISS_DIAGNOSTIC,
         }
     }
 
@@ -2787,8 +2809,8 @@ impl Event {
             Self::ToolRequest(_)
                 | Self::ToolError(_)
                 | Self::ToolCancelled(_)
-                | Self::AgentResponseUpdated(_)
-                | Self::AgentPromptSubmitted(_)
+                | Self::ProviderResponseUpdated(_)
+                | Self::ProviderPromptSubmitted(_)
                 | Self::ToolProgress(_)
                 | Self::ToolDelegateProgress(_)
                 | Self::ShellCommandProgress(_)

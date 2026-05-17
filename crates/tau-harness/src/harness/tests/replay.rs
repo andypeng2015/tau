@@ -29,7 +29,7 @@ fn late_joining_ui_client_receives_replayed_session_events() {
     assert!(
         events
             .iter()
-            .any(|entry| matches!(entry.event, Event::AgentResponseFinished(_))),
+            .any(|entry| matches!(entry.event, Event::ProviderResponseFinished(_))),
         "final agent response should be in durable session event log"
     );
     assert!(
@@ -77,7 +77,7 @@ fn late_joining_ui_client_receives_replayed_session_events() {
             Frame::Event(Event::UiPromptSubmitted(prompt)) if prompt.text == "hello replay" => {
                 got_prompt = true;
             }
-            Frame::Event(Event::AgentResponseFinished(finished))
+            Frame::Event(Event::ProviderResponseFinished(finished))
                 if finished.output_items.iter().any(|item| {
                     matches!(
                         item,
@@ -135,7 +135,7 @@ fn late_joining_ui_client_replays_only_final_session_events() {
     );
     h.publish_event(
         None,
-        Event::AgentResponseUpdated(AgentResponseUpdated {
+        Event::ProviderResponseUpdated(ProviderResponseUpdated {
             session_prompt_id: spid.clone(),
             text: "partial".to_owned(),
             thinking: None,
@@ -159,10 +159,10 @@ fn late_joining_ui_client_replays_only_final_session_events() {
     );
     h.publish_event(
         None,
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: spid,
             output_items: assistant_output("final"),
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             originator: Default::default(),
             usage: None,
             backend: None,
@@ -370,10 +370,10 @@ fn resumed_harness_replays_persisted_session_history() {
             .next()
             .expect("first session prompt id")
             .clone();
-        h.handle_agent_response_finished(AgentResponseFinished {
+        h.handle_provider_response_finished(ProviderResponseFinished {
             session_prompt_id: spid,
             output_items: assistant_output("remembered potato"),
-            stop_reason: tau_proto::AgentStopReason::EndTurn,
+            stop_reason: tau_proto::ProviderStopReason::EndTurn,
             originator: tau_proto::PromptOriginator::User,
             usage: None,
             backend: None,
@@ -432,10 +432,10 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
     append_user_message_via_event(&mut h, "s1", "first");
 
     let spid1 = h.send_prompt_to_agent("s1");
-    h.handle_agent_response_finished(AgentResponseFinished {
+    h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: spid1,
         output_items: assistant_output("answer"),
-        stop_reason: tau_proto::AgentStopReason::EndTurn,
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
         originator: tau_proto::PromptOriginator::User,
         usage: None,
         backend: None,

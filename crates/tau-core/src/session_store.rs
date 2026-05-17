@@ -158,7 +158,7 @@ impl Error for SessionStoreError {
 /// that node's id. Callers maintaining a per-conversation branch
 /// cursor advance it from `folded_node_id` rather than from the
 /// global `tree.head()` so non-folding events (e.g. an
-/// `AgentResponseFinished` carrying only tool calls) don't sync
+/// `ProviderResponseFinished` carrying only tool calls) don't sync
 /// the cursor onto a sibling conversation's last fold.
 #[derive(Clone, Debug)]
 pub struct AppendOutcome {

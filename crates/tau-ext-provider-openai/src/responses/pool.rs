@@ -686,7 +686,7 @@ mod tests {
             previous_response: Some(crate::common::PreviousResponse {
                 id: "resp_from_a_dead_socket",
                 next_item_index: 0,
-                transport: Some(tau_proto::AgentBackendTransport::Websocket),
+                transport: Some(tau_proto::ProviderBackendTransport::Websocket),
             }),
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,
@@ -742,7 +742,7 @@ mod tests {
             previous_response: Some(crate::common::PreviousResponse {
                 id: "resp_from_a_dead_socket",
                 next_item_index: 0,
-                transport: Some(tau_proto::AgentBackendTransport::Websocket),
+                transport: Some(tau_proto::ProviderBackendTransport::Websocket),
             }),
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,
@@ -827,7 +827,7 @@ mod tests {
             previous_response: Some(crate::common::PreviousResponse {
                 id: &prev_id,
                 next_item_index: 0,
-                transport: Some(tau_proto::AgentBackendTransport::Websocket),
+                transport: Some(tau_proto::ProviderBackendTransport::Websocket),
             }),
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,

@@ -304,8 +304,8 @@ mod tests {
             originator: tau_proto::PromptOriginator::default(),
             ctx_id: None,
         }));
-        tree.apply_event(&Event::AgentResponseFinished(
-            tau_proto::AgentResponseFinished {
+        tree.apply_event(&Event::ProviderResponseFinished(
+            tau_proto::ProviderResponseFinished {
                 session_prompt_id: "sp-tools".into(),
                 output_items: vec![ContextItem::ToolCall(tau_proto::ToolCallItem {
                     call_id: "call-1".into(),
@@ -313,7 +313,7 @@ mod tests {
                     tool_type: tau_proto::ToolType::Function,
                     arguments: CborValue::Null,
                 })],
-                stop_reason: tau_proto::AgentStopReason::ToolCalls,
+                stop_reason: tau_proto::ProviderStopReason::ToolCalls,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -391,8 +391,8 @@ mod tests {
             originator: tau_proto::PromptOriginator::default(),
             ctx_id: None,
         }));
-        tree.apply_event(&Event::AgentResponseFinished(
-            tau_proto::AgentResponseFinished {
+        tree.apply_event(&Event::ProviderResponseFinished(
+            tau_proto::ProviderResponseFinished {
                 session_prompt_id: "sp-1".into(),
                 output_items: vec![ContextItem::Message(MessageItem {
                     role: ContextRole::Assistant,
@@ -401,7 +401,7 @@ mod tests {
                     }],
                     phase: Some(tau_proto::MessagePhase::Commentary),
                 })],
-                stop_reason: tau_proto::AgentStopReason::EndTurn,
+                stop_reason: tau_proto::ProviderStopReason::EndTurn,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -432,11 +432,11 @@ mod tests {
             originator: tau_proto::PromptOriginator::default(),
             ctx_id: None,
         }));
-        tree.apply_event(&Event::AgentResponseFinished(
-            tau_proto::AgentResponseFinished {
+        tree.apply_event(&Event::ProviderResponseFinished(
+            tau_proto::ProviderResponseFinished {
                 session_prompt_id: "sp-1".into(),
                 output_items: vec![assistant_message("first answer")],
-                stop_reason: tau_proto::AgentStopReason::EndTurn,
+                stop_reason: tau_proto::ProviderStopReason::EndTurn,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -479,7 +479,7 @@ mod tests {
         ));
     }
 
-    /// Encrypted-reasoning replay: when `AgentResponseFinished` carries
+    /// Encrypted-reasoning replay: when `ProviderResponseFinished` carries
     /// `reasoning_items`, the next assembled prompt's assistant
     /// message must front-load them as `ContentBlock::Reasoning` blocks
     /// before any text. The responses backend then emits them as
@@ -502,8 +502,8 @@ mod tests {
             "encrypted_content": "OPAQUE",
         })
         .to_string();
-        tree.apply_event(&Event::AgentResponseFinished(
-            tau_proto::AgentResponseFinished {
+        tree.apply_event(&Event::ProviderResponseFinished(
+            tau_proto::ProviderResponseFinished {
                 session_prompt_id: "sp-1".into(),
                 output_items: vec![
                     ContextItem::Reasoning(
@@ -511,7 +511,7 @@ mod tests {
                     ),
                     assistant_message("here's what I found"),
                 ],
-                stop_reason: tau_proto::AgentStopReason::EndTurn,
+                stop_reason: tau_proto::ProviderStopReason::EndTurn,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,
@@ -551,13 +551,13 @@ mod tests {
             "encrypted_content": "OPAQUE",
         })
         .to_string();
-        tree.apply_event(&Event::AgentResponseFinished(
-            tau_proto::AgentResponseFinished {
+        tree.apply_event(&Event::ProviderResponseFinished(
+            tau_proto::ProviderResponseFinished {
                 session_prompt_id: "sp-1".into(),
                 output_items: vec![ContextItem::Reasoning(
                     serde_json::from_str(&blob).expect("opaque reasoning item"),
                 )],
-                stop_reason: tau_proto::AgentStopReason::EndTurn,
+                stop_reason: tau_proto::ProviderStopReason::EndTurn,
                 originator: tau_proto::PromptOriginator::User,
                 usage: None,
                 backend: None,

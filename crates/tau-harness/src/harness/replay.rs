@@ -216,9 +216,9 @@ impl Harness {
 
 fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
     // Replay final, durable transcript facts, not progress. In
-    // particular, skip `AgentResponseUpdated` streaming chunks and
+    // particular, skip `ProviderResponseUpdated` streaming chunks and
     // `SessionPromptCreated` pending markers, but keep
-    // `UiPromptSubmitted`, `AgentResponseFinished`, and completed
+    // `UiPromptSubmitted`, `ProviderResponseFinished`, and completed
     // compaction facts so a resumed UI can reconstruct completed turns.
     matches!(
         event,
@@ -234,6 +234,6 @@ fn should_replay_session_event_to_late_subscriber(event: &Event) -> bool {
             | Event::ExtAgentsMdAvailable(_)
             | Event::ExtensionContextReady(_)
             | Event::ExtensionEvent(_)
-            | Event::AgentResponseFinished(_)
+            | Event::ProviderResponseFinished(_)
     )
 }

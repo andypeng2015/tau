@@ -13,10 +13,10 @@ use tau_core::{
     PolicyStore, RouteError, SessionStore, SessionStoreError, ToolRegistry, ToolRouteError,
 };
 use tau_proto::{
-    AgentCacheMissDiagnostic, AgentResponseFinished, AgentStopReason, AgentTokenUsage, CborValue,
-    ClientKind, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
+    CborValue, ClientKind, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
     ExtensionName, Frame, HarnessContextUsageChanged, HarnessRoleSelected, Message, MessageItem,
-    ModelId, PreviousResponseCandidate, PromptOriginator, ProviderModelInfo,
+    ModelId, PreviousResponseCandidate, PromptOriginator, ProviderCacheMissDiagnostic,
+    ProviderModelInfo, ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage,
     SessionCompactionRequested, SessionId, SessionPromptCreated, SessionPromptId,
     SessionPromptPrewarmRequested, SessionPromptQueued, TokenUsageStats, ToolCallId, ToolCallItem,
     ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest,
@@ -126,11 +126,11 @@ pub(crate) fn tool_calls_from_output_items(output_items: &[ContextItem]) -> Vec<
         .collect()
 }
 
-fn response_requests_tool_calls(response: &AgentResponseFinished) -> bool {
+fn response_requests_tool_calls(response: &ProviderResponseFinished) -> bool {
     if response.stop_reason.requests_tool_calls() {
         return true;
     }
-    if response.stop_reason != AgentStopReason::EndTurn {
+    if response.stop_reason != ProviderStopReason::EndTurn {
         return false;
     }
     response
@@ -350,7 +350,7 @@ pub(crate) struct Harness {
     /// Keep session-scoped counters here instead of as top-level
     /// harness fields, so `/new` resets them with one assignment.
     pub(crate) current_session_state: CurrentSessionState,
-    /// Provider/model for each prompt sent to the agent, used to
+    /// Provider/model for each prompt sent to the provider, used to
     /// attribute the corresponding finished response even if the user
     /// switches models while it is in flight.
     pub(crate) prompt_models: std::collections::HashMap<SessionPromptId, ModelId>,
@@ -369,7 +369,7 @@ pub(crate) struct Harness {
     /// Sessions whose AGENTS/skill discovery has completed.
     pub(crate) initialized_sessions: std::collections::HashSet<SessionId>,
     /// Session prompt IDs that have already been completed by the agent.
-    /// Used to dedupe duplicate `AgentResponseFinished` events that can
+    /// Used to dedupe duplicate `ProviderResponseFinished` events that can
     /// arise under at-least-once delivery (e.g. an agent that reconnects
     /// after a crash and replays its last prompt).
     pub(crate) completed_prompts: std::collections::HashSet<SessionPromptId>,
@@ -423,10 +423,10 @@ where
     use std::io::{BufReader, BufWriter};
 
     use tau_proto::{
-        Ack, AgentPromptSubmitted, CborValue, ContentPart, ContextItem, ContextRole, Effort,
-        EventName, FrameReader, FrameWriter, Hello, MessageItem, OpaqueProviderItem,
-        PROTOCOL_VERSION, ProviderModelInfo, ProviderModelsUpdated, Ready, Subscribe,
-        ThinkingSummary, ToolCallItem, ToolName, Verbosity,
+        Ack, CborValue, ContentPart, ContextItem, ContextRole, Effort, EventName, FrameReader,
+        FrameWriter, Hello, MessageItem, OpaqueProviderItem, PROTOCOL_VERSION, ProviderModelInfo,
+        ProviderModelsUpdated, ProviderPromptSubmitted, Ready, Subscribe, ThinkingSummary,
+        ToolCallItem, ToolName, Verbosity,
     };
 
     fn materialize_prompt(
@@ -526,14 +526,14 @@ where
             Frame::Event(Event::SessionCompactionRequested(request)) => {
                 let spid = request.prompt.session_prompt_id.clone();
                 let prompt = materialize_prompt(&request.prompt);
-                writer.write_frame(&Frame::Event(Event::AgentPromptSubmitted(
-                    AgentPromptSubmitted {
+                writer.write_frame(&Frame::Event(Event::ProviderPromptSubmitted(
+                    ProviderPromptSubmitted {
                         session_prompt_id: spid.clone(),
                         originator: prompt.originator.clone(),
                     },
                 )))?;
-                writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
-                    AgentResponseFinished {
+                writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
+                    ProviderResponseFinished {
                         session_prompt_id: spid,
                         output_items: vec![ContextItem::Compaction(OpaqueProviderItem(
                             CborValue::Map(vec![
@@ -551,7 +551,7 @@ where
                                 ),
                             ]),
                         ))],
-                        stop_reason: AgentStopReason::Compaction,
+                        stop_reason: ProviderStopReason::Compaction,
                         originator: prompt.originator.clone(),
                         usage: None,
                         backend: None,
@@ -564,8 +564,8 @@ where
             Frame::Event(Event::SessionPromptCreated(prompt)) => {
                 let spid = prompt.session_prompt_id.clone();
                 let prompt = materialize_prompt(&prompt);
-                writer.write_frame(&Frame::Event(Event::AgentPromptSubmitted(
-                    AgentPromptSubmitted {
+                writer.write_frame(&Frame::Event(Event::ProviderPromptSubmitted(
+                    ProviderPromptSubmitted {
                         session_prompt_id: spid.clone(),
                         originator: prompt.originator.clone(),
                     },
@@ -586,15 +586,15 @@ where
                             _ => None,
                         })
                         .unwrap_or_default();
-                    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
-                        AgentResponseFinished {
+                    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
+                        ProviderResponseFinished {
                             session_prompt_id: spid,
                             output_items: vec![ContextItem::Message(MessageItem {
                                 role: ContextRole::Assistant,
                                 content: vec![ContentPart::Text { text }],
                                 phase: None,
                             })],
-                            stop_reason: AgentStopReason::EndTurn,
+                            stop_reason: ProviderStopReason::EndTurn,
                             originator: prompt.originator.clone(),
                             usage: None,
                             backend: None,
@@ -649,11 +649,11 @@ where
                         }
                     };
 
-                    writer.write_frame(&Frame::Event(Event::AgentResponseFinished(
-                        AgentResponseFinished {
+                    writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
+                        ProviderResponseFinished {
                             session_prompt_id: spid,
                             output_items: vec![ContextItem::ToolCall(tool_call)],
-                            stop_reason: AgentStopReason::ToolCalls,
+                            stop_reason: ProviderStopReason::ToolCalls,
                             originator: prompt.originator.clone(),
                             usage: None,
                             backend: None,
@@ -1412,7 +1412,7 @@ impl Harness {
         // Mirror every committed event into the JSONL debug log as a
         // `published` line. The inbound `from_connection` lines carry
         // the raw frame the agent sent us, but for events that the
-        // harness enriches (notably `AgentResponseFinished`, where
+        // harness enriches (notably `ProviderResponseFinished`, where
         // `token_usage` is built here from session-wide state the
         // agent never sees), the enriched payload only exists on the
         // outbound copy. Offline cache/cost analysis tools that read
@@ -1456,7 +1456,7 @@ impl Harness {
             // the event produced a tree node. `tree.head()` is the
             // *global* write cursor and may sit on a sibling
             // conversation's last fold; syncing to it after a
-            // non-folding event (e.g. `AgentResponseFinished` with
+            // non-folding event (e.g. `ProviderResponseFinished` with
             // only tool calls) would graft this conversation's next
             // tool request onto the wrong branch and produce orphan
             // ToolUse blocks downstream.
@@ -1622,13 +1622,13 @@ impl Harness {
             Event::SessionPromptCreated(created) => Some(created.session_id.clone()),
             Event::SessionPromptPrewarmRequested(prewarm) => Some(prewarm.session_id.clone()),
             Event::SessionUserMessageInjected(injected) => Some(injected.session_id.clone()),
-            Event::AgentPromptSubmitted(submitted) => {
+            Event::ProviderPromptSubmitted(submitted) => {
                 self.session_id_for_prompt(&submitted.session_prompt_id)
             }
-            Event::AgentResponseUpdated(updated) => {
+            Event::ProviderResponseUpdated(updated) => {
                 self.session_id_for_prompt(&updated.session_prompt_id)
             }
-            Event::AgentResponseFinished(finished) => {
+            Event::ProviderResponseFinished(finished) => {
                 self.session_id_for_prompt(&finished.session_prompt_id)
             }
             Event::ToolRequest(request) => self.session_id_for_tool_call(&request.call_id),
@@ -2115,11 +2115,11 @@ impl Harness {
             Event::ExtAgentQuery(query) => {
                 self.handle_ext_agent_query(source_id, query)?;
             }
-            Event::AgentPromptSubmitted(_) | Event::AgentResponseUpdated(_) => {
+            Event::ProviderPromptSubmitted(_) | Event::ProviderResponseUpdated(_) => {
                 self.publish_event(Some(source_id), event);
             }
-            Event::AgentResponseFinished(response) => {
-                self.handle_agent_response_finished(response)?;
+            Event::ProviderResponseFinished(response) => {
+                self.handle_provider_response_finished(response)?;
             }
             other => {
                 self.publish_event(Some(source_id), other);
@@ -4331,7 +4331,7 @@ impl Harness {
 
     fn maybe_emit_cache_miss_diagnostic(
         &mut self,
-        response: &AgentResponseFinished,
+        response: &ProviderResponseFinished,
         previous_input_tokens: Option<u64>,
     ) {
         let Some(context) = self
@@ -4374,7 +4374,7 @@ impl Harness {
         }
         self.publish_event(
             None,
-            Event::AgentCacheMissDiagnostic(AgentCacheMissDiagnostic {
+            Event::ProviderCacheMissDiagnostic(ProviderCacheMissDiagnostic {
                 session_prompt_id: response.session_prompt_id.clone(),
                 model: context.model,
                 previous_response_id: previous_response.provider_response_id,
@@ -4397,7 +4397,7 @@ impl Harness {
     fn finish_pending_compaction(
         &mut self,
         summary_cid: ConversationId,
-        response: AgentResponseFinished,
+        response: ProviderResponseFinished,
     ) -> Result<(), HarnessError> {
         let requested_tool_calls = response_requests_tool_calls(&response);
         let replacement_window = compaction_items_from_output_items(&response.output_items);
@@ -4406,7 +4406,10 @@ impl Harness {
             return Ok(());
         };
 
-        self.publish_for_conversation(&summary_cid, Event::AgentResponseFinished(response.clone()));
+        self.publish_for_conversation(
+            &summary_cid,
+            Event::ProviderResponseFinished(response.clone()),
+        );
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
         self.prompt_models.remove(&response.session_prompt_id);
@@ -4486,9 +4489,9 @@ impl Harness {
         }
     }
 
-    fn handle_agent_response_finished(
+    fn handle_provider_response_finished(
         &mut self,
-        mut response: AgentResponseFinished,
+        mut response: ProviderResponseFinished,
     ) -> Result<(), HarnessError> {
         let mut tool_calls = tool_calls_from_output_items(&response.output_items);
         let mut requested_tool_calls = response_requests_tool_calls(&response);
@@ -4563,7 +4566,7 @@ impl Harness {
             self.current_session_state
                 .token_usage
                 .add_received(model, received_tokens);
-            response.usage = Some(AgentTokenUsage {
+            response.usage = Some(ProviderTokenUsage {
                 model: Some(model.clone()),
                 prompt_sent_tokens: sent_tokens,
                 prompt_cached_tokens: cached_tokens,
@@ -4645,7 +4648,7 @@ impl Harness {
         // whichever branch happened to be at `tree.head` (e.g. after
         // a sibling side conv's teardown ran `snap_to_default`).
         // `publish_for_conversation` snaps and updates `c.head`.
-        self.publish_for_conversation(&cid, Event::AgentResponseFinished(response.clone()));
+        self.publish_for_conversation(&cid, Event::ProviderResponseFinished(response.clone()));
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
         // Stateful-chain anchor: set only when the agent supplied a
@@ -5271,12 +5274,12 @@ impl Harness {
                     }
                     let is_final = matches!(
                         frame.as_ref(),
-                        Frame::Event(Event::AgentResponseFinished(r))
+                        Frame::Event(Event::ProviderResponseFinished(r))
                             if tool_calls_from_output_items(&r.output_items).is_empty()
                                 && r.originator.is_user()
                     );
                     let final_text =
-                        if let Frame::Event(Event::AgentResponseFinished(r)) = frame.as_ref() {
+                        if let Frame::Event(Event::ProviderResponseFinished(r)) = frame.as_ref() {
                             assistant_text_from_output_items(&r.output_items)
                         } else {
                             None

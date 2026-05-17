@@ -258,7 +258,7 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
             .read_frame()
             .expect("read")
             .expect("provider event should arrive");
-        if let Frame::Event(Event::AgentResponseFinished(r)) = frame {
+        if let Frame::Event(Event::ProviderResponseFinished(r)) = frame {
             break r;
         }
     };

@@ -125,7 +125,7 @@ fn representative_events() -> Vec<Event> {
             previous_response_candidate: None,
             share_user_cache_key: false,
         }),
-        Event::AgentResponseFinished(AgentResponseFinished {
+        Event::ProviderResponseFinished(ProviderResponseFinished {
             session_prompt_id: "sp-1".into(),
             output_items: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
@@ -134,7 +134,7 @@ fn representative_events() -> Vec<Event> {
                 }],
                 phase: None,
             })],
-            stop_reason: AgentStopReason::EndTurn,
+            stop_reason: ProviderStopReason::EndTurn,
             usage: None,
             originator: PromptOriginator::User,
 
@@ -384,14 +384,14 @@ fn execution_events_use_provider_wire_family() {
     // names so subscribers stop depending on the legacy `agent.*` family.
     let cases = [
         (
-            Event::AgentPromptSubmitted(AgentPromptSubmitted {
+            Event::ProviderPromptSubmitted(ProviderPromptSubmitted {
                 session_prompt_id: "sp-1".into(),
                 originator: PromptOriginator::User,
             }),
             "provider.prompt_submitted",
         ),
         (
-            Event::AgentResponseUpdated(AgentResponseUpdated {
+            Event::ProviderResponseUpdated(ProviderResponseUpdated {
                 session_prompt_id: "sp-1".into(),
                 text: "hello".to_owned(),
                 thinking: None,
@@ -400,11 +400,11 @@ fn execution_events_use_provider_wire_family() {
             "provider.response_updated",
         ),
         (
-            Event::AgentResponseFinished(AgentResponseFinished {
+            Event::ProviderResponseFinished(ProviderResponseFinished {
                 session_prompt_id: "sp-1".into(),
-                stop_reason: AgentStopReason::EndTurn,
+                stop_reason: ProviderStopReason::EndTurn,
                 originator: PromptOriginator::User,
-                ..AgentResponseFinished::default()
+                ..ProviderResponseFinished::default()
             }),
             "provider.response_finished",
         ),
@@ -517,7 +517,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
     // explicit transient metadata. Lock it down here so any future
     // edit to the matcher is intentional.
     let transient = [
-        Event::AgentResponseUpdated(AgentResponseUpdated {
+        Event::ProviderResponseUpdated(ProviderResponseUpdated {
             session_prompt_id: "sp-1".into(),
             text: "partial".to_owned(),
             thinking: None,

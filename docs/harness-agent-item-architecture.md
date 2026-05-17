@@ -19,7 +19,7 @@ For a Rust-shaped sketch of the same model, see
 ## Core Model
 
 - The transcript is an ordered item timeline.
-- `AgentResponseFinished` is assistant-output truth.
+- `ProviderResponseFinished` is assistant-output truth.
 - `ToolRequest` is runtime machinery, not transcript truth.
 - A single conversation may have at most one unresolved tool round at a time.
 - A tool round may contain multiple tool calls.
@@ -87,7 +87,7 @@ These remain durable transcript inputs:
 - `UiPromptSubmitted`
 - `SessionUserMessageInjected`
 - `SessionPromptSteered`
-- `AgentResponseFinished`
+- `ProviderResponseFinished`
 - terminal tool-result facts
 - `SessionCompacted`
 
@@ -104,7 +104,7 @@ These should be transient/non-durable:
 - `SessionPromptCreated`
 - `SessionPromptPrewarmRequested`
 - `SessionCompactionRequested`
-- `AgentPromptSubmitted`
+- `ProviderPromptSubmitted`
 - progress-style lifecycle events
 
 ## Transcript Projection
@@ -116,7 +116,7 @@ Direct folds:
 - `UiPromptSubmitted -> UserInputNode`
 - `SessionUserMessageInjected -> UserInputNode`
 - `SessionPromptSteered -> UserInputNode`
-- `AgentResponseFinished -> AssistantResponseNode`
+- `ProviderResponseFinished -> AssistantResponseNode`
 - `SessionCompacted -> CompactionNode`
 
 Stateful folds:
@@ -138,7 +138,7 @@ Tool execution order is runtime policy. Transcript order is semantic.
 
 Rules:
 
-- persist `AgentResponseFinished` immediately once provider output is valid
+- persist `ProviderResponseFinished` immediately once provider output is valid
 - if it has no tool calls, the turn ends
 - if it has tool calls, open one pending round for that conversation
 - persist each completed tool-result fact as it arrives
