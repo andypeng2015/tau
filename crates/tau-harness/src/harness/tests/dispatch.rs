@@ -369,8 +369,8 @@ fn provider_execution_events_must_come_from_prompt_owner() {
 }
 
 #[test]
-fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
-    use tau_proto::ToolSideEffects::{Mutating, Pure};
+fn shared_exclusive_shared_serializes_through_dispatch_state_machine() {
+    use tau_proto::ToolExecutionMode::{Exclusive, Shared};
 
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
@@ -383,9 +383,9 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_conversations.insert("sp-x".into(), cid);
 
-    // A `read` of a nonexistent path returns a ToolError (Pure);
+    // A `read` of a nonexistent path returns a ToolError (Shared);
     // `write` of a valid path creates the file and returns
-    // ToolResult (Mutating). Either kind of response path is
+    // ToolResult (Exclusive). Either kind of response path is
     // handled identically by the state machine.
     let read_args = CborValue::Map(vec![(
         CborValue::Text("path".to_owned()),
@@ -444,35 +444,38 @@ fn pure_mutating_pure_serializes_through_dispatch_state_machine() {
     h.handle_provider_response_finished(response)
         .expect("finished");
 
-    // Right after dispatch, only c1 (Pure) should be in-flight;
-    // c2 (Mutating) and c3 (Pure behind the Mutating) must wait.
+    // Right after dispatch, only c1 (Shared) should be in-flight;
+    // c2 (Exclusive) and c3 (Shared behind the Exclusive) must wait.
     let c1_id: ToolCallId = "c1".to_owned().into();
     let c2_id: ToolCallId = "c2".to_owned().into();
     let c3_id: ToolCallId = "c3".to_owned().into();
-    assert_eq!(h.in_flight_tool_kinds.len(), 1);
-    assert_eq!(h.in_flight_tool_kinds.get(&c1_id), Some(&Pure));
+    assert_eq!(h.in_flight_tool_execution_modes.len(), 1);
+    assert_eq!(h.in_flight_tool_execution_modes.get(&c1_id), Some(&Shared));
     assert_eq!(h.pending_tool_invocations.len(), 2);
     assert_eq!(h.pending_tool_invocations[0].1.id, "c2");
     assert_eq!(h.pending_tool_invocations[1].1.id, "c3");
 
     drive_harness_until_call_completes(&mut h, "c1");
 
-    // After c1 completes the Mutating gate opens and c2 dispatches.
+    // After c1 completes the Exclusive gate opens and c2 dispatches.
     // c3 must stay queued behind it.
-    assert_eq!(h.in_flight_tool_kinds.len(), 1);
-    assert_eq!(h.in_flight_tool_kinds.get(&c2_id), Some(&Mutating));
+    assert_eq!(h.in_flight_tool_execution_modes.len(), 1);
+    assert_eq!(
+        h.in_flight_tool_execution_modes.get(&c2_id),
+        Some(&Exclusive)
+    );
     assert_eq!(h.pending_tool_invocations.len(), 1);
     assert_eq!(h.pending_tool_invocations[0].1.id, "c3");
 
     drive_harness_until_call_completes(&mut h, "c2");
 
-    // With the Mutating cleared, c3 finally dispatches.
-    assert_eq!(h.in_flight_tool_kinds.len(), 1);
-    assert_eq!(h.in_flight_tool_kinds.get(&c3_id), Some(&Pure));
+    // With the Exclusive cleared, c3 finally dispatches.
+    assert_eq!(h.in_flight_tool_execution_modes.len(), 1);
+    assert_eq!(h.in_flight_tool_execution_modes.get(&c3_id), Some(&Shared));
     assert!(h.pending_tool_invocations.is_empty());
 
     drive_harness_until_call_completes(&mut h, "c3");
-    assert!(h.in_flight_tool_kinds.is_empty());
+    assert!(h.in_flight_tool_execution_modes.is_empty());
 
     h.shutdown().expect("shutdown");
 }
@@ -1441,7 +1444,7 @@ fn tools_drift_invalidates_chain_anchor() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 
@@ -2234,7 +2237,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let cid = h.default_conversation_id.clone();
@@ -2398,7 +2401,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let cid = h.default_conversation_id.clone();
@@ -2786,7 +2789,7 @@ fn delegate_ext_agent_query_keeps_tool_choice_auto() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -2931,13 +2934,13 @@ fn user_prompt_preempts_in_flight_non_tool_ext_side_conversation() {
     h.shutdown().expect("shutdown");
 }
 
-/// Regression: a sub-agent's `Pure` tool call must not be gated by the
-/// parent's still-in-flight `Mutating` `delegate` call. The parent's
+/// Regression: a sub-agent's `Shared` tool call must not be gated by the
+/// parent's still-in-flight `Exclusive` `delegate` call. The parent's
 /// delegate only resolves once the sub-agent's tools have run, so a
-/// global pure-vs-mutating gate produces a self-deadlock — the main
+/// global shared/exclusive gate produces a self-deadlock — the main
 /// symptom we hit in `tau-agent-m2dpw4`'s event log.
 #[test]
-fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
+fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -2954,7 +2957,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let websearch_events = connect_test_tool(&mut h, "conn-websearch");
@@ -2968,11 +2971,11 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 
-    // Main agent issues `delegate`, putting a Mutating call in flight
+    // Main agent issues `delegate`, putting an Exclusive call in flight
     // on the default conversation.
     let cid = h.default_conversation_id.clone();
     let main_spid: SessionPromptId = "sp-main".into();
@@ -3028,9 +3031,9 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
     )
     .expect("query");
 
-    // Sub-agent now responds with a Pure `websearch` call. Without
+    // Sub-agent now responds with a Shared `websearch` call. Without
     // per-conversation gating this would queue forever behind the
-    // parent's still-in-flight Mutating `delegate`.
+    // parent's still-in-flight Exclusive `delegate`.
     let side_spid = h
         .prompt_conversations
         .iter()
@@ -3066,7 +3069,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
     })
     .expect("side response");
 
-    // The Pure call must have been routed to the websearch
+    // The Shared call must have been routed to the websearch
     // extension — the bus sends `ToolInvoke` directly to the
     // resolved provider, so the test sink sees it there rather
     // than the broadcast `ToolRequest`.
@@ -3078,7 +3081,7 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
     });
     assert!(
         saw_routed,
-        "side conversation's Pure tool must dispatch despite parent's in-flight Mutating delegate"
+        "side conversation's Shared tool must dispatch despite parent's in-flight Exclusive delegate"
     );
     assert!(
         h.pending_tool_invocations.is_empty(),
@@ -3088,13 +3091,13 @@ fn side_conversation_pure_tool_dispatches_through_parent_mutating_delegate() {
     h.shutdown().expect("shutdown");
 }
 
-/// Two `delegate` calls with `read_only: true` issued in the same
-/// agent turn must be classified as `Pure` and therefore dispatch
-/// concurrently — `delegate` is registered as `Mutating` (the safe
-/// default), but the per-call override on `read_only: true` lets the
-/// agent opt two known-safe delegations into parallel scheduling.
+/// Two `delegate` calls with `execution_mode: "shared"` issued in the same
+/// agent turn must be classified as `Shared` and therefore dispatch
+/// concurrently — `delegate` is registered as `Exclusive` (the safe
+/// default), but the per-call override lets the agent opt two known-safe
+/// delegations into parallel scheduling.
 #[test]
-fn read_only_delegate_calls_dispatch_concurrently() {
+fn shared_delegate_calls_dispatch_concurrently() {
     use tau_proto::CborValue;
 
     let td = TempDir::new().expect("tempdir");
@@ -3113,7 +3116,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -3126,29 +3129,29 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         &cid,
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
-            text: "two read-only lookups".to_owned(),
+            text: "two shared lookups".to_owned(),
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
         }),
     );
-    let read_only_args = CborValue::Map(vec![(
-        CborValue::Text("read_only".to_owned()),
-        CborValue::Bool(true),
+    let shared_args = CborValue::Map(vec![(
+        CborValue::Text("execution_mode".to_owned()),
+        CborValue::Text("shared".to_owned()),
     )]);
     h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
-                call_id: "ro-1".into(),
+                call_id: "shared-1".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: read_only_args.clone(),
+                arguments: shared_args.clone(),
             }),
             ContextItem::ToolCall(ToolCallItem {
-                call_id: "ro-2".into(),
+                call_id: "shared-2".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: read_only_args.clone(),
+                arguments: shared_args.clone(),
             }),
         ],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
@@ -3170,22 +3173,22 @@ fn read_only_delegate_calls_dispatch_concurrently() {
     })
     .expect("main response");
 
-    // Both calls should be in flight simultaneously: per-call kind
-    // resolves to `Pure` via `read_only: true`, and `Pure` does not
-    // serialize against other Pure on the same conversation.
-    assert_eq!(h.in_flight_tool_kinds.len(), 2);
+    // Both calls should be in flight simultaneously: per-call execution mode
+    // resolves to `Shared`, and `Shared` does not serialize against other
+    // shared calls on the same conversation.
+    assert_eq!(h.in_flight_tool_execution_modes.len(), 2);
     assert!(
-        h.in_flight_tool_kinds
+        h.in_flight_tool_execution_modes
             .values()
-            .all(|kind| matches!(kind, tau_proto::ToolSideEffects::Pure)),
-        "both read-only delegates should be classified Pure",
+            .all(|kind| matches!(kind, tau_proto::ToolExecutionMode::Shared)),
+        "both shared delegates should be classified Shared",
     );
     assert!(
         h.pending_tool_invocations.is_empty(),
-        "no entries should remain queued — Pure+Pure dispatches in parallel",
+        "no entries should remain queued — Shared+Shared dispatches in parallel",
     );
 
-    // Sanity: without `read_only` the same two calls must not
+    // Sanity: without the shared override the same two calls must not
     // parallelize. Reset the harness and replay with bare delegates.
     let td2 = TempDir::new().expect("tempdir");
     let sp2 = td2.path().join("state");
@@ -3202,7 +3205,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let cid2 = h2.default_conversation_id.clone();
@@ -3213,7 +3216,7 @@ fn read_only_delegate_calls_dispatch_concurrently() {
         &cid2,
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
-            text: "two mutating delegations".to_owned(),
+            text: "two exclusive delegations".to_owned(),
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
         }),
@@ -3253,24 +3256,74 @@ fn read_only_delegate_calls_dispatch_concurrently() {
     })
     .expect("main response");
     assert_eq!(
-        h2.in_flight_tool_kinds.len(),
+        h2.in_flight_tool_execution_modes.len(),
         1,
-        "only first Mutating dispatches"
+        "only first Exclusive dispatches"
     );
     assert_eq!(
         h2.pending_tool_invocations.len(),
         1,
-        "second Mutating queues"
+        "second Exclusive queues"
     );
 }
 
-/// Mutating tool serialization is scoped to the owning conversation,
+/// Regression: older delegate callers may still send the legacy `read_only`
+/// flag. The harness keeps accepting it as a compatibility alias for shared
+/// execution while the agent-visible schema advertises only `execution_mode`.
+#[test]
+fn legacy_read_only_delegate_argument_maps_to_shared_execution_mode() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let legacy_call = AgentToolCall {
+        id: "legacy".to_owned().into(),
+        name: ToolName::new("delegate"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("read_only".to_owned()),
+            CborValue::Bool(true),
+        )]),
+        display: None,
+    };
+    assert_eq!(
+        h.resolve_tool_execution_mode_for_call(&legacy_call),
+        ToolExecutionMode::Shared,
+        "legacy read_only=true remains a shared execution-mode alias"
+    );
+
+    let explicit_call = AgentToolCall {
+        id: "explicit".to_owned().into(),
+        name: ToolName::new("delegate"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![
+            (
+                CborValue::Text("execution_mode".to_owned()),
+                CborValue::Text("exclusive".to_owned()),
+            ),
+            (
+                CborValue::Text("read_only".to_owned()),
+                CborValue::Bool(true),
+            ),
+        ]),
+        display: None,
+    };
+    assert_eq!(
+        h.resolve_tool_execution_mode_for_call(&explicit_call),
+        ToolExecutionMode::Exclusive,
+        "explicit execution_mode takes precedence over the legacy alias"
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Exclusive tool serialization is scoped to the owning conversation,
 /// not process-global. Two independent sub-agents may both need to run
-/// mutating work; making them wait on each other would unnecessarily
+/// exclusive work; making them wait on each other would unnecessarily
 /// serialize otherwise unrelated side tasks and can deadlock nested
 /// delegate workflows that depend on sub-agent progress.
 #[test]
-fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
+fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
     use tau_proto::CborValue;
 
     let td = TempDir::new().expect("tempdir");
@@ -3289,7 +3342,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let _ = connect_test_tool(&mut h, "conn-mutate");
@@ -3303,13 +3356,13 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
-    // The parent uses read-only delegates only to create two realistic
+    // The parent uses shared delegates only to create two realistic
     // side conversations concurrently. The assertion below is about
-    // the mutating tools owned by those distinct side conversations.
+    // the exclusive tools owned by those distinct side conversations.
     let parent_cid = h.default_conversation_id.clone();
     let main_spid: SessionPromptId = "sp-main".into();
     seed_agent_thinking(&mut h, &parent_cid, "sp-main");
@@ -3324,9 +3377,9 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             ctx_id: None,
         }),
     );
-    let read_only_args = CborValue::Map(vec![(
-        CborValue::Text("read_only".to_owned()),
-        CborValue::Bool(true),
+    let shared_args = CborValue::Map(vec![(
+        CborValue::Text("execution_mode".to_owned()),
+        CborValue::Text("shared".to_owned()),
     )]);
     h.handle_provider_response_finished(ProviderResponseFinished {
         session_prompt_id: main_spid,
@@ -3335,13 +3388,13 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
                 call_id: "delegate-A".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: read_only_args.clone(),
+                arguments: shared_args.clone(),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-B".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: read_only_args,
+                arguments: shared_args,
             }),
         ],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
@@ -3451,25 +3504,25 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
     let mut_a_id: ToolCallId = "mut-A".to_owned().into();
     let mut_b_id: ToolCallId = "mut-B".to_owned().into();
     assert_eq!(
-        h.in_flight_tool_kinds.get(&mut_a_id),
-        Some(&ToolSideEffects::Mutating),
-        "conversation A's mutating call should be in flight",
+        h.in_flight_tool_execution_modes.get(&mut_a_id),
+        Some(&ToolExecutionMode::Exclusive),
+        "conversation A's exclusive call should be in flight",
     );
     assert_eq!(
-        h.in_flight_tool_kinds.get(&mut_b_id),
-        Some(&ToolSideEffects::Mutating),
-        "conversation B's mutating call should be in flight too",
+        h.in_flight_tool_execution_modes.get(&mut_b_id),
+        Some(&ToolExecutionMode::Exclusive),
+        "conversation B's exclusive call should be in flight too",
     );
     assert_eq!(h.tool_conversations.get("mut-A"), Some(&cid_a));
     assert_eq!(h.tool_conversations.get("mut-B"), Some(&cid_b));
     assert_ne!(
         h.tool_conversations.get("mut-A"),
         h.tool_conversations.get("mut-B"),
-        "mutating calls must be attributed to different dispatch scopes",
+        "exclusive calls must be attributed to different dispatch scopes",
     );
     assert!(
         h.pending_tool_invocations.is_empty(),
-        "cross-conversation Mutating calls should not queue behind each other",
+        "cross-conversation Exclusive calls should not queue behind each other",
     );
 
     h.shutdown().expect("shutdown");
@@ -3497,7 +3550,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     let _websearch_events = connect_test_tool(&mut h, "conn-websearch");
@@ -3511,7 +3564,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 
@@ -3682,7 +3735,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -3918,7 +3971,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -4066,7 +4119,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -4211,7 +4264,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -4396,7 +4449,7 @@ fn tool_call_response_preserves_assistant_text_items() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -4474,7 +4527,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 
@@ -4666,7 +4719,7 @@ fn tool_events_carry_owning_conversation_originator() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
 

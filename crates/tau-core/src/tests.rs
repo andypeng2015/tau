@@ -1,8 +1,8 @@
 use tau_proto::{
     CborValue, ClientKind, ConnectionId, ContentPart, ContextItem, ContextRole, Event, EventName,
     EventSelector, Frame, MessageItem, PromptOriginator, ProviderResponseFinished,
-    SessionPromptSteered, SessionUserMessageInjected, ToolCallItem, ToolRegister, ToolRequest,
-    ToolResult, ToolResultStatus, ToolSideEffects, ToolSpec, ToolType, UiNavigateTree,
+    SessionPromptSteered, SessionUserMessageInjected, ToolCallItem, ToolExecutionMode,
+    ToolRegister, ToolRequest, ToolResult, ToolResultStatus, ToolSpec, ToolType, UiNavigateTree,
     UiPromptSubmitted,
 };
 use tempfile::TempDir;
@@ -312,7 +312,7 @@ fn provider_can_register_tool_and_receive_invocations() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     assert!(register_report.warnings.is_empty());
@@ -366,7 +366,7 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     assert!(first_report.warnings.is_empty());
@@ -381,7 +381,7 @@ fn duplicate_tool_registrations_warn_but_remain_available() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     assert_eq!(second_report.warnings.len(), 1);
@@ -419,7 +419,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     registry.register(
@@ -432,7 +432,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     registry.register(
@@ -445,7 +445,7 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
             parameters: None,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 
@@ -481,7 +481,7 @@ fn register_events_map_cleanly_to_registry_state() {
                 parameters: None,
                 format: None,
                 enabled_by_default: true,
-                side_effects: ToolSideEffects::Pure,
+                execution_mode: ToolExecutionMode::Shared,
             },
         }
         .tool,

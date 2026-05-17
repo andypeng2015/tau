@@ -28,7 +28,7 @@ fn ext_agent_query_defers_dispatch_when_publish_is_intercepted() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     );
     // Register a no-op interceptor on `ui.prompt_submitted` so any

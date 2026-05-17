@@ -12,7 +12,7 @@ use std::sync::{Arc, mpsc};
 
 use tau_proto::{
     Ack, ConfigError, Event, Frame, FrameReader, FrameWriter, LogEventId, Message, SessionStarted,
-    ToolSideEffects, ToolSpec,
+    ToolExecutionMode, ToolSpec,
 };
 
 mod agents;
@@ -72,7 +72,7 @@ where
         parameters: None,
         format: None,
         enabled_by_default: true,
-        side_effects: ToolSideEffects::Pure,
+        execution_mode: ToolExecutionMode::Shared,
     });
     #[cfg(not(any(test, feature = "echo-agent")))]
     let echo_tool: Option<ToolSpec> = None;
@@ -114,7 +114,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
@@ -144,7 +144,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
@@ -204,7 +204,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
@@ -220,7 +220,7 @@ where
                 definition: crate::tools::apply_patch::APPLY_PATCH_LARK_GRAMMAR.to_owned(),
             }),
             enabled_by_default: false,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(GREP_TOOL_NAME),
@@ -269,7 +269,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(FIND_TOOL_NAME),
@@ -302,7 +302,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(LS_TOOL_NAME),
@@ -328,7 +328,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(SHELL_TOOL_NAME),
@@ -361,7 +361,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
         ToolSpec {
             name: tau_proto::ToolName::new(GPT_SHELL_TOOL_NAME),
@@ -393,7 +393,7 @@ where
             })),
             format: None,
             enabled_by_default: false,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         },
     ]);
 

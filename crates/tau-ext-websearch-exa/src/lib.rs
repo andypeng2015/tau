@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tau_proto::{
     Ack, CborValue, ConfigError, Event, Frame, FrameReader, FrameWriter, LogEventId, Message,
-    ToolDisplay, ToolDisplayStatus, ToolError, ToolInvoke, ToolResult, ToolSideEffects, ToolSpec,
+    ToolDisplay, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolInvoke, ToolResult, ToolSpec,
 };
 
 /// `tracing` target for events emitted from this extension.
@@ -231,7 +231,7 @@ fn tool_spec() -> ToolSpec {
         })),
         format: None,
         enabled_by_default: true,
-        side_effects: ToolSideEffects::Pure,
+        execution_mode: ToolExecutionMode::Shared,
     }
 }
 

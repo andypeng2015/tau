@@ -54,7 +54,7 @@ use crate::model::{
 };
 use crate::prompt::{
     assemble_conversation_from, assemble_prompt_context_from, build_system_prompt, cbor_map_bool,
-    render_agents_context_message,
+    cbor_map_text, render_agents_context_message,
 };
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::turn::{PromptSubmission, TurnState};
@@ -381,18 +381,18 @@ pub(crate) struct Harness {
     /// dispatched yet. Drained in FIFO order by
     /// `drain_pending_tool_invocations` whenever the in-flight set
     /// allows the next call through. Cleared out implicitly: a turn
-    /// only completes once this is empty and `in_flight_tool_kinds` is
-    /// empty.
+    /// only completes once this is empty and `in_flight_tool_execution_modes`
+    /// is empty.
     pub(crate) pending_tool_invocations:
-        VecDeque<(ConversationId, AgentToolCall, tau_proto::ToolSideEffects)>,
-    /// Kind of every tool call currently dispatched but not yet
-    /// completed (no `ToolResult`/`ToolError` received). Keyed by
+        VecDeque<(ConversationId, AgentToolCall, tau_proto::ToolExecutionMode)>,
+    /// Execution mode of every tool call currently dispatched but not
+    /// yet completed (no `ToolResult`/`ToolError` received). Keyed by
     /// `call_id`. Used by the dispatch state machine to decide whether
-    /// the next queued invocation can proceed: a `Pure` call may go
-    /// whenever no `Mutating` is in flight; a `Mutating` call may go
+    /// the next queued invocation can proceed: a `Shared` call may go
+    /// whenever no `Exclusive` is in flight; an `Exclusive` call may go
     /// only when this set is empty.
-    pub(crate) in_flight_tool_kinds:
-        std::collections::HashMap<ToolCallId, tau_proto::ToolSideEffects>,
+    pub(crate) in_flight_tool_execution_modes:
+        std::collections::HashMap<ToolCallId, tau_proto::ToolExecutionMode>,
     /// Prompt ids canceled by `/cancel`. Late agent events for these
     /// prompts are ignored and never folded into session state.
     pub(crate) canceled_prompts: std::collections::HashSet<SessionPromptId>,
@@ -838,7 +838,7 @@ impl Harness {
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             pending_tool_invocations: VecDeque::new(),
-            in_flight_tool_kinds: std::collections::HashMap::new(),
+            in_flight_tool_execution_modes: std::collections::HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             dirs,
@@ -1048,7 +1048,7 @@ impl Harness {
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             pending_tool_invocations: VecDeque::new(),
-            in_flight_tool_kinds: std::collections::HashMap::new(),
+            in_flight_tool_execution_modes: std::collections::HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             dirs,
@@ -2525,7 +2525,7 @@ impl Harness {
                     tool_type,
                 }),
             );
-            self.in_flight_tool_kinds.remove(&call_id);
+            self.in_flight_tool_execution_modes.remove(&call_id);
             self.clear_tool_call_tracking(call_id.as_str());
         }
         if let Some(conv) = self.conversations.get_mut(cid) {
@@ -3204,7 +3204,7 @@ impl Harness {
 
     /// Emit a `UiNavigateTree` to move the *UI's* view cursor back
     /// to the default conversation's tip after a side conversation
-    /// finishes. Purely a UI affordance now — fold parentage no
+    /// finishes. Only a UI affordance now — fold parentage no
     /// longer depends on `tree.head()` (Phase 4 of the interception
     /// refactor: each publish carries its explicit parent), so
     /// nothing in the harness's append path needs the bounce. UIs
@@ -4744,14 +4744,14 @@ impl Harness {
             ) && conv.parent_tool_call_id.is_none()
         });
 
-        let mut normalized_calls: Vec<(AgentToolCall, tau_proto::ToolSideEffects)> = Vec::new();
+        let mut normalized_calls: Vec<(AgentToolCall, tau_proto::ToolExecutionMode)> = Vec::new();
         if requested_tool_calls {
             normalized_calls = tool_calls
                 .iter()
                 .map(|call| {
                     let call = call.clone();
-                    let kind = self.resolve_tool_kind_for_call(&call);
-                    (call, kind)
+                    let mode = self.resolve_tool_execution_mode_for_call(&call);
+                    (call, mode)
                 })
                 .collect();
             let mut normalized_calls_iter = normalized_calls.iter();
@@ -4903,7 +4903,7 @@ impl Harness {
             // Normalize empty call_ids to a synthetic one. Models
             // sometimes emit hallucinated tool calls with both a
             // missing name *and* a missing id; an empty id would
-            // collide with itself in `in_flight_tool_kinds` /
+            // collide with itself in `in_flight_tool_execution_modes` /
             // `pending_tool_sessions`, and would later render into
             // conversation history as an empty `call_id` which the
             // OpenAI Responses API rejects with
@@ -4934,10 +4934,10 @@ impl Harness {
             }
             // Enqueue in the order the agent emitted them. Dispatch is
             // done by `drain_pending_tool_invocations`, which respects
-            // the pure-vs-mutating ordering rule.
-            for (call, kind) in normalized_calls {
+            // the shared/exclusive ordering rule.
+            for (call, mode) in normalized_calls {
                 self.pending_tool_invocations
-                    .push_back((cid.clone(), call, kind));
+                    .push_back((cid.clone(), call, mode));
             }
             self.drain_pending_tool_invocations()?;
         } else {
@@ -5031,55 +5031,65 @@ impl Harness {
         }
     }
 
-    /// Returns the side-effect class of a tool name.
+    /// Returns the execution mode of a tool name.
     ///
-    /// Falls back to `Mutating` for unknown tools so an unregistered
+    /// Falls back to `Exclusive` for unknown tools so an unregistered
     /// name does not accidentally parallelize.
-    fn resolve_tool_kind(&self, name: &str) -> tau_proto::ToolSideEffects {
+    fn resolve_tool_execution_mode(&self, name: &str) -> tau_proto::ToolExecutionMode {
         self.registry
             .resolve_provider(name)
-            .map(|provider| provider.tool.side_effects)
-            .unwrap_or(tau_proto::ToolSideEffects::Mutating)
+            .map(|provider| provider.tool.execution_mode)
+            .unwrap_or(tau_proto::ToolExecutionMode::Exclusive)
     }
 
-    /// Same as [`resolve_tool_kind`] but lets a tool override its
-    /// registered kind per-call by inspecting the call arguments.
+    /// Same as [`resolve_tool_execution_mode`] but lets a tool override its
+    /// registered mode per-call by inspecting the call arguments.
     ///
-    /// `delegate` registers as `Mutating` (the safe default) but
-    /// accepts a `read_only: bool` argument; when set, the agent is
-    /// asserting the sub-task does no mutation and the harness can
-    /// schedule it as `Pure` — letting two read-only delegations from
-    /// the same turn dispatch concurrently rather than serializing.
-    fn resolve_tool_kind_for_call(&self, call: &AgentToolCall) -> tau_proto::ToolSideEffects {
-        let registered = self.resolve_tool_kind(call.name.as_str());
-        if call.name.as_str() == "delegate"
-            && cbor_map_bool(&call.arguments, "read_only").unwrap_or(false)
-        {
-            return tau_proto::ToolSideEffects::Pure;
+    /// `delegate` registers as `Exclusive` (the safe default) but accepts an
+    /// `execution_mode` argument; when set to `shared`, the harness can let two
+    /// shared delegations from the same turn dispatch concurrently rather than
+    /// serializing. The legacy `read_only` argument is still accepted for older
+    /// callers, but it is not advertised to agents.
+    fn resolve_tool_execution_mode_for_call(
+        &self,
+        call: &AgentToolCall,
+    ) -> tau_proto::ToolExecutionMode {
+        let registered = self.resolve_tool_execution_mode(call.name.as_str());
+        if call.name.as_str() == "delegate" {
+            match cbor_map_text(&call.arguments, "execution_mode") {
+                Some("shared") => return tau_proto::ToolExecutionMode::Shared,
+                Some("exclusive") => return tau_proto::ToolExecutionMode::Exclusive,
+                _ => {}
+            }
+            if cbor_map_bool(&call.arguments, "read_only").unwrap_or(false) {
+                return tau_proto::ToolExecutionMode::Shared;
+            }
         }
         registered
     }
 
-    /// Whether any in-flight tool call belonging to `cid` is `Mutating`.
-    /// The pure-vs-mutating ordering rule is per-conversation: tools
+    /// Whether any in-flight tool call belonging to `cid` is `Exclusive`.
+    /// The shared/exclusive ordering rule is per-conversation: tools
     /// running for a *different* conversation are an independent thread
     /// of execution and must not gate this one. (Most importantly: the
-    /// parent agent's mid-flight `delegate` call is `Mutating`, but it
+    /// parent agent's mid-flight `delegate` call is `Exclusive`, but it
     /// must not block the sub-agent it spawned from running its own
-    /// `Pure` tools — otherwise delegate deadlocks itself.)
-    fn has_mutating_in_flight_for(&self, cid: &ConversationId) -> bool {
-        self.in_flight_tool_kinds.iter().any(|(call_id, kind)| {
-            matches!(kind, tau_proto::ToolSideEffects::Mutating)
-                && self
-                    .tool_conversations
-                    .get(call_id)
-                    .is_some_and(|owner| owner == cid)
-        })
+    /// `Shared` tools — otherwise delegate deadlocks itself.)
+    fn has_exclusive_in_flight_for(&self, cid: &ConversationId) -> bool {
+        self.in_flight_tool_execution_modes
+            .iter()
+            .any(|(call_id, mode)| {
+                matches!(mode, tau_proto::ToolExecutionMode::Exclusive)
+                    && self
+                        .tool_conversations
+                        .get(call_id)
+                        .is_some_and(|owner| owner == cid)
+            })
     }
 
     /// Whether `cid` has any tool call currently in flight.
     fn any_in_flight_for(&self, cid: &ConversationId) -> bool {
-        self.in_flight_tool_kinds.keys().any(|call_id| {
+        self.in_flight_tool_execution_modes.keys().any(|call_id| {
             self.tool_conversations
                 .get(call_id)
                 .is_some_and(|owner| owner == cid)
@@ -5090,16 +5100,17 @@ impl Harness {
     /// per-conversation in-flight set allows them through.
     ///
     /// Rule (per conversation):
-    /// - `Pure` may dispatch when no same-conversation `Mutating` is in flight.
-    /// - `Mutating` may dispatch when no same-conversation call is in flight at
-    ///   all.
+    /// - `Shared` may dispatch when no same-conversation `Exclusive` is in
+    ///   flight.
+    /// - `Exclusive` may dispatch when no same-conversation call is in flight
+    ///   at all.
     ///
     /// The queue can interleave entries from multiple conversations
     /// (parent + side conversations spawned mid-turn). We scan it and
     /// dispatch the first entry whose conversation is currently
     /// unblocked, repeating until no further progress can be made.
     /// Within a single conversation the per-turn FIFO order — and
-    /// therefore the read-after-write ordering of Pure-then-Mutating —
+    /// therefore the read-after-write ordering of Shared-then-Exclusive —
     /// is preserved, because we never skip an entry that is already
     /// blocked behind an earlier same-conversation entry.
     ///
@@ -5110,13 +5121,13 @@ impl Harness {
             let mut blocked_convs: std::collections::HashSet<ConversationId> =
                 std::collections::HashSet::new();
             let mut next_idx: Option<usize> = None;
-            for (idx, (cid, _call, kind)) in self.pending_tool_invocations.iter().enumerate() {
+            for (idx, (cid, _call, mode)) in self.pending_tool_invocations.iter().enumerate() {
                 if blocked_convs.contains(cid) {
                     continue;
                 }
-                let compatible = match *kind {
-                    tau_proto::ToolSideEffects::Pure => !self.has_mutating_in_flight_for(cid),
-                    tau_proto::ToolSideEffects::Mutating => !self.any_in_flight_for(cid),
+                let compatible = match *mode {
+                    tau_proto::ToolExecutionMode::Shared => !self.has_exclusive_in_flight_for(cid),
+                    tau_proto::ToolExecutionMode::Exclusive => !self.any_in_flight_for(cid),
                 };
                 if compatible {
                     next_idx = Some(idx);
@@ -5130,17 +5141,18 @@ impl Harness {
             let Some(idx) = next_idx else {
                 return Ok(());
             };
-            let (cid, call, kind) = self
+            let (cid, call, mode) = self
                 .pending_tool_invocations
                 .remove(idx)
                 .expect("index just located");
             let call_id: ToolCallId = call.id.clone();
-            self.in_flight_tool_kinds.insert(call_id.clone(), kind);
+            self.in_flight_tool_execution_modes
+                .insert(call_id.clone(), mode);
             // If dispatch fails synchronously, roll back the in-flight
             // entry so a retry or clean-up is not wedged on a phantom
             // slot.
             if let Err(error) = self.execute_agent_tool_call(&cid, &call) {
-                self.in_flight_tool_kinds.remove(&call_id);
+                self.in_flight_tool_execution_modes.remove(&call_id);
                 return Err(error);
             }
         }
@@ -5152,7 +5164,7 @@ impl Harness {
     /// calls, and then checks whether the turn is done.
     pub(crate) fn on_tool_call_complete(&mut self, call_id: &str) {
         let owned: ToolCallId = call_id.to_owned().into();
-        self.in_flight_tool_kinds.remove(&owned);
+        self.in_flight_tool_execution_modes.remove(&owned);
         // `tool_conversations` is still populated here: the call
         // sites clear it *after* this function returns. Decrement
         // the conversation's in-flight counter and surface the new

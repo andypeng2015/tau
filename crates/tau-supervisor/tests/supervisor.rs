@@ -86,7 +86,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
                 parameters: None,
                 format: None,
                 enabled_by_default: true,
-                side_effects: tau_proto::ToolSideEffects::Pure,
+                execution_mode: tau_proto::ToolExecutionMode::Shared,
             },
         }))
     );

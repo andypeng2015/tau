@@ -1128,7 +1128,7 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
             parameters: None,
             format: None,
             enabled_by_default: false,
-            side_effects: ToolSideEffects::Pure,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 

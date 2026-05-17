@@ -10,7 +10,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 
 use tau_proto::{
     Ack, CborValue, Event, ExtAgentQuery, Frame, FrameReader, FrameWriter, LogEventId, Message,
-    ToolError, ToolInvoke, ToolResult, ToolSideEffects, ToolSpec,
+    ToolError, ToolExecutionMode, ToolInvoke, ToolResult, ToolSpec,
 };
 
 pub const LOG_TARGET: &str = "core-delegate";
@@ -204,7 +204,7 @@ fn tool_spec() -> ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
         description: Some(
-            "Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple `read_only: true` delegations dispatched in the same turn run concurrently. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers."
+            "Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` dispatched in the same turn run concurrently. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers."
                 .to_owned(),
         ),
         tool_type: tau_proto::ToolType::Function,
@@ -219,9 +219,10 @@ fn tool_spec() -> ToolSpec {
                     "type": "string",
                     "description": "Self-contained task for the sub-agent. The sub-agent's conversation starts fresh — it has NO access to this conversation's history, your earlier tool results, or files you've read. State everything it needs: the goal, the relevant facts (absolute file paths, exact symbols, snippets you've already extracted), any constraints, what counts as 'done', and the format of the answer you want back. Treat it like briefing a teammate who just walked into the room. Terse command-style prompts produce shallow work; missing context produces wrong answers."
                 },
-                "read_only": {
-                    "type": "boolean",
-                    "description": "Set true ONLY when the sub-task is fully read-only (no file writes, no shell commands with side effects, no network mutation, no nested delegations that mutate). Read-only delegations dispatched in the same turn run concurrently with each other and with other read-only tool calls — set this whenever applicable to enable parallelism. Default: false (treated as `Mutating` — runs sequentially with other mutating work)."
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["shared", "exclusive"],
+                    "description": "Use `shared` ONLY when the sub-task can safely overlap with other shared tool calls. Use `exclusive` when the sub-task needs to run alone within this conversation. Shared delegations dispatched in the same turn run concurrently with each other and with other shared tool calls. Default: `exclusive`."
                 }
             },
             "required": ["task_name", "prompt"]
@@ -229,10 +230,10 @@ fn tool_spec() -> ToolSpec {
         format: None,
         enabled_by_default: true,
         // Conservative default at registration time. The harness
-        // overrides this per-call when `read_only: true` is set in the
-        // arguments, so two read-only delegations from the same agent
-        // turn can dispatch concurrently.
-        side_effects: ToolSideEffects::Mutating,
+        // overrides this per-call when `execution_mode: "shared"` is
+        // set in the arguments, so two shared delegations from the
+        // same agent turn can dispatch concurrently.
+        execution_mode: ToolExecutionMode::Exclusive,
     }
 }
 
@@ -299,6 +300,28 @@ mod tests {
         .expect("valid args parse");
         assert_eq!(parsed.task_name, "audit");
         assert_eq!(parsed.prompt, "do the thing");
+    }
+
+    /// Regression coverage for the agent-visible terminology: delegate should
+    /// advertise shared/exclusive execution modes and keep the legacy alias out
+    /// of the schema/description.
+    #[test]
+    fn tool_schema_advertises_execution_mode_only() {
+        let spec = tool_spec();
+        let description = spec.description.expect("description");
+        assert!(description.contains("execution_mode"));
+        assert!(description.contains("shared"));
+        assert!(!description.contains("read_only"));
+        assert!(!description.contains("read-only"));
+        assert!(!description.contains("Mutating"));
+
+        let parameters = spec.parameters.expect("parameters");
+        let properties = parameters
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("object properties");
+        assert!(properties.contains_key("execution_mode"));
+        assert!(!properties.contains_key("read_only"));
     }
 
     #[test]

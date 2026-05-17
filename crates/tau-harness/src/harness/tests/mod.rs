@@ -20,8 +20,8 @@ use tau_proto::{
     ExtAgentQuery, Frame, FrameReader, FrameWriter, Intercept, InterceptAction, InterceptReply,
     InterceptionPriority, Message, MessageItem, ProviderResponseFinished, ProviderResponseUpdated,
     SessionCompactionRequested, SessionPromptCreated, SessionPromptId, SessionPromptQueued,
-    Subscribe, ToolCallId, ToolCallItem, ToolName, ToolResult, ToolResultItem, ToolResultStatus,
-    ToolSideEffects, ToolSpec, UiPromptDraft, UiPromptSubmitted,
+    Subscribe, ToolCallId, ToolCallItem, ToolExecutionMode, ToolName, ToolResult, ToolResultItem,
+    ToolResultStatus, ToolSpec, UiPromptDraft, UiPromptSubmitted,
 };
 use tau_session_inspect::{
     default_session_id, format_session_entry, open_session_store, policy_lines, session_lines,

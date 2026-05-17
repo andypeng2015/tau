@@ -6,7 +6,7 @@ use rand::Rng;
 use rand::{SeedableRng, rngs::StdRng};
 use tau_proto::{
     Emit, Event, EventSelector, Frame, FrameReader, FrameWriter, HarnessInfo, HarnessInfoLevel,
-    InterceptAction, InterceptReply, InterceptionPriority, Message, ToolError, ToolSideEffects,
+    InterceptAction, InterceptReply, InterceptionPriority, Message, ToolError, ToolExecutionMode,
     ToolSpec, UiPromptSubmitted,
 };
 
@@ -103,7 +103,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            side_effects: ToolSideEffects::Mutating,
+            execution_mode: ToolExecutionMode::Exclusive,
         })
         .ready_message("test dummy tools ready")
         .run(&mut writer)?;

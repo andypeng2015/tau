@@ -1122,12 +1122,13 @@ pub struct ToolSpec {
     /// role-level `toolsProfile` overrides its default.
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
     pub enabled_by_default: bool,
-    /// Side-effect class used by the harness dispatch state machine to
-    /// serialize mutating calls with respect to pure ones. Unknown /
-    /// unset declarations default to `Mutating` so extensions that
+    /// Execution mode used by the harness dispatch state machine.
+    /// Shared calls may overlap with each other; exclusive calls run
+    /// alone within their conversation. Unknown / unset declarations
+    /// default to [`ToolExecutionMode::Exclusive`] so extensions that
     /// haven't been updated don't silently lose ordering.
-    #[serde(default)]
-    pub side_effects: ToolSideEffects,
+    #[serde(default, alias = "side_effects")]
+    pub execution_mode: ToolExecutionMode,
 }
 
 const fn tool_enabled_by_default() -> bool {
@@ -1138,23 +1139,27 @@ const fn is_true(value: &bool) -> bool {
     *value
 }
 
-/// Whether a tool observably mutates state. Purely informational for
-/// the agent; enforced by the harness's tool dispatch queue.
+/// How the harness may schedule a tool call relative to other tool calls.
+///
+/// This is informational for the agent and enforced by the harness's tool
+/// dispatch queue.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ToolSideEffects {
-    /// Read-only / commutative with other tool calls. Multiple `Pure`
-    /// calls can run concurrently and can be interleaved freely.
-    Pure,
-    /// May mutate externally observable state (filesystem, network,
-    /// processes, shared session data, …). Serialized against other
-    /// in-flight tool calls in the same dispatch scope / conversation;
-    /// independent conversations can run their own mutating calls in
-    /// parallel. Default so that tools which don't explicitly opt in to
-    /// `Pure` are treated conservatively.
+pub enum ToolExecutionMode {
+    /// May run concurrently with other shared calls in the same conversation.
+    #[serde(alias = "pure")]
+    Shared,
+    /// Must run alone within its conversation. Independent conversations can
+    /// run their own exclusive calls in parallel. Default so tools that do not
+    /// explicitly opt in to shared scheduling are treated conservatively.
     #[default]
-    Mutating,
+    #[serde(alias = "mutating")]
+    Exclusive,
 }
+
+/// Backward-compatible name for [`ToolExecutionMode`].
+#[deprecated(note = "use ToolExecutionMode")]
+pub type ToolSideEffects = ToolExecutionMode;
 
 /// Per-prompt knob telling the provider whether the model is allowed
 /// to call tools on this turn. Stamped onto every
