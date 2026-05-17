@@ -200,6 +200,7 @@
             "rustc-codegen-cranelift-preview"
           ];
           packages = [
+            pkgs.cargo-nextest
             pkgs.taplo
             selfci.packages.${system}.default
           ];
