@@ -266,9 +266,23 @@ fn run_init(force: bool) -> Result<(), CliError> {
 
 pub type ComponentRunner = fn() -> Result<(), Box<dyn std::error::Error>>;
 
+/// Describes how an `ext` component gets its global tracing subscriber.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComponentLogging {
+    /// `tau-cli` installs a stderr subscriber before invoking the component.
+    CliStderr,
+    /// The component installs its own subscriber, or does not emit tracing
+    /// logs.
+    RunnerManaged,
+}
+
 pub struct Component {
+    /// Name accepted by the hidden `tau ext <name>` dispatcher.
     pub name: &'static str,
+    /// Function that runs the component over stdin/stdout.
     pub runner: ComponentRunner,
+    /// Owner of the component's tracing initialization.
+    pub logging: ComponentLogging,
 }
 
 /// Parses CLI arguments via clap and dispatches to the appropriate
@@ -371,24 +385,22 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
             },
 
             cli::Command::Ext { name } => {
-                ui_logging::init_stderr_from_env(
-                    "tau_harness=info,tau_agent=info,tau_cli=info,agent=info",
-                );
                 let built_in_components = [
                     Component {
                         name: "agent",
                         runner: tau_agent::run_stdio,
+                        logging: ComponentLogging::RunnerManaged,
                     },
                     Component {
                         name: "harness",
                         runner: tau_harness::run_component,
+                        logging: ComponentLogging::CliStderr,
                     },
                 ];
-                let runner = built_in_components
+                let component = built_in_components
                     .iter()
                     .chain(components)
                     .find(|component| component.name == name)
-                    .map(|component| component.runner)
                     .ok_or_else(|| {
                         let available = built_in_components
                             .iter()
@@ -400,7 +412,13 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                             "unknown extension: {name}\navailable: {available}"
                         ))
                     })?;
-                runner().map_err(|e| CliError::Participant(e.to_string()))
+                match component.logging {
+                    ComponentLogging::CliStderr => ui_logging::init_stderr_from_env(
+                        "tau_harness=info,tau_agent=info,tau_cli=info,agent=info",
+                    ),
+                    ComponentLogging::RunnerManaged => {}
+                }
+                (component.runner)().map_err(|e| CliError::Participant(e.to_string()))
             }
         }
     };
