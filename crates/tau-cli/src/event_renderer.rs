@@ -1562,6 +1562,7 @@ impl EventRenderer {
                 state.live_display = Some(display.clone());
                 let block = self.render_tool_history_block(&display);
                 self.handle.set_block(bid, block);
+                self.handle.redraw();
             }
             Event::ToolResult(result) => {
                 let call_id = result.call_id.as_str();

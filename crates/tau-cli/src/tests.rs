@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tau_cli_term::TermHandle;
 use tau_cli_term_raw::{Color, Term};
@@ -83,6 +83,17 @@ fn setup(w: u16, h: u16) -> (Term, TermHandle, VtWriter) {
 
 fn sync(handle: &TermHandle) {
     handle.redraw_sync();
+}
+
+fn eventually_screen_contains(vt: &VtWriter, w: u16, needle: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        if vt.screen_contains(w, needle) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 #[test]
@@ -1236,6 +1247,85 @@ fn replayed_compacted_event_renders_success_status() {
     }));
     sync(&handle);
     assert!(vt.screen_contains(80, "compact ok"));
+}
+
+#[test]
+fn delegate_progress_redraws_live_parent_block() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::AgentResponseFinished(AgentResponseFinished {
+        session_prompt_id: "sp-0".into(),
+        text: None,
+        tool_calls: vec![tau_proto::AgentToolCall {
+            id: "call-delegate".into(),
+            name: "delegate".into(),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+            display: Some(tau_proto::ToolDisplay {
+                args: "[probe]".into(),
+                progress_counters: vec![tau_proto::ProgressCounter {
+                    label: Some("tools".into()),
+                    unit: tau_proto::ProgressUnit::Count,
+                    complete: Some(0),
+                    total: Some(0),
+                }],
+                status: tau_proto::ToolDisplayStatus::InProgress,
+                status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
+                ..Default::default()
+            }),
+        }],
+        input_tokens: None,
+        cached_tokens: None,
+        output_tokens: None,
+        thinking: None,
+        token_usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        response_id: None,
+        phase: None,
+        reasoning_items: Vec::new(),
+        compacted_input_items: Vec::new(),
+        ws_pool_delta: None,
+    }));
+    sync(&handle);
+    assert!(vt.screen_contains(100, "[probe]"));
+    assert!(!vt.screen_contains(100, "%3/3"));
+
+    // Regression: `ToolDelegateProgress` mutates the already-visible
+    // parent `delegate` block. That live mutation must request its own
+    // redraw because suppressed sub-agent tool events will not repaint it.
+    renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
+        call_id: "call-delegate".into(),
+        task_name: "probe".into(),
+        ctx_percent: None,
+        ctx_input_tokens: None,
+        ctx_window: None,
+        tools_in_flight: 0,
+        tools_total: 3,
+        display: Some(tau_proto::ToolDisplay {
+            args: "[probe]".into(),
+            progress_counters: vec![tau_proto::ProgressCounter {
+                label: Some("tools".into()),
+                unit: tau_proto::ProgressUnit::Count,
+                complete: Some(3),
+                total: Some(3),
+            }],
+            status: tau_proto::ToolDisplayStatus::InProgress,
+            status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
+            ..Default::default()
+        }),
+    }));
+
+    assert!(
+        eventually_screen_contains(&vt, 100, "%3/3"),
+        "delegate progress should repaint without an explicit test redraw: {:?}",
+        vt.screen_text(100)
+    );
 }
 
 #[test]
