@@ -172,6 +172,7 @@ fn handle_tool_invoke<W: Write>(
         target: LOG_TARGET,
         query_id = %query_id,
         task_name = %parsed.task_name,
+        execution_mode = ?parsed.execution_mode,
         prompt_len = parsed.prompt.len(),
         "dispatching delegation",
     );
@@ -179,6 +180,7 @@ fn handle_tool_invoke<W: Write>(
     writer.write_frame(&Frame::Event(Event::ExtAgentQuery(ExtAgentQuery {
         query_id,
         instruction: format!("{DELEGATE_PREFIX}{}", parsed.prompt),
+        execution_mode: parsed.execution_mode,
         // Hand the parent call_id and the agent-supplied task name to
         // the harness so it can route sub-agent progress
         // (`DelegateProgress`) under this tool block and the CLI can
@@ -204,7 +206,7 @@ fn tool_spec() -> ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
         description: Some(
-            "Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` dispatched in the same turn run concurrently. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers."
+            "Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` can overlap globally. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers."
                 .to_owned(),
         ),
         tool_type: tau_proto::ToolType::Function,
@@ -222,18 +224,17 @@ fn tool_spec() -> ToolSpec {
                 "execution_mode": {
                     "type": "string",
                     "enum": ["shared", "exclusive"],
-                    "description": "Use `shared` ONLY when the sub-task can safely overlap with other shared tool calls. Use `exclusive` when the sub-task needs to run alone within this conversation. Shared delegations dispatched in the same turn run concurrently with each other and with other shared tool calls. Default: `exclusive`."
+                    "description": "Use `shared` when the sub-task can safely overlap globally with other shared sub-agent delegations. Use `exclusive` when it must run alone: it waits for all other sub-agent delegations and blocks later independent ones. Default: `shared`."
                 }
             },
             "required": ["task_name", "prompt"]
         })),
         format: None,
         enabled_by_default: true,
-        // Conservative default at registration time. The harness
-        // overrides this per-call when `execution_mode: "shared"` is
-        // set in the arguments, so two shared delegations from the
-        // same agent turn can dispatch concurrently.
-        execution_mode: ToolExecutionMode::Exclusive,
+        // The delegate tool itself can dispatch alongside other shared
+        // tools in the parent conversation; the `ExtAgentQuery` global
+        // scheduler below enforces per-delegation exclusivity.
+        execution_mode: ToolExecutionMode::Shared,
     }
 }
 
@@ -241,6 +242,7 @@ fn tool_spec() -> ToolSpec {
 struct DelegateArgs {
     task_name: String,
     prompt: String,
+    execution_mode: ToolExecutionMode,
 }
 
 fn parse_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
@@ -249,6 +251,7 @@ fn parse_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
     };
     let mut prompt = None;
     let mut task_name = None;
+    let mut execution_mode = None;
     for (k, v) in entries {
         let CborValue::Text(name) = k else { continue };
         match name.as_str() {
@@ -259,6 +262,26 @@ fn parse_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
             "task_name" => match v {
                 CborValue::Text(text) => task_name = Some(text.clone()),
                 _ => return Err("`task_name` must be a string".to_owned()),
+            },
+            "execution_mode" => match v {
+                CborValue::Text(text) if text == "shared" => {
+                    execution_mode = Some(ToolExecutionMode::Shared)
+                }
+                CborValue::Text(text) if text == "exclusive" => {
+                    execution_mode = Some(ToolExecutionMode::Exclusive)
+                }
+                CborValue::Text(_) => {
+                    return Err("`execution_mode` must be `shared` or `exclusive`".to_owned());
+                }
+                _ => return Err("`execution_mode` must be a string".to_owned()),
+            },
+            // Compatibility with the pre-`execution_mode` schema. Only true was
+            // meaningful: it requested overlap for safe read-only work, which is
+            // now represented as Shared. Explicit `execution_mode` wins because
+            // omitted mode also defaults to Shared below.
+            "read_only" => match v {
+                CborValue::Bool(_) => {}
+                _ => return Err("`read_only` must be a boolean".to_owned()),
             },
             _ => {}
         }
@@ -271,7 +294,12 @@ fn parse_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
     if task_name.trim().is_empty() {
         return Err("`task_name` must not be empty".to_owned());
     }
-    Ok(DelegateArgs { task_name, prompt })
+    let execution_mode = execution_mode.unwrap_or(ToolExecutionMode::Shared);
+    Ok(DelegateArgs {
+        task_name,
+        prompt,
+        execution_mode,
+    })
 }
 
 #[cfg(test)]
@@ -300,6 +328,30 @@ mod tests {
         .expect("valid args parse");
         assert_eq!(parsed.task_name, "audit");
         assert_eq!(parsed.prompt, "do the thing");
+        assert_eq!(parsed.execution_mode, ToolExecutionMode::Shared);
+    }
+
+    /// Regression coverage for global sub-agent scheduling intent: omitted
+    /// execution_mode is shared, explicit exclusive is preserved, and legacy
+    /// read_only:true remains accepted as shared for older agents.
+    #[test]
+    fn parses_execution_mode_and_legacy_read_only() {
+        let exclusive = parse_args(&args(&[
+            ("task_name", text("audit")),
+            ("prompt", text("do the thing")),
+            ("execution_mode", text("exclusive")),
+            ("read_only", CborValue::Bool(true)),
+        ]))
+        .expect("explicit execution_mode parses");
+        assert_eq!(exclusive.execution_mode, ToolExecutionMode::Exclusive);
+
+        let legacy = parse_args(&args(&[
+            ("task_name", text("audit")),
+            ("prompt", text("do the thing")),
+            ("read_only", CborValue::Bool(true)),
+        ]))
+        .expect("legacy read_only parses");
+        assert_eq!(legacy.execution_mode, ToolExecutionMode::Shared);
     }
 
     /// Regression coverage for the agent-visible terminology: delegate should
@@ -322,6 +374,7 @@ mod tests {
             .expect("object properties");
         assert!(properties.contains_key("execution_mode"));
         assert!(!properties.contains_key("read_only"));
+        assert_eq!(spec.execution_mode, ToolExecutionMode::Shared);
     }
 
     #[test]

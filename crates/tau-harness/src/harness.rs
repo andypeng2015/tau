@@ -54,7 +54,7 @@ use crate::model::{
 };
 use crate::prompt::{
     assemble_conversation_from, assemble_prompt_context_from, build_system_prompt, cbor_map_bool,
-    cbor_map_text, render_agents_context_message,
+    render_agents_context_message,
 };
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::turn::{PromptSubmission, TurnState};
@@ -196,6 +196,20 @@ struct PendingCompaction {
     session_id: SessionId,
     originator: PromptOriginator,
     resume: PendingCompactionResume,
+}
+
+#[derive(Debug)]
+struct PendingExtAgentQuery {
+    source_id: String,
+    extension_name: String,
+    query: tau_proto::ExtAgentQuery,
+    cid: ConversationId,
+    parent_cid: ConversationId,
+}
+
+#[derive(Debug)]
+struct ActiveExtAgentQuery {
+    execution_mode: tau_proto::ToolExecutionMode,
 }
 
 pub(crate) struct Harness {
@@ -399,6 +413,14 @@ pub(crate) struct Harness {
     /// In-flight auto-compaction summaries keyed by the temporary
     /// side-conversation that is generating them.
     pending_compactions: std::collections::HashMap<ConversationId, PendingCompaction>,
+    /// Extension-started side-agent conversations waiting for the harness-owned
+    /// global shared/exclusive scheduler. This queue is independent from normal
+    /// per-conversation tool scheduling and applies to every `ExtAgentQuery`,
+    /// whether it came from delegate, notifications, or a future extension.
+    pending_ext_agent_queries: VecDeque<PendingExtAgentQuery>,
+    /// Active extension-started side-agent conversations participating in the
+    /// global sub-agent scheduler.
+    active_ext_agent_queries: std::collections::HashMap<ConversationId, ActiveExtAgentQuery>,
     /// Directory layout (config + state) the harness reads and writes.
     pub(crate) dirs: tau_config::settings::TauDirs,
 }
@@ -841,6 +863,8 @@ impl Harness {
             in_flight_tool_execution_modes: std::collections::HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
+            pending_ext_agent_queries: VecDeque::new(),
+            active_ext_agent_queries: std::collections::HashMap::new(),
             dirs,
         };
 
@@ -1051,6 +1075,8 @@ impl Harness {
             in_flight_tool_execution_modes: std::collections::HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
+            pending_ext_agent_queries: VecDeque::new(),
+            active_ext_agent_queries: std::collections::HashMap::new(),
             dirs,
         };
 
@@ -1361,9 +1387,10 @@ impl Harness {
             .prompt_conversations
             .get(&materialized.session_prompt_id)
             .cloned()
-            && let Some(conv) = self.conversations.get_mut(&cid)
         {
-            conv.last_prompt_id = Some(materialized.session_prompt_id);
+            if let Some(conv) = self.conversations.get_mut(&cid) {
+                conv.last_prompt_id = Some(materialized.session_prompt_id);
+            }
         }
     }
 
@@ -1470,38 +1497,39 @@ impl Harness {
         if let Event::SessionPromptCreated(prompt) = &event {
             self.note_session_prompt_created(prompt);
         }
-        if let Some(sync) = sync_head_for
-            && let Some(node_id) = folded_node_id
-            && let Some(c) = self.conversations.get_mut(&sync.cid)
-        {
-            // Only advance the conversation's own branch cursor when
-            // the event produced a tree node. `tree.head()` is the
-            // *global* write cursor and may sit on a sibling
-            // conversation's last fold; syncing to it after a
-            // non-folding event (e.g. `ProviderResponseFinished` with
-            // only tool calls) would graft this conversation's next
-            // tool request onto the wrong branch and produce orphan
-            // ToolUse blocks downstream.
-            c.head = Some(node_id);
-            // Keep the dedup map's "built for" cursor in lockstep with
-            // the just-folded linear extension. The dedup-decision
-            // path already inserted any new (hash, call_id) entry
-            // before the publish, so the map's contents already match
-            // what a fresh rebuild from this new head would produce.
-            // Bumping the cursor here lets the next tool result skip
-            // the rebuild entirely (the steady-state hot path).
-            //
-            // We pass *every* fold through this hook, including ones
-            // that didn't touch the dedup map (a `UserMessage` from
-            // session re-init, an `AgentMessage`, a `ToolRequest`
-            // node). [`ResultDedupMap::note_head_advanced_to`] guards
-            // against the dangerous case — `built_for == None` plus a
-            // non-dedup-eligible fold — by skipping the bump, so the
-            // rebuild still triggers on the next dedup intake. Don't
-            // gate this call on the event variant: that would re-couple
-            // `commit_event` to per-tool semantics that the dedup
-            // module deliberately owns.
-            c.result_dedup.note_head_advanced_to(node_id);
+        if let Some(sync) = sync_head_for {
+            if let Some(node_id) = folded_node_id {
+                if let Some(c) = self.conversations.get_mut(&sync.cid) {
+                    // Only advance the conversation's own branch cursor when
+                    // the event produced a tree node. `tree.head()` is the
+                    // *global* write cursor and may sit on a sibling
+                    // conversation's last fold; syncing to it after a
+                    // non-folding event (e.g. `ProviderResponseFinished` with
+                    // only tool calls) would graft this conversation's next
+                    // tool request onto the wrong branch and produce orphan
+                    // ToolUse blocks downstream.
+                    c.head = Some(node_id);
+                    // Keep the dedup map's "built for" cursor in lockstep with
+                    // the just-folded linear extension. The dedup-decision
+                    // path already inserted any new (hash, call_id) entry
+                    // before the publish, so the map's contents already match
+                    // what a fresh rebuild from this new head would produce.
+                    // Bumping the cursor here lets the next tool result skip
+                    // the rebuild entirely (the steady-state hot path).
+                    //
+                    // We pass *every* fold through this hook, including ones
+                    // that didn't touch the dedup map (a `UserMessage` from
+                    // session re-init, an `AgentMessage`, a `ToolRequest`
+                    // node). [`ResultDedupMap::note_head_advanced_to`] guards
+                    // against the dangerous case — `built_for == None` plus a
+                    // non-dedup-eligible fold — by skipping the bump, so the
+                    // rebuild still triggers on the next dedup intake. Don't
+                    // gate this call on the event variant: that would re-couple
+                    // `commit_event` to per-tool semantics that the dedup
+                    // module deliberately owns.
+                    c.result_dedup.note_head_advanced_to(node_id);
+                }
+            }
         }
         // Wrap in a `LogEvent` message envelope so subscribers get the
         // id and can ack after processing. Receivers that don't care
@@ -3027,11 +3055,186 @@ impl Harness {
         self.initialized_sessions.contains(session_id)
     }
 
+    /// Queue an extension-started sub-agent request onto the harness-owned
+    /// global shared/exclusive scheduler.
+    ///
+    /// Normal tool calls still use the per-conversation scheduler in
+    /// `drain_pending_tool_invocations`. This queue is only for
+    /// `ExtAgentQuery` side conversations, so delegate, notifications, and
+    /// future extension-owned sub-agents all share one global lane.
+    fn handle_ext_agent_query(
+        &mut self,
+        source_id: &str,
+        query: tau_proto::ExtAgentQuery,
+    ) -> Result<(), HarnessError> {
+        let extension_name = self
+            .extensions
+            .get(source_id)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| source_id.to_owned());
+        let cid = ConversationId::new(format!("extq-{}-{}", extension_name, query.query_id));
+        if self.conversations.contains_key(&cid)
+            || self
+                .pending_ext_agent_queries
+                .iter()
+                .any(|pending| pending.cid == cid)
+        {
+            self.emit_info(&format!(
+                "ignoring duplicate ext-query `{}` from `{}` — already in flight",
+                query.query_id, extension_name
+            ));
+            return Ok(());
+        }
+
+        // Resolve the parent conversation at enqueue time: tool-backed queries
+        // inherit from the conversation that owns the triggering tool call;
+        // non-tool queries inherit from the default user conversation.
+        let parent_cid = query
+            .tool_call_id
+            .as_ref()
+            .and_then(|call_id| self.tool_conversations.get(call_id))
+            .cloned()
+            .unwrap_or_else(|| self.default_conversation_id.clone());
+
+        self.pending_ext_agent_queries
+            .push_back(PendingExtAgentQuery {
+                source_id: source_id.to_owned(),
+                extension_name,
+                query,
+                cid,
+                parent_cid,
+            });
+        self.drain_pending_ext_agent_queries()
+    }
+
+    /// Dispatch queued `ExtAgentQuery`s while the global sub-agent scheduler
+    /// allows them through.
+    ///
+    /// Rules:
+    /// - Shared may start when no incompatible active Exclusive sub-agent
+    ///   exists.
+    /// - Exclusive may start when no incompatible active sub-agent exists.
+    /// - FIFO is preserved for independent work: once an Exclusive reaches the
+    ///   front and is blocked, later independent Shared queries do not jump it.
+    /// - Reentrant descendants of an active Exclusive are allowed to pass as
+    ///   part of that exclusive subtree. Without this exception, an exclusive
+    ///   delegate that asks its own sub-agent to delegate would deadlock behind
+    ///   itself. Descendancy is computed from
+    ///   `Conversation.parent_tool_call_id` through `tool_conversations`, which
+    ///   ties each side conversation to the tool call that spawned it.
+    fn drain_pending_ext_agent_queries(&mut self) -> Result<(), HarnessError> {
+        loop {
+            let Some(idx) = self.next_dispatchable_ext_agent_query_index() else {
+                return Ok(());
+            };
+            let pending = self
+                .pending_ext_agent_queries
+                .remove(idx)
+                .expect("index just located");
+            self.start_ext_agent_query(pending)?;
+        }
+    }
+
+    fn next_dispatchable_ext_agent_query_index(&self) -> Option<usize> {
+        let mut blocked_exclusive_ahead = false;
+        for (idx, pending) in self.pending_ext_agent_queries.iter().enumerate() {
+            let can_start = self.ext_agent_query_can_start(pending);
+            if !can_start {
+                if matches!(
+                    pending.query.execution_mode,
+                    tau_proto::ToolExecutionMode::Exclusive
+                ) {
+                    blocked_exclusive_ahead = true;
+                }
+                continue;
+            }
+            if blocked_exclusive_ahead
+                && !self.query_belongs_to_active_exclusive(&pending.parent_cid)
+            {
+                continue;
+            }
+            return Some(idx);
+        }
+        None
+    }
+
+    fn ext_agent_query_can_start(&self, pending: &PendingExtAgentQuery) -> bool {
+        self.active_ext_agent_queries
+            .iter()
+            .all(|(active_cid, active)| {
+                !self.active_ext_agent_query_is_incompatible(
+                    active_cid,
+                    active,
+                    &pending.parent_cid,
+                    pending.query.execution_mode,
+                )
+            })
+    }
+
+    fn active_ext_agent_query_is_incompatible(
+        &self,
+        active_cid: &ConversationId,
+        active: &ActiveExtAgentQuery,
+        candidate_parent_cid: &ConversationId,
+        candidate_mode: tau_proto::ToolExecutionMode,
+    ) -> bool {
+        if let Some(exclusive_root) = self.active_exclusive_ancestor_for(candidate_parent_cid) {
+            if self.conversation_descends_from(active_cid, &exclusive_root) {
+                return false;
+            }
+        }
+        match candidate_mode {
+            tau_proto::ToolExecutionMode::Shared => {
+                matches!(
+                    active.execution_mode,
+                    tau_proto::ToolExecutionMode::Exclusive
+                )
+            }
+            tau_proto::ToolExecutionMode::Exclusive => true,
+        }
+    }
+
+    fn query_belongs_to_active_exclusive(&self, parent_cid: &ConversationId) -> bool {
+        self.active_exclusive_ancestor_for(parent_cid).is_some()
+    }
+
+    fn active_exclusive_ancestor_for(&self, cid: &ConversationId) -> Option<ConversationId> {
+        self.active_ext_agent_queries
+            .iter()
+            .find_map(|(active_cid, active)| {
+                matches!(
+                    active.execution_mode,
+                    tau_proto::ToolExecutionMode::Exclusive
+                )
+                .then(|| active_cid)
+                .filter(|active_cid| self.conversation_descends_from(cid, active_cid))
+                .cloned()
+            })
+    }
+
+    fn conversation_descends_from(&self, cid: &ConversationId, ancestor: &ConversationId) -> bool {
+        let mut current = Some(cid.clone());
+        let mut seen = std::collections::HashSet::new();
+        while let Some(current_cid) = current {
+            if &current_cid == ancestor {
+                return true;
+            }
+            if !seen.insert(current_cid.clone()) {
+                return false;
+            }
+            current = self
+                .conversations
+                .get(&current_cid)
+                .and_then(|conv| conv.parent_tool_call_id.as_ref())
+                .and_then(|call_id| self.tool_conversations.get(call_id))
+                .cloned();
+        }
+        false
+    }
+
     /// Spawn a fresh side conversation for an extension's
-    /// [`tau_proto::ExtAgentQuery`] and dispatch it. The harness has no
-    /// global agent slot — the side conversation publishes its own
-    /// `SessionPromptCreated` immediately, and the agent extension
-    /// serializes consumption from the event log.
+    /// [`tau_proto::ExtAgentQuery`] and dispatch it after the global scheduler
+    /// admits it.
     ///
     /// Two forking modes depending on whether the query is tool-backed:
     ///
@@ -3051,41 +3254,17 @@ impl Harness {
     ///   summarizing. Sharing the prefix also lets prompt caching reuse the
     ///   parent's cached transcript verbatim, since the only delta is the
     ///   appended instruction.
-    fn handle_ext_agent_query(
-        &mut self,
-        source_id: &str,
-        query: tau_proto::ExtAgentQuery,
-    ) -> Result<(), HarnessError> {
-        let extension_name = self
-            .extensions
-            .get(source_id)
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| source_id.to_owned());
-
+    fn start_ext_agent_query(&mut self, pending: PendingExtAgentQuery) -> Result<(), HarnessError> {
+        let PendingExtAgentQuery {
+            source_id,
+            extension_name,
+            query,
+            cid,
+            parent_cid,
+        } = pending;
         let parent_call_id = query.tool_call_id.clone();
         let task_name = query.task_name.clone();
-
-        // Mint a unique conversation id. Format kept human-readable
-        // for /tree and debug logs.
-        let cid = ConversationId::new(format!("extq-{}-{}", extension_name, query.query_id));
-        if self.conversations.contains_key(&cid) {
-            self.emit_info(&format!(
-                "ignoring duplicate ext-query `{}` from `{}` — already in flight",
-                query.query_id, extension_name
-            ));
-            return Ok(());
-        }
-
-        // Resolve the parent conversation: for tool-backed queries it's
-        // the conv that owns the tool_call_id; for non-tool queries it's
-        // the default (user) conv. Both modes share the parent's
-        // session id so the side branch lands in the same session.
-        let parent_cid = query
-            .tool_call_id
-            .as_ref()
-            .and_then(|call_id| self.tool_conversations.get(call_id))
-            .cloned()
-            .unwrap_or_else(|| self.default_conversation_id.clone());
+        let execution_mode = query.execution_mode;
         let parent_conv = self
             .conversations
             .get(&parent_cid)
@@ -3118,6 +3297,8 @@ impl Harness {
         conv.task_name = task_name;
         conv.chain_anchor = initial_chain_anchor;
         self.conversations.insert(cid.clone(), conv);
+        self.active_ext_agent_queries
+            .insert(cid.clone(), ActiveExtAgentQuery { execution_mode });
 
         // Emit the initial progress snapshot (`%0/0`, no ctx
         // info yet) so the parent's tool block flips from `…` to the
@@ -3163,6 +3344,14 @@ impl Harness {
             self.send_prompt_to_agent_for(&cid);
         }
         Ok(())
+    }
+
+    fn release_ext_agent_query(&mut self, cid: &ConversationId) {
+        if self.active_ext_agent_queries.remove(cid).is_some() {
+            if let Err(error) = self.drain_pending_ext_agent_queries() {
+                self.emit_info(&format!("queued ext-agent dispatch failed: {error}"));
+            }
+        }
     }
 
     /// Publish a `DelegateProgress` snapshot for `cid` if it is a side
@@ -3225,16 +3414,16 @@ impl Harness {
             .store
             .session(session_id.as_str())
             .and_then(|t| t.head());
-        if want != have
-            && let Some(target) = want
-        {
-            self.publish_event(
-                None,
-                Event::UiNavigateTree(tau_proto::UiNavigateTree {
-                    session_id,
-                    node_id: target.get(),
-                }),
-            );
+        if want != have {
+            if let Some(target) = want {
+                self.publish_event(
+                    None,
+                    Event::UiNavigateTree(tau_proto::UiNavigateTree {
+                        session_id,
+                        node_id: target.get(),
+                    }),
+                );
+            }
         }
     }
 
@@ -3723,6 +3912,7 @@ impl Harness {
                 conv.turn_state = ConversationTurnState::Idle;
                 conv.pending_prompts.clear();
             }
+            self.release_ext_agent_query(cid);
             self.emit_info(&format!(
                 "preempting side conv `{cid}` ({spid}) for incoming user prompt",
             ));
@@ -3865,6 +4055,8 @@ impl Harness {
         self.prompt_conversations.clear();
         self.pending_provider_prompts.clear();
         self.pending_compactions.clear();
+        self.pending_ext_agent_queries.clear();
+        self.active_ext_agent_queries.clear();
 
         // Token and context accounting are session-scoped. Reset them
         // before `SessionStarted` so clients recreating status UI for
@@ -4729,13 +4921,13 @@ impl Harness {
             ));
             requested_tool_calls = false;
         }
-        if requested_tool_calls
-            && let Some(call) = tool_calls.iter().find(|call| call.id.as_str().is_empty())
-        {
-            return Err(HarnessError::Participant(format!(
-                "agent response {} contained tool call {} with empty call_id",
-                response.session_prompt_id, call.name
-            )));
+        if requested_tool_calls {
+            if let Some(call) = tool_calls.iter().find(|call| call.id.as_str().is_empty()) {
+                return Err(HarnessError::Participant(format!(
+                    "agent response {} contained tool call {} with empty call_id",
+                    response.session_prompt_id, call.name
+                )));
+            }
         }
         let is_non_tool_ext_query = self.conversations.get(&cid).is_some_and(|conv| {
             matches!(
@@ -4847,49 +5039,51 @@ impl Harness {
             ref name,
             ref query_id,
         } = response.originator
-            && (!requested_tool_calls || is_non_tool_ext_query)
         {
-            let source = self
-                .conversations
-                .get(&cid)
-                .and_then(|c| c.source_connection.clone());
-            let error = if is_non_tool_ext_query && requested_tool_calls {
-                Some(format!(
-                    "non-tool extension query attempted to call {} tool(s); refusing to execute",
-                    tool_calls.len()
-                ))
-            } else {
-                None
-            };
-            let result = tau_proto::ExtAgentQueryResult {
-                query_id: query_id.clone(),
-                text: assistant_text.clone().unwrap_or_default(),
-                error,
-            };
-            if let Some(source) = source {
-                let _ = self.bus.send_to(
-                    source.as_str(),
-                    None,
-                    Frame::Event(Event::ExtAgentQueryResult(result)),
-                );
-            } else {
-                // Should never happen — `source_connection` is set in
-                // `handle_ext_agent_query` when the conversation is
-                // spawned. Surface it via `harness.info` rather than
-                // silently dropping so a future regression is visible.
-                self.emit_info(&format!(
-                    "ext-query result for `{}` (extension `{}`) had no source connection — \
-                     dropping",
-                    query_id, name
-                ));
+            if !requested_tool_calls || is_non_tool_ext_query {
+                let source = self
+                    .conversations
+                    .get(&cid)
+                    .and_then(|c| c.source_connection.clone());
+                let error = if is_non_tool_ext_query && requested_tool_calls {
+                    Some(format!(
+                        "non-tool extension query attempted to call {} tool(s); refusing to execute",
+                        tool_calls.len()
+                    ))
+                } else {
+                    None
+                };
+                let result = tau_proto::ExtAgentQueryResult {
+                    query_id: query_id.clone(),
+                    text: assistant_text.clone().unwrap_or_default(),
+                    error,
+                };
+                if let Some(source) = source {
+                    let _ = self.bus.send_to(
+                        source.as_str(),
+                        None,
+                        Frame::Event(Event::ExtAgentQueryResult(result)),
+                    );
+                } else {
+                    // Should never happen — `source_connection` is set in
+                    // `handle_ext_agent_query` when the conversation is
+                    // spawned. Surface it via `harness.info` rather than
+                    // silently dropping so a future regression is visible.
+                    self.emit_info(&format!(
+                        "ext-query result for `{}` (extension `{}`) had no source connection — \
+                         dropping",
+                        query_id, name
+                    ));
+                }
+                // Snap the tree head back to the default conversation's
+                // local head so the user's next interactive prompt
+                // continues on the main branch instead of the side branch.
+                self.snap_to_default_conversation();
+                self.conversations.remove(&cid);
+                self.release_ext_agent_query(&cid);
+                self.try_advance_queue();
+                return Ok(());
             }
-            // Snap the tree head back to the default conversation's
-            // local head so the user's next interactive prompt
-            // continues on the main branch instead of the side branch.
-            self.snap_to_default_conversation();
-            self.conversations.remove(&cid);
-            self.try_advance_queue();
-            return Ok(());
         }
 
         if requested_tool_calls {
@@ -5042,39 +5236,35 @@ impl Harness {
             .unwrap_or(tau_proto::ToolExecutionMode::Exclusive)
     }
 
-    /// Same as [`resolve_tool_execution_mode`] but lets a tool override its
-    /// registered mode per-call by inspecting the call arguments.
+    /// Same as [`resolve_tool_execution_mode`] but keeps legacy per-call
+    /// compatibility where needed.
     ///
-    /// `delegate` registers as `Exclusive` (the safe default) but accepts an
-    /// `execution_mode` argument; when set to `shared`, the harness can let two
-    /// shared delegations from the same turn dispatch concurrently rather than
-    /// serializing. The legacy `read_only` argument is still accepted for older
-    /// callers, but it is not advertised to agents.
+    /// `delegate` registers as `Shared` so multiple sub-agent requests can be
+    /// handed to the extension from one parent turn. The delegate call's
+    /// `execution_mode` argument belongs to the emitted `ExtAgentQuery`, not to
+    /// this parent-conversation tool invocation; per-delegation exclusivity is
+    /// enforced later by the harness-owned `ExtAgentQuery` scheduler. The
+    /// legacy `read_only` argument is still accepted for older callers as a
+    /// shared-mode alias, but it is not advertised to agents.
     fn resolve_tool_execution_mode_for_call(
         &self,
         call: &AgentToolCall,
     ) -> tau_proto::ToolExecutionMode {
-        let registered = self.resolve_tool_execution_mode(call.name.as_str());
-        if call.name.as_str() == "delegate" {
-            match cbor_map_text(&call.arguments, "execution_mode") {
-                Some("shared") => return tau_proto::ToolExecutionMode::Shared,
-                Some("exclusive") => return tau_proto::ToolExecutionMode::Exclusive,
-                _ => {}
-            }
-            if cbor_map_bool(&call.arguments, "read_only").unwrap_or(false) {
-                return tau_proto::ToolExecutionMode::Shared;
-            }
+        if call.name.as_str() == "delegate"
+            && cbor_map_bool(&call.arguments, "read_only").unwrap_or(false)
+        {
+            return tau_proto::ToolExecutionMode::Shared;
         }
-        registered
+        self.resolve_tool_execution_mode(call.name.as_str())
     }
 
     /// Whether any in-flight tool call belonging to `cid` is `Exclusive`.
     /// The shared/exclusive ordering rule is per-conversation: tools
     /// running for a *different* conversation are an independent thread
-    /// of execution and must not gate this one. (Most importantly: the
-    /// parent agent's mid-flight `delegate` call is `Exclusive`, but it
-    /// must not block the sub-agent it spawned from running its own
-    /// `Shared` tools — otherwise delegate deadlocks itself.)
+    /// of execution and must not gate this one. A parent agent's
+    /// mid-flight tool call must not block the sub-agent it spawned from
+    /// running its own `Shared` tools — otherwise delegation deadlocks
+    /// itself.
     fn has_exclusive_in_flight_for(&self, cid: &ConversationId) -> bool {
         self.in_flight_tool_execution_modes
             .iter()
@@ -5171,10 +5361,10 @@ impl Harness {
         // state to any UI watching this delegate flow before the
         // mapping is cleared.
         let owner = self.tool_conversations.get(call_id).cloned();
-        if let Some(cid) = owner.as_ref()
-            && let Some(conv) = self.conversations.get_mut(cid)
-        {
-            conv.tools_in_flight = conv.tools_in_flight.saturating_sub(1);
+        if let Some(cid) = owner.as_ref() {
+            if let Some(conv) = self.conversations.get_mut(cid) {
+                conv.tools_in_flight = conv.tools_in_flight.saturating_sub(1);
+            }
         }
         if let Some(cid) = owner {
             self.emit_delegate_progress(&cid);

@@ -1556,6 +1556,15 @@ pub struct ExtAgentQuery {
     /// User-style instruction text. Appended to the current
     /// conversation's history as a `User` message before dispatch.
     pub instruction: String,
+    /// Global sub-agent scheduling mode enforced by the harness.
+    ///
+    /// Shared queries may overlap with other shared sub-agent queries.
+    /// Exclusive queries wait until no incompatible sub-agent query is active,
+    /// then block later independent sub-agent queries until they finish.
+    /// Defaults to Shared for compatibility with older extensions that did
+    /// not declare global scheduling needs.
+    #[serde(default = "default_ext_agent_query_execution_mode")]
+    pub execution_mode: ToolExecutionMode,
     /// `ToolCallId` of the tool invocation that triggered this query,
     /// when the extension is implementing a tool whose live progress
     /// the harness should attribute back to that call. Used by the
@@ -1569,6 +1578,10 @@ pub struct ExtAgentQuery {
     /// `tool_call_id` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_name: Option<String>,
+}
+
+const fn default_ext_agent_query_execution_mode() -> ToolExecutionMode {
+    ToolExecutionMode::Shared
 }
 
 /// Reply to an [`ExtAgentQuery`], routed point-to-point back to the

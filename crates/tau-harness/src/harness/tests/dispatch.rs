@@ -117,6 +117,54 @@ fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) 
     false
 }
 
+fn ext_query(query_id: &str, execution_mode: ToolExecutionMode) -> ExtAgentQuery {
+    ExtAgentQuery {
+        query_id: query_id.to_owned(),
+        instruction: format!("instruction {query_id}"),
+        execution_mode,
+        tool_call_id: None,
+        task_name: None,
+    }
+}
+
+fn ext_query_cid(h: &Harness, query_id: &str) -> Option<ConversationId> {
+    h.conversations.iter().find_map(|(cid, conv)| {
+        matches!(
+            &conv.originator,
+            tau_proto::PromptOriginator::Extension { query_id: id, .. } if id == query_id
+        )
+        .then_some(cid.clone())
+    })
+}
+
+fn finish_ext_query(h: &mut Harness, cid: &ConversationId, query_id: &str) {
+    let spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| (prompt_cid == cid).then_some(spid.clone()))
+        .expect("side prompt id");
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![ContextItem::Message(MessageItem {
+            role: ContextRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: format!("answer {query_id}"),
+            }],
+            phase: None,
+        })],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "test-ext".into(),
+            query_id: query_id.to_owned(),
+        },
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("finish ext query");
+}
+
 #[test]
 fn cross_session_prompt_is_rejected() {
     // The harness owns one session at a time. A UserMessage with
@@ -2295,6 +2343,7 @@ fn ext_agent_query_dispatches_while_tool_is_running_and_restores_turn() {
         ExtAgentQuery {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
         },
@@ -2450,6 +2499,7 @@ fn ext_agent_query_during_tool_call_branches_off_unresolved_tool_use() {
         ExtAgentQuery {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
         },
@@ -2590,6 +2640,7 @@ fn non_tool_ext_agent_query_inherits_parent_branch() {
         ExtAgentQuery {
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: None,
             task_name: None,
         },
@@ -2732,6 +2783,7 @@ fn non_tool_ext_agent_query_preserves_chain_anchor_and_tool_choice() {
         ExtAgentQuery {
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: None,
             task_name: None,
         },
@@ -2839,6 +2891,7 @@ fn delegate_ext_agent_query_keeps_tool_choice_auto() {
         ExtAgentQuery {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
         },
@@ -2886,6 +2939,7 @@ fn user_prompt_preempts_in_flight_non_tool_ext_side_conversation() {
         ExtAgentQuery {
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: None,
             task_name: None,
         },
@@ -3025,6 +3079,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
         ExtAgentQuery {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
         },
@@ -3091,13 +3146,14 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
     h.shutdown().expect("shutdown");
 }
 
-/// Two `delegate` calls with `execution_mode: "shared"` issued in the same
-/// agent turn must be classified as `Shared` and therefore dispatch
-/// concurrently — `delegate` is registered as `Exclusive` (the safe
-/// default), but the per-call override lets the agent opt two known-safe
-/// delegations into parallel scheduling.
+/// Mixed-mode `delegate` calls issued in the same agent turn must still
+/// dispatch to the delegate extension concurrently. The call argument
+/// `execution_mode: "exclusive"` belongs to the `ExtAgentQuery` emitted by the
+/// extension, not to the parent conversation's `delegate` tool invocation;
+/// global exclusivity is enforced only after those queries enter the harness
+/// `ExtAgentQuery` scheduler.
 #[test]
-fn shared_delegate_calls_dispatch_concurrently() {
+fn mixed_mode_delegate_calls_dispatch_concurrently_to_ext_scheduler() {
     use tau_proto::CborValue;
 
     let td = TempDir::new().expect("tempdir");
@@ -3105,7 +3161,7 @@ fn shared_delegate_calls_dispatch_concurrently() {
     let mut h = echo_harness(&sp).expect("start");
 
     h.selected_model = Some("test/model".into());
-    let _ = connect_test_tool(&mut h, "conn-delegate");
+    let delegate_events = connect_test_tool(&mut h, "conn-delegate");
     h.registry.register(
         "conn-delegate",
         ToolSpec {
@@ -3116,7 +3172,7 @@ fn shared_delegate_calls_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
 
@@ -3129,11 +3185,15 @@ fn shared_delegate_calls_dispatch_concurrently() {
         &cid,
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
-            text: "two shared lookups".to_owned(),
+            text: "mixed delegate work".to_owned(),
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
         }),
     );
+    let exclusive_args = CborValue::Map(vec![(
+        CborValue::Text("execution_mode".to_owned()),
+        CborValue::Text("exclusive".to_owned()),
+    )]);
     let shared_args = CborValue::Map(vec![(
         CborValue::Text("execution_mode".to_owned()),
         CborValue::Text("shared".to_owned()),
@@ -3142,16 +3202,16 @@ fn shared_delegate_calls_dispatch_concurrently() {
         session_prompt_id: main_spid,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
-                call_id: "shared-1".into(),
+                call_id: "delegate-exclusive".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: shared_args.clone(),
+                arguments: exclusive_args,
             }),
             ContextItem::ToolCall(ToolCallItem {
-                call_id: "shared-2".into(),
+                call_id: "delegate-shared".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: shared_args.clone(),
+                arguments: shared_args,
             }),
         ],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
@@ -3173,98 +3233,197 @@ fn shared_delegate_calls_dispatch_concurrently() {
     })
     .expect("main response");
 
-    // Both calls should be in flight simultaneously: per-call execution mode
-    // resolves to `Shared`, and `Shared` does not serialize against other
-    // shared calls on the same conversation.
     assert_eq!(h.in_flight_tool_execution_modes.len(), 2);
     assert!(
         h.in_flight_tool_execution_modes
             .values()
             .all(|kind| matches!(kind, tau_proto::ToolExecutionMode::Shared)),
-        "both shared delegates should be classified Shared",
+        "delegate tool invocations should stay Shared even when an argument asks for an exclusive sub-agent",
     );
     assert!(
         h.pending_tool_invocations.is_empty(),
-        "no entries should remain queued — Shared+Shared dispatches in parallel",
+        "mixed delegate calls should not serialize before reaching the extension",
     );
 
-    // Sanity: without the shared override the same two calls must not
-    // parallelize. Reset the harness and replay with bare delegates.
-    let td2 = TempDir::new().expect("tempdir");
-    let sp2 = td2.path().join("state");
-    let mut h2 = echo_harness(&sp2).expect("start");
-    h2.selected_model = Some("test/model".into());
-    let _ = connect_test_tool(&mut h2, "conn-delegate");
-    h2.registry.register(
+    let requested_delegate_calls: std::collections::HashSet<String> = delegate_events
+        .lock()
+        .expect("delegate events")
+        .iter()
+        .filter_map(|routed| match &routed.frame {
+            Frame::Event(Event::ToolInvoke(invoke)) if invoke.tool_name.as_str() == "delegate" => {
+                Some(invoke.call_id.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(requested_delegate_calls.contains("delegate-exclusive"));
+    assert!(requested_delegate_calls.contains("delegate-shared"));
+
+    let mut exclusive_query = ext_query("q-exclusive", ToolExecutionMode::Exclusive);
+    exclusive_query.tool_call_id = Some("delegate-exclusive".into());
+    exclusive_query.task_name = Some("exclusive".to_owned());
+    h.handle_ext_agent_query("conn-delegate", exclusive_query)
+        .expect("exclusive ext query");
+    let exclusive_cid = ext_query_cid(&h, "q-exclusive").expect("exclusive query started");
+
+    let mut shared_query = ext_query("q-shared", ToolExecutionMode::Shared);
+    shared_query.tool_call_id = Some("delegate-shared".into());
+    shared_query.task_name = Some("shared".to_owned());
+    h.handle_ext_agent_query("conn-delegate", shared_query)
+        .expect("shared ext query reaches scheduler");
+
+    assert!(ext_query_cid(&h, "q-shared").is_none());
+    assert_eq!(h.pending_ext_agent_queries.len(), 1);
+
+    finish_ext_query(&mut h, &exclusive_cid, "q-exclusive");
+    assert!(ext_query_cid(&h, "q-shared").is_some());
+    assert!(h.pending_ext_agent_queries.is_empty());
+}
+
+/// Global sub-agent scheduling is harness-owned, not a delegate-extension local
+/// concern. Shared `ExtAgentQuery`s from independent extensions should both be
+/// admitted immediately so read/research fan-out can overlap.
+#[test]
+fn shared_ext_agent_queries_start_concurrently() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-a");
+    let _ = connect_test_tool(&mut h, "conn-b");
+
+    h.handle_ext_agent_query("conn-a", ext_query("q-a", ToolExecutionMode::Shared))
+        .expect("query a");
+    h.handle_ext_agent_query("conn-b", ext_query("q-b", ToolExecutionMode::Shared))
+        .expect("query b");
+
+    assert!(ext_query_cid(&h, "q-a").is_some());
+    assert!(ext_query_cid(&h, "q-b").is_some());
+    assert!(h.pending_ext_agent_queries.is_empty());
+    assert_eq!(h.active_ext_agent_queries.len(), 2);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// An Exclusive sub-agent is process-global for independent sub-agent work: it
+/// waits for all incompatible side conversations and then blocks later shared
+/// or exclusive `ExtAgentQuery`s until its result is routed back.
+#[test]
+fn exclusive_ext_agent_query_blocks_independent_queries_globally() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-a");
+    let _ = connect_test_tool(&mut h, "conn-b");
+    let _ = connect_test_tool(&mut h, "conn-c");
+
+    h.handle_ext_agent_query(
+        "conn-a",
+        ext_query("q-exclusive", ToolExecutionMode::Exclusive),
+    )
+    .expect("exclusive query");
+    let exclusive_cid = ext_query_cid(&h, "q-exclusive").expect("exclusive started");
+    h.handle_ext_agent_query("conn-b", ext_query("q-shared", ToolExecutionMode::Shared))
+        .expect("shared query");
+    h.handle_ext_agent_query(
+        "conn-c",
+        ext_query("q-exclusive-2", ToolExecutionMode::Exclusive),
+    )
+    .expect("second exclusive query");
+
+    assert!(ext_query_cid(&h, "q-shared").is_none());
+    assert!(ext_query_cid(&h, "q-exclusive-2").is_none());
+    assert_eq!(h.pending_ext_agent_queries.len(), 2);
+
+    finish_ext_query(&mut h, &exclusive_cid, "q-exclusive");
+
+    assert!(ext_query_cid(&h, "q-exclusive").is_none());
+    assert!(ext_query_cid(&h, "q-shared").is_some());
+    assert!(
+        ext_query_cid(&h, "q-exclusive-2").is_none(),
+        "second exclusive must wait for the shared query that was ahead of it"
+    );
+    assert_eq!(h.pending_ext_agent_queries.len(), 1);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// FIFO matters for global sub-agent scheduling: once an Exclusive is queued
+/// behind active work, later independent Shared queries must not jump it and
+/// starve exclusive work forever.
+#[test]
+fn queued_exclusive_prevents_later_shared_from_jumping_fifo() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-a");
+    let _ = connect_test_tool(&mut h, "conn-b");
+    let _ = connect_test_tool(&mut h, "conn-c");
+
+    h.handle_ext_agent_query("conn-a", ext_query("q-active", ToolExecutionMode::Shared))
+        .expect("active shared query");
+    let active_cid = ext_query_cid(&h, "q-active").expect("active shared started");
+    h.handle_ext_agent_query(
+        "conn-b",
+        ext_query("q-exclusive", ToolExecutionMode::Exclusive),
+    )
+    .expect("queued exclusive query");
+    h.handle_ext_agent_query(
+        "conn-c",
+        ext_query("q-later-shared", ToolExecutionMode::Shared),
+    )
+    .expect("later shared query");
+
+    assert!(ext_query_cid(&h, "q-exclusive").is_none());
+    assert!(ext_query_cid(&h, "q-later-shared").is_none());
+    assert_eq!(h.pending_ext_agent_queries.len(), 2);
+
+    finish_ext_query(&mut h, &active_cid, "q-active");
+
+    assert!(ext_query_cid(&h, "q-exclusive").is_some());
+    assert!(
+        ext_query_cid(&h, "q-later-shared").is_none(),
+        "later shared query must remain queued behind the exclusive"
+    );
+    assert_eq!(h.pending_ext_agent_queries.len(), 1);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Nested delegates inside an active Exclusive sub-agent are reentrant: the
+/// harness treats them as part of the exclusive subtree instead of making the
+/// parent wait on itself forever.
+#[test]
+fn nested_ext_agent_query_under_active_exclusive_is_allowed() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-delegate");
+
+    h.handle_ext_agent_query(
         "conn-delegate",
-        ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
-            model_visible_name: None,
-            description: None,
-            parameters: None,
-            tool_type: tau_proto::ToolType::Function,
-            format: None,
-            enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
-        },
-    );
-    let cid2 = h2.default_conversation_id.clone();
-    let spid2: SessionPromptId = "sp-main".into();
-    seed_agent_thinking(&mut h2, &cid2, "sp-main");
-    h2.prompt_conversations.insert(spid2.clone(), cid2.clone());
-    h2.publish_for_conversation(
-        &cid2,
-        Event::UiPromptSubmitted(UiPromptSubmitted {
-            session_id: "s1".into(),
-            text: "two exclusive delegations".to_owned(),
-            originator: tau_proto::PromptOriginator::User,
-            ctx_id: None,
-        }),
-    );
-    h2.handle_provider_response_finished(ProviderResponseFinished {
-        session_prompt_id: spid2,
-        output_items: vec![
-            ContextItem::ToolCall(ToolCallItem {
-                call_id: "mut-1".into(),
-                name: ToolName::new("delegate"),
-                tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Map(Vec::new()),
-            }),
-            ContextItem::ToolCall(ToolCallItem {
-                call_id: "mut-2".into(),
-                name: ToolName::new("delegate"),
-                tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Map(Vec::new()),
-            }),
-        ],
-        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
-        usage: match (None, None, None) {
-            (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
-                model: None,
-                prompt_sent_tokens: input_tokens.unwrap_or(0),
-                prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                response_received_tokens: output_tokens.unwrap_or(0),
-                stats: Default::default(),
-            }),
-        },
-        originator: tau_proto::PromptOriginator::User,
+        ext_query("q-outer", ToolExecutionMode::Exclusive),
+    )
+    .expect("outer query");
+    let outer_cid = ext_query_cid(&h, "q-outer").expect("outer started");
 
-        backend: None,
-        provider_response_id: None,
-        ws_pool_delta: None,
-    })
-    .expect("main response");
-    assert_eq!(
-        h2.in_flight_tool_execution_modes.len(),
-        1,
-        "only first Exclusive dispatches"
-    );
-    assert_eq!(
-        h2.pending_tool_invocations.len(),
-        1,
-        "second Exclusive queues"
-    );
+    h.tool_conversations
+        .insert("nested-call".into(), outer_cid.clone());
+    let mut nested = ext_query("q-nested", ToolExecutionMode::Shared);
+    nested.tool_call_id = Some("nested-call".into());
+    nested.task_name = Some("nested".to_owned());
+    h.handle_ext_agent_query("conn-delegate", nested)
+        .expect("nested query");
+
+    let nested_cid = ext_query_cid(&h, "q-nested").expect("nested started");
+    assert_ne!(outer_cid, nested_cid);
+    assert!(h.pending_ext_agent_queries.is_empty());
+    assert_eq!(h.active_ext_agent_queries.len(), 2);
+
+    h.shutdown().expect("shutdown");
 }
 
 /// Regression: older delegate callers may still send the legacy `read_only`
@@ -3292,26 +3451,34 @@ fn legacy_read_only_delegate_argument_maps_to_shared_execution_mode() {
         "legacy read_only=true remains a shared execution-mode alias"
     );
 
+    h.registry.register(
+        "conn-delegate",
+        ToolSpec {
+            name: ToolName::new("delegate"),
+            model_visible_name: None,
+            description: None,
+            parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
+            enabled_by_default: true,
+            execution_mode: ToolExecutionMode::Shared,
+        },
+    );
+
     let explicit_call = AgentToolCall {
         id: "explicit".to_owned().into(),
         name: ToolName::new("delegate"),
         tool_type: tau_proto::ToolType::Function,
-        arguments: CborValue::Map(vec![
-            (
-                CborValue::Text("execution_mode".to_owned()),
-                CborValue::Text("exclusive".to_owned()),
-            ),
-            (
-                CborValue::Text("read_only".to_owned()),
-                CborValue::Bool(true),
-            ),
-        ]),
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("execution_mode".to_owned()),
+            CborValue::Text("exclusive".to_owned()),
+        )]),
         display: None,
     };
     assert_eq!(
         h.resolve_tool_execution_mode_for_call(&explicit_call),
-        ToolExecutionMode::Exclusive,
-        "explicit execution_mode takes precedence over the legacy alias"
+        ToolExecutionMode::Shared,
+        "delegate execution_mode affects the emitted ExtAgentQuery, not the parent tool invocation"
     );
 
     h.shutdown().expect("shutdown");
@@ -3342,7 +3509,7 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Shared,
         },
     );
     let _ = connect_test_tool(&mut h, "conn-mutate");
@@ -3411,6 +3578,7 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
         ExtAgentQuery {
             query_id: "q-A".to_owned(),
             instruction: "side task A".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-A".into()),
             task_name: Some("A".to_owned()),
         },
@@ -3421,6 +3589,7 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
         ExtAgentQuery {
             query_id: "q-B".to_owned(),
             instruction: "side task B".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-B".into()),
             task_name: Some("B".to_owned()),
         },
@@ -3615,6 +3784,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         ExtAgentQuery {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("delegate-call".into()),
             task_name: Some("look it up".to_owned()),
         },
@@ -3787,6 +3957,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         ExtAgentQuery {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
         },
@@ -3837,6 +4008,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         ExtAgentQuery {
             query_id: "q-nested".to_owned(),
             instruction: "nested task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("nested-call".into()),
             task_name: Some("nested".to_owned()),
         },
@@ -4021,6 +4193,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         ExtAgentQuery {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
         },
@@ -4067,6 +4240,7 @@ fn nested_ext_agent_query_branches_from_tool_owner_conversation() {
         ExtAgentQuery {
             query_id: "q-nested".to_owned(),
             instruction: "nested task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("nested-call".into()),
             task_name: Some("nested".to_owned()),
         },
@@ -4168,6 +4342,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         ExtAgentQuery {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
         },
@@ -4314,6 +4489,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         ExtAgentQuery {
             query_id: "q-top".to_owned(),
             instruction: "TOP: delegate exactly two more subtasks".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("top-call".into()),
             task_name: Some("top".to_owned()),
         },
@@ -4360,6 +4536,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         ExtAgentQuery {
             query_id: "q-leaf".to_owned(),
             instruction: "LEAF: do one terminal search only".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("leaf-call".into()),
             task_name: Some("leaf".to_owned()),
         },
@@ -4585,6 +4762,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         ExtAgentQuery {
             query_id: "q-A".to_owned(),
             instruction: "instr A".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("main-A".into()),
             task_name: Some("A".to_owned()),
         },
@@ -4595,6 +4773,7 @@ fn parallel_side_convs_do_not_share_branch_cursor() {
         ExtAgentQuery {
             query_id: "q-B".to_owned(),
             instruction: "instr B".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("main-B".into()),
             task_name: Some("B".to_owned()),
         },
@@ -4782,6 +4961,7 @@ fn tool_events_carry_owning_conversation_originator() {
         ExtAgentQuery {
             query_id: "q-sub".to_owned(),
             instruction: "sub task".to_owned(),
+            execution_mode: ToolExecutionMode::Shared,
             tool_call_id: Some("main-call".into()),
             task_name: Some("sub".to_owned()),
         },
@@ -4825,10 +5005,10 @@ fn tool_events_carry_owning_conversation_originator() {
     let frames = sink.lock().expect("sink");
     let mut originators_by_call = std::collections::HashMap::new();
     for routed in frames.iter() {
-        if let Frame::Message(tau_proto::Message::LogEvent(env)) = &routed.frame
-            && let Event::ToolRequest(req) = env.event.as_ref()
-        {
-            originators_by_call.insert(req.call_id.as_str().to_owned(), req.originator.clone());
+        if let Frame::Message(tau_proto::Message::LogEvent(env)) = &routed.frame {
+            if let Event::ToolRequest(req) = env.event.as_ref() {
+                originators_by_call.insert(req.call_id.as_str().to_owned(), req.originator.clone());
+            }
         }
     }
     drop(frames);

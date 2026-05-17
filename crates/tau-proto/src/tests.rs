@@ -631,6 +631,28 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
     );
 }
 
+/// Older extensions did not send `execution_mode` on `ExtAgentQuery`. The
+/// harness-owned global sub-agent scheduler must treat those as Shared so
+/// existing notifications/delegate flows keep overlapping unless they opt into
+/// rare exclusive scheduling.
+#[test]
+fn ext_agent_query_execution_mode_defaults_to_shared() {
+    let parsed: ExtAgentQuery = serde_json::from_value(serde_json::json!({
+        "query_id": "q1",
+        "instruction": "summarize"
+    }))
+    .expect("deserialize ext agent query");
+    assert_eq!(parsed.execution_mode, ToolExecutionMode::Shared);
+
+    let exclusive: ExtAgentQuery = serde_json::from_value(serde_json::json!({
+        "query_id": "q2",
+        "instruction": "mutate carefully",
+        "execution_mode": "exclusive"
+    }))
+    .expect("deserialize exclusive ext agent query");
+    assert_eq!(exclusive.execution_mode, ToolExecutionMode::Exclusive);
+}
+
 /// `Verbosity::next_in` mirrors `Effort::next_in`. Even though the CLI
 /// doesn't bind a cycle key for verbosity today, the helper is part of
 /// the public API and the protocol tests should pin the same wrap /
