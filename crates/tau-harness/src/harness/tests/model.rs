@@ -62,6 +62,10 @@ fn clear_startup_echo_models(h: &mut Harness) {
     .expect("clear startup echo provider models");
 }
 
+fn connect_provider_source(h: &mut Harness, name: &str) {
+    let _frames = connect_test_client(h, name, tau_proto::ClientKind::Provider);
+}
+
 /// Provider snapshots are runtime registry input, not just private extension
 /// chatter: the harness must retain metadata/routes and re-emit refreshed UI
 /// state for clients that are already connected.
@@ -69,6 +73,7 @@ fn clear_startup_echo_models(h: &mut Harness) {
 fn provider_models_snapshot_updates_available_models() {
     let td = TempDir::new().expect("tempdir");
     let mut h = echo_harness(td.path()).expect("harness");
+    connect_provider_source(&mut h, "provider-ext");
 
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     assert!(!h.available_models.contains(&model_id));
@@ -117,6 +122,72 @@ fn provider_models_snapshot_updates_available_models() {
     assert!(saw_harness_roles);
 }
 
+/// Model snapshots are an execution-provider contract. A tool connection that
+/// publishes `provider.models_updated` must not be able to claim a model route,
+/// otherwise the next prompt could be sent to a non-provider participant.
+#[test]
+fn provider_models_snapshot_from_non_provider_is_ignored() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path()).expect("harness");
+    clear_startup_echo_models(&mut h);
+    let _frames = connect_test_client(&mut h, "tool-ext", tau_proto::ClientKind::Tool);
+
+    let model_id: ModelId = "evil/model".parse().expect("model id");
+    h.handle_extension_event(
+        "tool-ext",
+        Frame::Event(Event::ProviderModelsUpdated(ProviderModelsUpdated {
+            models: vec![provider_model(model_id.clone(), 1)],
+        })),
+    )
+    .expect("handle forged provider snapshot");
+
+    assert!(!h.available_models.contains(&model_id));
+    assert!(!h.provider_model_info.contains_key(&model_id));
+    assert!(!h.provider_model_routes.contains_key(&model_id));
+    let mut seq = 0;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        assert!(
+            !matches!(entry.event, Event::ProviderModelsUpdated(_))
+                || entry.source.as_deref() != Some("tool-ext"),
+            "forged provider snapshot must not be published"
+        );
+    }
+}
+
+/// Socket clients are UI participants. Even though their frames enter through
+/// the client handler instead of the extension handler, provider-category
+/// events from them must not mutate provider routing or get published.
+#[test]
+fn provider_models_snapshot_from_ui_client_is_ignored() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path()).expect("harness");
+    clear_startup_echo_models(&mut h);
+    let _frames = connect_test_client(&mut h, "ui-client", tau_proto::ClientKind::Ui);
+
+    let model_id: ModelId = "evil/ui-model".parse().expect("model id");
+    h.handle_client_event_inner(
+        "ui-client",
+        Event::ProviderModelsUpdated(ProviderModelsUpdated {
+            models: vec![provider_model(model_id.clone(), 1)],
+        }),
+    )
+    .expect("handle forged client provider snapshot");
+
+    assert!(!h.available_models.contains(&model_id));
+    assert!(!h.provider_model_info.contains_key(&model_id));
+    assert!(!h.provider_model_routes.contains_key(&model_id));
+    let mut seq = 0;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        assert!(
+            !matches!(entry.event, Event::ProviderModelsUpdated(_))
+                || entry.source.as_deref() != Some("ui-client"),
+            "client-forged provider snapshot must not be published"
+        );
+    }
+}
+
 /// Startup no longer selects config-file models. A provider snapshot is the
 /// moment a runtime model exists, so it should also unblock queued prompts by
 /// choosing the first model through the normal harness-owned selection path.
@@ -125,6 +196,7 @@ fn provider_models_snapshot_selects_first_model_and_drains_queue() {
     let td = TempDir::new().expect("tempdir");
     let mut h = echo_harness(td.path()).expect("harness");
     clear_startup_echo_models(&mut h);
+    connect_provider_source(&mut h, "provider-ext");
     assert!(h.selected_model.is_none());
 
     assert_eq!(
@@ -165,6 +237,7 @@ fn provider_model_metadata_drives_selection_state() {
     let td = TempDir::new().expect("tempdir");
     let mut h = echo_harness(td.path()).expect("harness");
     clear_startup_echo_models(&mut h);
+    connect_provider_source(&mut h, "provider-ext");
 
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     h.handle_extension_event(

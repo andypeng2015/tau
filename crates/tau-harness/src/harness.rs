@@ -328,6 +328,10 @@ pub(crate) struct Harness {
     /// [`Self::provider_model_info`] so prompt routing can address the provider
     /// that most recently published the selected model.
     pub(crate) provider_model_routes: HashMap<ModelId, tau_proto::ConnectionId>,
+    /// Provider connection that received each in-flight prompt request.
+    /// Incoming provider execution events must match this owner before the
+    /// harness will publish streaming updates or accept the final response.
+    pub(crate) pending_provider_prompts: HashMap<SessionPromptId, tau_proto::ConnectionId>,
     /// Available agent roles.
     pub(crate) available_roles: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Named role-selectable tool enablement overlays loaded from
@@ -819,6 +823,7 @@ impl Harness {
             provider_models_by_extension: HashMap::new(),
             provider_model_info: HashMap::new(),
             provider_model_routes: HashMap::new(),
+            pending_provider_prompts: HashMap::new(),
             available_roles,
             tools_profiles,
             role_overrides,
@@ -1028,6 +1033,7 @@ impl Harness {
             provider_models_by_extension: HashMap::new(),
             provider_model_info: HashMap::new(),
             provider_model_routes: HashMap::new(),
+            pending_provider_prompts: HashMap::new(),
             available_roles,
             tools_profiles,
             role_overrides,
@@ -1370,6 +1376,22 @@ impl Harness {
         self.provider_model_routes.get(model).cloned()
     }
 
+    fn track_provider_prompt_request(
+        &mut self,
+        event: &Event,
+        provider_connection_id: tau_proto::ConnectionId,
+    ) {
+        let Some(session_prompt_id) = (match event {
+            Event::SessionPromptCreated(prompt) => Some(&prompt.session_prompt_id),
+            Event::SessionCompactionRequested(request) => Some(&request.prompt.session_prompt_id),
+            _ => None,
+        }) else {
+            return;
+        };
+        self.pending_provider_prompts
+            .insert(session_prompt_id.clone(), provider_connection_id);
+    }
+
     /// Final commit: persist (when applicable), append to the event
     /// log, and broadcast on the bus. Does not consult interception
     /// state — the caller is responsible for getting here only when
@@ -1503,7 +1525,9 @@ impl Harness {
                 .bus
                 .send_to(provider_connection_id.as_str(), source, log_frame)
             {
-                Ok(report) if !report.delivered_to.is_empty() => {}
+                Ok(report) if !report.delivered_to.is_empty() => {
+                    self.track_provider_prompt_request(&event, provider_connection_id);
+                }
                 Ok(report) => {
                     tracing::warn!(
                         target: "tau_harness",
@@ -1953,6 +1977,13 @@ impl Harness {
         source_id: &str,
         event: Event,
     ) -> Result<(), HarnessError> {
+        let event_name = event.name();
+        if event_name.category == tau_proto::EventCategory::Provider
+            && !self.accepts_provider_event_from(source_id, &event_name)
+        {
+            return Ok(());
+        }
+
         match event {
             Event::ToolRegister(ToolRegister { tool }) => {
                 let _ = self.registry.register(source_id, tool);
@@ -2115,11 +2146,32 @@ impl Harness {
             Event::ExtAgentQuery(query) => {
                 self.handle_ext_agent_query(source_id, query)?;
             }
-            Event::ProviderPromptSubmitted(_) | Event::ProviderResponseUpdated(_) => {
-                self.publish_event(Some(source_id), event);
+            Event::ProviderPromptSubmitted(submitted) => {
+                if self.provider_prompt_owner_matches(
+                    source_id,
+                    &submitted.session_prompt_id,
+                    tau_proto::EventName::PROVIDER_PROMPT_SUBMITTED,
+                ) {
+                    self.publish_event(Some(source_id), Event::ProviderPromptSubmitted(submitted));
+                }
+            }
+            Event::ProviderResponseUpdated(updated) => {
+                if self.provider_prompt_owner_matches(
+                    source_id,
+                    &updated.session_prompt_id,
+                    tau_proto::EventName::PROVIDER_RESPONSE_UPDATED,
+                ) {
+                    self.publish_event(Some(source_id), Event::ProviderResponseUpdated(updated));
+                }
             }
             Event::ProviderResponseFinished(response) => {
-                self.handle_provider_response_finished(response)?;
+                if self.provider_prompt_owner_matches(
+                    source_id,
+                    &response.session_prompt_id,
+                    tau_proto::EventName::PROVIDER_RESPONSE_FINISHED,
+                ) {
+                    self.handle_provider_response_finished_from(Some(source_id), response)?;
+                }
             }
             other => {
                 self.publish_event(Some(source_id), other);
@@ -2193,6 +2245,12 @@ impl Harness {
         client_id: &str,
         event: Event,
     ) -> Result<bool, HarnessError> {
+        let event_name = event.name();
+        if event_name.category == tau_proto::EventCategory::Provider {
+            self.handle_extension_event_inner(client_id, event)?;
+            return Ok(true);
+        }
+
         match event {
             Event::UiRoleSelect(select) => {
                 if !self.available_roles.contains_key(&select.role) {
@@ -2481,6 +2539,8 @@ impl Harness {
         self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
         self.fail_pending_tool_calls_for_connection(connection_id);
+        self.pending_provider_prompts
+            .retain(|_, provider_id| provider_id.as_str() != connection_id);
         self.set_extension_state(connection_id, ExtensionState::Disconnected);
         self.client_writers
             .remove(&tau_proto::ConnectionId::from(connection_id));
@@ -2513,6 +2573,67 @@ impl Harness {
         self.extensions
             .get(connection_id)
             .is_some_and(|entry| entry.kind == ClientKind::Provider)
+    }
+
+    fn accepts_provider_event_from(
+        &self,
+        source_id: &str,
+        event_name: &tau_proto::EventName,
+    ) -> bool {
+        match self.bus.connection(source_id) {
+            Some(metadata) if metadata.kind == ClientKind::Provider => true,
+            Some(metadata) => {
+                tracing::warn!(
+                    target: "tau_harness",
+                    event = %event_name,
+                    source_id,
+                    kind = ?metadata.kind,
+                    "discarding provider event from non-provider connection"
+                );
+                false
+            }
+            None => {
+                tracing::warn!(
+                    target: "tau_harness",
+                    event = %event_name,
+                    source_id,
+                    "discarding provider event from unknown connection"
+                );
+                false
+            }
+        }
+    }
+
+    fn provider_prompt_owner_matches(
+        &self,
+        source_id: &str,
+        session_prompt_id: &SessionPromptId,
+        event_name: tau_proto::EventName,
+    ) -> bool {
+        match self.pending_provider_prompts.get(session_prompt_id) {
+            Some(expected) if expected.as_str() == source_id => true,
+            Some(expected) => {
+                tracing::warn!(
+                    target: "tau_harness",
+                    event = %event_name,
+                    session_prompt_id = %session_prompt_id,
+                    expected_provider = %expected,
+                    source_id,
+                    "discarding provider event from non-owning provider"
+                );
+                false
+            }
+            None => {
+                tracing::warn!(
+                    target: "tau_harness",
+                    event = %event_name,
+                    session_prompt_id = %session_prompt_id,
+                    source_id,
+                    "discarding provider event for prompt without a pending provider route"
+                );
+                false
+            }
+        }
     }
 
     fn fail_pending_tool_calls_for_connection(&mut self, connection_id: &str) {
@@ -3742,6 +3863,7 @@ impl Harness {
         self.pending_tools.clear();
         self.pending_tool_providers.clear();
         self.prompt_conversations.clear();
+        self.pending_provider_prompts.clear();
         self.pending_compactions.clear();
 
         // Token and context accounting are session-scoped. Reset them
@@ -4398,6 +4520,7 @@ impl Harness {
         &mut self,
         summary_cid: ConversationId,
         response: ProviderResponseFinished,
+        source: Option<&str>,
     ) -> Result<(), HarnessError> {
         let requested_tool_calls = response_requests_tool_calls(&response);
         let replacement_window = compaction_items_from_output_items(&response.output_items);
@@ -4406,12 +4529,15 @@ impl Harness {
             return Ok(());
         };
 
-        self.publish_for_conversation(
+        self.publish_for_conversation_from(
             &summary_cid,
+            source,
             Event::ProviderResponseFinished(response.clone()),
         );
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
+        self.pending_provider_prompts
+            .remove(&response.session_prompt_id);
         self.prompt_models.remove(&response.session_prompt_id);
         self.prompt_fingerprints.remove(&response.session_prompt_id);
         self.prompt_cache_diagnostics
@@ -4489,8 +4615,17 @@ impl Harness {
         }
     }
 
+    #[cfg(test)]
     fn handle_provider_response_finished(
         &mut self,
+        response: ProviderResponseFinished,
+    ) -> Result<(), HarnessError> {
+        self.handle_provider_response_finished_from(None, response)
+    }
+
+    fn handle_provider_response_finished_from(
+        &mut self,
+        source: Option<&str>,
         mut response: ProviderResponseFinished,
     ) -> Result<(), HarnessError> {
         let mut tool_calls = tool_calls_from_output_items(&response.output_items);
@@ -4511,6 +4646,8 @@ impl Harness {
         if self.canceled_prompts.remove(&response.session_prompt_id) {
             self.prompt_conversations
                 .remove(response.session_prompt_id.as_str());
+            self.pending_provider_prompts
+                .remove(&response.session_prompt_id);
             self.prompt_models.remove(&response.session_prompt_id);
             self.prompt_fingerprints.remove(&response.session_prompt_id);
             self.prompt_cache_diagnostics
@@ -4583,7 +4720,7 @@ impl Harness {
             call.display = build_tool_args_display(call.name.as_str(), &call.arguments);
         }
         if self.pending_compactions.contains_key(&cid) {
-            return self.finish_pending_compaction(cid, response);
+            return self.finish_pending_compaction(cid, response, source);
         }
         if requested_tool_calls && tool_calls.is_empty() {
             self.emit_info(&format!(
@@ -4648,9 +4785,15 @@ impl Harness {
         // whichever branch happened to be at `tree.head` (e.g. after
         // a sibling side conv's teardown ran `snap_to_default`).
         // `publish_for_conversation` snaps and updates `c.head`.
-        self.publish_for_conversation(&cid, Event::ProviderResponseFinished(response.clone()));
+        self.publish_for_conversation_from(
+            &cid,
+            source,
+            Event::ProviderResponseFinished(response.clone()),
+        );
         self.prompt_conversations
             .remove(response.session_prompt_id.as_str());
+        self.pending_provider_prompts
+            .remove(&response.session_prompt_id);
         // Stateful-chain anchor: set only when the agent supplied a
         // `response_id` (i.e. the upstream backend exposed one — the
         // Responses API does, Chat Completions doesn't). The anchor

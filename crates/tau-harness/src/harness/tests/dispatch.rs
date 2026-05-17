@@ -74,6 +74,36 @@ fn tool_result_id(item: &ContextItem) -> Option<&str> {
     }
 }
 
+fn provider_text_response(spid: &SessionPromptId, text: &str) -> ProviderResponseFinished {
+    ProviderResponseFinished {
+        session_prompt_id: spid.clone(),
+        output_items: vec![ContextItem::Message(MessageItem {
+            role: ContextRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: text.to_owned(),
+            }],
+            phase: None,
+        })],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    }
+}
+
+fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) -> bool) -> bool {
+    let mut seq = 0;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        if entry.source.as_deref() == Some(source) && matches_event(&entry.event) {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 fn cross_session_prompt_is_rejected() {
     // The harness owns one session at a time. A UserMessage with
@@ -188,6 +218,139 @@ fn provider_model_prompt_routes_directly_to_provider_owner() {
             .is_empty(),
         "provider observers should not receive provider-owned prompt execution"
     );
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn provider_execution_events_must_come_from_prompt_owner() {
+    // Provider execution is point-to-point. Once the harness routes a prompt to
+    // the provider that published the selected model, streaming and final
+    // response events for that prompt must come back from the same connection.
+    // Otherwise a second provider participant could spoof a response for an
+    // in-flight prompt it never received.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let _owner_frames =
+        connect_test_client(&mut h, "provider-owner", tau_proto::ClientKind::Provider);
+    let _other_frames =
+        connect_test_client(&mut h, "provider-other", tau_proto::ClientKind::Provider);
+    let _tool_frames =
+        connect_test_client(&mut h, "tool-impersonator", tau_proto::ClientKind::Tool);
+
+    let model_id: tau_proto::ModelId = "openai/gpt-5.5".parse().expect("model id");
+    h.handle_extension_event(
+        "provider-owner",
+        Frame::Event(Event::ProviderModelsUpdated(
+            tau_proto::ProviderModelsUpdated {
+                models: vec![tau_proto::ProviderModelInfo {
+                    id: model_id.clone(),
+                    display_name: None,
+                    context_window: 200_000,
+                    efforts: vec![tau_proto::Effort::Medium],
+                    verbosities: vec![tau_proto::Verbosity::Medium],
+                    thinking_summaries: vec![tau_proto::ThinkingSummary::Auto],
+                    supports_compaction: false,
+                }],
+            },
+        )),
+    )
+    .expect("provider model snapshot");
+    h.selected_model = Some(model_id);
+
+    append_user_message_via_event(&mut h, "s1", "hello");
+    let spid = h.send_prompt_to_agent("s1");
+    assert_eq!(
+        h.pending_provider_prompts.get(&spid).map(|id| id.as_str()),
+        Some("provider-owner"),
+        "outbound prompt owner should be recorded"
+    );
+
+    h.handle_extension_event(
+        "provider-other",
+        Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
+            session_prompt_id: spid.clone(),
+            text: "spoofed stream".to_owned(),
+            thinking: None,
+            originator: tau_proto::PromptOriginator::User,
+        })),
+    )
+    .expect("forged stream from provider");
+    h.handle_extension_event(
+        "tool-impersonator",
+        Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
+            session_prompt_id: spid.clone(),
+            text: "tool stream".to_owned(),
+            thinking: None,
+            originator: tau_proto::PromptOriginator::User,
+        })),
+    )
+    .expect("forged stream from tool");
+    h.handle_extension_event(
+        "provider-other",
+        Frame::Event(Event::ProviderResponseFinished(provider_text_response(
+            &spid,
+            "spoofed final",
+        ))),
+    )
+    .expect("forged final response");
+
+    assert_eq!(
+        h.pending_provider_prompts.get(&spid).map(|id| id.as_str()),
+        Some("provider-owner"),
+        "wrong-source events must not consume the pending owner"
+    );
+    assert!(matches!(
+        h.conversations[&h.default_conversation_id].turn_state,
+        ConversationTurnState::AgentThinking { .. }
+    ));
+    assert!(!event_log_contains(&h, "provider-other", |event| matches!(
+        event,
+        Event::ProviderResponseUpdated(_) | Event::ProviderResponseFinished(_)
+    )));
+    assert!(!event_log_contains(
+        &h,
+        "tool-impersonator",
+        |event| matches!(
+            event,
+            Event::ProviderResponseUpdated(_) | Event::ProviderResponseFinished(_)
+        )
+    ));
+
+    h.handle_extension_event(
+        "provider-owner",
+        Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
+            session_prompt_id: spid.clone(),
+            text: "real stream".to_owned(),
+            thinking: None,
+            originator: tau_proto::PromptOriginator::User,
+        })),
+    )
+    .expect("owner stream");
+    h.handle_extension_event(
+        "provider-owner",
+        Frame::Event(Event::ProviderResponseFinished(provider_text_response(
+            &spid,
+            "real final",
+        ))),
+    )
+    .expect("owner final response");
+
+    assert!(!h.pending_provider_prompts.contains_key(&spid));
+    assert!(matches!(
+        h.conversations[&h.default_conversation_id].turn_state,
+        ConversationTurnState::Idle
+    ));
+    assert!(event_log_contains(&h, "provider-owner", |event| matches!(
+        event,
+        Event::ProviderResponseUpdated(_)
+    )));
+    assert!(event_log_contains(&h, "provider-owner", |event| matches!(
+        event,
+        Event::ProviderResponseFinished(_)
+    )));
 
     h.shutdown().expect("shutdown");
 }
