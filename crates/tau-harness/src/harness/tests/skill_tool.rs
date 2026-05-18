@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn build_system_prompt_includes_skills() {
+fn render_builtin_system_prompt_includes_skills() {
     let mut skills = std::collections::HashMap::new();
     skills.insert(
         tau_proto::SkillName::from("brave-search"),
@@ -12,14 +12,8 @@ fn build_system_prompt_includes_skills() {
             add_to_prompt: true,
         },
     );
-    let prompt = build_system_prompt(
-        &skills,
-        "/tmp/work",
-        None,
-        None,
-        None,
-        &tau_proto::PromptHook::new(),
-    );
+    let prompt =
+        render_builtin_system_prompt(&skills, "/tmp/work", false, &tau_proto::PromptHook::new());
     assert!(prompt.contains("<available_skills>"));
     assert!(prompt.contains("<name>brave-search</name>"));
     assert!(prompt.contains("<description>Web search via Brave API</description>"));
@@ -30,7 +24,7 @@ fn build_system_prompt_includes_skills() {
 }
 
 #[test]
-fn build_system_prompt_excludes_hidden_skills() {
+fn render_builtin_system_prompt_excludes_hidden_skills() {
     let mut skills = std::collections::HashMap::new();
     skills.insert(
         tau_proto::SkillName::from("hidden"),
@@ -41,20 +35,14 @@ fn build_system_prompt_excludes_hidden_skills() {
             add_to_prompt: false,
         },
     );
-    let prompt = build_system_prompt(
-        &skills,
-        "/tmp/work",
-        None,
-        None,
-        None,
-        &tau_proto::PromptHook::new(),
-    );
+    let prompt =
+        render_builtin_system_prompt(&skills, "/tmp/work", false, &tau_proto::PromptHook::new());
     assert!(!prompt.contains("<available_skills>"));
     assert!(!prompt.contains("hidden"));
 }
 
 #[test]
-fn build_system_prompt_escapes_skill_xml_text() {
+fn render_builtin_system_prompt_escapes_skill_xml_text() {
     let mut skills = std::collections::HashMap::new();
     skills.insert(
         tau_proto::SkillName::from("weird-skill"),
@@ -65,14 +53,8 @@ fn build_system_prompt_escapes_skill_xml_text() {
             add_to_prompt: true,
         },
     );
-    let prompt = build_system_prompt(
-        &skills,
-        "/tmp/work",
-        None,
-        None,
-        None,
-        &tau_proto::PromptHook::new(),
-    );
+    let prompt =
+        render_builtin_system_prompt(&skills, "/tmp/work", false, &tau_proto::PromptHook::new());
     assert!(prompt.contains("Use &lt;/description&gt; &amp; &lt;tag&gt; &quot;quotes&quot;"));
     assert!(!prompt.contains("Use </description>"));
 }
@@ -936,12 +918,10 @@ fn built_in_tau_self_knowledge_skills_are_available_without_file_paths() {
         assert_eq!(skill.add_to_prompt, advertised, "{name} prompt flag");
     }
 
-    let prompt = build_system_prompt(
+    let prompt = render_builtin_system_prompt(
         &h.discovered_skills,
         "/tmp/work",
-        None,
-        None,
-        None,
+        false,
         &tau_proto::PromptHook::new(),
     );
     assert!(prompt.contains("<name>tau-self-knowledge</name>"));
@@ -1179,16 +1159,16 @@ fn gather_tool_definitions_respects_role_tools_profile() {
     std::fs::create_dir_all(&config_dir).expect("mkdir config");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     std::fs::write(
-        config_dir.join("harness.json5"),
+        config_dir.join("harness.ncl"),
         r#"{
-            toolsProfiles: {
-                read_only: {
-                    shell: false,
-                    skill: false,
+            toolsProfiles = {
+                read_only = {
+                    shell = false,
+                    skill = false,
                 },
             },
-            roles: {
-                smart: { toolsProfile: "read_only" },
+            roles = {
+                smart = { toolsProfile = "read_only" },
             },
         }"#,
     )
@@ -1272,16 +1252,16 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
     std::fs::create_dir_all(&config_dir).expect("mkdir config");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     std::fs::write(
-        config_dir.join("harness.json5"),
+        config_dir.join("harness.ncl"),
         r#"{
-            toolsProfiles: {
-                specialized: {
-                    shell: false,
-                    test_gpt_shell: true,
+            toolsProfiles = {
+                specialized = {
+                    shell = false,
+                    test_gpt_shell = true,
                 },
             },
-            roles: {
-                smart: { toolsProfile: "specialized" },
+            roles = {
+                smart = { toolsProfile = "specialized" },
             },
         }"#,
     )

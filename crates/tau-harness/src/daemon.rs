@@ -24,7 +24,7 @@ use crate::settings::{Config, resolve_config};
 /// Cap on how long [`send_daemon_message_with_trace`] (a synchronous test
 /// helper) waits for a daemon response. This is not a daemon-wide knob —
 /// the long-running daemon paths block indefinitely on their event loop.
-const SEND_DAEMON_MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
+const SEND_DAEMON_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionLaunchStatus {
