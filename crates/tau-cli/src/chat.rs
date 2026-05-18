@@ -72,6 +72,34 @@ fn send_current_role_update(
     );
 }
 
+fn cycle_role(
+    writer: &WriterHandle,
+    current_role_state: &Arc<Mutex<Option<String>>>,
+    roles_available: &Arc<Mutex<Vec<String>>>,
+    print_local: &impl Fn(&str),
+) {
+    let roles = match roles_available.lock() {
+        Ok(roles) => roles.clone(),
+        Err(_) => Vec::new(),
+    };
+    if roles.is_empty() {
+        print_local("role-cycle: no agent roles are available yet");
+        return;
+    }
+    let current = current_role_state.lock().ok().and_then(|role| role.clone());
+    let next = match current
+        .as_deref()
+        .and_then(|current| roles.iter().position(|role| role == current))
+    {
+        Some(index) => roles[(index + 1) % roles.len()].clone(),
+        None => roles[0].clone(),
+    };
+    let _ = send_event(
+        writer,
+        &Event::UiRoleSelect(tau_proto::UiRoleSelect { role: next }),
+    );
+}
+
 fn is_reset_value(value: &str) -> bool {
     value == "reset"
 }
@@ -395,7 +423,7 @@ pub(crate) fn run_chat(
         ),
         SlashCommand::new(
             "/effort",
-            "Set reasoning effort: off, minimal, low, medium, high, xhigh (Shift+Tab to cycle)",
+            "Set reasoning effort: off, minimal, low, medium, high, xhigh",
         ),
         SlashCommand::new(
             "/verbosity",
@@ -466,10 +494,9 @@ pub(crate) fn run_chat(
     // the thread-safe TermHandle.
     let renderer_handle = handle.clone();
     let renderer_rx = event_rx;
-    // Pre-build the renderer so we can grab its `effort_state`
-    // handle for the input loop's Shift+Tab cycle. Load the
-    // persisted `cli.json` state so `/set show-*` toggles survive
-    // restarts.
+    // Pre-build the renderer so we can grab its shared state handles
+    // for the input loop. Load the persisted `cli.json` state so
+    // `/set show-*` toggles survive restarts.
     let cli_state = tau_config::settings::CliState::load(&dirs);
     let renderer = EventRenderer::new_with_state(
         renderer_handle,
@@ -488,11 +515,9 @@ pub(crate) fn run_chat(
         build_set_arg_completer(renderer.cli_state_mirror()),
     );
     let agent_in_progress = renderer.agent_in_progress_state();
-    let effort_state = renderer.effort_state();
     let fast_service_tier_state = renderer.fast_service_tier_state();
     let current_role_state = renderer.current_role_state();
     let roles_available = renderer.roles_available();
-    let efforts_available = renderer.efforts_available();
     let editor_context = renderer.editor_context();
     term.set_editor_context_handle(editor_context.clone());
     let _renderer = std::thread::spawn(move || {
@@ -529,11 +554,9 @@ pub(crate) fn run_chat(
         &writer,
         &mut active_session_id,
         TerminalInputLoopCtx {
-            effort_state,
             fast_service_tier_state,
             current_role_state,
             roles_available,
-            efforts_available,
             theme,
             agent_in_progress,
             renderer_tx: event_tx,
@@ -613,16 +636,9 @@ enum RendererCmd {
 }
 
 struct TerminalInputLoopCtx {
-    effort_state: Arc<std::sync::atomic::AtomicU8>,
     fast_service_tier_state: Arc<std::sync::atomic::AtomicBool>,
     current_role_state: Arc<Mutex<Option<String>>>,
     roles_available: Arc<Mutex<Vec<String>>>,
-    /// Set of effort levels the harness currently accepts, kept in
-    /// sync with `HarnessEffortsAvailable` by the renderer. The
-    /// Shift+Tab cycle reads it so we don't ask for a level the
-    /// model doesn't support (which the harness would clamp,
-    /// trapping the cycle in place).
-    efforts_available: Arc<Mutex<std::collections::BTreeSet<tau_proto::Effort>>>,
     theme: tau_themes::Theme,
     agent_in_progress: Arc<std::sync::atomic::AtomicBool>,
     renderer_tx: mpsc::Sender<RendererCmd>,
@@ -964,63 +980,11 @@ fn terminal_input_loop(
                     &print_local,
                 );
             }
-            TermEvent::RoleCycle => {
-                let roles = match ctx.roles_available.lock() {
-                    Ok(roles) => roles.clone(),
-                    Err(_) => Vec::new(),
-                };
-                if roles.is_empty() {
-                    print_local("role-cycle: no agent roles are available yet");
-                    continue;
-                }
-                let current = ctx
-                    .current_role_state
-                    .lock()
-                    .ok()
-                    .and_then(|role| role.clone());
-                let next = match current
-                    .as_deref()
-                    .and_then(|current| roles.iter().position(|role| role == current))
-                {
-                    Some(index) => roles[(index + 1) % roles.len()].clone(),
-                    None => roles[0].clone(),
-                };
-                let _ = send_event(
-                    writer,
-                    &Event::UiRoleSelect(tau_proto::UiRoleSelect { role: next }),
-                );
-            }
-            TermEvent::BackTab => {
-                // Pi-style: cycle effort. Read the current level
-                // from the shared atomic the renderer keeps in sync
-                // with `HarnessEffortChanged`, advance through the
-                // currently-allowed set (mirrored from
-                // `HarnessEffortsAvailable`), send the request. The
-                // role update echoes back as harness state and the renderer
-                // updates the status block. Skipping unavailable levels avoids
-                // a stuck cycle when the model lacks `xhigh`.
-                let current = tau_proto::Effort::from_u8(
-                    ctx.effort_state.load(std::sync::atomic::Ordering::Relaxed),
-                )
-                .unwrap_or_default();
-                let allowed: Vec<tau_proto::Effort> = match ctx.efforts_available.lock() {
-                    Ok(set) => set.iter().copied().collect(),
-                    Err(_) => Vec::new(),
-                };
-                if allowed.is_empty() {
-                    // No allowed set known yet (pre-handshake or no
-                    // model selected). Don't send a request the
-                    // harness would just clamp.
-                    continue;
-                }
-                let next = current.next_in(&allowed);
-                if next == current {
-                    continue;
-                }
-                send_current_role_update(
+            TermEvent::RoleCycle | TermEvent::BackTab => {
+                cycle_role(
                     writer,
                     &ctx.current_role_state,
-                    tau_proto::UiRoleUpdateAction::SetEffort { effort: Some(next) },
+                    &ctx.roles_available,
                     &print_local,
                 );
             }

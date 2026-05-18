@@ -41,7 +41,7 @@ pub enum Event {
     /// UI.
     BufferChanged,
     /// Shift+Tab pressed outside an open completion menu — caller
-    /// decides what to do with it (Pi-style: cycle effort).
+    /// decides what to do with it.
     BackTab,
     /// A binding requested Fast mode toggle without touching the prompt draft.
     FastToggle,

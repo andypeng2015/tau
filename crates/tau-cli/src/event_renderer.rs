@@ -154,23 +154,20 @@ pub(crate) struct EventRenderer {
     cli_state_mirror: std::sync::Arc<std::sync::Mutex<tau_config::settings::CliState>>,
     /// Cumulative end-to-end time spent waiting for agent responses.
     cumulative_agent_latency: Duration,
-    /// Shared effort mirror for the input thread.
+    /// Shared effort mirror kept in sync with harness state.
     effort_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Shared fast-service-tier mirror for the input thread's `fast-toggle`
     /// binding.
     fast_service_tier_state: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Shared active-role mirror for the input thread's `role-cycle` binding.
+    /// Shared active-role mirror for input-thread role cycling.
     current_role_state: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    /// Shared ordered role names for the input thread's `role-cycle` binding.
+    /// Shared ordered role names for input-thread role cycling.
     roles_available: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Shared set of currently-available effort levels, mirrored
-    /// from `HarnessEffortsAvailable`. The input thread's Shift+Tab
-    /// cycle reads it to skip levels the current model doesn't
-    /// support (e.g. `xhigh` on `gpt-5.4-mini`).
+    /// from `HarnessEffortsAvailable`.
     efforts_available:
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<tau_proto::Effort>>>,
-    /// Shared verbosity mirror. No cycle key today; kept symmetric
-    /// with `effort_state` so a future Shift+Tab variant can read it.
+    /// Shared verbosity mirror kept symmetric with `effort_state`.
     verbosity_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Allowed verbosity set, mirrored from
     /// `HarnessVerbositiesAvailable`. Also drives `/verbosity` arg
@@ -669,9 +666,7 @@ impl EventRenderer {
             current_role_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             roles_available: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             // Empty until the first `HarnessEffortsAvailable`
-            // arrives. The input loop's BackTab handler treats an
-            // empty set as "no allowed levels known yet" and
-            // skips sending a request the harness would just clamp.
+            // arrives.
             efforts_available: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeSet::new(),
             )),
@@ -734,37 +729,20 @@ impl EventRenderer {
         self.agent_in_progress.clone()
     }
 
-    /// Returns a clone of the shared effort mirror, used by the
-    /// input thread to read the current level for Shift+Tab cycling.
-    pub(crate) fn effort_state(&self) -> std::sync::Arc<std::sync::atomic::AtomicU8> {
-        self.effort_state.clone()
-    }
-
     /// Returns a clone of the shared Fast-mode mirror, used by configurable
     /// bindings.
     pub(crate) fn fast_service_tier_state(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.fast_service_tier_state.clone()
     }
 
-    /// Returns a clone of the shared active-role mirror, used by configurable
-    /// bindings.
+    /// Returns a clone of the shared active-role mirror used by role cycling.
     pub(crate) fn current_role_state(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
         self.current_role_state.clone()
     }
 
-    /// Returns a clone of the shared ordered role list, used by configurable
-    /// bindings.
+    /// Returns a clone of the shared ordered role list used by role cycling.
     pub(crate) fn roles_available(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         self.roles_available.clone()
-    }
-
-    /// Returns a clone of the shared available-efforts set. The
-    /// input thread uses it to skip levels the current model
-    /// doesn't expose (e.g. `xhigh` on `gpt-5.4-mini`).
-    pub(crate) fn efforts_available(
-        &self,
-    ) -> std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<tau_proto::Effort>>> {
-        self.efforts_available.clone()
     }
 
     /// Apply a `/set <name> <value>` change. The caller (input loop)

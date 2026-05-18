@@ -117,13 +117,11 @@ settings, with built-in/configured role overrides persisted. See
 [`docs/agent-roles.md`](docs/agent-roles.md).
 
 In the UI: `/effort medium`, `/verbosity low`, `/thinking-summary
-concise`. Shift+Tab cycles **effort** specifically; the other knobs
-are slash-command-only today. The cycle walks levels the harness
-reports as available for the current model, so `xhigh` is reachable
-on `gpt-5.5` and skipped on `gpt-5.4-mini`. Asking for an unsupported
-level (e.g. `/effort xhigh` on a mini model, `/verbosity high` on a
-provider that doesn't support it) degrades and surfaces a
-`HarnessInfo` notice rather than silently dropping the field.
+concise`. Shift+Tab cycles to the next agent role. Model knobs are
+slash-command-only today. Asking for an unsupported level (e.g.
+`/effort xhigh` on a mini model, `/verbosity high` on a provider that
+doesn't support it) degrades and surfaces a `HarnessInfo` notice rather
+than silently dropping the field.
 
 The status bar renders only the selected agent role, falling back to the
 model id when no role is selected. Model knobs and context usage stay out
@@ -279,7 +277,7 @@ Type `/` for menu autocompletion. The built-in set:
 | `/detach`           | Leave the UI, keep the harness running for reattach  |
 | `/new`              | Start a fresh session in this harness                |
 | `/model <id>`       | Switch model (Tab completes from provider list)      |
-| `/effort <level>`   | Set reasoning effort (`Shift+Tab` cycles)            |
+| `/effort <level>`   | Set reasoning effort                                 |
 | `/verbosity <level>`| Set output verbosity (`low`/`medium`/`high`)         |
 | `/fast` | Toggle Codex Fast mode (`service_tier: fast`)      |
 | `/thinking-summary <mode>` | Set reasoning-summary mode (`off`/`auto`/`concise`/`detailed`) |

@@ -686,10 +686,9 @@ impl Effort {
     }
 
     /// Cycle in the canonical order, but only through levels that are
-    /// in `allowed`. Used by Shift+Tab in the CLI so the user doesn't
-    /// land on a level the current model doesn't support (e.g. xhigh
-    /// on `gpt-5.4-mini`). Falls back to [`Effort::next`] when
-    /// `allowed` is empty.
+    /// in `allowed` so callers don't land on a level the current model
+    /// doesn't support (e.g. xhigh on `gpt-5.4-mini`). Falls back to
+    /// [`Effort::next`] when `allowed` is empty.
     #[must_use]
     pub fn next_in(self, allowed: &[Self]) -> Self {
         if allowed.is_empty() {

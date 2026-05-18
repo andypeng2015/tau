@@ -842,11 +842,11 @@ fn model_params_serializes_skipping_defaults() {
     );
 }
 
-/// `Effort::next_in` powers the Shift+Tab cycle on the CLI side: it
-/// must skip levels that aren't in the harness's allowed set so the
-/// cycle doesn't trap when (say) `xhigh` is missing for the current
-/// model. Locking the behaviour with explicit cases so a future
-/// refactor of the cycle helper can't silently regress the UX.
+/// `Effort::next_in` must skip levels that aren't in the harness's
+/// allowed set so cycling callers don't trap when (say) `xhigh` is
+/// missing for the current model. Locking the behaviour with explicit
+/// cases so a future refactor of the cycle helper can't silently
+/// regress the UX.
 #[test]
 fn effort_next_in_skips_disallowed_levels_and_wraps() {
     use Effort::*;
@@ -866,7 +866,7 @@ fn effort_next_in_skips_disallowed_levels_and_wraps() {
     assert_eq!(Off.next_in(&only_off), Off);
 
     // Empty allowed set falls through to plain `next()` so callers
-    // that haven't received `HarnessEffortsAvailable` yet still
-    // make progress on Shift+Tab presses.
+    // that haven't received `HarnessEffortsAvailable` yet still make
+    // progress.
     assert_eq!(Medium.next_in(&[]), Medium.next());
 }

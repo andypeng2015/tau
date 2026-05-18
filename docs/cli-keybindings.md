@@ -35,7 +35,7 @@ These keys are handled by the raw terminal prompt and are not configurable bindi
 | `C-w` | Kill the word before the cursor. |
 | `Backspace`, `Delete` | Delete text around the cursor. |
 | Arrow keys | Move within multiline input, completion candidates, or prompt history. |
-| `Tab`, `Shift-Tab` | Cycle completion candidates; `Shift-Tab` outside completion is exposed to the CLI. |
+| `Tab`, `Shift-Tab` | Cycle completion candidates; `Shift-Tab` outside completion cycles to the next agent role. |
 | `Esc` | Dismiss the completion menu. |
 
 
