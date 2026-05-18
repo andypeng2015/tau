@@ -24,7 +24,12 @@ pub(crate) fn load_roles(
     let mut roles = harness_settings.roles.clone();
     role_overrides.retain(|name, _| roles.contains_key(name));
     for (name, role) in &role_overrides {
-        roles.insert(name.clone(), role.clone());
+        let mut effective_role = role.clone();
+        if let Some(configured_role) = roles.get(name) {
+            effective_role.prompt = configured_role.prompt.clone();
+            effective_role.extra_prompt = configured_role.extra_prompt.clone();
+        }
+        roles.insert(name.clone(), effective_role);
     }
     let selected_role = load_last_selected_role(dirs)
         .filter(|role| roles.contains_key(role))
@@ -364,6 +369,12 @@ fn load_last_selected_role(dirs: &tau_config::settings::TauDirs) -> Option<Strin
     (!role.is_empty()).then_some(role)
 }
 
+fn role_without_prompt_fields(mut role: AgentRole) -> AgentRole {
+    role.prompt = None;
+    role.extra_prompt = None;
+    role
+}
+
 fn load_role_overrides(dirs: &tau_config::settings::TauDirs) -> HashMap<String, AgentRole> {
     let json = load_state_json(dirs);
     let mut out = HashMap::new();
@@ -373,7 +384,7 @@ fn load_role_overrides(dirs: &tau_config::settings::TauDirs) -> HashMap<String, 
     {
         for (name, entry) in map {
             if let Ok(role) = serde_json::from_value::<AgentRole>(entry.clone()) {
-                out.insert(name.clone(), role);
+                out.insert(name.clone(), role_without_prompt_fields(role));
             }
         }
     }
@@ -401,7 +412,8 @@ pub(crate) fn save_role_overrides(
         .map(|(name, role)| {
             (
                 name.clone(),
-                serde_json::to_value(role).unwrap_or(serde_json::Value::Null),
+                serde_json::to_value(role_without_prompt_fields(role.clone()))
+                    .unwrap_or(serde_json::Value::Null),
             )
         })
         .collect::<serde_json::Map<String, serde_json::Value>>();

@@ -3,12 +3,32 @@
 //! [`tau_core::SessionTree`] into item-based prompt context.
 
 use tau_core::SessionEntry;
-use tau_proto::{CborValue, ContextItem};
+use tau_proto::{CborValue, ContextItem, PromptContent, PromptHook, PromptPriority};
 
 use crate::dedup::DEDUP_MARKER;
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 
-/// Builds the system prompt from available tools, skills, and cwd.
+const ROLE_EXTRA_PROMPT_PRIORITY: PromptPriority = PromptPriority::new(1000);
+
+/// Return the built-in prompt text for a role, if Tau ships one.
+///
+/// There are currently no built-in role prompts: built-in role configs only set
+/// model parameters. Keeping this as a distinct layer makes configured
+/// `prompt` an override of default role prompt text rather than an additive
+/// append point.
+pub(crate) fn default_tau_role_prompt(_role_name: &str) -> Option<PromptContent> {
+    None
+}
+
+/// Resolve the role prompt layer after applying the configured override.
+pub(crate) fn effective_tau_role_prompt<'a>(
+    role_prompt_override: Option<&'a PromptContent>,
+    default_role_prompt: Option<&'a PromptContent>,
+) -> Option<&'a PromptContent> {
+    role_prompt_override.or(default_role_prompt)
+}
+
+/// Builds the system prompt from Tau defaults plus role/tool prompt hooks.
 ///
 /// Must be deterministic and stable across turns of the same session
 /// — see the linear-prefix invariant in `send_prompt_to_agent`.
@@ -20,6 +40,9 @@ use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 pub(crate) fn build_system_prompt(
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     cwd: &str,
+    role_prompt: Option<&PromptContent>,
+    role_extra_prompt: Option<&PromptContent>,
+    tool_prompt_hook: &PromptHook,
 ) -> String {
     // Tool definitions are delivered out-of-band via the provider's
     // tool-use channel, so we don't restate them here.
@@ -62,7 +85,64 @@ pub(crate) fn build_system_prompt(
 
     prompt.push_str(&format!("\nCurrent working directory: {cwd}\n"));
 
+    compose_system_prompt(prompt, role_prompt, role_extra_prompt, tool_prompt_hook)
+}
+
+fn compose_system_prompt(
+    tau_system_prompt: String,
+    role_prompt: Option<&PromptContent>,
+    role_extra_prompt: Option<&PromptContent>,
+    tool_prompt_hook: &PromptHook,
+) -> String {
+    let mut prompt = tau_system_prompt.trim_end().to_owned();
+
+    let mut role_extra_prompt_hook = PromptHook::new();
+    if let Some(content) = role_extra_prompt
+        && !content.is_empty()
+    {
+        role_extra_prompt_hook.insert((ROLE_EXTRA_PROMPT_PRIORITY, content.clone()));
+    }
+
+    let has_role_prompt = role_prompt.is_some_and(|content| !content.is_empty());
+    let has_role_extra = !role_extra_prompt_hook.is_empty();
+    if has_role_prompt || has_role_extra {
+        prompt.push_str("\n\n");
+        if let Some(content) = role_prompt
+            && !content.is_empty()
+        {
+            prompt.push_str(content.as_str());
+        }
+        if has_role_prompt && has_role_extra {
+            prompt.push('\n');
+        }
+        append_prompt_hook(&mut prompt, &role_extra_prompt_hook);
+    }
+
+    if prompt_hook_has_content(tool_prompt_hook) {
+        prompt.push_str("\n\n");
+        append_prompt_hook(&mut prompt, tool_prompt_hook);
+    }
+
+    prompt.push('\n');
     prompt
+}
+
+fn prompt_hook_has_content(hook: &PromptHook) -> bool {
+    hook.iter().any(|(_, content)| !content.is_empty())
+}
+
+fn append_prompt_hook(prompt: &mut String, hook: &PromptHook) {
+    let mut first = true;
+    for (_, content) in hook {
+        if content.is_empty() {
+            continue;
+        }
+        if !first {
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(content.as_str());
+        first = false;
+    }
 }
 
 fn xml_escape(text: &str) -> String {
@@ -266,7 +346,13 @@ mod tests {
     #[test]
     fn build_system_prompt_includes_cwd() {
         let skills = std::collections::HashMap::new();
-        let prompt = build_system_prompt(&skills, "/tmp/work");
+        let prompt = build_system_prompt(
+            &skills,
+            "/tmp/work",
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+        );
         assert!(prompt.contains("expert coding assistant"));
         assert!(prompt.contains("Current working directory: /tmp/work"));
     }
@@ -274,9 +360,105 @@ mod tests {
     #[test]
     fn build_system_prompt_encourages_parallel_tool_calls() {
         let skills = std::collections::HashMap::new();
-        let prompt = build_system_prompt(&skills, "/tmp/work");
+        let prompt = build_system_prompt(
+            &skills,
+            "/tmp/work",
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+        );
         assert!(prompt.contains("parallel"));
         assert!(prompt.contains("make all independent tool calls in parallel"));
+    }
+
+    /// A configured role prompt replaces default role prompt text. If neither
+    /// exists, the role prompt layer is absent rather than represented as an
+    /// empty append-only section.
+    #[test]
+    fn effective_tau_role_prompt_uses_override_else_default_else_none() {
+        let configured = tau_proto::PromptContent::new("CONFIGURED ROLE PROMPT");
+        let default = tau_proto::PromptContent::new("DEFAULT ROLE PROMPT");
+
+        assert_eq!(
+            effective_tau_role_prompt(Some(&configured), Some(&default))
+                .map(tau_proto::PromptContent::as_str),
+            Some("CONFIGURED ROLE PROMPT")
+        );
+        assert_eq!(
+            effective_tau_role_prompt(None, Some(&default)).map(tau_proto::PromptContent::as_str),
+            Some("DEFAULT ROLE PROMPT")
+        );
+        assert!(effective_tau_role_prompt(None, None).is_none());
+        assert!(default_tau_role_prompt("smart").is_none());
+    }
+
+    /// Role prompt overrides, role extra prompts, and tool prompt hooks are
+    /// distinct layers. This pins their composition order so adding more hook
+    /// contributors later does not accidentally move tool instructions before
+    /// role instructions or ignore hook priority ordering.
+    #[test]
+    fn build_system_prompt_composes_role_and_tool_prompt_hooks_in_order() {
+        let skills = std::collections::HashMap::new();
+        let role_prompt = tau_proto::PromptContent::new("ROLE PROMPT");
+        let role_extra = tau_proto::PromptContent::new("ROLE EXTRA");
+        let mut tool_hook = tau_proto::PromptHook::new();
+        tool_hook.insert((
+            tau_proto::PromptPriority::new(20),
+            tau_proto::PromptContent::new("TOOL LATE"),
+        ));
+        tool_hook.insert((
+            tau_proto::PromptPriority::new(10),
+            tau_proto::PromptContent::new("TOOL EARLY"),
+        ));
+
+        let prompt = build_system_prompt(
+            &skills,
+            "/tmp/work",
+            Some(&role_prompt),
+            Some(&role_extra),
+            &tool_hook,
+        );
+
+        let base = prompt
+            .find("Current working directory: /tmp/work")
+            .expect("base Tau system prompt should render cwd");
+        let role = prompt
+            .find("ROLE PROMPT")
+            .expect("role prompt should be rendered");
+        let extra = prompt
+            .find("ROLE EXTRA")
+            .expect("role extra prompt should be rendered");
+        let early = prompt
+            .find("TOOL EARLY")
+            .expect("earlier-priority tool prompt should be rendered");
+        let late = prompt
+            .find("TOOL LATE")
+            .expect("later-priority tool prompt should be rendered");
+        assert!(base < role);
+        assert!(role < extra);
+        assert!(extra < early);
+        assert!(early < late);
+    }
+
+    /// Empty hook entries are ignored without adding a blank prompt section.
+    #[test]
+    fn build_system_prompt_ignores_empty_tool_prompt_hook_sections() {
+        let skills = std::collections::HashMap::new();
+        let without_hook = build_system_prompt(
+            &skills,
+            "/tmp/work",
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+        );
+        let mut empty_hook = tau_proto::PromptHook::new();
+        empty_hook.insert((
+            tau_proto::PromptPriority::new(10),
+            tau_proto::PromptContent::new(""),
+        ));
+        let with_empty_hook = build_system_prompt(&skills, "/tmp/work", None, None, &empty_hook);
+
+        assert_eq!(with_empty_hook, without_hook);
     }
 
     #[test]

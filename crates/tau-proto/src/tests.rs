@@ -23,6 +23,7 @@ fn representative_events() -> Vec<Event> {
                 enabled_by_default: true,
                 execution_mode: ToolExecutionMode::Shared,
             },
+            prompt: None,
         }),
         Event::ToolRequest(ToolRequest {
             call_id: "call-1".into(),
@@ -635,6 +636,73 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
         serialized["enabled_by_default"],
         serde_json::Value::Bool(false)
     );
+}
+
+/// Prompt hook primitives are transparent on the wire so config and extension
+/// JSON can stay simple: priorities are numbers and prompt contents are plain
+/// strings.
+#[test]
+fn prompt_hook_primitives_serde_as_simple_values() {
+    let priority: PromptPriority =
+        serde_json::from_value(serde_json::json!(42)).expect("deserialize prompt priority");
+    let content: PromptContent =
+        serde_json::from_value(serde_json::json!("Use care")).expect("deserialize prompt content");
+
+    assert_eq!(priority.get(), 42);
+    assert_eq!(content.as_str(), "Use care");
+    assert_eq!(
+        serde_json::to_value(priority).expect("serialize prompt priority"),
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        serde_json::to_value(content).expect("serialize prompt content"),
+        serde_json::json!("Use care")
+    );
+}
+
+fn echo_tool_spec() -> ToolSpec {
+    ToolSpec {
+        name: ToolName::new("echo"),
+        model_visible_name: None,
+        description: Some("Echo a payload".to_owned()),
+        tool_type: ToolType::Function,
+        parameters: None,
+        format: None,
+        enabled_by_default: true,
+        execution_mode: ToolExecutionMode::Shared,
+    }
+}
+
+/// `tool.register` remains compatible with extensions that omit prompt hooks,
+/// while newer extensions can attach one ordered prompt fragment.
+#[test]
+fn tool_register_prompt_is_optional_and_round_trips_when_present() {
+    let without_prompt: ToolRegister = serde_json::from_value(serde_json::json!({
+        "tool": {
+            "name": "echo",
+            "description": "Echo a payload",
+            "tool_type": "function",
+            "execution_mode": "shared"
+        }
+    }))
+    .expect("deserialize tool register without prompt");
+    assert_eq!(without_prompt.prompt, None);
+
+    let with_prompt = ToolRegister {
+        tool: echo_tool_spec(),
+        prompt: Some(PromptHookPart::new(
+            PromptPriority::new(7),
+            "Prefer the echo tool for echo requests.",
+        )),
+    };
+    let json = serde_json::to_value(&with_prompt).expect("serialize tool register with prompt");
+    assert_eq!(json["prompt"]["priority"], serde_json::json!(7));
+    assert_eq!(
+        json["prompt"]["content"],
+        serde_json::json!("Prefer the echo tool for echo requests.")
+    );
+    let decoded: ToolRegister = serde_json::from_value(json).expect("decode prompt hook");
+    assert_eq!(decoded, with_prompt);
 }
 
 /// Older extensions did not send `execution_mode` on `ExtAgentQuery`. The

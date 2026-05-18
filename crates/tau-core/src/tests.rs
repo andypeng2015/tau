@@ -467,6 +467,55 @@ fn disconnect_cleanup_removes_stale_tool_providers() {
 }
 
 #[test]
+fn re_registering_tool_without_prompt_clears_previous_prompt_hook() {
+    // Prompt hooks are part of the live registration, not sticky metadata. A
+    // tool that unregisters or re-registers without a hook must not leave stale
+    // prompt text behind for future prompt assembly.
+    let mut registry = ToolRegistry::new();
+    let tool = || ToolSpec {
+        name: tau_proto::ToolName::new("echo"),
+        model_visible_name: None,
+        description: Some("Echo".to_owned()),
+        tool_type: ToolType::Function,
+        parameters: None,
+        format: None,
+        enabled_by_default: true,
+        execution_mode: ToolExecutionMode::Shared,
+    };
+
+    registry.register_with_prompt(
+        "conn-tool",
+        ToolRegister {
+            tool: tool(),
+            prompt: Some(tau_proto::PromptHookPart::new(
+                tau_proto::PromptPriority::new(10),
+                "STALE TOOL PROMPT",
+            )),
+        },
+    );
+    assert!(registry.providers_for("echo")[0].prompt.is_some());
+
+    registry.register_with_prompt(
+        "conn-tool",
+        ToolRegister {
+            tool: tool(),
+            prompt: None,
+        },
+    );
+    assert_eq!(registry.providers_for("echo")[0].prompt, None);
+
+    assert!(registry.unregister("conn-tool", "echo"));
+    registry.register_with_prompt(
+        "conn-tool",
+        ToolRegister {
+            tool: tool(),
+            prompt: None,
+        },
+    );
+    assert_eq!(registry.providers_for("echo")[0].prompt, None);
+}
+
+#[test]
 fn register_events_map_cleanly_to_registry_state() {
     let mut registry = ToolRegistry::new();
 
@@ -483,6 +532,7 @@ fn register_events_map_cleanly_to_registry_state() {
                 enabled_by_default: true,
                 execution_mode: ToolExecutionMode::Shared,
             },
+            prompt: None,
         }
         .tool,
     );

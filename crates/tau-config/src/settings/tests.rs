@@ -229,6 +229,51 @@ fn harness_roles_merge_with_built_ins() {
 }
 
 #[test]
+fn harness_role_prompt_fields_parse_as_plain_strings() {
+    // Role prompt customization must keep harness.json5 ergonomic: users write
+    // prompt text directly instead of nested newtype objects.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.json5"),
+        r#"{
+            roles: {
+                custom: {
+                    prompt: "You are a focused reviewer.",
+                    extraPrompt: "Prefer small patches.",
+                },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+    let role = &s.roles["custom"];
+    assert_eq!(
+        role.prompt.as_ref().map(|p| p.as_str()),
+        Some("You are a focused reviewer.")
+    );
+    assert_eq!(
+        role.extra_prompt.as_ref().map(|p| p.as_str()),
+        Some("Prefer small patches.")
+    );
+}
+
+#[test]
+fn harness_built_in_roles_leave_prompt_fields_unset() {
+    // Built-in roles only pick model knobs; prompt customization is opt-in so
+    // users do not inherit hidden role prompt text they cannot see in config.
+    let s = HarnessSettings::built_in();
+    for (name, role) in &s.roles {
+        assert!(role.prompt.is_none(), "built-in role {name} has prompt");
+        assert!(
+            role.extra_prompt.is_none(),
+            "built-in role {name} has extraPrompt"
+        );
+    }
+}
+
+#[test]
 fn harness_default_roles_alias_still_loads() {
     // Keep the previous `defaultRoles` spelling as a compatibility alias now
     // that roles are loaded from harness config.

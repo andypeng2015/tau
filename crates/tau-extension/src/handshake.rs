@@ -26,8 +26,8 @@ use std::io::Write;
 
 use tau_proto::{
     ClientKind, EncodeError, Event, EventName, EventSelector, ExtensionName, Frame, FrameWriter,
-    Hello, Intercept, InterceptionPriority, Message, PROTOCOL_VERSION, Ready, Subscribe,
-    ToolRegister, ToolSpec,
+    Hello, Intercept, InterceptionPriority, Message, PROTOCOL_VERSION, PromptHookPart, Ready,
+    Subscribe, ToolRegister, ToolSpec,
 };
 
 /// Builder for the opening frame sequence an extension sends to the
@@ -38,7 +38,7 @@ pub struct Handshake {
     client_kind: ClientKind,
     selectors: Vec<EventSelector>,
     intercepts: Vec<Intercept>,
-    tools: Vec<ToolSpec>,
+    tools: Vec<ToolRegister>,
     events: Vec<Event>,
     ready_message: Option<String>,
 }
@@ -88,15 +88,29 @@ impl Handshake {
         self
     }
 
-    /// Register a single tool.
-    pub fn register_tool(mut self, tool: ToolSpec) -> Self {
-        self.tools.push(tool);
+    /// Register a single tool without adding a prompt hook.
+    pub fn register_tool(self, tool: ToolSpec) -> Self {
+        self.register_tool_with_prompt(tool, None)
+    }
+
+    /// Register a single tool and optionally attach a prompt hook fragment that
+    /// the harness includes whenever the tool is enabled for the current role.
+    pub fn register_tool_with_prompt(
+        mut self,
+        tool: ToolSpec,
+        prompt: Option<PromptHookPart>,
+    ) -> Self {
+        self.tools.push(ToolRegister { tool, prompt });
         self
     }
 
-    /// Register multiple tools at once.
+    /// Register multiple tools at once without adding prompt hooks.
     pub fn register_tools(mut self, tools: impl IntoIterator<Item = ToolSpec>) -> Self {
-        self.tools.extend(tools);
+        self.tools.extend(
+            tools
+                .into_iter()
+                .map(|tool| ToolRegister { tool, prompt: None }),
+        );
         self
     }
 
@@ -143,7 +157,7 @@ impl Handshake {
             writer.write_frame(&Frame::Message(Message::Intercept(intercept)))?;
         }
         for tool in self.tools {
-            writer.write_frame(&Frame::Event(Event::ToolRegister(ToolRegister { tool })))?;
+            writer.write_frame(&Frame::Event(Event::ToolRegister(tool)))?;
         }
         for event in self.events {
             writer.write_frame(&Frame::Event(event))?;

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-use tau_proto::{ConnectionId, Event, ToolName, ToolRequest, ToolSpec};
+use tau_proto::{
+    ConnectionId, Event, PromptHookPart, ToolName, ToolRegister, ToolRequest, ToolSpec,
+};
 
 use crate::bus::EventBus;
 use crate::connection::{RouteError, RouteReport};
@@ -13,8 +15,12 @@ use crate::connection::{RouteError, RouteReport};
 /// One live provider registered for a tool name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolProvider {
+    /// Connection that registered this tool.
     pub connection_id: ConnectionId,
+    /// Tool metadata advertised to the model and used for routing.
     pub tool: ToolSpec,
+    /// Optional prompt fragment contributed while this tool is enabled.
+    pub prompt: Option<PromptHookPart>,
 }
 
 /// Warning emitted by the tool registry.
@@ -78,8 +84,19 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Registers one tool for a live provider connection.
+    /// Registers one tool for a live provider connection without a prompt hook.
     pub fn register(&mut self, connection_id: &str, tool: ToolSpec) -> RegisterToolReport {
+        self.register_with_prompt(connection_id, ToolRegister { tool, prompt: None })
+    }
+
+    /// Registers one tool for a live provider connection, including any prompt
+    /// hook fragment attached to the registration.
+    pub fn register_with_prompt(
+        &mut self,
+        connection_id: &str,
+        registration: ToolRegister,
+    ) -> RegisterToolReport {
+        let ToolRegister { tool, prompt } = registration;
         let tool_name = tool.name.clone();
         let providers = self.providers_by_tool.entry(tool_name.clone()).or_default();
 
@@ -102,10 +119,12 @@ impl ToolRegistry {
             .find(|provider| provider.connection_id == connection_id)
         {
             existing_provider.tool = tool;
+            existing_provider.prompt = prompt;
         } else {
             providers.push(ToolProvider {
                 connection_id: connection_id.into(),
                 tool,
+                prompt,
             });
         }
 
@@ -176,13 +195,23 @@ impl ToolRegistry {
     /// Returns all unique tool specs, one per tool name (first provider wins).
     #[must_use]
     pub fn all_tools(&self) -> Vec<&ToolSpec> {
-        let mut tools: Vec<_> = self
+        self.all_tool_providers()
+            .into_iter()
+            .map(|provider| &provider.tool)
+            .collect()
+    }
+
+    /// Returns all unique tool providers, one per tool name (first provider
+    /// wins), sorted by tool name for deterministic prompt and tool assembly.
+    #[must_use]
+    pub fn all_tool_providers(&self) -> Vec<&ToolProvider> {
+        let mut providers: Vec<_> = self
             .providers_by_tool
             .values()
-            .filter_map(|providers| providers.first().map(|p| &p.tool))
+            .filter_map(|providers| providers.first())
             .collect();
-        tools.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-        tools
+        providers.sort_by(|a, b| a.tool.name.as_str().cmp(b.tool.name.as_str()));
+        providers
     }
 
     /// Picks one currently live provider for a tool name.

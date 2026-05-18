@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tau_proto::{ModelId, ToolName};
+use tau_proto::{ModelId, PromptContent, ToolName};
 
 // ---------------------------------------------------------------------------
 // Built-in configs
@@ -479,6 +479,12 @@ pub struct AgentRole {
     /// Provider service tier preferred by this role.
     #[serde(skip_serializing_if = "Option::is_none", rename = "serviceTier")]
     pub service_tier: Option<tau_proto::ServiceTier>,
+    /// User-provided replacement for the role's built-in prompt, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptContent>,
+    /// Additional role-specific prompt text appended after the role prompt.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "extraPrompt")]
+    pub extra_prompt: Option<PromptContent>,
     /// Name of the harness tools profile applied when this role is active.
     #[serde(skip_serializing_if = "Option::is_none", rename = "toolsProfile")]
     pub tools_profile: Option<String>,
@@ -491,6 +497,11 @@ impl AgentRole {
         self.verbosity = self.verbosity.or(fallback.verbosity);
         self.thinking_summary = self.thinking_summary.or(fallback.thinking_summary);
         self.service_tier = self.service_tier.or(fallback.service_tier);
+        self.prompt = self.prompt.clone().or_else(|| fallback.prompt.clone());
+        self.extra_prompt = self
+            .extra_prompt
+            .clone()
+            .or_else(|| fallback.extra_prompt.clone());
         self.tools_profile = self
             .tools_profile
             .clone()

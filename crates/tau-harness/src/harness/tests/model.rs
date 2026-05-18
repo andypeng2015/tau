@@ -408,6 +408,82 @@ fn role_baseline_ignores_persisted_role_overrides() {
     assert_eq!(baseline.verbosity, Verbosity::Medium);
 }
 
+/// Persisted runtime role overrides must never carry prompt text. Prompt fields
+/// come from harness config so changing `harness.json5` is reflected after a
+/// restart instead of being shadowed by stale state.
+#[test]
+fn persisted_role_overrides_do_not_shadow_configured_role_prompts() {
+    let td = TempDir::new().expect("tempdir");
+    let config_dir = td.path().join("config");
+    let state_dir = td.path().join("state");
+    std::fs::create_dir_all(&config_dir).expect("mkdir config");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir.clone()),
+        state_dir: Some(state_dir.clone()),
+    };
+
+    std::fs::write(
+        config_dir.join("harness.json5"),
+        r#"{
+            roles: {
+                smart: {
+                    model: "openai/gpt-4.1",
+                    prompt: "CURRENT CONFIG PROMPT",
+                    extraPrompt: "CURRENT CONFIG EXTRA",
+                },
+            },
+        }"#,
+    )
+    .expect("write harness config");
+    std::fs::write(
+        state_dir.join("harness.json5"),
+        r#"{
+            "last_selected_role": "smart",
+            "role_overrides": {
+                "smart": {
+                    "model": "openai/gpt-4.1-mini",
+                    "prompt": "STALE STATE PROMPT",
+                    "extraPrompt": "STALE STATE EXTRA"
+                }
+            }
+        }"#,
+    )
+    .expect("write state");
+
+    let harness_settings =
+        tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
+    let (roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let role = roles.get("smart").expect("smart role");
+    assert_eq!(selected_role, "smart");
+    assert_eq!(
+        role.model.as_ref().map(ToString::to_string).as_deref(),
+        Some("openai/gpt-4.1-mini")
+    );
+    assert_eq!(
+        role.prompt.as_ref().map(|prompt| prompt.as_str()),
+        Some("CURRENT CONFIG PROMPT")
+    );
+    assert_eq!(
+        role.extra_prompt.as_ref().map(|prompt| prompt.as_str()),
+        Some("CURRENT CONFIG EXTRA")
+    );
+    let runtime_override = role_overrides.get("smart").expect("runtime override");
+    assert!(runtime_override.prompt.is_none());
+    assert!(runtime_override.extra_prompt.is_none());
+
+    save_role_overrides(&dirs, &selected_role, &roles);
+    let saved = std::fs::read_to_string(state_dir.join("harness.json5")).expect("read state");
+    assert!(
+        !saved.contains("prompt"),
+        "saved state must strip prompt fields: {saved}"
+    );
+    assert!(
+        !saved.contains("extraPrompt"),
+        "saved state must strip extraPrompt fields: {saved}"
+    );
+}
+
 /// Roles without an explicit effort get the middle provider-published
 /// reasoning level. Providers that publish only `Off` stay at `Off`.
 #[test]

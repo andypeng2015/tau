@@ -5,6 +5,7 @@
 //! Events are facts — each component broadcasts what happened.
 //! There are no requests or responses, only announcements.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
@@ -373,6 +374,108 @@ pub enum ClientKind {
 pub enum EventSelector {
     Exact(EventName),
     Prefix(String),
+}
+
+/// System-prompt hook priority. Lower numeric values render first.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct PromptPriority(u16);
+
+impl PromptPriority {
+    /// Create a prompt priority from its numeric ordering value.
+    #[must_use]
+    pub const fn new(v: u16) -> Self {
+        Self(v)
+    }
+
+    /// Return the numeric ordering value.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+/// Text fragment inserted into a composed system prompt.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PromptContent(String);
+
+impl PromptContent {
+    /// Create prompt content from owned or borrowed text.
+    #[must_use]
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Borrow the prompt text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the newtype and return the owned prompt text.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Return whether the prompt text is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::ops::Deref for PromptContent {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PromptContent {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for PromptContent {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl AsRef<str> for PromptContent {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Ordered collection of prompt hook fragments.
+pub type PromptHook = BTreeSet<(PromptPriority, PromptContent)>;
+
+/// One prompt fragment contributed to a hook.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct PromptHookPart {
+    /// Priority controlling coarse placement among hook fragments. Lower values
+    /// render first.
+    pub priority: PromptPriority,
+    /// Prompt text rendered at this priority.
+    pub content: PromptContent,
+}
+
+impl PromptHookPart {
+    /// Create one prompt hook fragment.
+    #[must_use]
+    pub fn new(priority: PromptPriority, content: impl Into<PromptContent>) -> Self {
+        Self {
+            priority,
+            content: content.into(),
+        }
+    }
 }
 
 /// Interception priority. Lower numeric values run first.
@@ -1192,7 +1295,12 @@ impl ToolChoice {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolRegister {
+    /// Tool metadata made available to the agent and used for routing calls.
     pub tool: ToolSpec,
+    /// Optional system-prompt fragment to include whenever this tool is enabled
+    /// for the current role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptHookPart>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

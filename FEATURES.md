@@ -193,6 +193,12 @@ working directory, plus `$HOME/.agents*/skills` and
 machine- or user-specific instructions and skills that should usually be added
 to `.gitignore` instead of checked in.
 
+Role prompts are composable too: each `harness.json5` role may set `prompt` to
+replace the role's built-in prompt, if any, and `extraPrompt` to append local
+instructions after the role prompt. Extensions can also attach ordered prompt
+fragments to registered tools, so tool-specific instructions appear only when
+that tool is enabled for the active role.
+
 ### `provider-openai` — OpenAI Responses backend
 
 Publishes hardcoded `chatgpt/*` model metadata from provider-owned ChatGPT OAuth

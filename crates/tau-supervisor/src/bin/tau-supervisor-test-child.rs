@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         enabled_by_default: true,
                         execution_mode: tau_proto::ToolExecutionMode::Shared,
                     },
+                    prompt: None,
                 })))?;
                 writer.flush()?;
             }

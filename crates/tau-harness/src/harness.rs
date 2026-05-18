@@ -15,12 +15,12 @@ use tau_core::{
 use tau_proto::{
     CborValue, ClientKind, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
     ExtensionName, Frame, HarnessContextUsageChanged, HarnessRoleSelected, Message, MessageItem,
-    ModelId, PreviousResponseCandidate, PromptOriginator, ProviderCacheMissDiagnostic,
+    ModelId, PreviousResponseCandidate, PromptHook, PromptOriginator, ProviderCacheMissDiagnostic,
     ProviderModelInfo, ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage,
     SessionCompactionRequested, SessionId, SessionPromptCreated, SessionPromptId,
     SessionPromptPrewarmRequested, SessionPromptQueued, TokenUsageStats, ToolCallId, ToolCallItem,
-    ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRequest,
-    ToolType, UiCancelPrompt,
+    ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName, ToolRequest, ToolType,
+    UiCancelPrompt,
 };
 
 use crate::conversation::{Conversation, ConversationId, ConversationTurnState, PendingCancel};
@@ -54,7 +54,7 @@ use crate::model::{
 };
 use crate::prompt::{
     assemble_conversation_from, assemble_prompt_context_from, build_system_prompt, cbor_map_bool,
-    render_agents_context_message,
+    default_tau_role_prompt, effective_tau_role_prompt, render_agents_context_message,
 };
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::turn::{PromptSubmission, TurnState};
@@ -2105,8 +2105,8 @@ impl Harness {
         }
 
         match event {
-            Event::ToolRegister(ToolRegister { tool }) => {
-                let _ = self.registry.register(source_id, tool);
+            Event::ToolRegister(registration) => {
+                let _ = self.registry.register_with_prompt(source_id, registration);
             }
             Event::ToolRequest(request) => {
                 // Track session attribution before publishing — the
@@ -4355,7 +4355,7 @@ impl Harness {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "(unknown)".to_owned());
-        let system_prompt = build_system_prompt(&self.discovered_skills, &cwd);
+        let system_prompt = self.build_current_system_prompt(&cwd);
         let event = Event::SessionPromptPrewarmRequested(SessionPromptPrewarmRequested {
             session_id: session_id.clone(),
             system_prompt,
@@ -4519,7 +4519,7 @@ impl Harness {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "(unknown)".to_owned());
-        let system_prompt = build_system_prompt(&self.discovered_skills, &cwd);
+        let system_prompt = self.build_current_system_prompt(&cwd);
         // Fingerprint the non-input fields of the impending request.
         // Used to (a) drop the chain anchor when any of those fields
         // drifted since the anchor was minted (matches Pi's
@@ -4669,6 +4669,33 @@ impl Harness {
         self.publish_event(None, event);
 
         session_prompt_id
+    }
+
+    fn build_current_system_prompt(&self, cwd: &str) -> String {
+        let current_role = self.available_roles.get(&self.selected_role);
+        let default_role_prompt = default_tau_role_prompt(&self.selected_role);
+        let tau_role_prompt = effective_tau_role_prompt(
+            current_role.and_then(|role| role.prompt.as_ref()),
+            default_role_prompt.as_ref(),
+        );
+        let tool_prompt_hook = self.gather_tool_prompt_hook();
+        build_system_prompt(
+            &self.discovered_skills,
+            cwd,
+            tau_role_prompt,
+            current_role.and_then(|role| role.extra_prompt.as_ref()),
+            &tool_prompt_hook,
+        )
+    }
+
+    fn gather_tool_prompt_hook(&self) -> PromptHook {
+        self.registry
+            .all_tool_providers()
+            .into_iter()
+            .filter(|provider| self.is_tool_enabled_for_current_role(&provider.tool))
+            .filter_map(|provider| provider.prompt.as_ref())
+            .map(|part| (part.priority, part.content.clone()))
+            .collect()
     }
 
     fn gather_tool_definitions(&self) -> Vec<ToolDefinition> {

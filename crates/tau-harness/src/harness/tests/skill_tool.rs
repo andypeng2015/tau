@@ -12,7 +12,13 @@ fn build_system_prompt_includes_skills() {
             add_to_prompt: true,
         },
     );
-    let prompt = build_system_prompt(&skills, "/tmp/work");
+    let prompt = build_system_prompt(
+        &skills,
+        "/tmp/work",
+        None,
+        None,
+        &tau_proto::PromptHook::new(),
+    );
     assert!(prompt.contains("<available_skills>"));
     assert!(prompt.contains("<name>brave-search</name>"));
     assert!(prompt.contains("<description>Web search via Brave API</description>"));
@@ -34,7 +40,13 @@ fn build_system_prompt_excludes_hidden_skills() {
             add_to_prompt: false,
         },
     );
-    let prompt = build_system_prompt(&skills, "/tmp/work");
+    let prompt = build_system_prompt(
+        &skills,
+        "/tmp/work",
+        None,
+        None,
+        &tau_proto::PromptHook::new(),
+    );
     assert!(!prompt.contains("<available_skills>"));
     assert!(!prompt.contains("hidden"));
 }
@@ -51,7 +63,13 @@ fn build_system_prompt_escapes_skill_xml_text() {
             add_to_prompt: true,
         },
     );
-    let prompt = build_system_prompt(&skills, "/tmp/work");
+    let prompt = build_system_prompt(
+        &skills,
+        "/tmp/work",
+        None,
+        None,
+        &tau_proto::PromptHook::new(),
+    );
     assert!(prompt.contains("Use &lt;/description&gt; &amp; &lt;tag&gt; &quot;quotes&quot;"));
     assert!(!prompt.contains("Use </description>"));
 }
@@ -1088,6 +1106,65 @@ fn gather_tool_definitions_respects_role_tools_profile() {
     assert!(defs.iter().any(|d| d.name == "read"));
     assert!(!defs.iter().any(|d| d.name == "shell"));
     assert!(!defs.iter().any(|d| d.name == "skill"));
+}
+
+#[test]
+fn tool_prompt_hook_includes_only_tools_enabled_for_current_role() {
+    // Tool prompt fragments ride along with tool registration, but must only be
+    // rendered for tools the current role can actually call. Otherwise a hidden
+    // or profile-disabled tool could still steer the model via the system prompt.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    h.registry.register_with_prompt(
+        "conn-prompt-enabled",
+        tau_proto::ToolRegister {
+            tool: ToolSpec {
+                name: ToolName::new("prompt_enabled"),
+                model_visible_name: None,
+                description: Some("enabled prompt tool".to_owned()),
+                tool_type: tau_proto::ToolType::Function,
+                parameters: None,
+                format: None,
+                enabled_by_default: true,
+                execution_mode: ToolExecutionMode::Shared,
+            },
+            prompt: Some(tau_proto::PromptHookPart::new(
+                tau_proto::PromptPriority::new(10),
+                "ENABLED TOOL PROMPT",
+            )),
+        },
+    );
+    h.registry.register_with_prompt(
+        "conn-prompt-disabled",
+        tau_proto::ToolRegister {
+            tool: ToolSpec {
+                name: ToolName::new("prompt_disabled"),
+                model_visible_name: None,
+                description: Some("disabled prompt tool".to_owned()),
+                tool_type: tau_proto::ToolType::Function,
+                parameters: None,
+                format: None,
+                enabled_by_default: false,
+                execution_mode: ToolExecutionMode::Shared,
+            },
+            prompt: Some(tau_proto::PromptHookPart::new(
+                tau_proto::PromptPriority::new(5),
+                "DISABLED TOOL PROMPT",
+            )),
+        },
+    );
+
+    let hook = h.gather_tool_prompt_hook();
+    let rendered = hook
+        .iter()
+        .map(|(_, content)| content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("ENABLED TOOL PROMPT"));
+    assert!(!rendered.contains("DISABLED TOOL PROMPT"));
 }
 
 #[test]
