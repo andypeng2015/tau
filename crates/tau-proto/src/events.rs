@@ -1316,7 +1316,7 @@ pub struct ToolDisplay {
 /// `unit` and which of `complete` / `total` are populated:
 /// - `Count`: `N` (complete only) or `N/M` (both).
 /// - `Percent`: `N%` (complete only) or `N%/M` (both — `M` is e.g. a context
-///   window size, formatted by [`format_token_count`]).
+///   window size, formatted like a token count).
 /// - `Tokens`: `N` or `N/M` rendered with token-count suffixes.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ProgressCounter {

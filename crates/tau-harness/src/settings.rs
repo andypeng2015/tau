@@ -273,8 +273,8 @@ pub(crate) fn load_harness_settings_or_warn(
 /// `extensions: { name: { … } }`.
 ///
 /// The list itself lives in `config/built-in.extensions.json5` and is
-/// embedded into the binary via `include_str!`; see
-/// [`built_in_extension_defs`] for the parse step.
+/// embedded into the binary via `include_str!`; `built_in_extension_defs`
+/// performs the parse step.
 #[must_use]
 pub fn builtin_extensions() -> Vec<BuiltinExtension> {
     let tau_binary = std::env::current_exe()

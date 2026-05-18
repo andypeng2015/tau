@@ -439,7 +439,7 @@ impl SessionStore {
 
     /// Records initial cwd metadata for a session if not already
     /// present. Idempotent: subsequent calls only update
-    /// `last_touched` via [`touch_meta`].
+    /// `last_touched`.
     pub fn record_session_meta(
         &mut self,
         session_id: &str,

@@ -240,7 +240,7 @@ impl SessionTree {
 
     /// Returns the id the next durable event appended to this
     /// session's log should receive. Maintained incrementally by
-    /// [`SessionStore::append_session_event_at`]; on replay,
+    /// `SessionStore::append_session_event_at`; on replay,
     /// initialised from the highest persisted event id.
     #[must_use]
     pub fn next_event_id(&self) -> LogEventId {
@@ -517,7 +517,7 @@ impl SessionTree {
 /// One durable session-scoped protocol event.
 ///
 /// `parent_node_id` is the explicit fold parent that was passed to
-/// [`SessionStore::append_session_event_at`] at write time. Carrying
+/// `SessionStore::append_session_event_at` at write time. Carrying
 /// it on the persisted record (rather than on the wire) preserves
 /// cross-conversation branching across replay without requiring the
 /// publisher-side `UiNavigateTree` head-bouncing dance the harness

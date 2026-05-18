@@ -59,7 +59,7 @@ pub fn pick_with_writer(
 ///
 /// Does **not** toggle terminal raw mode. Intended for tests and for
 /// hosts that already own the terminal. `reader` should produce key
-/// presses as bytes; see [`crate::key`] for the supported encoding.
+/// presses as bytes; see `crate::key` for the supported encoding.
 pub fn pick_with_io(
     prompt: &str,
     items: &[PickerItem],

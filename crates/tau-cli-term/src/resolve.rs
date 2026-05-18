@@ -54,7 +54,7 @@ pub fn themed_block(theme: &Theme, name: &str, text: impl Into<String>) -> Style
 }
 
 /// Converts a theme [`tau_themes::Color`] to a terminal
-/// [`Color`](tau_cli_term_raw::Color).
+/// `tau_cli_term_raw::Color`.
 pub fn convert_color(c: tau_themes::Color) -> Color {
     use tau_themes::Color as TC;
     match c {

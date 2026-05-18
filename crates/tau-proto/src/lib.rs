@@ -380,7 +380,7 @@ impl std::fmt::Display for ModelId {
 
 /// Convenience `&str` → `ModelId` that panics on invalid input.
 /// Intended for tests, fixtures, and statically-known constants
-/// (`"openai/gpt-5.5".into()` and friends). Use [`ModelId::from_str`]
+/// (`"openai/gpt-5.5".into()` and friends). Use `ModelId::from_str`
 /// when handling user input.
 impl From<&str> for ModelId {
     fn from(s: &str) -> Self {
@@ -388,7 +388,7 @@ impl From<&str> for ModelId {
     }
 }
 
-/// See [`From<&str> for ModelId`]. Panics on invalid input.
+/// See `From<&str> for ModelId`. Panics on invalid input.
 impl From<String> for ModelId {
     fn from(s: String) -> Self {
         s.parse().expect("invalid model id")

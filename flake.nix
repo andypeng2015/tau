@@ -149,6 +149,7 @@
               pname = projectName;
               src = buildSrc;
               nativeBuildInputs = [ ];
+              env.RUSTDOCFLAGS = "-D warnings";
             };
           in
           rec {
@@ -160,7 +161,7 @@
 
             tests = craneLib.cargoNextest {
               cargoArtifacts = workspace;
-              cargoNextestExtraArgs = "--workspace";
+              cargoNextestExtraArgs = "--workspace --show-progress none";
               nativeBuildInputs = [ pkgs.ripgrep ];
             };
 

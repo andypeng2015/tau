@@ -31,7 +31,7 @@ use tau_proto::{
 };
 
 /// Builder for the opening frame sequence an extension sends to the
-/// harness. See the [module docs](self) for a worked example.
+/// harness. See the module-level documentation for a worked example.
 #[must_use = "Handshake does nothing until `.run()` is called"]
 pub struct Handshake {
     client_name: ExtensionName,
