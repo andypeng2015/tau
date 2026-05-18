@@ -17,9 +17,10 @@ use tau_proto::{
 use super::chat::{DraftSlot, is_local_slash_command, should_send_draft_snapshot};
 use super::event_renderer::EventRenderer;
 use super::tool_render::{
-    ToolStatus, build_osc1337_set_user_var, cache_hit_percent, format_token_stats_line,
-    render_delegate_display, render_shell_block, render_token_stats_block, render_tool_block,
-    render_tool_display, streaming_block, synthesize_fallback_display,
+    CompactionStatus, ToolStatus, build_osc1337_set_user_var, cache_hit_percent,
+    format_token_stats_line, render_compaction_block, render_delegate_display, render_shell_block,
+    render_token_stats_block, render_tool_block, render_tool_display, streaming_block,
+    synthesize_fallback_display,
 };
 
 #[test]
@@ -1509,7 +1510,7 @@ fn compaction_lifecycle_renders_status_line() {
         },
     ));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k"));
+    assert!(vt.screen_contains(80, "compact #226.2k …"));
 
     renderer.handle(&Event::SessionCompacted(tau_proto::SessionCompacted {
         session_id: "s1".into(),
@@ -1519,7 +1520,7 @@ fn compaction_lifecycle_renders_status_line() {
         replacement_window: vec![assistant_message_item("Conversation compacted.")],
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k"));
+    assert!(vt.screen_contains(80, "compact #226.2k …"));
     assert!(!vt.screen_contains(80, "compact ok"));
 
     renderer.handle(&Event::SessionCompactionFinished(
@@ -1534,7 +1535,55 @@ fn compaction_lifecycle_renders_status_line() {
     ));
     sync(&handle);
     assert!(vt.screen_contains(80, "compact #226.2k ok: #4.5k"));
-    assert!(!vt.screen_contains(80, "compact …"));
+    assert!(!vt.screen_contains(80, "compact #226.2k …"));
+}
+
+#[test]
+fn render_compaction_block_styles_token_chips_like_context_status() {
+    let theme = tau_themes::Theme::builtin();
+
+    // Regression: compaction status text is mostly lifecycle status, but the
+    // `#…` token chips carry the same semantic theme as context stats in the
+    // status bar and delegate progress chips.
+    let block =
+        render_compaction_block(&theme, "#10.9k/258.4k ok: #4.5k", CompactionStatus::Success);
+    let spans = block.content.spans();
+    let context_style = tau_cli_term::resolve::resolve(&theme, tau_themes::names::STATUS_CONTEXT);
+    let success_style =
+        tau_cli_term::resolve::resolve(&theme, tau_themes::names::TOOL_STATUS_SUCCESS);
+
+    let original_chip = spans
+        .iter()
+        .find(|span| span.text == "#10.9k/258.4k")
+        .expect("original token chip span");
+    let compacted_chip = spans
+        .iter()
+        .find(|span| span.text == "#4.5k")
+        .expect("compacted token chip span");
+    let success_text = spans
+        .iter()
+        .find(|span| span.text == "ok:")
+        .expect("success status span");
+
+    assert_eq!(original_chip.style, context_style);
+    assert_eq!(compacted_chip.style, context_style);
+    assert_eq!(success_text.style, success_style);
+
+    let progress_block = render_compaction_block(&theme, "#226.2k …", CompactionStatus::Progress);
+    let progress_spans = progress_block.content.spans();
+    let progress_style =
+        tau_cli_term::resolve::resolve(&theme, tau_themes::names::PROGRESS_INDICATOR);
+    let progress_chip = progress_spans
+        .iter()
+        .find(|span| span.text == "#226.2k")
+        .expect("progress token chip span");
+    let ellipsis = progress_spans
+        .iter()
+        .find(|span| span.text == "…")
+        .expect("progress ellipsis span");
+
+    assert_eq!(progress_chip.style, context_style);
+    assert_eq!(ellipsis.style, progress_style);
 }
 
 #[test]

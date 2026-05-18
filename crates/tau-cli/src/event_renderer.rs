@@ -878,9 +878,14 @@ impl EventRenderer {
     }
 
     fn compaction_progress_status(original_input_tokens: Option<u64>) -> String {
-        original_input_tokens
-            .map(Self::compaction_token_chip)
-            .unwrap_or_else(|| tau_proto::PROGRESS_INDICATOR_TEXT.to_owned())
+        match original_input_tokens {
+            Some(tokens) => format!(
+                "{} {}",
+                Self::compaction_token_chip(tokens),
+                tau_proto::PROGRESS_INDICATOR_TEXT,
+            ),
+            None => tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        }
     }
 
     fn compaction_success_status(

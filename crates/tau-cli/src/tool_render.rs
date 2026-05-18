@@ -696,7 +696,7 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
 }
 
 /// Render the provider-side compaction lifecycle as a compact session
-/// status line: `compact …`, `compact #226.2k`, or
+/// status line: `compact …`, `compact #226.2k …`, or
 /// `compact #226.2k ok: #4.5k`.
 /// Compaction is not a model-visible tool invocation, so this paints the
 /// small lifecycle line directly instead of fabricating a `ToolDisplay`.
@@ -708,6 +708,7 @@ pub(crate) fn render_compaction_block(
     use tau_cli_term::resolve::themed_text;
     use tau_themes::{SpanTree, ThemedText, names};
 
+    let status_text = status_text.into();
     let mut themed = ThemedText::new();
     let output = themed.add_style(names::TOOL_OUTPUT);
     let name = themed.add_style(names::TOOL_NAME);
@@ -717,14 +718,23 @@ pub(crate) fn render_compaction_block(
         CompactionStatus::Error => names::TOOL_STATUS_ERROR,
         CompactionStatus::Progress => names::PROGRESS_INDICATOR,
     });
-    themed.push_tree(SpanTree::span(
-        output,
-        vec![
-            SpanTree::span(name, vec![SpanTree::text("compact")]),
-            SpanTree::span(spacer, vec![SpanTree::text(" ")]),
-            SpanTree::span(status_style, vec![SpanTree::text(status_text.into())]),
-        ],
-    ));
+    let context_style = themed.add_style(names::STATUS_CONTEXT);
+    let mut children = vec![
+        SpanTree::span(name, vec![SpanTree::text("compact")]),
+        SpanTree::span(spacer, vec![SpanTree::text(" ")]),
+    ];
+    for (index, part) in status_text.split(' ').enumerate() {
+        if 0 < index {
+            children.push(SpanTree::span(status_style, vec![SpanTree::text(" ")]));
+        }
+        let style = if part.starts_with('#') {
+            context_style
+        } else {
+            status_style
+        };
+        children.push(SpanTree::span(style, vec![SpanTree::text(part.to_owned())]));
+    }
+    themed.push_tree(SpanTree::span(output, children));
     tau_cli_term::StyledBlock::new(themed_text(theme, &themed))
 }
 
