@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tau_cli_term_raw::{Candidate, CompletionView, Span, StyledBlock, StyledText};
@@ -170,7 +170,8 @@ impl CompletionData {
 
 /// Builds the candidate list for the given buffer/cursor.
 ///
-/// - Buffer starting with `./` or `../` → filesystem path candidates.
+/// - Buffer starting with `./`, `../`, `~`, or `~/` → filesystem path
+///   candidates.
 /// - Buffer not starting with `/` → no slash-command candidates.
 /// - Buffer with no space → match against the static slash-command registry by
 ///   prefix.
@@ -183,8 +184,18 @@ pub fn build_candidates(
     buffer: &str,
     cursor: usize,
 ) -> Vec<Candidate> {
+    build_candidates_with_home(commands, data, buffer, cursor, home_dir().as_deref())
+}
+
+pub(crate) fn build_candidates_with_home(
+    commands: &[SlashCommand],
+    data: &CompletionData,
+    buffer: &str,
+    cursor: usize,
+    home_dir: Option<&Path>,
+) -> Vec<Candidate> {
     if let Some(path_token) = filesystem_path_token(buffer, cursor) {
-        return build_filesystem_candidates(&path_token);
+        return build_filesystem_candidates_with_home(&path_token, home_dir);
     }
 
     if !buffer.starts_with('/') {
@@ -243,28 +254,69 @@ fn filesystem_path_token(buffer: &str, cursor: usize) -> Option<PathToken<'_>> {
 }
 
 fn is_filesystem_prefix(buffer: &str) -> bool {
-    buffer.starts_with("./") || buffer.starts_with("../")
+    buffer.starts_with("./")
+        || buffer.starts_with("../")
+        || buffer == "~"
+        || buffer.starts_with("~/")
 }
 
-fn build_filesystem_candidates(path_token: &PathToken<'_>) -> Vec<Candidate> {
-    let prefix = path_token.prefix;
-    let path = Path::new(prefix);
-    let (dir, partial) = if prefix.ends_with('/') {
-        (path, "")
+fn home_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    if home.as_os_str().is_empty() {
+        None
     } else {
-        let Some(parent) = path.parent() else {
+        Some(PathBuf::from(home))
+    }
+}
+
+fn home_expanded_path(prefix: &str, home_dir: Option<&Path>) -> Option<PathBuf> {
+    if prefix == "~" {
+        Some(home_dir?.to_path_buf())
+    } else if let Some(rest) = prefix.strip_prefix("~/") {
+        Some(home_dir?.join(rest))
+    } else {
+        Some(PathBuf::from(prefix))
+    }
+}
+
+fn build_filesystem_candidates_with_home(
+    path_token: &PathToken<'_>,
+    home_dir: Option<&Path>,
+) -> Vec<Candidate> {
+    let prefix = path_token.prefix;
+    let Some(lookup_path) = home_expanded_path(prefix, home_dir) else {
+        return Vec::new();
+    };
+    let display_path = Path::new(prefix);
+    let (lookup_dir, display_dir, partial) = if prefix == "~" {
+        (lookup_path, PathBuf::from("~"), "")
+    } else if prefix.ends_with('/') {
+        (lookup_path, display_path.to_path_buf(), "")
+    } else {
+        let Some(lookup_parent) = lookup_path.parent() else {
             return Vec::new();
         };
-        let partial = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let dir = if parent.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            parent
+        let Some(display_parent) = display_path.parent() else {
+            return Vec::new();
         };
-        (dir, partial)
+        let partial = display_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let lookup_dir = if lookup_parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            lookup_parent.to_path_buf()
+        };
+        let display_dir = if display_parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            display_parent.to_path_buf()
+        };
+        (lookup_dir, display_dir, partial)
     };
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = std::fs::read_dir(lookup_dir) else {
         return Vec::new();
     };
 
@@ -282,7 +334,7 @@ fn build_filesystem_candidates(path_token: &PathToken<'_>) -> Vec<Candidate> {
         }
 
         let is_dir = entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false);
-        let replacement = dir.join(name).to_string_lossy().into_owned();
+        let replacement = display_dir.join(name).to_string_lossy().into_owned();
         candidates.push(Candidate {
             label: replacement.clone(),
             description: if is_dir { "directory" } else { "file" }.to_owned(),

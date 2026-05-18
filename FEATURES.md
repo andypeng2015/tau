@@ -325,6 +325,7 @@ Supported actions:
 - `role-cycle`: cycle to the next available agent role directly. For example:
   `{ action: "role-cycle" }`.
 - `prompt-history-search`: feed indexed prompt-history rows to a picker command,
+  expose original prompts under `$TAU_PROMPT_HISTORY_DIR/<index>` for previews,
   then replace the prompt with the selected original prompt. The draft active
   when the picker opens is saved for prompt undo.
 
@@ -334,6 +335,8 @@ Command environment:
 - `TAU_PROMPT_ROW` / `TAU_PROMPT_COLUMN`: 1-indexed cursor position for
   editor commands that support `file:row:column` syntax. Multi-line row
   calculation is still limited.
+- `TAU_PROMPT_HISTORY_DIR`: for `prompt-history-search`, a temporary directory
+  containing original prompt text files named by row index.
 
 Default bindings:
 
@@ -347,7 +350,7 @@ bind: {
   "C-s": { action: "role-cycle" },
   "C-r": {
     action: "prompt-history-search",
-    command: "fzf --height=100% --delimiter='\\t' --with-nth=2.. | cut -f1",
+    command: "fzf --height=100% --delimiter='\\t' --with-nth=2 --no-hscroll --preview 'cat \"$TAU_PROMPT_HISTORY_DIR\"/{1}' --preview-window 'right,60%,wrap' | cut -f1",
     trim: true,
   },
   "C-t": {
@@ -420,7 +423,7 @@ bind: {
   },
   "C-r": {
     action: "prompt-history-search",
-    command: "fzf --height=100% --delimiter='\\t' --with-nth=2.. | cut -f1",
+    command: "fzf --height=100% --delimiter='\\t' --with-nth=2 --no-hscroll --preview 'cat \"$TAU_PROMPT_HISTORY_DIR\"/{1}' --preview-window 'right,60%,wrap' | cut -f1",
     trim: true,
   },
   "C-t": {
@@ -436,9 +439,10 @@ bind: {
 },
 ```
 
-`C-r` searches prompt history (newest first) and replaces the current draft
-with the selected original prompt; `C-z` restores the draft that was active
-before the picker opened. `C-t` starts with an empty result list; type a query
+`C-r` searches prompt history (newest first), shows the selected prompt in an
+fzf preview pane, and replaces the current draft with the selected original
+prompt; `C-z` restores the draft that was active before the picker opened. `C-t`
+starts with an empty result list; type a query
 to search file contents with `rg`, preview the matching context, and insert the
 selected file path. `C-y` opens a jj change picker when inside a jj repository,
 falls back to git

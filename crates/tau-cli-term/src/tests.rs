@@ -515,7 +515,11 @@ mod trailer {
 }
 
 mod filesystem_token {
-    use crate::completion::{self, CompletionData, SlashCommand, build_candidates};
+    use std::fs;
+
+    use crate::completion::{
+        self, CompletionData, SlashCommand, build_candidates, build_candidates_with_home,
+    };
 
     #[test]
     fn dotslash_token_triggers_filesystem_candidates() {
@@ -524,9 +528,9 @@ mod filesystem_token {
         // candidate list).
         let tmp = tempfile::tempdir().expect("tempdir");
         let prefix = format!("{}/", tmp.path().display());
-        // Synthesize a buffer of the form "./" prefix. `build_candidates`
-        // requires the prefix to start with "./" or "../"; absolute
-        // paths are not a filesystem token.
+        // Synthesize a buffer with a recognized filesystem prefix.
+        // Absolute paths are not filesystem tokens so plain slash-command
+        // input can still be completed without probing the filesystem.
         let buffer = "./";
         let cursor = buffer.len();
         let cands = build_candidates(
@@ -541,6 +545,30 @@ mod filesystem_token {
             assert!(!c.replacement.starts_with('/'), "expected fs candidate");
         }
         let _ = prefix;
+    }
+
+    #[test]
+    fn home_relative_token_reads_injected_home_and_preserves_tilde_replacement() {
+        // `~/...` completion must read entries from the user's home
+        // directory, but accepting a candidate should keep the prompt
+        // home-relative instead of inserting an absolute path.
+        let home = tempfile::tempdir().expect("tempdir");
+        fs::write(home.path().join("alpha.txt"), "").expect("write alpha");
+        fs::write(home.path().join("beta.txt"), "").expect("write beta");
+        let buffer = "open ~/a now";
+        let cursor = "open ~/a".len();
+
+        let cands = build_candidates_with_home(
+            &[SlashCommand::new("/whatever", "")],
+            &CompletionData::new(),
+            buffer,
+            cursor,
+            Some(home.path()),
+        );
+
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].label, "~/alpha.txt");
+        assert_eq!(cands[0].replacement, "open ~/alpha.txt now");
     }
 
     #[test]
@@ -690,10 +718,11 @@ mod prompt_history_search {
 
     #[test]
     fn selected_history_prompt_replaces_buffer_and_can_be_undone() {
-        // Ctrl-R must record the draft before launching the picker, then
-        // replace the buffer with the original history entry (including
-        // embedded newlines). Undo should restore the draft the user had
-        // before opening the picker.
+        // Ctrl-R must record the draft before launching the picker, expose
+        // original history prompts through TAU_PROMPT_HISTORY_DIR for fzf
+        // previews, then replace the buffer with the original history entry
+        // (including embedded newlines). Undo should restore the draft the
+        // user had before opening the picker.
         let (term, handle, _input_tx) = tau_cli_term_raw::Term::new_virtual(
             80,
             24,
@@ -704,7 +733,7 @@ mod prompt_history_search {
         handle.set_buffer("current draft".to_owned(), "current draft".len());
         let history = vec!["old".to_owned(), "chosen\noriginal".to_owned()];
         let action = PromptShellAction::HistorySearch(PromptShellCommand {
-            command: "cat | head -n 1 | cut -f1".to_owned(),
+            command: r#"index=$(head -n 1 | cut -f1); expected=$(printf 'chosen\noriginal'); test "$(cat "$TAU_PROMPT_HISTORY_DIR/$index")" = "$expected"; printf '%s\n' "$index""#.to_owned(),
             trim: true,
         });
 

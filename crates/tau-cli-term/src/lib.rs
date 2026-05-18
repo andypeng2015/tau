@@ -462,14 +462,15 @@ fn run_prompt_shell_action(
     std::fs::write(tmp.path(), file_text.as_bytes())
         .map_err(|e| format!("could not write tempfile: {e}"))?;
 
-    let history_picker_input = match &action {
+    let history_picker = match &action {
         PromptShellAction::HistorySearch(_) => {
             let rows = prompt_history_search_rows(prompt_history);
             if rows.is_empty() {
                 return Ok(None);
             }
+            let prompt_dir = prompt_history_preview_dir(prompt_history)?;
             term.record_prompt_undo();
-            Some(rows)
+            Some((rows, prompt_dir))
         }
         _ => None,
     };
@@ -505,7 +506,10 @@ fn run_prompt_shell_action(
         .env("TAU_PROMPT_COLUMN", (cursor + 1).to_string())
         .env("TAU_PROMPT_ROW", "1")
         .env("TAU_EDITOR", external_editor.unwrap_or(""));
-    command_builder.stdin(if history_picker_input.is_some() {
+    if let Some((_, prompt_dir)) = &history_picker {
+        command_builder.env("TAU_PROMPT_HISTORY_DIR", prompt_dir.path());
+    }
+    command_builder.stdin(if history_picker.is_some() {
         std::process::Stdio::piped()
     } else {
         std::process::Stdio::null()
@@ -515,7 +519,7 @@ fn run_prompt_shell_action(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not spawn shell: {e}"))?;
-    if let Some(input) = history_picker_input.as_deref()
+    if let Some((input, _prompt_dir)) = &history_picker
         && let Some(mut stdin) = child.stdin.take()
     {
         match stdin.write_all(input.as_bytes()) {
@@ -591,6 +595,21 @@ fn prompt_history_search_rows(prompt_history: &[String]) -> String {
         rows.push('\n');
     }
     rows
+}
+
+fn prompt_history_preview_dir(prompt_history: &[String]) -> Result<tempfile::TempDir, String> {
+    let dir = tempfile::Builder::new()
+        .prefix("tau-prompt-history-")
+        .tempdir()
+        .map_err(|e| format!("could not create prompt history tempdir: {e}"))?;
+    for (index, prompt) in prompt_history.iter().enumerate() {
+        if prompt.is_empty() {
+            continue;
+        }
+        std::fs::write(dir.path().join(index.to_string()), prompt.as_bytes())
+            .map_err(|e| format!("could not write prompt history preview {index}: {e}"))?;
+    }
+    Ok(dir)
 }
 
 fn prompt_history_summary(prompt: &str) -> String {
