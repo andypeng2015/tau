@@ -3,6 +3,8 @@
 //! state so streaming updates land in the right block.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tau_proto::{
@@ -191,6 +193,12 @@ pub(crate) struct EventRenderer {
     editor_context: std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>>,
     /// Symbol shown before submitted prompts in the transcript.
     submitted_prompt_symbol: String,
+    /// Shared flag telling the input loop whether Tau knows about
+    /// in-flight agent/session work. Updated before side-conversation
+    /// filtering so sub-agent activity protects Ctrl-D too.
+    agent_in_progress: Arc<AtomicBool>,
+    /// Detailed lifecycle bookkeeping backing [`Self::agent_in_progress`].
+    agent_activity: AgentActivity,
 }
 
 /// One completed file-mutation tool block. Held so `/set show-diff` can
@@ -376,6 +384,10 @@ struct ToolCallState {
     /// chips so the user sees the delegation cost alongside the
     /// response stats.
     delegate_last_progress: Option<tau_proto::DelegateProgress>,
+    /// `true` for the user-facing parent `delegate` tool call that
+    /// spawned a side conversation. While it is live, side-conversation
+    /// prompt lifecycle events must not hide the main tool usage chip.
+    is_main_delegate: bool,
     /// `true` for tool calls in side conversations. Their lifecycle
     /// events (`ToolResult`, `ToolError`, `ToolProgress`) share the bus
     /// with the main agent's, but the UI filters them out.
@@ -390,6 +402,66 @@ struct ShellBlockState {
     /// Output accumulated from `ShellCommandProgress` chunks. Rendered
     /// under the header each redraw.
     output: String,
+}
+
+/// Session/agent lifecycle state used to decide whether Ctrl-D is safe.
+#[derive(Default)]
+struct AgentActivity {
+    /// User submissions seen before the harness assigns a prompt id.
+    optimistic_submissions: usize,
+    /// Prompt ids currently being processed by any provider conversation.
+    active_prompts: HashSet<String>,
+    /// Tool call ids emitted by any agent and not finished yet.
+    active_tools: HashSet<String>,
+}
+
+impl AgentActivity {
+    fn is_in_progress(&self) -> bool {
+        self.optimistic_submissions != 0
+            || !self.active_prompts.is_empty()
+            || !self.active_tools.is_empty()
+    }
+
+    fn mark_optimistic_submission(&mut self) {
+        self.optimistic_submissions = self.optimistic_submissions.saturating_add(1);
+    }
+
+    fn start_prompt(&mut self, session_prompt_id: &tau_proto::SessionPromptId) {
+        self.optimistic_submissions = self.optimistic_submissions.saturating_sub(1);
+        self.active_prompts.insert(session_prompt_id.to_string());
+    }
+
+    fn finish_prompt(
+        &mut self,
+        session_prompt_id: &tau_proto::SessionPromptId,
+        output_items: &[ContextItem],
+    ) {
+        if self.active_prompts.remove(session_prompt_id.as_str()) {
+            for call in tool_calls_from_output_items(output_items) {
+                self.active_tools.insert(call.call_id.to_string());
+            }
+        } else {
+            self.optimistic_submissions = self.optimistic_submissions.saturating_sub(1);
+        }
+    }
+
+    fn start_tool(&mut self, call_id: &tau_proto::ToolCallId) {
+        self.active_tools.insert(call_id.to_string());
+    }
+
+    fn finish_tool(&mut self, call_id: &tau_proto::ToolCallId) {
+        self.active_tools.remove(call_id.as_str());
+    }
+
+    fn clear_optimistic_submissions(&mut self) {
+        self.optimistic_submissions = 0;
+    }
+
+    fn clear(&mut self) {
+        self.optimistic_submissions = 0;
+        self.active_prompts.clear();
+        self.active_tools.clear();
+    }
 }
 
 /// Returns the originator of any prompt-lifecycle event, or
@@ -603,6 +675,8 @@ impl EventRenderer {
                 tau_cli_term::EditorContext::default(),
             )),
             submitted_prompt_symbol,
+            agent_in_progress: Arc::new(AtomicBool::new(false)),
+            agent_activity: AgentActivity::default(),
         }
     }
 
@@ -635,6 +709,13 @@ impl EventRenderer {
         &self,
     ) -> std::sync::Arc<std::sync::Mutex<tau_cli_term::EditorContext>> {
         self.editor_context.clone()
+    }
+
+    /// Returns a shared flag that is true while any agent/session work
+    /// is in flight. The input loop uses it to keep Ctrl-D from
+    /// terminating an active session accidentally.
+    pub(crate) fn agent_in_progress_state(&self) -> Arc<AtomicBool> {
+        self.agent_in_progress.clone()
     }
 
     /// Returns a clone of the shared effort mirror, used by the
@@ -1322,18 +1403,62 @@ impl EventRenderer {
         self.set_main_tools_visible(active && self.main_tools_total != 0);
     }
 
+    fn has_live_main_delegate_tool_call(&self) -> bool {
+        self.tool_calls
+            .values()
+            .any(|state| state.is_main_delegate && !state.is_sub_agent)
+    }
+
+    fn sync_agent_activity_for_lifecycle(&mut self, event: &Event) {
+        match event {
+            Event::UiPromptSubmitted(_) => self.agent_activity.mark_optimistic_submission(),
+            Event::SessionPromptCreated(prompt) => {
+                self.agent_activity.start_prompt(&prompt.session_prompt_id);
+            }
+            Event::ProviderPromptSubmitted(submitted) => {
+                self.agent_activity
+                    .start_prompt(&submitted.session_prompt_id);
+            }
+            Event::ProviderResponseUpdated(update) => {
+                self.agent_activity.start_prompt(&update.session_prompt_id);
+            }
+            Event::ProviderResponseFinished(finished) => {
+                self.agent_activity
+                    .finish_prompt(&finished.session_prompt_id, &finished.output_items);
+            }
+            Event::ToolRequest(request) => self.agent_activity.start_tool(&request.call_id),
+            Event::ToolInvoke(invoke) => self.agent_activity.start_tool(&invoke.call_id),
+            Event::ToolResult(result) => self.agent_activity.finish_tool(&result.call_id),
+            Event::ToolError(error) => self.agent_activity.finish_tool(&error.call_id),
+            Event::ToolCancelled(cancelled) => self.agent_activity.finish_tool(&cancelled.call_id),
+            Event::UiCancelPrompt(_) => self.agent_activity.clear_optimistic_submissions(),
+            Event::SessionShutdown(_) => self.agent_activity.clear(),
+            _ => {}
+        }
+        self.agent_in_progress
+            .store(self.agent_activity.is_in_progress(), Ordering::Relaxed);
+    }
+
     fn sync_main_tools_visibility_for_prompt_lifecycle(&mut self, event: &Event) {
         match event {
             Event::SessionPromptCreated(prompt) => {
-                self.set_main_agent_turn_active(prompt.originator.is_user());
+                if prompt.originator.is_user() || !self.has_live_main_delegate_tool_call() {
+                    self.set_main_agent_turn_active(prompt.originator.is_user());
+                }
             }
             Event::ProviderPromptSubmitted(submitted) => {
-                self.set_main_agent_turn_active(submitted.originator.is_user());
+                if submitted.originator.is_user() || !self.has_live_main_delegate_tool_call() {
+                    self.set_main_agent_turn_active(submitted.originator.is_user());
+                }
             }
             Event::ProviderResponseUpdated(update) => {
-                self.set_main_agent_turn_active(update.originator.is_user());
+                if update.originator.is_user() || !self.has_live_main_delegate_tool_call() {
+                    self.set_main_agent_turn_active(update.originator.is_user());
+                }
             }
-            Event::ProviderResponseFinished(finished) if !finished.originator.is_user() => {
+            Event::ProviderResponseFinished(finished)
+                if !finished.originator.is_user() && !self.has_live_main_delegate_tool_call() =>
+            {
                 self.set_main_agent_turn_active(false);
             }
             _ => {}
@@ -1381,6 +1506,8 @@ impl EventRenderer {
     pub(crate) fn handle_disconnect(&mut self, reason: Option<String>) {
         use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
+        self.agent_activity.clear();
+        self.agent_in_progress.store(false, Ordering::Relaxed);
         let reason = reason.as_deref().unwrap_or("disconnected");
         self.handle.print_output(
             "system-disconnect",
@@ -1391,6 +1518,8 @@ impl EventRenderer {
     pub(crate) fn handle(&mut self, event: &Event) {
         use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
+
+        self.sync_agent_activity_for_lifecycle(event);
 
         if self.handle_compaction_event(event) {
             return;
@@ -1768,6 +1897,7 @@ impl EventRenderer {
                                         block_id: Some(id),
                                         live_display: Some(display),
                                         summary_block_id,
+                                        is_main_delegate: call.name.as_str() == "delegate",
                                         ..ToolCallState::default()
                                     },
                                 );
@@ -1947,6 +2077,41 @@ impl EventRenderer {
                     bid
                 } else {
                     self.handle.print_output("tool-error", block)
+                };
+                self.tool_history.push(ToolBlockEntry {
+                    block_id: bid,
+                    display,
+                });
+                if known_main_tool && self.main_agent_turn_active {
+                    self.render_model_status();
+                }
+            }
+            Event::ToolCancelled(cancelled) => {
+                let call_id = cancelled.call_id.as_str();
+                let prior = self.tool_calls.remove(call_id);
+                let known_main_tool = prior.as_ref().is_some_and(|prior| !prior.is_sub_agent);
+                let prior = prior.unwrap_or_default();
+                if prior.is_sub_agent {
+                    return;
+                }
+                if known_main_tool {
+                    self.record_main_tool_completed();
+                    if self.main_agent_turn_active {
+                        self.main_tools_visible = true;
+                    }
+                }
+                let display = render_tool_display(
+                    &cancelled.tool_name,
+                    &synthesize_fallback_display(&cancelled.tool_name, Some("cancelled")),
+                );
+                self.record_tool_summary_result(prior.summary_block_id, None, None, true);
+                let block = self.render_tool_history_block(&display);
+                let bid = if let Some(bid) = prior.block_id {
+                    self.handle.set_block(bid, block);
+                    self.handle.redraw();
+                    bid
+                } else {
+                    self.handle.print_output("tool-cancelled", block)
                 };
                 self.tool_history.push(ToolBlockEntry {
                     block_id: bid,
@@ -2327,7 +2492,46 @@ impl EventRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{RoleCompletionDetails, role_value_completion};
+    use super::{AgentActivity, RoleCompletionDetails, role_value_completion};
+
+    fn tool_call(call_id: &str) -> tau_proto::ContextItem {
+        tau_proto::ContextItem::ToolCall(tau_proto::ToolCallItem {
+            call_id: call_id.into(),
+            name: tau_proto::ToolName::new("read"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: tau_proto::CborValue::Null,
+        })
+    }
+
+    /// Ctrl-D must stay guarded across the assistant/tool boundary: a
+    /// provider response that requests tools means the session is still
+    /// busy even though the provider turn itself has finished.
+    #[test]
+    fn agent_activity_stays_busy_until_requested_tools_finish() {
+        let mut activity = AgentActivity::default();
+        activity.mark_optimistic_submission();
+        assert!(activity.is_in_progress());
+
+        activity.start_prompt(&"sp1".into());
+        activity.finish_prompt(&"sp1".into(), &[tool_call("call1")]);
+        assert!(activity.is_in_progress());
+
+        activity.finish_tool(&"call1".into());
+        assert!(!activity.is_in_progress());
+    }
+
+    /// Side conversations use the same lifecycle events as the main chat;
+    /// the Ctrl-D guard must track them before UI filtering hides their
+    /// transcript details.
+    #[test]
+    fn agent_activity_tracks_side_conversation_prompts() {
+        let mut activity = AgentActivity::default();
+        activity.start_prompt(&"side-sp1".into());
+        assert!(activity.is_in_progress());
+
+        activity.finish_prompt(&"side-sp1".into(), &[]);
+        assert!(!activity.is_in_progress());
+    }
 
     #[test]
     fn role_details_abbreviate_description() {

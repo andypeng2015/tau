@@ -26,7 +26,7 @@ These keys are handled by the raw terminal prompt and are not configurable bindi
 | --- | --- |
 | `Enter` | Submit the prompt. |
 | `Shift-Enter`, `Alt-Enter` | Insert a newline. |
-| `C-d` on an empty prompt | Exit Tau. |
+| `C-d` on an empty prompt | Exit Tau when no agent/session work is in progress; otherwise print a notice to use `/quit` and keep the session running. |
 | `C-c` on an empty prompt | Print `Use Ctrl+D to exit`; does not exit. |
 | `C-c` on a non-empty prompt | Clear the prompt; undoable with `prompt-undo`. |
 | `C-a` / `Home` | Move to the beginning of the prompt. |

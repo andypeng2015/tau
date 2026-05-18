@@ -34,6 +34,11 @@ This architecture has important benefits:
 See [FEATURES.md](FEATURES.md) for a tour of the major features.
 
 
+## Sister-projects
+
+[Patchmark](https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3sP3WnHgo1UfwmfmFM9a5cZSSEZR) is a diff-aware language server for Markdown and plain-text review notes. It pairs nicely with Tau's prompt-editing flow: open your prompt in `$EDITOR`, review diffs with language-server help, and leave precise feedback for agents without leaving your normal editing environment.
+
+
 ## Status: call for testing
 
 Tau is still young, but the core functionality is working and it is ready for testing.

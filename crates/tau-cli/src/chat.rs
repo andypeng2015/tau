@@ -157,6 +157,8 @@ pub(crate) fn parse_role_setting_update(
 /// (std-notifications) only cares about second-or-better resolution
 /// to bump its idle deadline.
 const DRAFT_DEBOUNCE: Duration = Duration::from_secs(1);
+const EOF_DURING_AGENT_NOTICE: &str =
+    "An agent is still running; use /quit to terminate the session in progress.";
 
 /// Single-slot mailbox the input loop pushes the latest prompt
 /// snapshot into; the debounce thread drains it. `pending = None` +
@@ -485,6 +487,7 @@ pub(crate) fn run_chat(
         tau_cli_term::CommandName::new("/set"),
         build_set_arg_completer(renderer.cli_state_mirror()),
     );
+    let agent_in_progress = renderer.agent_in_progress_state();
     let effort_state = renderer.effort_state();
     let fast_service_tier_state = renderer.fast_service_tier_state();
     let current_role_state = renderer.current_role_state();
@@ -532,6 +535,7 @@ pub(crate) fn run_chat(
             roles_available,
             efforts_available,
             theme,
+            agent_in_progress,
             renderer_tx: event_tx,
             editor_context,
             draft_handle: draft_handle.clone(),
@@ -620,6 +624,7 @@ struct TerminalInputLoopCtx {
     /// trapping the cycle in place).
     efforts_available: Arc<Mutex<std::collections::BTreeSet<tau_proto::Effort>>>,
     theme: tau_themes::Theme,
+    agent_in_progress: Arc<std::sync::atomic::AtomicBool>,
     renderer_tx: mpsc::Sender<RendererCmd>,
     editor_context: Arc<Mutex<tau_cli_term::EditorContext>>,
     draft_handle: DraftHandle,
@@ -895,6 +900,8 @@ fn terminal_input_loop(
                         cv.notify_one();
                     }
                 }
+                ctx.agent_in_progress
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 if send_event(
                     writer,
                     &Event::UiPromptSubmitted(UiPromptSubmitted {
@@ -909,7 +916,16 @@ fn terminal_input_loop(
                     return Ok(InputLoopExit::Quit);
                 }
             }
-            TermEvent::Eof => return Ok(InputLoopExit::Quit),
+            TermEvent::Eof => {
+                if ctx
+                    .agent_in_progress
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    print_local(EOF_DURING_AGENT_NOTICE);
+                    continue;
+                }
+                return Ok(InputLoopExit::Quit);
+            }
             TermEvent::Resize { .. } => {
                 tracing::debug!(target: "tau_cli::ui", "terminal resized");
             }

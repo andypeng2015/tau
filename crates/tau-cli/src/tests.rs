@@ -9,7 +9,7 @@ use tau_proto::{
     HarnessRoleSelected, HarnessRolesAvailable, HarnessVerbosityChanged, MessageItem,
     ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason, ServiceTier,
     SessionPromptCreated, SessionPromptQueued, SessionPromptSteered, SessionStartReason,
-    SessionStarted, ThinkingSummary, ToolCallItem, ToolResult, UiPromptSubmitted,
+    SessionStarted, ThinkingSummary, ToolCallItem, ToolCancelled, ToolResult, UiPromptSubmitted,
     UiRoleUpdateAction, Verbosity,
 };
 
@@ -591,6 +591,156 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("+smart"))
         .expect("status row after next prompt");
+    assert!(status_row.ends_with("#12k/200k"));
+    assert!(!status_row.contains('%'));
+}
+
+#[test]
+fn agent_in_progress_ignores_completed_replayed_prompt_history() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let in_progress = renderer.agent_in_progress_state();
+
+    renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
+        session_id: "s1".into(),
+        text: "old prompt".into(),
+        originator: tau_proto::PromptOriginator::User,
+        ctx_id: None,
+    }));
+    assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
+
+    // Late subscribers can replay historical UI submit and provider-finished
+    // events without replaying the old SessionPromptCreated. That sequence is
+    // already complete, so it must not leave Ctrl-D permanently guarded.
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
+        "old-sp",
+        vec![assistant_message_item("old answer")],
+    )));
+
+    assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn agent_in_progress_clears_when_tool_is_cancelled() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let in_progress = renderer.agent_in_progress_state();
+
+    renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
+        "sp1", "s1",
+    )));
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
+        "sp1",
+        vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "call-1".into(),
+            name: tau_proto::ToolName::new("read"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+    )));
+    assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
+
+    // ToolCancelled is a terminal tool event just like ToolResult/ToolError.
+    // The Ctrl-D guard must clear it, otherwise a cancelled tool leaves the
+    // session looking busy forever after the harness has stopped the tool.
+    renderer.handle(&Event::ToolCancelled(ToolCancelled {
+        call_id: "call-1".into(),
+        tool_name: tau_proto::ToolName::new("read"),
+        tool_type: tau_proto::ToolType::Function,
+    }));
+
+    assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn delegate_side_conversation_keeps_parent_tool_status_visible() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
+        model: Some("test/model".into()),
+        context_window: Some(200_000),
+        role: "smart".into(),
+        baseline_params: None,
+    }));
+    renderer.handle(&Event::HarnessContextUsageChanged(
+        HarnessContextUsageChanged {
+            input_tokens: Some(12_000),
+            cached_tokens: None,
+            percent_used: Some(6),
+        },
+    ));
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
+        "main-sp",
+        vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "delegate-call".into(),
+            name: tau_proto::ToolName::new("delegate"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+    )));
+
+    // A running parent `delegate` call is the visible main-agent work while
+    // the sub-agent side conversation is active. Regression coverage: the
+    // side prompt lifecycle must not hide `%0/1` from the status bar, because
+    // otherwise users lose the only bottom-bar indication that delegation is
+    // still in progress.
+    renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-delegate".into(),
+            query_id: "q1".to_owned(),
+        },
+        ..session_prompt_created("side-sp", "s1")
+    }));
+    renderer.handle(&Event::ProviderResponseUpdated(ProviderResponseUpdated {
+        session_prompt_id: "side-sp".into(),
+        text: "working".into(),
+        thinking: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-delegate".into(),
+            query_id: "q1".to_owned(),
+        },
+    }));
+    sync(&handle);
+
+    let status_row = vt
+        .screen_text(100)
+        .into_iter()
+        .find(|row| row.contains("+smart"))
+        .expect("status row during delegate side conversation");
+    assert!(status_row.ends_with("%0/1 #12k/200k"));
+
+    renderer.handle(&Event::ToolCancelled(ToolCancelled {
+        call_id: "delegate-call".into(),
+        tool_name: tau_proto::ToolName::new("delegate"),
+        tool_type: tau_proto::ToolType::Function,
+    }));
+    renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-delegate".into(),
+            query_id: "q2".to_owned(),
+        },
+        ..session_prompt_created("later-side-sp", "s1")
+    }));
+    sync(&handle);
+
+    let status_row = vt
+        .screen_text(100)
+        .into_iter()
+        .find(|row| row.contains("+smart"))
+        .expect("status row after delegate cancellation");
     assert!(status_row.ends_with("#12k/200k"));
     assert!(!status_row.contains('%'));
 }
