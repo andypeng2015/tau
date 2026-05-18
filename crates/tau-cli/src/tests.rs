@@ -17,8 +17,8 @@ use super::chat::{DraftSlot, is_local_slash_command, should_send_draft_snapshot}
 use super::event_renderer::EventRenderer;
 use super::tool_render::{
     ToolStatus, build_osc1337_set_user_var, cache_hit_percent, format_token_stats_line,
-    render_shell_block, render_token_stats_block, render_tool_block, render_tool_display,
-    streaming_block, synthesize_fallback_display,
+    render_delegate_display, render_shell_block, render_token_stats_block, render_tool_block,
+    render_tool_display, streaming_block, synthesize_fallback_display,
 };
 
 #[test]
@@ -1595,6 +1595,11 @@ fn delegate_progress_redraws_live_parent_block() {
     }));
 
     assert!(
+        eventually_screen_contains(&vt, 100, "+smart"),
+        "delegate progress should repaint the role suffix without an explicit test redraw: {:?}",
+        vt.screen_text(100)
+    );
+    assert!(
         eventually_screen_contains(&vt, 100, "%3/3"),
         "delegate progress should repaint without an explicit test redraw: {:?}",
         vt.screen_text(100)
@@ -2141,6 +2146,67 @@ fn render_tool_display_assembles_chips_in_order() {
         rendered.suffixes.last().expect("status suffix").status,
         ToolStatus::Success
     ));
+}
+
+#[test]
+fn render_delegate_display_pulls_legacy_role_args_into_first_suffix() {
+    use tau_proto::{ProgressCounter, ProgressUnit, ToolDisplay, ToolDisplayStatus};
+
+    // Regression: delegate roles used to be embedded in `ToolDisplay.args`,
+    // which made `+smart` inherit the tool-args color. Rendering delegates now
+    // strips that legacy suffix and reinserts the role as the first dedicated
+    // suffix so later progress chips keep their existing order.
+    let display = ToolDisplay {
+        args: "[probe] +smart".into(),
+        progress_counters: vec![ProgressCounter {
+            label: Some("tools".into()),
+            unit: ProgressUnit::Count,
+            complete: Some(3),
+            total: Some(3),
+        }],
+        status: ToolDisplayStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
+        ..Default::default()
+    };
+
+    let rendered = render_delegate_display(&display, Some("smart"));
+    assert_eq!(rendered.tool_name, "delegate");
+    assert_eq!(rendered.args, "[probe]");
+    let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["+smart", "%3/3", tau_proto::PROGRESS_INDICATOR_TEXT]
+    );
+    assert!(matches!(rendered.suffixes[0].status, ToolStatus::Role));
+}
+
+#[test]
+fn render_delegate_display_styles_role_like_status_bar() {
+    use tau_proto::{ToolDisplay, ToolDisplayStatus};
+
+    // Regression: the delegate role is visually the same semantic chip as the
+    // bottom status-bar role, not part of the free-form tool args string.
+    let theme = tau_themes::Theme::builtin();
+    let display = ToolDisplay {
+        args: "[probe]".into(),
+        status: ToolDisplayStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
+        ..Default::default()
+    };
+
+    let rendered = render_delegate_display(&display, Some("smart"));
+    let block = render_tool_block(&theme, &rendered);
+    let role_span = block
+        .content
+        .spans()
+        .iter()
+        .find(|span| span.text == "+smart")
+        .expect("delegate role span");
+
+    assert_eq!(
+        role_span.style,
+        tau_cli_term::resolve::resolve(&theme, tau_themes::names::STATUS_ROLE)
+    );
 }
 
 #[test]

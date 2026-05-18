@@ -3592,7 +3592,6 @@ impl Harness {
         });
         let display = build_delegate_progress_display(
             &task_name,
-            role.as_deref(),
             conv.context_input_tokens,
             conv.context_percent_used,
             ctx_window,
@@ -6329,14 +6328,15 @@ fn shell_command_payload(command: &str) -> Option<tau_proto::ToolDisplayPayload>
 
 /// Build the [`ToolDisplay`] descriptor the renderer paints for a
 /// running `delegate` tool block. Carries the sub-task name as the
-/// args label and two progress counters (tools and context). The tools
-/// counter is completed/total so users can infer the currently running
-/// count as `total - completed`. The trailing chip is set to
+/// args label and two progress counters (tools and context); the role
+/// stays on [`tau_proto::DelegateProgress`] so the UI can paint it with
+/// the status-bar role style. The tools counter is completed/total so
+/// users can infer the currently running count as `total - completed`.
+/// The trailing chip is set to
 /// [`ToolDisplayStatus::InProgress`] so the renderer paints
 /// [`tau_proto::PROGRESS_INDICATOR_TEXT`].
 fn build_delegate_progress_display(
     task_name: &str,
-    role: Option<&str>,
     ctx_input_tokens: Option<u64>,
     ctx_percent: Option<u8>,
     ctx_window: Option<u64>,
@@ -6368,10 +6368,7 @@ fn build_delegate_progress_display(
         });
     }
     tau_proto::ToolDisplay {
-        args: match role {
-            Some(role) => format!("[{task_name}] +{role}"),
-            None => format!("[{task_name}]"),
-        },
+        args: format!("[{task_name}]"),
         progress_counters: counters,
         status: ToolDisplayStatus::InProgress,
         status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),

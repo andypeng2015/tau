@@ -242,6 +242,8 @@ pub(crate) enum ToolStatus {
     Progress,
     DiffAdded,
     DiffRemoved,
+    /// Agent role suffix, painted like the status-bar role chip.
+    Role,
     Context,
     Tools,
 }
@@ -452,6 +454,31 @@ fn stats_suffix(prefix: Option<String>, text: &str) -> ToolSuffixSegment {
     parts.push(format!("{}L", text.lines().count()));
     parts.push(format!("{}B", text.len()));
     info_suffix(format!("({})", parts.join(", ")))
+}
+
+/// Render a `delegate` display with the agent role as a dedicated
+/// status-bar-colored suffix, ahead of progress counters and final
+/// status chips. Current descriptors keep the role on
+/// [`tau_proto::DelegateProgress`], but legacy cached descriptors may
+/// still have ` +role` embedded in `args`; strip that copy so the line
+/// does not render the role twice.
+pub(crate) fn render_delegate_display(
+    display: &ToolDisplay,
+    role: Option<&str>,
+) -> ToolCallDisplay {
+    let mut rendered = render_tool_display("delegate", display);
+    let Some(role) = role.filter(|role| !role.is_empty()) else {
+        return rendered;
+    };
+
+    let legacy_suffix = format!(" +{role}");
+    if let Some(args) = rendered.args.strip_suffix(&legacy_suffix) {
+        rendered.args = args.to_owned();
+    }
+    rendered
+        .suffixes
+        .insert(0, tool_suffix(format!("+{role}"), ToolStatus::Role));
+    rendered
 }
 
 /// Render a [`ToolDisplay`] descriptor directly to a
@@ -739,6 +766,7 @@ pub(crate) fn render_tool_block(
             ToolStatus::Progress => names::PROGRESS_INDICATOR,
             ToolStatus::DiffAdded => names::DIFF_ADDED,
             ToolStatus::DiffRemoved => names::DIFF_REMOVED,
+            ToolStatus::Role => names::STATUS_ROLE,
             ToolStatus::Context => names::STATUS_CONTEXT,
             ToolStatus::Tools => names::STATUS_TOOLS,
         };

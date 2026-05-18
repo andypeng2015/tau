@@ -15,10 +15,10 @@ use crate::build_banner;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
     build_osc1337_set_user_var, build_tool_summary_display, extension_status_block, extract_diff,
-    format_token_count, format_tool_call, render_compaction_block, render_diff_tool_block,
-    render_harness_info, render_shell_block, render_token_stats_block, render_tool_block,
-    render_tool_display, session_status_block, streaming_block, synthesize_fallback_display,
-    system_loaded_block, system_status_block, ui_dir_block,
+    format_token_count, format_tool_call, render_compaction_block, render_delegate_display,
+    render_diff_tool_block, render_harness_info, render_shell_block, render_token_stats_block,
+    render_tool_block, render_tool_display, session_status_block, streaming_block,
+    synthesize_fallback_display, system_loaded_block, system_status_block, ui_dir_block,
 };
 
 pub(crate) struct EventRenderer {
@@ -1931,10 +1931,12 @@ impl EventRenderer {
                     return;
                 };
                 let display = match &progress.display {
-                    Some(descriptor) => render_tool_display("delegate", descriptor),
-                    None => render_tool_display(
-                        "delegate",
+                    Some(descriptor) => {
+                        render_delegate_display(descriptor, progress.role.as_deref())
+                    }
+                    None => render_delegate_display(
                         &synthesize_fallback_display("delegate", None),
+                        progress.role.as_deref(),
                     ),
                 };
                 state.live_display = Some(display.clone());
@@ -1964,12 +1966,13 @@ impl EventRenderer {
                 let existing_block_id = prior.block_id;
                 let last_progress = prior.delegate_last_progress;
                 let display = if result.tool_name.as_str() == "delegate" {
+                    let role = last_progress.as_ref().and_then(|p| p.role.as_deref());
                     let descriptor = build_delegate_completion_display(
                         last_progress.as_ref().and_then(|p| p.display.as_ref()),
                         &result.result,
                         None,
                     );
-                    render_tool_display("delegate", &descriptor)
+                    render_delegate_display(&descriptor, role)
                 } else if let Some(descriptor) = &result.display {
                     render_tool_display(&result.tool_name, descriptor)
                 } else {
@@ -2044,12 +2047,13 @@ impl EventRenderer {
                 let last_progress = prior.delegate_last_progress;
                 let cbor = error.details.as_ref();
                 let display = if error.tool_name.as_str() == "delegate" {
+                    let role = last_progress.as_ref().and_then(|p| p.role.as_deref());
                     let descriptor = build_delegate_completion_display(
                         last_progress.as_ref().and_then(|p| p.display.as_ref()),
                         cbor.unwrap_or(&CborValue::Null),
                         Some(&error.message),
                     );
-                    render_tool_display("delegate", &descriptor)
+                    render_delegate_display(&descriptor, role)
                 } else if let Some(descriptor) = &error.display {
                     render_tool_display(&error.tool_name, descriptor)
                 } else {
