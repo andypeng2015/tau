@@ -161,6 +161,7 @@ fn provider_model_info(
     tau_proto::ProviderModelInfo {
         id,
         display_name: None,
+        default_affinity: 0,
         context_window,
         efforts: vec![tau_proto::Effort::Off, tau_proto::Effort::High],
         verbosities: vec![tau_proto::Verbosity::Low, tau_proto::Verbosity::High],
@@ -290,6 +291,7 @@ fn provider_model_prompt_routes_directly_to_provider_owner() {
                 models: vec![tau_proto::ProviderModelInfo {
                     id: model_id.clone(),
                     display_name: None,
+                    default_affinity: 0,
                     context_window: 200_000,
                     efforts: vec![tau_proto::Effort::Medium],
                     verbosities: vec![tau_proto::Verbosity::Medium],
@@ -366,6 +368,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
                 models: vec![tau_proto::ProviderModelInfo {
                     id: model_id.clone(),
                     display_name: None,
+                    default_affinity: 0,
                     context_window: 200_000,
                     efforts: vec![tau_proto::Effort::Medium],
                     verbosities: vec![tau_proto::Verbosity::Medium],
@@ -2357,6 +2360,7 @@ fn enable_remote_compaction_for_test_model(h: &mut Harness) {
         tau_proto::ProviderModelInfo {
             id: "test/model".into(),
             display_name: None,
+            default_affinity: 0,
             context_window: 1_000,
             efforts: vec![tau_proto::Effort::Medium],
             verbosities: vec![tau_proto::Verbosity::Medium],

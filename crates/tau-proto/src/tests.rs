@@ -192,6 +192,7 @@ fn representative_events() -> Vec<Event> {
             models: vec![ProviderModelInfo {
                 id: "openai/gpt-4.1".parse().expect("model id"),
                 display_name: Some("GPT-4.1".to_owned()),
+                default_affinity: 0,
                 context_window: 128_000,
                 efforts: vec![Effort::Off, Effort::Low, Effort::Medium, Effort::High],
                 verbosities: vec![Verbosity::Low, Verbosity::Medium, Verbosity::High],

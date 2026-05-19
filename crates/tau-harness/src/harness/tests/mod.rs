@@ -40,7 +40,7 @@ use crate::error::HarnessError;
 use crate::event::HarnessEvent;
 use crate::model::{
     baseline_params_for_selection, clamp_effort, efforts_for_model, load_roles, role_infos,
-    save_role_overrides, select_model_for_available, selected_params_for_role,
+    save_role_overrides, select_model_for_role, selected_params_for_role,
     thinking_summaries_for_model, verbosities_for_model,
 };
 use crate::prompt::build_system_prompt;
@@ -119,6 +119,7 @@ fn quiet_provider_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, Harn
                     models: vec![tau_proto::ProviderModelInfo {
                         id: "test/model".into(),
                         display_name: Some("Test".to_owned()),
+                        default_affinity: 0,
                         context_window: 1_000,
                         efforts: vec![tau_proto::Effort::Medium],
                         verbosities: vec![tau_proto::Verbosity::Medium],

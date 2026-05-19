@@ -28,6 +28,7 @@ fn provider_model(id: ModelId, context_window: u64) -> ProviderModelInfo {
     ProviderModelInfo {
         id,
         display_name: None,
+        default_affinity: 0,
         context_window,
         efforts: vec![Effort::Off, Effort::High],
         verbosities: vec![Verbosity::Low, Verbosity::High],
@@ -214,9 +215,33 @@ fn provider_models_snapshot_from_ui_client_is_ignored() {
     }
 }
 
+/// Roles without an explicit model should use provider intent, not incidental
+/// lexicographic model ordering. This lets providers steer Tau's implicit
+/// default while keeping role model overrides exact.
+#[test]
+fn role_without_model_selects_highest_default_affinity() {
+    let low: ModelId = "openai/aaa-cheap".parse().expect("model id");
+    let high: ModelId = "openai/zzz-smart".parse().expect("model id");
+    let mut low_info = provider_model(low.clone(), 128_000);
+    low_info.default_affinity = 10;
+    let mut high_info = provider_model(high.clone(), 128_000);
+    high_info.default_affinity = 100;
+    let provider_models = provider_models([low_info, high_info]);
+    let roles = std::collections::HashMap::from([(
+        "smart".to_owned(),
+        tau_config::settings::AgentRole::default(),
+    )]);
+
+    assert_eq!(
+        select_model_for_role(&provider_models, &roles, "smart"),
+        Some(high)
+    );
+}
+
 /// Startup no longer selects config-file models. A provider snapshot is the
 /// moment a runtime model exists, so it should also unblock queued prompts by
-/// choosing the first model through the normal harness-owned selection path.
+/// choosing the default-affinity model through the normal harness-owned
+/// selection path.
 #[test]
 fn provider_models_snapshot_selects_first_model_and_drains_queue() {
     let td = TempDir::new().expect("tempdir");
@@ -299,6 +324,7 @@ fn provider_model_metadata_drives_selection_state() {
             models: vec![ProviderModelInfo {
                 id: model_id.clone(),
                 display_name: None,
+                default_affinity: 0,
                 context_window: 654_321,
                 efforts: vec![Effort::Off],
                 verbosities: vec![Verbosity::High],
@@ -338,6 +364,7 @@ fn selected_role_params_are_clamped_by_provider_metadata() {
         ProviderModelInfo {
             id: openai.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![Effort::Off, Effort::High],
             verbosities: vec![Verbosity::Medium],
@@ -347,6 +374,7 @@ fn selected_role_params_are_clamped_by_provider_metadata() {
         ProviderModelInfo {
             id: local.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 8_192,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Medium],
@@ -411,18 +439,19 @@ fn role_baseline_ignores_persisted_role_overrides() {
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
     let (roles, _role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
-    let available = vec!["openai/gpt-4.1".parse().expect("model id")];
-    let model =
-        select_model_for_available(&roles, &selected_role, &available).expect("selected model");
+    let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     let provider_models = provider_models([ProviderModelInfo {
-        id: model.clone(),
+        id: model_id,
         display_name: None,
+        default_affinity: 0,
         context_window: 128_000,
         efforts: vec![Effort::Off, Effort::Low, Effort::High],
         verbosities: vec![Verbosity::Low, Verbosity::Medium, Verbosity::High],
         thinking_summaries: vec![ThinkingSummary::Off, ThinkingSummary::Auto],
         supports_compaction: false,
     }]);
+    let model =
+        select_model_for_role(&provider_models, &roles, &selected_role).expect("selected model");
 
     let selected = selected_params_for_role(&provider_models, &roles, "smart", &model);
     assert_eq!(selected.effort, Effort::Low);
@@ -529,6 +558,7 @@ fn role_without_effort_picks_middle_provider_effort() {
         ProviderModelInfo {
             id: openai.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![
                 Effort::Off,
@@ -544,6 +574,7 @@ fn role_without_effort_picks_middle_provider_effort() {
         ProviderModelInfo {
             id: local.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 8_192,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Medium],
@@ -610,8 +641,14 @@ fn load_roles_falls_back_to_smart_role_while_models_are_provider_owned() {
     assert_eq!(selected_role, "smart");
 
     let available = vec!["local/deep".into(), "local/smart".into()];
+    let provider_models = provider_models(
+        available
+            .iter()
+            .cloned()
+            .map(|model| provider_model(model, 8_192)),
+    );
     assert_eq!(
-        select_model_for_available(&roles, &selected_role, &available)
+        select_model_for_role(&provider_models, &roles, &selected_role)
             .as_ref()
             .map(ToString::to_string)
             .as_deref(),
@@ -656,14 +693,21 @@ fn role_missing_fields_use_model_defaults() {
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
     let (roles, _role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
     let available = vec!["local/aaa".into(), "local/smart".into()];
-    let selected =
-        select_model_for_available(&roles, &selected_role, &available).expect("selected model");
+    let available_provider_models = provider_models(
+        available
+            .iter()
+            .cloned()
+            .map(|model| provider_model(model, 8_192)),
+    );
+    let selected = select_model_for_role(&available_provider_models, &roles, &selected_role)
+        .expect("selected model");
     assert_eq!(selected_role, "plain");
     assert_eq!(selected.to_string(), "local/aaa");
 
     let provider_models = provider_models([ProviderModelInfo {
         id: selected.clone(),
         display_name: None,
+        default_affinity: 0,
         context_window: 8_192,
         efforts: vec![Effort::Off, Effort::Low, Effort::High],
         verbosities: vec![Verbosity::Medium],
@@ -685,6 +729,7 @@ fn role_without_verbosity_picks_low_when_supported() {
         ProviderModelInfo {
             id: openai.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Low, Verbosity::Medium, Verbosity::High],
@@ -694,6 +739,7 @@ fn role_without_verbosity_picks_low_when_supported() {
         ProviderModelInfo {
             id: local.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 8_192,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Medium],
@@ -759,6 +805,7 @@ fn efforts_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: custom.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![L::Medium, L::High, L::XHigh],
             verbosities: vec![Verbosity::Medium],
@@ -768,6 +815,7 @@ fn efforts_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: local.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 8_192,
             efforts: vec![L::Off],
             verbosities: vec![Verbosity::Medium],
@@ -823,6 +871,7 @@ fn verbosities_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: gpt.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![Effort::Off],
             verbosities: vec![V::Low, V::Medium, V::High],
@@ -832,6 +881,7 @@ fn verbosities_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: locked.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![Effort::Off],
             verbosities: vec![V::Medium],
@@ -869,6 +919,7 @@ fn thinking_summaries_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: gpt.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 128_000,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Medium],
@@ -878,6 +929,7 @@ fn thinking_summaries_for_model_uses_provider_snapshot_levels() {
         ProviderModelInfo {
             id: local.clone(),
             display_name: None,
+            default_affinity: 0,
             context_window: 8_192,
             efforts: vec![Effort::Off],
             verbosities: vec![Verbosity::Medium],
@@ -943,6 +995,7 @@ fn selected_params_restore_each_field_from_role_override() {
     let provider_models = provider_models([ProviderModelInfo {
         id: model.clone(),
         display_name: None,
+        default_affinity: 0,
         context_window: 128_000,
         efforts: vec![Effort::Off, Effort::Low, Effort::High],
         verbosities: vec![Verbosity::Low, Verbosity::High],

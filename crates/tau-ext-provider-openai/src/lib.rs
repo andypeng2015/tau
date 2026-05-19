@@ -1688,6 +1688,7 @@ fn model_info(provider: &str, model: &str) -> ProviderModelInfo {
     ProviderModelInfo {
         id: ModelId::new(ProviderName::new(provider), ModelName::new(model)),
         display_name: None,
+        default_affinity: default_affinity_for_model(model),
         context_window: CONTEXT_WINDOW,
         efforts: efforts_for_model(model),
         verbosities: verbosities_for_model(model),
@@ -1698,6 +1699,16 @@ fn model_info(provider: &str, model: &str) -> ProviderModelInfo {
             ThinkingSummary::Detailed,
         ],
         supports_compaction: true,
+    }
+}
+
+fn default_affinity_for_model(model: &str) -> i32 {
+    match model {
+        "gpt-5.5" => 400,
+        "gpt-5.4" => 300,
+        "gpt-5.3-codex" => 200,
+        "gpt-5.4-mini" => 100,
+        _ => 0,
     }
 }
 

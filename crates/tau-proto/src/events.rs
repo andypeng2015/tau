@@ -21,6 +21,11 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_affinity_neutral(value: &i32) -> bool {
+    *value == 0
+}
+
 // ---------------------------------------------------------------------------
 // Event names
 // ---------------------------------------------------------------------------
@@ -1762,6 +1767,11 @@ pub struct ProviderModelInfo {
     /// is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Provider-published preference for becoming the implicit default model
+    /// when the selected role does not name one. Higher values win; ties are
+    /// broken by model id for deterministic behavior. Zero means neutral.
+    #[serde(default, skip_serializing_if = "is_default_affinity_neutral")]
+    pub default_affinity: i32,
     /// Total model context window in tokens. Required so harness/UI state does
     /// not have to fall back to provider-specific config.
     pub context_window: u64,

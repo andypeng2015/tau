@@ -49,28 +49,41 @@ pub(crate) fn fallback_role(roles: &HashMap<String, AgentRole>) -> String {
         .unwrap_or_else(|| BASE_AGENT_ROLE.to_owned())
 }
 
-/// Resolve the model for `role` from the currently provider-published model
-/// list. Roles without an explicit model use the first available model.
+/// Resolve the model for `role` from provider-published model metadata. Roles
+/// without an explicit model use the model with the highest provider-published
+/// default affinity.
 pub(crate) fn model_for_role(
+    provider_models: &HashMap<ModelId, ProviderModelInfo>,
     roles: &HashMap<String, AgentRole>,
     role: &str,
-    available: &[ModelId],
 ) -> Option<ModelId> {
     let model = roles
         .get(role)
         .and_then(|r| r.model.clone())
-        .or_else(|| available.first().cloned())?;
-    available.contains(&model).then_some(model)
+        .or_else(|| default_model(provider_models))?;
+    provider_models.contains_key(&model).then_some(model)
+}
+
+fn default_model(provider_models: &HashMap<ModelId, ProviderModelInfo>) -> Option<ModelId> {
+    provider_models
+        .iter()
+        .max_by(|(a_id, a_info), (b_id, b_info)| {
+            a_info
+                .default_affinity
+                .cmp(&b_info.default_affinity)
+                .then_with(|| b_id.cmp(a_id))
+        })
+        .map(|(id, _)| id.clone())
 }
 
 /// Resolve the current model from the selected role and provider-published
-/// runtime model list.
-pub(crate) fn select_model_for_available(
+/// runtime model metadata.
+pub(crate) fn select_model_for_role(
+    provider_models: &HashMap<ModelId, ProviderModelInfo>,
     roles: &HashMap<String, AgentRole>,
     selected_role: &str,
-    available: &[ModelId],
 ) -> Option<ModelId> {
-    model_for_role(roles, selected_role, available)
+    model_for_role(provider_models, roles, selected_role)
 }
 
 /// Resolve selected prompt parameters from a role and provider metadata.
@@ -123,9 +136,9 @@ fn describe_role_inner(
     provider_models: &HashMap<ModelId, ProviderModelInfo>,
     roles: &HashMap<String, AgentRole>,
     role: &str,
-    available: &[ModelId],
+    _available: &[ModelId],
 ) -> String {
-    let Some(model) = model_for_role(roles, role, available) else {
+    let Some(model) = model_for_role(provider_models, roles, role) else {
         return "no model".to_owned();
     };
     let params = selected_params_for_role(provider_models, roles, role, &model);

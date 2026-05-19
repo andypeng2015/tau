@@ -49,7 +49,7 @@ use crate::harness::interception::{
 use crate::model::{
     baseline_params_for_selection, clamp_effort, clamp_thinking_summary, clamp_verbosity,
     context_percent_used, context_window_for_model, efforts_for_model, fallback_role, load_roles,
-    model_for_role, role_infos, save_role_overrides, select_model_for_available,
+    model_for_role, role_infos, save_role_overrides, select_model_for_role,
     selected_params_for_role, thinking_summaries_for_model, verbosities_for_model,
 };
 use crate::prompt::{
@@ -800,6 +800,7 @@ where
             models: vec![ProviderModelInfo {
                 id: "echo/model".into(),
                 display_name: Some("Echo".to_owned()),
+                default_affinity: 0,
                 context_window: 128_000,
                 efforts: vec![Effort::Off],
                 verbosities: vec![Verbosity::Low],
@@ -1055,7 +1056,7 @@ impl Harness {
         let available_models = Vec::new();
         let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
         let selected_model =
-            select_model_for_available(&available_roles, &selected_role, &available_models);
+            select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         crate::session_cleanup::spawn_session_cleanup(
             sessions_dir.clone(),
             harness_settings.session_retention(),
@@ -1268,7 +1269,7 @@ impl Harness {
         let available_models = Vec::new();
         let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
         let selected_model =
-            select_model_for_available(&available_roles, &selected_role, &available_models);
+            select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         tracing::debug!(target: "tau_harness::startup", selected_model = ?selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "harness settings loaded");
         crate::session_cleanup::spawn_session_cleanup(
             sessions_dir.clone(),
@@ -3439,7 +3440,7 @@ impl Harness {
             .available_roles
             .keys()
             .filter(|name| {
-                model_for_role(&self.available_roles, name, &self.available_models).is_some()
+                model_for_role(&self.provider_model_info, &self.available_roles, name).is_some()
             })
             .cloned()
             .collect();
@@ -3469,7 +3470,7 @@ impl Harness {
         };
 
         if self.available_roles.contains_key(requested)
-            && model_for_role(&self.available_roles, requested, &self.available_models).is_some()
+            && model_for_role(&self.provider_model_info, &self.available_roles, requested).is_some()
         {
             return Ok(requested.to_owned());
         }
@@ -4045,10 +4046,10 @@ impl Harness {
 
     fn reconcile_selected_model_with_available(&mut self) {
         let previous_model = self.selected_model.clone();
-        self.selected_model = select_model_for_available(
+        self.selected_model = select_model_for_role(
+            &self.provider_model_info,
             &self.available_roles,
             &self.selected_role,
-            &self.available_models,
         );
         self.selected_params = self
             .selected_model
@@ -5064,7 +5065,7 @@ impl Harness {
 
     fn model_for_conversation_role(&self, conv: &Conversation) -> Option<ModelId> {
         let role_name = self.role_name_for_conversation(conv);
-        model_for_role(&self.available_roles, &role_name, &self.available_models)
+        model_for_role(&self.provider_model_info, &self.available_roles, &role_name)
     }
 
     fn params_for_role_model(&self, role_name: &str, model: &ModelId) -> tau_proto::ModelParams {
