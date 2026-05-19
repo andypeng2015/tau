@@ -1,5 +1,5 @@
 [package]
-name = "tau-provider-cli"
+name = "tau-ext-provider-chat-completions"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -15,5 +15,11 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tau-ext-provider-chat-completions.workspace = true
-tau-ext-provider-openai.workspace = true
+dialoguer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tau-extension.workspace = true
+tau-proto.workspace = true
+tau-provider.workspace = true
+tracing.workspace = true
+ureq.workspace = true

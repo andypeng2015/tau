@@ -17,6 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use backon::BackoffBuilder;
+use dialoguer::Input;
+use serde::{Deserialize, Serialize};
 use tau_proto::{
     Ack, ClientKind, ContextItem, Effort, Event, EventName, Frame, FrameReader, FrameWriter,
     Message, ModelId, ModelName, ProviderBackend, ProviderBackendKind, ProviderBackendTransport,
@@ -24,17 +26,40 @@ use tau_proto::{
     ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason, ThinkingSummary,
     Verbosity,
 };
-use tau_provider::storage::{AuthStore, Credentials, ProviderKind, ProviderStore};
+use tau_provider::storage::AuthFile;
 
 /// `tracing` target for events emitted from this extension.
 pub const LOG_TARGET: &str = "provider-openai";
 
 const EXTENSION_NAME: &str = "tau-ext-provider-openai";
+/// Auth file name for the ChatGPT/Codex provider extension.
+pub const AUTH_FILE_NAME: &str = "provider-openai";
 const CHATGPT_PROVIDER_NAME: &str = "chatgpt";
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const CONTEXT_WINDOW: u64 = 258400;
 
 const CHATGPT_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"];
+
+/// OAuth credentials for the ChatGPT/Codex Responses provider.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OpenAiAuth {
+    /// ChatGPT access token used as bearer auth for Codex Responses calls.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub access_token: String,
+    /// Refresh token used to renew [`Self::access_token`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_token: String,
+    /// Milliseconds since epoch when [`Self::access_token`] expires.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub expires_at_ms: u64,
+    /// OpenAI account id sent as `chatgpt-account-id`, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
 
 /// Maximum number of retry attempts before giving up on a transient provider
 /// error. Combined with [`llm_retry_schedule`]'s fibonacci shape (min 10s),
@@ -58,6 +83,90 @@ const PROMPT_CONCURRENCY_ENV: &str = "TAU_OPENAI_PROVIDER_PROMPT_CONCURRENCY";
 const CANCELED_BY_HARNESS_STATUS: u16 = 499;
 const CANCELED_BY_HARNESS_BODY: &str = "cancelled by harness";
 
+/// Runs provider-specific setup commands for ChatGPT/Codex.
+pub fn run_provider_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
+    match args.first().map(String::as_str).unwrap_or("help") {
+        "login" => cmd_login()?,
+        "logout" | "remove" => cmd_logout()?,
+        "status" | "list" => cmd_status()?,
+        "help" | "--help" | "-h" => println!("{PROVIDER_CLI_HELP}"),
+        other => return Err(format!("unknown chatgpt provider subcommand: {other}").into()),
+    }
+    Ok(())
+}
+
+const PROVIDER_CLI_HELP: &str = "\
+Usage: tau provider chatgpt <subcommand>
+
+Subcommands:
+  login        Log in / refresh ChatGPT OAuth credentials
+  logout       Remove ChatGPT OAuth credentials
+  status       Show ChatGPT auth status";
+
+fn cmd_login() -> Result<(), Box<dyn Error>> {
+    let auth = run_openai_codex_login()?;
+    let file = AuthFile::<OpenAiAuth>::open_default(AUTH_FILE_NAME)?;
+    file.save(&auth)?;
+    eprintln!("\nCredentials saved to: {}", file.path().display());
+    Ok(())
+}
+
+fn cmd_logout() -> Result<(), Box<dyn Error>> {
+    let file = AuthFile::<OpenAiAuth>::open_default(AUTH_FILE_NAME)?;
+    if file.delete()? {
+        eprintln!("Removed ChatGPT credentials.");
+    } else {
+        eprintln!("ChatGPT credentials were not configured.");
+    }
+    Ok(())
+}
+
+fn cmd_status() -> Result<(), Box<dyn Error>> {
+    let auth = AuthFile::<OpenAiAuth>::open_default(AUTH_FILE_NAME)?
+        .load()?
+        .unwrap_or_default();
+    if auth.access_token.trim().is_empty() && auth.refresh_token.trim().is_empty() {
+        println!("chatgpt: not configured");
+    } else if now_ms() < auth.expires_at_ms {
+        println!("chatgpt: logged in");
+    } else {
+        println!("chatgpt: expired");
+    }
+    Ok(())
+}
+
+fn run_openai_codex_login() -> Result<OpenAiAuth, Box<dyn Error>> {
+    let (auth_url, expected_state, verifier) = tau_provider::oauth::openai_codex_auth_url();
+
+    eprintln!("\nOpen this URL in your browser:\n");
+    eprintln!("{auth_url}");
+    eprintln!("\x1b]8;;{auth_url}\x1b\\Or click here.\x1b]8;;\x1b\\");
+    eprintln!();
+    eprintln!("After logging in, you'll be redirected to a page that won't load.");
+    eprintln!("Copy the full URL from your browser's address bar and paste it here:\n");
+
+    std::io::stdout().flush()?;
+    let redirect_input: String = Input::new().with_prompt("Redirect URL").interact_text()?;
+
+    let (code, state) = tau_provider::oauth::parse_redirect_url(&redirect_input)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+
+    if state != expected_state {
+        return Err("state mismatch — possible CSRF attack or stale URL".into());
+    }
+
+    eprintln!("Exchanging code for tokens...");
+    let tokens = tau_provider::oauth::openai_codex_exchange(&code, &verifier)?;
+
+    eprintln!("Login successful!");
+    Ok(OpenAiAuth {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at_ms: tokens.expires_at_ms,
+        account_id: tokens.account_id,
+    })
+}
+
 /// Runs the extension on stdin/stdout.
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
     tau_extension::init_logging_for(LOG_TARGET);
@@ -73,26 +182,27 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
-    let startup_auth = load_auth_store();
-    run_inner(reader, writer, startup_auth, load_auth_store)
+    let startup_auth = load_auth();
+    run_inner(reader, writer, startup_auth, load_auth)
 }
 
-fn load_auth_store() -> AuthStore {
-    match ProviderStore::open_default().and_then(|store| store.load()) {
-        Ok(auth) => auth,
+fn load_auth() -> OpenAiAuth {
+    match AuthFile::<OpenAiAuth>::open_default(AUTH_FILE_NAME).and_then(|file| file.load()) {
+        Ok(Some(auth)) => auth,
+        Ok(None) => OpenAiAuth::default(),
         Err(error) => {
             tracing::warn!(
                 target: LOG_TARGET,
                 error = %error,
                 "failed to load provider auth; publishing no models"
             );
-            AuthStore::default()
+            OpenAiAuth::default()
         }
     }
 }
 
 #[cfg(test)]
-fn run_with_auth_store<R, W>(reader: R, writer: W, auth: AuthStore) -> Result<(), Box<dyn Error>>
+fn run_with_auth<R, W>(reader: R, writer: W, auth: OpenAiAuth) -> Result<(), Box<dyn Error>>
 where
     R: Read + Send + 'static,
     W: Write,
@@ -104,13 +214,13 @@ where
 fn run_inner<R, W, F>(
     reader: R,
     writer: W,
-    startup_auth: AuthStore,
+    startup_auth: OpenAiAuth,
     load_prompt_auth: F,
 ) -> Result<(), Box<dyn Error>>
 where
     R: Read + Send + 'static,
     W: Write,
-    F: FnMut() -> AuthStore,
+    F: FnMut() -> OpenAiAuth,
 {
     run_inner_with_prompt_executor(
         reader,
@@ -125,7 +235,7 @@ where
 fn run_inner_with_prompt_executor<R, W, F>(
     reader: R,
     writer: W,
-    startup_auth: AuthStore,
+    startup_auth: OpenAiAuth,
     mut load_prompt_auth: F,
     prompt_concurrency_limit: usize,
     prompt_executor: PromptExecutor,
@@ -133,7 +243,7 @@ fn run_inner_with_prompt_executor<R, W, F>(
 where
     R: Read + Send + 'static,
     W: Write,
-    F: FnMut() -> AuthStore,
+    F: FnMut() -> OpenAiAuth,
 {
     let mut handshake_writer = FrameWriter::new(BufWriter::new(writer));
 
@@ -888,7 +998,7 @@ impl RetrySleeper for SharedRetryContext {
 
 fn resolve_responses_backend(
     model: &ModelId,
-    auth_store: &mut AuthStore,
+    auth_store: &mut OpenAiAuth,
 ) -> Option<responses::ResponsesConfig> {
     if model.provider.as_str() != CHATGPT_PROVIDER_NAME {
         return None;
@@ -898,43 +1008,22 @@ fn resolve_responses_backend(
 
 fn resolve_chatgpt_backend(
     model: &ModelId,
-    auth_store: &mut AuthStore,
+    auth_store: &mut OpenAiAuth,
 ) -> Option<responses::ResponsesConfig> {
-    let provider = ProviderName::new(CHATGPT_PROVIDER_NAME);
-    let creds = auth_store.providers.get(&provider)?.clone();
-    let Credentials::Oauth {
-        provider_kind,
-        mut access_token,
-        refresh_token,
-        expires_at_ms,
-        mut account_id,
-    } = creds
-    else {
-        return None;
-    };
-    if provider_kind != ProviderKind::OpenaiCodex {
-        return None;
-    }
-    if oauth_token_should_refresh(&access_token, expires_at_ms) && !refresh_token.trim().is_empty()
+    if oauth_token_should_refresh(&auth_store.access_token, auth_store.expires_at_ms)
+        && !auth_store.refresh_token.trim().is_empty()
     {
-        match refresh_chatgpt_credentials_locked(&provider, auth_store) {
-            Ok(Some(Credentials::Oauth {
-                access_token: refreshed_access_token,
-                account_id: refreshed_account_id,
-                ..
-            })) => {
-                access_token = refreshed_access_token;
-                account_id = refreshed_account_id;
+        match refresh_chatgpt_credentials_locked() {
+            Ok(refreshed) => {
+                *auth_store = refreshed;
             }
-            Ok(Some(_)) | Ok(None) => {}
             Err(error) => tracing::warn!(
                 target: LOG_TARGET,
-                provider = %provider,
                 "failed to refresh ChatGPT credentials: {error}"
             ),
         }
     }
-    if access_token.trim().is_empty() {
+    if auth_store.access_token.trim().is_empty() {
         return None;
     }
 
@@ -942,9 +1031,9 @@ fn resolve_chatgpt_backend(
     Some(responses::ResponsesConfig {
         surface: responses::ResponsesSurface::ChatGpt,
         base_url: CHATGPT_BASE_URL.to_owned(),
-        api_key: access_token,
+        api_key: auth_store.access_token.clone(),
         model_id: model_id.to_owned(),
-        account_id,
+        account_id: auth_store.account_id.clone(),
         supports_reasoning_effort: true,
         supports_reasoning_summary: true,
         supports_verbosity: model_id.starts_with("gpt-5"),
@@ -956,55 +1045,26 @@ fn resolve_chatgpt_backend(
     })
 }
 
-fn refresh_chatgpt_credentials_locked(
-    provider: &ProviderName,
-    auth_store: &mut AuthStore,
-) -> std::io::Result<Option<Credentials>> {
-    let provider_handle = ProviderStore::open_default()?.provider(provider.clone());
-    let refreshed = provider_handle.with_lock(|locked| {
-        let Some(current) = locked.load()? else {
-            return Ok(None);
-        };
-        let Credentials::Oauth {
-            provider_kind,
-            access_token,
-            refresh_token,
-            expires_at_ms,
-            ..
-        } = &current
-        else {
-            return Ok(Some(current));
-        };
-        if *provider_kind != ProviderKind::OpenaiCodex
-            || !oauth_token_should_refresh(access_token, *expires_at_ms)
-            || refresh_token.trim().is_empty()
+fn refresh_chatgpt_credentials_locked() -> std::io::Result<OpenAiAuth> {
+    let auth_file = AuthFile::<OpenAiAuth>::open_default(AUTH_FILE_NAME)?;
+    auth_file.with_lock(|locked| {
+        let current = locked.load()?.unwrap_or_default();
+        if !oauth_token_should_refresh(&current.access_token, current.expires_at_ms)
+            || current.refresh_token.trim().is_empty()
         {
-            return Ok(Some(current));
+            return Ok(current);
         }
 
-        let tokens = tau_provider::oauth::openai_codex_refresh(refresh_token)?;
-        let refreshed = Credentials::Oauth {
-            provider_kind: ProviderKind::OpenaiCodex,
+        let tokens = tau_provider::oauth::openai_codex_refresh(&current.refresh_token)?;
+        let refreshed = OpenAiAuth {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
             expires_at_ms: tokens.expires_at_ms,
             account_id: tokens.account_id,
         };
         locked.save(&refreshed)?;
-        Ok(Some(refreshed))
-    })?;
-
-    match &refreshed {
-        Some(credentials) => {
-            auth_store
-                .providers
-                .insert(provider.clone(), credentials.clone());
-        }
-        None => {
-            auth_store.providers.remove(provider);
-        }
-    }
-    Ok(refreshed)
+        Ok(refreshed)
+    })
 }
 
 fn oauth_token_should_refresh(access_token: &str, expires_at_ms: u64) -> bool {
@@ -1304,7 +1364,7 @@ fn should_disable_ws(error: &common::LlmError) -> bool {
 
 fn handle_prewarm(
     prewarm: &tau_proto::SessionPromptPrewarmRequested,
-    auth_store: &mut AuthStore,
+    auth_store: &mut OpenAiAuth,
     ws_pool: &responses::pool::SharedWsPool,
     ws_disabled: &Mutex<HashSet<String>>,
 ) {
@@ -1697,7 +1757,7 @@ fn finish_error<W: Write>(
     Ok(())
 }
 
-fn models_for_auth(auth: &AuthStore) -> Vec<ProviderModelInfo> {
+fn models_for_auth(auth: &OpenAiAuth) -> Vec<ProviderModelInfo> {
     if has_chatgpt_auth(auth) {
         models_for_provider(CHATGPT_PROVIDER_NAME, CHATGPT_MODELS)
     } else {
@@ -1705,17 +1765,8 @@ fn models_for_auth(auth: &AuthStore) -> Vec<ProviderModelInfo> {
     }
 }
 
-fn has_chatgpt_auth(auth: &AuthStore) -> bool {
-    matches!(
-        auth.providers.get(&ProviderName::new(CHATGPT_PROVIDER_NAME)),
-        Some(Credentials::Oauth {
-            provider_kind,
-            access_token,
-            refresh_token,
-            ..
-        }) if *provider_kind == ProviderKind::OpenaiCodex
-            && (!access_token.trim().is_empty() || !refresh_token.trim().is_empty())
-    )
+fn has_chatgpt_auth(auth: &OpenAiAuth) -> bool {
+    !auth.access_token.trim().is_empty() || !auth.refresh_token.trim().is_empty()
 }
 
 fn models_for_provider(provider: &str, models: &[&str]) -> Vec<ProviderModelInfo> {
@@ -1792,25 +1843,14 @@ fn verbosities_for_model(model: &str) -> Vec<Verbosity> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::io::{BufReader, Cursor};
     use std::sync::{Condvar, Mutex};
     use std::time::{Duration, Instant};
 
     use super::*;
 
-    fn auth_store(entries: impl IntoIterator<Item = (&'static str, Credentials)>) -> AuthStore {
-        AuthStore {
-            providers: entries
-                .into_iter()
-                .map(|(name, credentials)| (ProviderName::new(name), credentials))
-                .collect(),
-        }
-    }
-
-    fn chatgpt_oauth() -> Credentials {
-        Credentials::Oauth {
-            provider_kind: ProviderKind::OpenaiCodex,
+    fn chatgpt_auth() -> OpenAiAuth {
+        OpenAiAuth {
             access_token: "access".to_owned(),
             refresh_token: "refresh".to_owned(),
             expires_at_ms: u64::MAX,
@@ -1875,9 +1915,7 @@ mod tests {
     fn no_auth_publishes_no_models() {
         // Auth presence is the first-cut enable switch: no API key or OAuth state
         // means the provider extension should still start, but advertise nothing.
-        let models = models_for_auth(&AuthStore {
-            providers: HashMap::new(),
-        });
+        let models = models_for_auth(&OpenAiAuth::default());
 
         assert!(models.is_empty());
     }
@@ -1886,7 +1924,7 @@ mod tests {
     fn chatgpt_oauth_publishes_chatgpt_models() {
         // ChatGPT/Codex is a provider namespace named `chatgpt`; there is no
         // compatibility fallback to an `openai-codex` provider name.
-        let models = models_for_auth(&auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]));
+        let models = models_for_auth(&chatgpt_auth());
 
         assert_eq!(
             model_ids(&models),
@@ -1901,20 +1939,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_openai_codex_name_does_not_publish_chatgpt_models() {
-        // The provider rework is a hard switch. Existing `openai-codex` auth can
-        // be re-added as `chatgpt`, but the new extension must not silently
-        // migrate or alias it.
-        let models = models_for_auth(&auth_store([("openai-codex", chatgpt_oauth())]));
-
-        assert!(models.is_empty());
-    }
-
-    #[test]
     fn resolves_chatgpt_to_codex_responses_backend() {
         // ChatGPT is OAuth-backed and enables Codex-specific transport and replay
         // features owned by this provider slice.
-        let mut auth = auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]);
+        let mut auth = chatgpt_auth();
 
         let config =
             resolve_responses_backend(&model_id(CHATGPT_PROVIDER_NAME, "gpt-5.4"), &mut auth)
@@ -1934,7 +1962,7 @@ mod tests {
     fn chatgpt_phase_metadata_is_model_specific() {
         // The assistant `phase` field is only accepted by newer Codex model
         // families, so the hardcoded resolver must preserve the old whitelist.
-        let mut auth = auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]);
+        let mut auth = chatgpt_auth();
 
         let old =
             resolve_responses_backend(&model_id(CHATGPT_PROVIDER_NAME, "gpt-5.2-codex"), &mut auth)
@@ -1951,7 +1979,7 @@ mod tests {
     fn xhigh_metadata_is_model_specific() {
         // The UI cycles through the provider-published effort list, so hardcoded
         // metadata must preserve xhigh only for model families that accept it.
-        let models = models_for_auth(&auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]));
+        let models = models_for_auth(&chatgpt_auth());
         let ids_with_xhigh = models
             .iter()
             .filter(|model| model.efforts.contains(&Effort::XHigh))
@@ -1972,7 +2000,7 @@ mod tests {
     fn verbosity_metadata_is_published_for_chatgpt_models() {
         // The provider snapshot is authoritative for UI cycling, so ChatGPT
         // models must publish the verbosity choices they accept.
-        let models = models_for_auth(&auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]));
+        let models = models_for_auth(&chatgpt_auth());
         let gpt = models
             .iter()
             .find(|model| model.id.to_string() == "chatgpt/gpt-5.5")
@@ -2062,7 +2090,7 @@ mod tests {
             cv.notify_all();
         });
 
-        let auth = auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]);
+        let auth = chatgpt_auth();
         let prompt_auth = auth.clone();
         let mut output = Vec::new();
         run_inner_with_prompt_executor(
@@ -2094,12 +2122,8 @@ mod tests {
         // model/role UI state is available immediately after all extensions are
         // ready.
         let mut output = Vec::new();
-        run_with_auth_store(
-            std::io::empty(),
-            &mut output,
-            auth_store([(CHATGPT_PROVIDER_NAME, chatgpt_oauth())]),
-        )
-        .expect("run provider extension");
+        run_with_auth(std::io::empty(), &mut output, chatgpt_auth())
+            .expect("run provider extension");
 
         let frames = decode_frames(&output);
         assert!(
@@ -2146,7 +2170,7 @@ mod tests {
             })),
         ]);
         let mut output = Vec::new();
-        run_with_auth_store(Cursor::new(input), &mut output, AuthStore::default())
+        run_with_auth(Cursor::new(input), &mut output, OpenAiAuth::default())
             .expect("run provider extension");
 
         let frames = decode_frames(&output);

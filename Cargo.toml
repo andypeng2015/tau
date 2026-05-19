@@ -10,6 +10,7 @@ members = [
   "crates/tau-config",
   "crates/tau-core",
   "crates/tau-ext-core-delegate",
+  "crates/tau-ext-provider-chat-completions",
   "crates/tau-ext-provider-openai",
   "crates/tau-ext-shell",
   "crates/tau-ext-std-notifications",
@@ -61,6 +62,7 @@ tau-cli-term-raw = { path = "crates/tau-cli-term-raw" }
 tau-config = { path = "crates/tau-config" }
 tau-core = { path = "crates/tau-core" }
 tau-ext-core-delegate = { path = "crates/tau-ext-core-delegate" }
+tau-ext-provider-chat-completions = { path = "crates/tau-ext-provider-chat-completions" }
 tau-ext-provider-openai = { path = "crates/tau-ext-provider-openai" }
 tau-ext-shell = { path = "crates/tau-ext-shell" }
 tau-ext-std-notifications = { path = "crates/tau-ext-std-notifications" }

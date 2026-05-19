@@ -298,16 +298,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "comfy-table"
-version = "7.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
-dependencies = [
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
 name = "config"
 version = "0.15.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1729,6 +1719,7 @@ version = "0.1.0"
 dependencies = [
  "tau-cli",
  "tau-ext-core-delegate",
+ "tau-ext-provider-chat-completions",
  "tau-ext-provider-openai",
  "tau-ext-shell",
  "tau-ext-std-notifications",
@@ -1840,12 +1831,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-ext-provider-chat-completions"
+version = "0.1.0"
+dependencies = [
+ "dialoguer",
+ "serde",
+ "serde_json",
+ "tau-extension",
+ "tau-proto",
+ "tau-provider",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "tau-ext-provider-openai"
 version = "0.1.0"
 dependencies = [
  "backon",
  "base64",
  "blake3",
+ "dialoguer",
  "futures-util",
  "serde",
  "serde_json",
@@ -1975,6 +1981,7 @@ dependencies = [
  "sha2",
  "tau-config",
  "tau-proto",
+ "tempfile",
  "tracing",
  "ureq",
  "url",
@@ -1984,13 +1991,8 @@ dependencies = [
 name = "tau-provider-cli"
 version = "0.1.0"
 dependencies = [
- "comfy-table",
- "dialoguer",
- "serde_json",
- "tau-cli-picker",
- "tau-config",
- "tau-proto",
- "tau-provider",
+ "tau-ext-provider-chat-completions",
+ "tau-ext-provider-openai",
 ]
 
 [[package]]
@@ -2295,12 +2297,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "unicode-segmentation"
-version = "1.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
 
 [[package]]
 name = "unicode-width"

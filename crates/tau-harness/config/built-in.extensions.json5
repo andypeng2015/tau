@@ -11,6 +11,13 @@
         config: {},
     },
     {
+        name: "provider-chat-completions",
+        suffix: ["ext", "ext-provider-chat-completions"],
+        role: "provider",
+        enable: true,
+        config: {},
+    },
+    {
         name: "core-shell",
         suffix: ["ext", "ext-shell"],
         role: "tool",
