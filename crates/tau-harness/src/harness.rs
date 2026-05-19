@@ -2212,13 +2212,7 @@ impl Harness {
         let (prompt, error) = if !self.available_roles.contains_key(&request.role) {
             (None, Some(format!("unknown role: {}", request.role)))
         } else {
-            let cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "(unknown)".to_owned());
-            (
-                Some(self.build_system_prompt_for_role(&cwd, &request.role)),
-                None,
-            )
+            (Some(self.build_system_prompt_for_role(&request.role)), None)
         };
         let _ = self.bus.send_to(
             connection_id,
@@ -4718,10 +4712,7 @@ impl Harness {
             .map(|t| assemble_conversation_from(t, head))
             .unwrap_or_default();
         let tools = self.gather_tool_definitions();
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "(unknown)".to_owned());
-        let system_prompt = self.build_current_system_prompt(&cwd);
+        let system_prompt = self.build_current_system_prompt();
         let event = Event::SessionPromptPrewarmRequested(SessionPromptPrewarmRequested {
             session_id: session_id.clone(),
             system_prompt,
@@ -4893,10 +4884,7 @@ impl Harness {
             });
         let context_items = prompt_context.context_items;
         let tools = self.gather_tool_definitions_for_role(&role_name);
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "(unknown)".to_owned());
-        let system_prompt = self.build_system_prompt_for_role(&cwd, &role_name);
+        let system_prompt = self.build_system_prompt_for_role(&role_name);
         // Fingerprint the non-input fields of the impending request.
         // Used to (a) drop the chain anchor when any of those fields
         // drifted since the anchor was minted (matches Pi's
@@ -5075,21 +5063,20 @@ impl Harness {
         )
     }
 
-    fn build_current_system_prompt(&self, cwd: &str) -> String {
-        self.build_system_prompt_for_role(cwd, &self.selected_role)
+    fn build_current_system_prompt(&self) -> String {
+        self.build_system_prompt_for_role(&self.selected_role)
     }
 
-    fn build_system_prompt_for_role(&self, cwd: &str, role_name: &str) -> String {
+    fn build_system_prompt_for_role(&self, role_name: &str) -> String {
         let prompt_fragments = self.gather_prompt_fragments_for_role(role_name);
         let system_template = self.system_template_for_role(role_name);
         build_system_prompt_with_template_context(
             system_template,
             &self.discovered_skills,
-            cwd,
             &prompt_fragments,
             self.session_context
                 .template_value(&self.current_session_id),
-            RolePromptTemplateContext { role_name, cwd },
+            RolePromptTemplateContext { role_name },
         )
     }
 
