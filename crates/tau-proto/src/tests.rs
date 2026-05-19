@@ -881,3 +881,35 @@ fn effort_next_in_skips_disallowed_levels_and_wraps() {
     // progress.
     assert_eq!(Medium.next_in(&[]), Medium.next());
 }
+
+/// Provider-facing tool responses must use the uniform header/body shape so
+/// individual providers do not each invent their own CBOR rendering.
+#[test]
+fn tool_response_renders_headers_blank_line_and_body() {
+    let response = ToolResponse::from_cbor(&CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text("/tmp/file".to_owned()),
+        ),
+        (
+            CborValue::Text("total_lines".to_owned()),
+            CborValue::Integer(2.into()),
+        ),
+        (
+            CborValue::Text("line-numbered content".to_owned()),
+            CborValue::Text("1 hello\n2 world".to_owned()),
+        ),
+    ]));
+
+    assert_eq!(
+        response.render(),
+        "path: /tmp/file\ntotal_lines: 2\n\nline-numbered content:\n1 hello\n2 world"
+    );
+}
+
+#[test]
+fn tool_response_leaves_plain_text_as_body_only() {
+    let response = ToolResponse::from_cbor(&CborValue::Text("done".to_owned()));
+
+    assert_eq!(response.render(), "done");
+}

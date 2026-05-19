@@ -289,7 +289,7 @@ fn harness_roles_merge_with_built_ins() {
         manager
             .prompt_fragments
             .iter()
-            .any(|fragment| fragment.text.as_str().contains("use the `delegate` tool"))
+            .any(|fragment| fragment.text.as_str().contains("delegating to sub-agents"))
     );
 }
 
@@ -401,8 +401,8 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
         .expect("manager prompt fragment")
         .text
         .as_str();
-    assert!(prompt.contains("You are a manager/orchestrator agent"));
-    assert!(prompt.contains("use the `delegate` tool"));
+    assert!(prompt.contains("You are a planning and orchestration agent"));
+    assert!(prompt.contains("delegating to sub-agents"));
     assert!(prompt.contains("available sub-task roles list"));
 }
 
@@ -434,7 +434,7 @@ fn harness_default_roles_alias_still_loads() {
         manager
             .prompt_fragments
             .iter()
-            .any(|fragment| fragment.text.as_str().contains("use the `delegate` tool"))
+            .any(|fragment| fragment.text.as_str().contains("delegating to sub-agents"))
     );
     assert_eq!(
         manager.model.as_ref().map(ToString::to_string).as_deref(),

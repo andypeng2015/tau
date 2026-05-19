@@ -1078,7 +1078,7 @@ fn latest_tool_result(h: &Harness, session_id: &str, call_id: &str) -> CborValue
             SessionEntry::ToolResults { items } => items
                 .iter()
                 .find(|item| item.call_id.as_str() == call_id)
-                .map(|item| item.output.clone()),
+                .map(|item| item.output.raw.clone()),
             _ => None,
         })
         .expect("tool result")

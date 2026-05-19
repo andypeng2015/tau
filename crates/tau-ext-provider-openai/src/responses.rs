@@ -15,7 +15,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tau_proto::{ContentPart, ContextItem, ContextRole, ToolResultStatus};
+use tau_proto::{ContentPart, ContextItem, ContextRole, ToolResponseHeader, ToolResultStatus};
 
 use crate::common::{
     LlmError, PromptPayload, StreamState, cbor_to_json, effort_wire, mix_originator_into_cache_key,
@@ -1101,12 +1101,27 @@ fn convert_context_item(
         }
         ContextItem::ToolResult(result) => {
             let output = match &result.status {
-                ToolResultStatus::Success => match &result.output {
-                    tau_proto::CborValue::Text(text) => text.clone(),
-                    other => serde_json::to_string(&cbor_to_json(other)).unwrap_or_default(),
-                },
-                ToolResultStatus::Error { message } => format!("ERROR: {message}"),
-                ToolResultStatus::Cancelled { reason } => format!("CANCELLED: {reason}"),
+                ToolResultStatus::Success => result.output.render(),
+                ToolResultStatus::Error { message } => {
+                    let mut response = result.output.clone();
+                    response.headers.insert(
+                        0,
+                        ToolResponseHeader {
+                            key: "error".to_owned(),
+                            value: message.clone(),
+                        },
+                    );
+                    response.render()
+                }
+                ToolResultStatus::Cancelled { reason } => tau_proto::ToolResponse {
+                    raw: tau_proto::CborValue::Null,
+                    headers: vec![ToolResponseHeader {
+                        key: "cancelled".to_owned(),
+                        value: reason.clone(),
+                    }],
+                    body: String::new(),
+                }
+                .render(),
             };
             let output_type = match result.tool_type {
                 tau_proto::ToolType::Function => "function_call_output",

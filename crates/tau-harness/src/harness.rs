@@ -371,7 +371,7 @@ fn approx_context_item_provider_bytes(item: &ContextItem) -> u64 {
             };
             result.call_id.as_str().len() as u64
                 + status_bytes
-                + approx_cbor_json_bytes(&result.output)
+                + result.output.render().len() as u64
                 + 16
         }
         ContextItem::Reasoning(item)
@@ -735,51 +735,6 @@ where
         materialized
     }
 
-    fn cbor_result_text(value: &CborValue) -> String {
-        match value {
-            CborValue::Text(text) => text.clone(),
-            other => serde_json::to_string(&cbor_to_json(other)).unwrap_or_else(|_| String::new()),
-        }
-    }
-
-    fn cbor_to_json(value: &CborValue) -> serde_json::Value {
-        match value {
-            CborValue::Null => serde_json::Value::Null,
-            CborValue::Bool(value) => serde_json::Value::Bool(*value),
-            CborValue::Integer(value) => {
-                let value = i128::from(*value);
-                match i64::try_from(value) {
-                    Ok(n) => serde_json::json!(n),
-                    Err(_) => serde_json::Value::String(value.to_string()),
-                }
-            }
-            CborValue::Float(value) => serde_json::json!(value),
-            CborValue::Text(value) => serde_json::Value::String(value.clone()),
-            CborValue::Bytes(bytes) => serde_json::Value::Array(
-                bytes
-                    .iter()
-                    .map(|byte| serde_json::Value::Number((*byte).into()))
-                    .collect(),
-            ),
-            CborValue::Array(items) => {
-                serde_json::Value::Array(items.iter().map(cbor_to_json).collect())
-            }
-            CborValue::Map(entries) => {
-                let mut map = serde_json::Map::new();
-                for (key, value) in entries {
-                    let key = match key {
-                        CborValue::Text(text) => text.clone(),
-                        other => serde_json::to_string(&cbor_to_json(other)).unwrap_or_default(),
-                    };
-                    map.insert(key, cbor_to_json(value));
-                }
-                serde_json::Value::Object(map)
-            }
-            CborValue::Tag(_, inner) => cbor_to_json(inner),
-            _ => serde_json::Value::Null,
-        }
-    }
-
     let mut reader = FrameReader::new(BufReader::new(reader));
     let mut writer = FrameWriter::new(BufWriter::new(writer));
 
@@ -879,9 +834,7 @@ where
                         .context_items
                         .last()
                         .and_then(|item| match item {
-                            ContextItem::ToolResult(result) => {
-                                Some(cbor_result_text(&result.output))
-                            }
+                            ContextItem::ToolResult(result) => Some(result.output.render()),
                             _ => None,
                         })
                         .unwrap_or_default();

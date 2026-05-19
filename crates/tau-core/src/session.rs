@@ -381,7 +381,7 @@ impl SessionTree {
                 call_id: result.call_id.clone(),
                 tool_type: result.tool_type,
                 status: ToolResultStatus::Success,
-                output: result.result.clone(),
+                output: tau_proto::ToolResponse::from_cbor(&result.result),
             }),
             Event::ToolError(error) => self.record_terminal_tool_result(ToolResultItem {
                 call_id: error.call_id.clone(),
@@ -389,7 +389,12 @@ impl SessionTree {
                 status: ToolResultStatus::Error {
                     message: error.message.clone(),
                 },
-                output: error.details.clone().unwrap_or(tau_proto::CborValue::Null),
+                output: tau_proto::ToolResponse::from_cbor(
+                    error
+                        .details
+                        .as_ref()
+                        .unwrap_or(&tau_proto::CborValue::Null),
+                ),
             }),
             Event::ToolCancelled(cancelled) => self.record_terminal_tool_result(ToolResultItem {
                 call_id: cancelled.call_id.clone(),
@@ -397,7 +402,7 @@ impl SessionTree {
                 status: ToolResultStatus::Cancelled {
                     reason: "cancelled".to_owned(),
                 },
-                output: tau_proto::CborValue::Null,
+                output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Null),
             }),
             Event::UiNavigateTree(req) => {
                 let target = NodeId::new(req.node_id);

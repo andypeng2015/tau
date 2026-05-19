@@ -65,7 +65,7 @@ fn text_part(item: &ContextItem) -> Option<&str> {
         ContextItem::Message(message) => message.content.first().map(|part| match part {
             ContentPart::Text { text } => text.as_str(),
         }),
-        ContextItem::ToolResult(result) => match &result.output {
+        ContextItem::ToolResult(result) => match &result.output.raw {
             CborValue::Text(text) => Some(text.as_str()),
             _ => None,
         },

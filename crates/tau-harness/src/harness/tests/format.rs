@@ -7,7 +7,7 @@ fn format_session_entry_tree_preview_shows_grouped_tool_results() {
             call_id: "call_ugly".into(),
             tool_type: tau_proto::ToolType::Function,
             status: tau_proto::ToolResultStatus::Success,
-            output: CborValue::Text("hello".to_owned()),
+            output: tau_proto::ToolResponse::from_cbor(&CborValue::Text("hello".to_owned())),
         }],
     };
     assert_eq!(
@@ -20,7 +20,7 @@ fn format_session_entry_tree_preview_shows_grouped_tool_results() {
             call_id: "call_utf8".into(),
             tool_type: tau_proto::ToolType::Function,
             status: tau_proto::ToolResultStatus::Success,
-            output: CborValue::Text("é".repeat(81)),
+            output: tau_proto::ToolResponse::from_cbor(&CborValue::Text("é".repeat(81))),
         }],
     };
     let formatted = format_session_entry(&multibyte_result);

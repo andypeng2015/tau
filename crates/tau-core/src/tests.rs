@@ -972,7 +972,7 @@ fn session_tree_groups_terminal_tool_results_under_assistant_response() {
                 call_id: "call-1".into(),
                 tool_type: ToolType::Function,
                 status: ToolResultStatus::Success,
-                output: CborValue::Text("README".to_owned()),
+                output: tau_proto::ToolResponse::from_cbor(&CborValue::Text("README".to_owned())),
             }],
         }
     );
@@ -1160,13 +1160,17 @@ fn session_store_rejects_duplicate_terminal_tool_result_before_persisting() {
                     call_id: "call-1".into(),
                     tool_type: ToolType::Function,
                     status: ToolResultStatus::Success,
-                    output: CborValue::Text("first".to_owned()),
+                    output: tau_proto::ToolResponse::from_cbor(&CborValue::Text(
+                        "first".to_owned()
+                    )),
                 },
                 tau_proto::ToolResultItem {
                     call_id: "call-2".into(),
                     tool_type: ToolType::Function,
                     status: ToolResultStatus::Success,
-                    output: CborValue::Text("second".to_owned()),
+                    output: tau_proto::ToolResponse::from_cbor(&CborValue::Text(
+                        "second".to_owned()
+                    )),
                 },
             ],
         }

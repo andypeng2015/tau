@@ -916,7 +916,7 @@ fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output
             call_id: "call-patch".into(),
             tool_type: tau_proto::ToolType::Custom,
             status: ToolResultStatus::Success,
-            output: tau_proto::CborValue::Text("ok".into()),
+            output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Text("ok".into())),
         }),
     ];
     let request = PromptPayload {
@@ -1009,7 +1009,7 @@ fn build_request_chain_keeps_custom_tool_output_type_from_prior_history() {
             call_id: "call-custom".into(),
             tool_type: tau_proto::ToolType::Custom,
             status: ToolResultStatus::Success,
-            output: tau_proto::CborValue::Text("ok".into()),
+            output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Text("ok".into())),
         }),
     ];
     let request = PromptPayload {

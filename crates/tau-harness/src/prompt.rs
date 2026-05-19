@@ -978,7 +978,7 @@ alpha middle zeta "
         let ToolResultStatus::Error { message } = &tool_result.status else {
             panic!("expected error tool result status")
         };
-        let detail_text = cbor_to_text(&tool_result.output);
+        let detail_text = tool_result.output.render();
 
         assert!(
             message.contains("command exited with status 1"),

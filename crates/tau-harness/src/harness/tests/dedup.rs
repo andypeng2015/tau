@@ -126,14 +126,14 @@ fn cross_turn_identical_result_collapses_to_pointer() {
 
     let first = run_tool_result(&mut h, "s1", &cid, "call_first", "read", big.clone());
     assert!(
-        matches!(&first, ToolResultItem { status: ToolResultStatus::Success, output, .. } if output == &big),
+        matches!(&first, ToolResultItem { status: ToolResultStatus::Success, output, .. } if output.raw == big),
         "first occurrence is recorded verbatim, got: {first:?}"
     );
 
     let second = run_tool_result(&mut h, "s1", &cid, "call_second", "read", big.clone());
     assert_eq!(second.status, ToolResultStatus::Success);
     let dedup_result = second.output;
-    let CborValue::Text(text) = &dedup_result else {
+    let CborValue::Text(text) = &dedup_result.raw else {
         panic!("deduped result should be a CborValue::Text pointer; got: {dedup_result:?}");
     };
     assert!(
@@ -181,9 +181,9 @@ fn small_results_below_threshold_are_not_deduped() {
     assert_eq!(second.status, ToolResultStatus::Success);
     let r1 = first.output;
     let r2 = second.output;
-    assert_eq!(r1, small);
+    assert_eq!(r1.raw, small);
     assert_eq!(
-        r2, small,
+        r2.raw, small,
         "below-threshold results must not be deduped — pointer would be the same size or larger"
     );
 
@@ -220,7 +220,7 @@ fn pointer_entries_are_not_themselves_dedup_anchors() {
     let third = run_tool_result(&mut h, "s1", &cid, "call_third", "read", big.clone());
     assert_eq!(third.status, ToolResultStatus::Success);
     let result = third.output;
-    let CborValue::Text(text) = &result else {
+    let CborValue::Text(text) = &result.raw else {
         panic!("third occurrence should still dedup; got: {result:?}");
     };
     assert!(
@@ -278,7 +278,7 @@ fn identical_errors_collapse_but_distinct_details_stay() {
         "identical second error must dedup to a pointer; got message: {m2:?}",
     );
     assert!(
-        second.output == CborValue::Null,
+        second.output.raw == CborValue::Null,
         "deduped error should drop the details payload"
     );
 
@@ -340,7 +340,7 @@ fn dedup_map_rebuilds_on_session_restore() {
     let post = run_tool_result(&mut h, "s1", &cid, "call_post_restore", "read", big.clone());
     assert_eq!(post.status, ToolResultStatus::Success);
     let result = post.output;
-    let CborValue::Text(text) = &result else {
+    let CborValue::Text(text) = &result.raw else {
         panic!("post-restore identical result should dedup; got: {result:?}");
     };
     assert!(
@@ -379,7 +379,7 @@ fn new_session_reset_does_not_dedup_against_previous_branch() {
     assert_eq!(after.status, ToolResultStatus::Success);
     let result = after.output;
     assert_eq!(
-        result, big,
+        result.raw, big,
         "first result after /new must not dedup against an older branch that the model cannot see",
     );
 
@@ -435,7 +435,7 @@ fn dedup_is_scoped_to_a_single_branch() {
     assert_eq!(side_outcome.status, ToolResultStatus::Success);
     let result = side_outcome.output;
     assert_eq!(
-        result, big,
+        result.raw, big,
         "side conversation's first identical result must NOT dedup against the default \
          conv's prior result — the model on the side conversation can't see that earlier \
          output in its assembled history",

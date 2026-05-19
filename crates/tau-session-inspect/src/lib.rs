@@ -179,7 +179,7 @@ pub fn format_session_entry(entry: &SessionEntry) -> String {
 fn format_tool_result_item(item: &tau_proto::ToolResultItem) -> String {
     match &item.status {
         ToolResultStatus::Success => {
-            let preview = truncate_chars(&cbor_to_text(&item.output), 80);
+            let preview = truncate_chars(&item.output.render(), 80);
             format!("tool.result {} -> {preview}", item.call_id)
         }
         ToolResultStatus::Error { message } => {
@@ -260,40 +260,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// Convert a CBOR value to human-readable text for tool-result previews.
-fn cbor_to_text(v: &CborValue) -> String {
-    match v {
-        CborValue::Null => String::new(),
-        CborValue::Bool(b) => b.to_string(),
-        CborValue::Integer(i) => {
-            let n: i128 = (*i).into();
-            n.to_string()
-        }
-        CborValue::Float(f) => f.to_string(),
-        CborValue::Text(s) => s.clone(),
-        CborValue::Bytes(b) => format!("<{} bytes>", b.len()),
-        CborValue::Array(arr) => arr.iter().map(cbor_to_text).collect::<Vec<_>>().join("\n"),
-        CborValue::Map(entries) => {
-            let mut parts = Vec::new();
-            for (k, val) in entries {
-                let key = match k {
-                    CborValue::Text(s) => s.clone(),
-                    other => cbor_to_text(other),
-                };
-                let value = cbor_to_text(val);
-                if value.contains('\n') {
-                    parts.push(format!("{key}:\n{value}"));
-                } else {
-                    parts.push(format!("{key}: {value}"));
-                }
-            }
-            parts.join("\n")
-        }
-        CborValue::Tag(_, inner) => cbor_to_text(inner),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tau_proto::{ContextRole, MessageItem, ToolType};
@@ -347,7 +313,7 @@ mod tests {
                     call_id: "call-1".into(),
                     tool_type: ToolType::Function,
                     status: ToolResultStatus::Success,
-                    output: CborValue::Text("ok".into()),
+                    output: tau_proto::ToolResponse::from_cbor(&CborValue::Text("ok".into())),
                 },
                 tau_proto::ToolResultItem {
                     call_id: "call-2".into(),
@@ -355,7 +321,7 @@ mod tests {
                     status: ToolResultStatus::Error {
                         message: "failed".into(),
                     },
-                    output: CborValue::Null,
+                    output: tau_proto::ToolResponse::from_cbor(&CborValue::Null),
                 },
             ],
         };

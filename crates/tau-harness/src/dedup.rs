@@ -112,21 +112,21 @@ impl ResultDedupMap {
                         if is_dedup_pointer_value(&item.output) {
                             continue;
                         }
-                        let bytes = encode_for_hash(&item.output);
+                        let bytes = encode_tool_response_for_hash(&item.output);
                         (hash_truncated(&bytes), bytes.len())
                     }
                     ToolResultStatus::Error { message } => {
                         if message.starts_with(DEDUP_MARKER) {
                             continue;
                         }
-                        let bytes = encode_error_for_hash(message, Some(&item.output));
+                        let bytes = encode_error_response_for_hash(message, &item.output);
                         (hash_truncated(&bytes), bytes.len())
                     }
                     ToolResultStatus::Cancelled { reason } => {
                         if reason.starts_with(DEDUP_MARKER) {
                             continue;
                         }
-                        let bytes = encode_error_for_hash(reason, Some(&item.output));
+                        let bytes = encode_error_response_for_hash(reason, &item.output);
                         (hash_truncated(&bytes), bytes.len())
                     }
                 };
@@ -223,6 +223,23 @@ pub(crate) fn encode_error_for_hash(message: &str, details: Option<&CborValue>) 
     buf
 }
 
+pub(crate) fn encode_tool_response_for_hash(response: &tau_proto::ToolResponse) -> Vec<u8> {
+    encode_for_hash(&response.raw)
+}
+
+pub(crate) fn encode_error_response_for_hash(
+    message: &str,
+    response: &tau_proto::ToolResponse,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"err\x00");
+    buf.extend_from_slice(message.as_bytes());
+    buf.push(0);
+    ciborium::into_writer(&response.raw, &mut buf)
+        .expect("CborValue from tau_proto should always serialize back to CBOR");
+    buf
+}
+
 /// BLAKE3 of `bytes`, truncated to 16 bytes. See [`ResultHash`].
 pub(crate) fn hash_truncated(bytes: &[u8]) -> ResultHash {
     let digest = blake3::hash(bytes);
@@ -273,8 +290,8 @@ pub(crate) fn build_pointer_error_message(
 /// True when `value` is a previously-emitted dedup pointer rather
 /// than a real tool result. Recognized by the [`DEDUP_MARKER`] prefix
 /// on a `CborValue::Text` payload; any other shape is real content.
-pub(crate) fn is_dedup_pointer_value(value: &CborValue) -> bool {
-    matches!(value, CborValue::Text(s) if s.starts_with(DEDUP_MARKER))
+pub(crate) fn is_dedup_pointer_value(value: &tau_proto::ToolResponse) -> bool {
+    value.body.starts_with(DEDUP_MARKER)
 }
 
 #[cfg(test)]
@@ -293,7 +310,7 @@ mod tests {
                 call_id: ToolCallId::from(call_id),
                 tool_type: ToolType::Function,
                 status: ToolResultStatus::Success,
-                output: cbor_text(content),
+                output: tau_proto::ToolResponse::from_cbor(&cbor_text(content)),
             }],
         }
     }
@@ -310,7 +327,9 @@ mod tests {
         map.rebuild_from_branch(&entries, Some(NodeId::new(1)), DEFAULT_THRESHOLD_BYTES);
         // Only the big entry was over the threshold.
         assert_eq!(map.len(), 1);
-        let big_hash = hash_truncated(&encode_for_hash(&cbor_text(&big)));
+        let big_hash = hash_truncated(&encode_tool_response_for_hash(
+            &tau_proto::ToolResponse::from_cbor(&cbor_text(&big)),
+        ));
         assert_eq!(map.lookup(&big_hash).map(|c| c.as_str()), Some("call_big"),);
     }
 
@@ -377,7 +396,9 @@ mod tests {
             panic!("pointer should always be CborValue::Text");
         };
         assert!(s.starts_with(DEDUP_MARKER), "got: {s}");
-        assert!(is_dedup_pointer_value(&CborValue::Text(s)));
+        assert!(is_dedup_pointer_value(&tau_proto::ToolResponse::from_cbor(
+            &CborValue::Text(s),
+        )));
     }
 
     #[test]

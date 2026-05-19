@@ -2679,13 +2679,114 @@ pub enum ToolResultStatus {
     Cancelled { reason: String },
 }
 
+/// One rendered header in the text sent to a provider for a tool response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ToolResponseHeader {
+    /// Header key rendered before the `: ` separator.
+    pub key: String,
+    /// Header value rendered after the `: ` separator.
+    pub value: String,
+}
+
+/// Provider-facing text form of a tool response.
+///
+/// The canonical rendering is header lines in `<key>: <value>` form, followed
+/// by an empty line and then the tool-specific body. Tool result events still
+/// carry raw CBOR so extensions do not need to coordinate a wire-format
+/// migration; this type is the normalized boundary used before provider output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolResponse {
+    /// Original tool payload kept for non-provider consumers that need
+    /// structured data rather than rendered text.
+    pub raw: CborValue,
+    /// Structured headers rendered before the response body.
+    pub headers: Vec<ToolResponseHeader>,
+    /// Tool-specific response text rendered after the blank separator.
+    pub body: String,
+}
+
+impl ToolResponse {
+    /// Builds a normalized provider-facing response from a raw CBOR tool
+    /// result.
+    #[must_use]
+    pub fn from_cbor(value: &CborValue) -> Self {
+        match value {
+            CborValue::Map(entries) => Self::from_cbor_map(entries),
+            other => Self {
+                raw: other.clone(),
+                headers: Vec::new(),
+                body: cbor_tool_response_text(other),
+            },
+        }
+    }
+
+    /// Renders this response as header lines, a blank line, then body text.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        for header in &self.headers {
+            out.push_str(&header.key);
+            out.push_str(": ");
+            out.push_str(&header.value);
+            out.push('\n');
+        }
+        if !self.headers.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&self.body);
+        out
+    }
+
+    fn from_cbor_map(entries: &[(CborValue, CborValue)]) -> Self {
+        let raw = CborValue::Map(entries.to_vec());
+        let mut headers = Vec::new();
+        let mut body_parts = Vec::new();
+        for (key, value) in entries {
+            let key = cbor_tool_response_text(key);
+            let value = cbor_tool_response_text(value);
+            if value.contains('\n') || key == "line-numbered content" || key == "output" {
+                body_parts.push(format!("{key}:\n{value}"));
+            } else {
+                headers.push(ToolResponseHeader { key, value });
+            }
+        }
+        Self {
+            raw,
+            headers,
+            body: body_parts.join("\n"),
+        }
+    }
+}
+
+fn cbor_tool_response_text(value: &CborValue) -> String {
+    match value {
+        CborValue::Null => String::new(),
+        CborValue::Bool(b) => b.to_string(),
+        CborValue::Integer(i) => {
+            let n: i128 = (*i).into();
+            n.to_string()
+        }
+        CborValue::Float(f) => f.to_string(),
+        CborValue::Text(s) => s.clone(),
+        CborValue::Bytes(b) => format!("<{} bytes>", b.len()),
+        CborValue::Array(arr) => arr
+            .iter()
+            .map(cbor_tool_response_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        CborValue::Map(entries) => ToolResponse::from_cbor_map(entries).render(),
+        CborValue::Tag(_, inner) => cbor_tool_response_text(inner),
+        _ => String::new(),
+    }
+}
+
 /// One tool result item in the prompt timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultItem {
     pub call_id: ToolCallId,
     pub tool_type: ToolType,
     pub status: ToolResultStatus,
-    pub output: CborValue,
+    pub output: ToolResponse,
 }
 
 /// One item in Tau's prompt/response timeline.
