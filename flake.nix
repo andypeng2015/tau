@@ -27,6 +27,10 @@
         pkgs = nixpkgs.legacyPackages.${system};
         projectName = "tau";
         cargoCrap = pkgs.callPackage ./nix/pkgs/cargo-crap.nix { };
+        selfciPkg = selfci.packages.${system}.default;
+        mq = pkgs.writeShellScriptBin "mq" ''
+          exec ${selfciPkg}/bin/selfci mq "$@"
+        '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
           config = {
@@ -357,9 +361,10 @@
           ];
           packages = [
             cargoCrap
+            mq
             pkgs.cargo-nextest
             pkgs.taplo
-            selfci.packages.${system}.default
+            selfciPkg
           ];
         };
       }
