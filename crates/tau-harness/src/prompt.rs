@@ -7,7 +7,15 @@ use tau_proto::{CborValue, ContextItem, PromptContent, PromptFragment};
 
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 
+pub(crate) const BUILT_IN_SYSTEM_TEMPLATE_NAME: &str = "built-in";
 const BUILT_IN_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.hbs");
+
+pub(crate) fn built_in_system_prompt_templates() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::from([(
+        BUILT_IN_SYSTEM_TEMPLATE_NAME.to_owned(),
+        BUILT_IN_SYSTEM_PROMPT_TEMPLATE.to_owned(),
+    )])
+}
 
 /// Context made available to role prompt Handlebars templates.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +44,7 @@ pub(crate) fn build_system_prompt(
     prompt_fragments: &[PromptFragment],
 ) -> String {
     build_system_prompt_with_template_context(
+        BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
         skills,
         cwd,
         available_sub_task_roles_prompt,
@@ -47,6 +56,7 @@ pub(crate) fn build_system_prompt(
 
 /// Builds the system prompt with role prompt sections rendered as Handlebars.
 pub(crate) fn build_system_prompt_with_template_context(
+    system_template: &str,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     _cwd: &str,
     available_sub_task_roles_prompt: Option<&PromptContent>,
@@ -58,6 +68,7 @@ pub(crate) fn build_system_prompt_with_template_context(
     // tool-use channel, so the built-in system template doesn't restate them.
     let fragments: Vec<_> = prompt_fragments.to_vec();
     render_system_prompt_template(
+        system_template,
         template_context,
         skills,
         available_sub_task_roles_prompt,
@@ -67,6 +78,7 @@ pub(crate) fn build_system_prompt_with_template_context(
 }
 
 fn render_system_prompt_template(
+    system_template: &str,
     context: RolePromptTemplateContext<'_>,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     available_sub_task_roles_prompt: Option<&PromptContent>,
@@ -81,15 +93,25 @@ fn render_system_prompt_template(
         session_context,
     );
     let handlebars = prompt_template_renderer();
-    match handlebars.render_template(BUILT_IN_SYSTEM_PROMPT_TEMPLATE, &data) {
+    match handlebars.render_template(system_template, &data) {
         Ok(rendered) => rendered,
         Err(error) => {
             tracing::warn!(
                 role = context.role_name,
                 error = %error,
-                "failed to render built-in system prompt handlebars template; using unrendered template"
+                "failed to render system prompt handlebars template"
             );
-            BUILT_IN_SYSTEM_PROMPT_TEMPLATE.to_owned()
+            match handlebars.render_template(BUILT_IN_SYSTEM_PROMPT_TEMPLATE, &data) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    tracing::warn!(
+                        role = context.role_name,
+                        error = %error,
+                        "failed to render built-in system prompt handlebars template; using unrendered template"
+                    );
+                    BUILT_IN_SYSTEM_PROMPT_TEMPLATE.to_owned()
+                }
+            }
         }
     }
 }
@@ -516,6 +538,7 @@ mod tests {
     fn build_system_prompt_does_not_html_escape_cwd() {
         let skills = std::collections::HashMap::new();
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/a&b<quoted>",
             None,
@@ -562,6 +585,7 @@ mod tests {
         ];
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/work",
             None,
@@ -605,6 +629,7 @@ mod tests {
         )];
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/work",
             None,
@@ -649,6 +674,7 @@ mod tests {
         );
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/work",
             None,
@@ -691,6 +717,7 @@ alpha middle zeta "
         )];
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/work",
             None,
@@ -721,6 +748,7 @@ alpha middle zeta "
         )];
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &std::collections::HashMap::new(),
             "/tmp/work",
             None,
@@ -842,6 +870,7 @@ alpha middle zeta "
         ];
 
         let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
             &skills,
             "/tmp/work",
             None,

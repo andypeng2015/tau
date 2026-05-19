@@ -443,6 +443,11 @@ pub struct AgentRole {
     /// Handlebars templates and ordered together with tool/extension fragments.
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "promptFragments")]
     pub prompt_fragments: Vec<RolePromptFragment>,
+    /// Optional system prompt template name for this role. "built-in" selects
+    /// Tau's embedded default template. Other names resolve to
+    /// `<config_dir>/prompts/<name>.hbs`.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "promptOverride")]
+    pub prompt_override: Option<String>,
     /// Whether this role focuses on orchestrating and delegating work to
     /// sub-agents. Defaults semantically to false when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -483,6 +488,9 @@ impl AgentRole {
         }
         if !override_role.prompt_fragments.is_empty() {
             self.prompt_fragments = override_role.prompt_fragments.clone();
+        }
+        if let Some(prompt_override) = &override_role.prompt_override {
+            self.prompt_override = Some(prompt_override.clone());
         }
         if let Some(orchestrator) = override_role.orchestrator {
             self.orchestrator = Some(orchestrator);

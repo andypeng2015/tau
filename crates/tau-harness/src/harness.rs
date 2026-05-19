@@ -53,8 +53,9 @@ use crate::model::{
     selected_params_for_role, thinking_summaries_for_model, verbosities_for_model,
 };
 use crate::prompt::{
-    RolePromptTemplateContext, assemble_conversation_from, assemble_prompt_context_from,
-    build_system_prompt_with_template_context, cbor_map_bool, render_agents_context_message,
+    BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, assemble_conversation_from,
+    assemble_prompt_context_from, build_system_prompt_with_template_context,
+    built_in_system_prompt_templates, cbor_map_bool, render_agents_context_message,
 };
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::turn::{PromptSubmission, TurnState};
@@ -66,6 +67,35 @@ const BUILT_IN_SKILLS_SOURCE_ID: &str = "harness:built-in-skills";
 const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";
 const SELF_KNOWLEDGE_BUILD_DATE_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_BUILD_DATE__";
+
+fn load_system_prompt_templates(config_dir: Option<&Path>) -> HashMap<String, String> {
+    let mut templates = built_in_system_prompt_templates();
+    let Some(config_dir) = config_dir else {
+        return templates;
+    };
+    let prompts_dir = config_dir.join("prompts");
+    let Ok(entries) = std::fs::read_dir(prompts_dir) else {
+        return templates;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("hbs") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                templates.insert(name.to_owned(), content);
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), error = %error, "failed to read prompt template");
+            }
+        }
+    }
+    templates
+}
 
 #[derive(Clone, Debug)]
 struct SessionContextContribution {
@@ -624,6 +654,8 @@ pub(crate) struct Harness {
     /// Extension-level prompt fragments keyed by source connection and name.
     pub(crate) extension_prompt_fragments:
         BTreeMap<tau_proto::ConnectionId, BTreeMap<String, PromptFragment>>,
+    /// Loaded system prompt templates keyed by template name.
+    pub(crate) system_prompt_templates: HashMap<String, String>,
     /// Sessions whose AGENTS/skill discovery has completed.
     pub(crate) initialized_sessions: std::collections::HashSet<SessionId>,
     /// Session prompt IDs that have already been completed by the agent.
@@ -1019,6 +1051,7 @@ impl Harness {
         }
 
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
+        let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
         let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
         let selected_model =
@@ -1097,6 +1130,7 @@ impl Harness {
             discovered_agents_files: Vec::new(),
             session_context: SessionContextStore::default(),
             extension_prompt_fragments: BTreeMap::new(),
+            system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             pending_tool_invocations: VecDeque::new(),
@@ -1230,6 +1264,7 @@ impl Harness {
 
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "loading harness settings");
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
+        let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
         let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
         let selected_model =
@@ -1309,6 +1344,7 @@ impl Harness {
             discovered_agents_files: Vec::new(),
             session_context: SessionContextStore::default(),
             extension_prompt_fragments: BTreeMap::new(),
+            system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             pending_tool_invocations: VecDeque::new(),
@@ -5051,7 +5087,9 @@ impl Harness {
             .unwrap_or(false)
             .then(|| self.available_sub_task_roles_prompt());
         let prompt_fragments = self.gather_prompt_fragments_for_role(role_name);
+        let system_template = self.system_template_for_role(role_name);
         build_system_prompt_with_template_context(
+            system_template,
             &self.discovered_skills,
             cwd,
             available_sub_task_roles_prompt.as_ref(),
@@ -5060,6 +5098,22 @@ impl Harness {
                 .template_value(&self.current_session_id),
             RolePromptTemplateContext { role_name, cwd },
         )
+    }
+
+    fn system_template_for_role(&self, role_name: &str) -> &str {
+        let template_name = self
+            .available_roles
+            .get(role_name)
+            .and_then(|role| role.prompt_override.as_deref())
+            .unwrap_or(BUILT_IN_SYSTEM_TEMPLATE_NAME);
+        self.system_prompt_templates
+            .get(template_name)
+            .or_else(|| {
+                self.system_prompt_templates
+                    .get(BUILT_IN_SYSTEM_TEMPLATE_NAME)
+            })
+            .map(String::as_str)
+            .unwrap_or("")
     }
 
     fn available_sub_task_roles_prompt(&self) -> tau_proto::PromptContent {
