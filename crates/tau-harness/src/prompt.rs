@@ -3,12 +3,20 @@
 //! [`tau_core::SessionTree`] into item-based prompt context.
 
 use tau_core::SessionEntry;
-use tau_proto::{CborValue, ContextItem, PromptContent, PromptHook, PromptPriority};
+use tau_proto::{CborValue, ContextItem, PromptContent, PromptHook};
 
-use crate::dedup::DEDUP_MARKER;
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 
-const ROLE_EXTRA_PROMPT_PRIORITY: PromptPriority = PromptPriority::new(1000);
+const BUILT_IN_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.hbs");
+
+/// Context made available to role prompt Handlebars templates.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RolePromptTemplateContext<'a> {
+    /// Name of the role whose prompt is being rendered.
+    pub(crate) role_name: &'a str,
+    /// Current working directory for this prompt.
+    pub(crate) cwd: &'a str,
+}
 
 /// Builds the system prompt from Tau defaults plus role/tool prompt hooks.
 ///
@@ -19,6 +27,7 @@ const ROLE_EXTRA_PROMPT_PRIORITY: PromptPriority = PromptPriority::new(1000);
 /// including it would invalidate the prompt cache every midnight
 /// UTC. cwd is threaded in from the caller so the caller owns the
 /// source of truth.
+#[cfg(test)]
 pub(crate) fn build_system_prompt(
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     cwd: &str,
@@ -27,121 +36,203 @@ pub(crate) fn build_system_prompt(
     available_sub_task_roles_prompt: Option<&PromptContent>,
     tool_prompt_hook: &PromptHook,
 ) -> String {
-    // Tool definitions are delivered out-of-band via the provider's
-    // tool-use channel, so we don't restate them here.
-    let mut prompt = format!(
-        "You are an expert coding assistant operating inside Tau, \
-         a coding agent harness. You help users by reading files, executing commands, \
-         editing code, and writing new files.\n\n\
-         You can call multiple tools in a single response. \
-         If you intend to call multiple tools and there are no dependencies between the calls, \
-         make all independent tool calls in parallel in the same response. \
-         Maximize use of parallel tool calls where possible to increase efficiency. \
-         However, if some tool calls depend on previous calls to inform dependent values, \
-         do NOT call these tools in parallel and instead call them sequentially. \
-         For instance, if one operation must complete before another starts, \
-         run these operations sequentially instead.\n\n\
-         Tau deduplicates tool result outputs. `{DEDUP_MARKER}` results are \
-         not errors, but an optimization pointing at an earlier identical result.\n\n",
-    );
-
-    // Available skills section.
-    let mut prompt_skills: Vec<_> = skills.iter().filter(|(_, s)| s.add_to_prompt).collect();
-    prompt_skills.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
-    if !prompt_skills.is_empty() {
-        prompt.push_str(
-            "\nSkills provide specialized instructions for specific tasks.\n\
-             Below are skills you should be initially aware of. Use the skill tool to load a skill, and search for more skills.\n\n\
-             <available_skills>\n",
-        );
-        for (name, skill) in &prompt_skills {
-            let description = tau_skills::truncate_description(&skill.description);
-            prompt.push_str(&format!(
-                "  <skill>\n    <name>{}</name>\n    \
-                 <description>{}</description>\n  </skill>\n",
-                xml_escape(name.as_str()),
-                xml_escape(description.as_ref()),
-            ));
-        }
-        prompt.push_str("</available_skills>\n");
-    }
-
-    prompt.push_str(&format!("\nCurrent working directory: {cwd}\n"));
-
-    compose_system_prompt(
-        prompt,
+    build_system_prompt_with_template_context(
+        skills,
+        cwd,
         role_prompt,
         role_extra_prompt,
+        available_sub_task_roles_prompt,
+        tool_prompt_hook,
+        RolePromptTemplateContext { role_name: "", cwd },
+    )
+}
+
+/// Builds the system prompt with role prompt sections rendered as Handlebars.
+pub(crate) fn build_system_prompt_with_template_context(
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+    _cwd: &str,
+    role_prompt: Option<&PromptContent>,
+    role_extra_prompt: Option<&PromptContent>,
+    available_sub_task_roles_prompt: Option<&PromptContent>,
+    tool_prompt_hook: &PromptHook,
+    template_context: RolePromptTemplateContext<'_>,
+) -> String {
+    // Tool definitions are delivered out-of-band via the provider's
+    // tool-use channel, so the built-in system template doesn't restate them.
+    let role_prompt =
+        role_prompt.map(|content| render_role_prompt_template(content, template_context, skills));
+    let role_extra_prompt = role_extra_prompt
+        .map(|content| render_role_prompt_template(content, template_context, skills));
+    render_system_prompt_template(
+        template_context,
+        skills,
+        role_prompt.as_ref(),
+        role_extra_prompt.as_ref(),
         available_sub_task_roles_prompt,
         tool_prompt_hook,
     )
 }
 
-fn compose_system_prompt(
-    tau_system_prompt: String,
+fn render_system_prompt_template(
+    context: RolePromptTemplateContext<'_>,
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     role_prompt: Option<&PromptContent>,
     role_extra_prompt: Option<&PromptContent>,
     available_sub_task_roles_prompt: Option<&PromptContent>,
     tool_prompt_hook: &PromptHook,
 ) -> String {
-    let mut prompt = tau_system_prompt.trim_end().to_owned();
-
-    let mut role_extra_prompt_hook = PromptHook::new();
-    if let Some(content) = role_extra_prompt
-        && !content.is_empty()
-    {
-        role_extra_prompt_hook.insert((ROLE_EXTRA_PROMPT_PRIORITY, content.clone()));
-    }
-
-    let has_role_prompt = role_prompt.is_some_and(|content| !content.is_empty());
-    let has_role_extra = !role_extra_prompt_hook.is_empty();
-    let has_available_roles =
-        available_sub_task_roles_prompt.is_some_and(|content| !content.is_empty());
-    if has_role_prompt || has_role_extra || has_available_roles {
-        prompt.push_str("\n\n");
-        if let Some(content) = role_prompt
-            && !content.is_empty()
-        {
-            prompt.push_str(content.as_str());
-        }
-        if has_role_prompt && has_role_extra {
-            prompt.push('\n');
-        }
-        append_prompt_hook(&mut prompt, &role_extra_prompt_hook);
-        if (has_role_prompt || has_role_extra) && has_available_roles {
-            prompt.push_str("\n\n");
-        }
-        if let Some(content) = available_sub_task_roles_prompt
-            && !content.is_empty()
-        {
-            prompt.push_str(content.as_str());
+    let data = system_prompt_template_data(
+        context,
+        skills,
+        role_prompt,
+        role_extra_prompt,
+        available_sub_task_roles_prompt,
+        tool_prompt_hook,
+    );
+    let handlebars = prompt_template_renderer();
+    match handlebars.render_template(BUILT_IN_SYSTEM_PROMPT_TEMPLATE, &data) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            tracing::warn!(
+                role = context.role_name,
+                error = %error,
+                "failed to render built-in system prompt handlebars template; using unrendered template"
+            );
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE.to_owned()
         }
     }
-
-    if prompt_hook_has_content(tool_prompt_hook) {
-        prompt.push_str("\n\n");
-        append_prompt_hook(&mut prompt, tool_prompt_hook);
-    }
-
-    prompt.push('\n');
-    prompt
 }
 
-fn prompt_hook_has_content(hook: &PromptHook) -> bool {
-    hook.iter().any(|(_, content)| !content.is_empty())
+fn render_role_prompt_template(
+    content: &PromptContent,
+    context: RolePromptTemplateContext<'_>,
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+) -> PromptContent {
+    if content.is_empty() {
+        return content.clone();
+    }
+    let data = role_prompt_template_data(context, skills);
+    let handlebars = prompt_template_renderer();
+    match handlebars.render_template(content.as_str(), &data) {
+        Ok(rendered) => PromptContent::new(rendered),
+        Err(error) => {
+            tracing::warn!(
+                role = context.role_name,
+                error = %error,
+                "failed to render role prompt handlebars template; using unrendered prompt"
+            );
+            content.clone()
+        }
+    }
 }
 
-fn append_prompt_hook(prompt: &mut String, hook: &PromptHook) {
-    let mut first = true;
-    for (_, content) in hook {
-        if content.is_empty() {
-            continue;
-        }
-        if !first {
-            prompt.push_str("\n\n");
-        }
-        prompt.push_str(content.as_str());
-        first = false;
+fn role_prompt_template_data(
+    context: RolePromptTemplateContext<'_>,
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "cwd": context.cwd,
+        "role": {
+            "name": context.role_name,
+        },
+        "skills": role_prompt_template_skills(skills),
+    })
+}
+
+fn system_prompt_template_data(
+    context: RolePromptTemplateContext<'_>,
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+    role_prompt: Option<&PromptContent>,
+    role_extra_prompt: Option<&PromptContent>,
+    available_sub_task_roles_prompt: Option<&PromptContent>,
+    tool_prompt_hook: &PromptHook,
+) -> serde_json::Value {
+    let mut data = role_prompt_template_data(context, skills);
+    let object = data
+        .as_object_mut()
+        .expect("system prompt template data is an object");
+    object.insert("role_prompt".to_owned(), prompt_content_value(role_prompt));
+    object.insert(
+        "role_extra_prompt".to_owned(),
+        prompt_content_value(role_extra_prompt),
+    );
+    object.insert(
+        "available_sub_task_roles_prompt".to_owned(),
+        prompt_content_value(available_sub_task_roles_prompt),
+    );
+    object.insert(
+        "tool_prompt_hooks".to_owned(),
+        prompt_hook_template_parts(tool_prompt_hook),
+    );
+    data
+}
+
+fn prompt_content_value(content: Option<&PromptContent>) -> serde_json::Value {
+    content
+        .filter(|content| !content.is_empty())
+        .map(|content| serde_json::Value::String(content.as_str().to_owned()))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn prompt_hook_template_parts(hook: &PromptHook) -> serde_json::Value {
+    serde_json::Value::Array(
+        hook.iter()
+            .filter(|(_, content)| !content.is_empty())
+            .map(|(_, content)| {
+                serde_json::json!({
+                    "content": content.as_str(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn prompt_template_renderer() -> handlebars::Handlebars<'static> {
+    let mut handlebars = handlebars::Handlebars::new();
+    handlebars.set_strict_mode(true);
+    handlebars.register_escape_fn(handlebars::no_escape);
+    handlebars.register_helper("sort", Box::new(SortHelper));
+    handlebars.register_helper("xml_escape", Box::new(XmlEscapeHelper));
+    handlebars
+}
+
+fn role_prompt_template_skills(
+    skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+) -> Vec<serde_json::Value> {
+    let mut skills: Vec<_> = skills
+        .iter()
+        .filter(|(_, skill)| skill.add_to_prompt)
+        .map(|(name, skill)| {
+            serde_json::json!({
+                "name": name.as_str(),
+                "description": tau_skills::truncate_description(&skill.description),
+            })
+        })
+        .collect();
+    skills.sort_by(|a, b| compare_template_values(a, b, Some("name")));
+    skills
+}
+
+struct XmlEscapeHelper;
+
+impl handlebars::HelperDef for XmlEscapeHelper {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &handlebars::Helper<'rc>,
+        _: &'reg handlebars::Handlebars<'reg>,
+        _: &'rc handlebars::Context,
+        _: &mut handlebars::RenderContext<'reg, 'rc>,
+    ) -> Result<handlebars::ScopedJson<'rc>, handlebars::RenderError> {
+        use handlebars::JsonRender;
+
+        let Some(value) = h.param(0) else {
+            return Ok(handlebars::ScopedJson::Derived(serde_json::Value::String(
+                String::new(),
+            )));
+        };
+        Ok(handlebars::ScopedJson::Derived(serde_json::Value::String(
+            xml_escape(&value.value().render()),
+        )))
     }
 }
 
@@ -158,6 +249,61 @@ fn xml_escape(text: &str) -> String {
         }
     }
     escaped
+}
+
+struct SortHelper;
+
+impl handlebars::HelperDef for SortHelper {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &handlebars::Helper<'rc>,
+        _: &'reg handlebars::Handlebars<'reg>,
+        _: &'rc handlebars::Context,
+        _: &mut handlebars::RenderContext<'reg, 'rc>,
+    ) -> Result<handlebars::ScopedJson<'rc>, handlebars::RenderError> {
+        let Some(values) = h.param(0).and_then(|param| param.value().as_array()) else {
+            return Ok(handlebars::ScopedJson::Derived(serde_json::Value::Array(
+                Vec::new(),
+            )));
+        };
+        let key = h.hash_get("by").and_then(|param| param.value().as_str());
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| compare_template_values(a, b, key));
+        Ok(handlebars::ScopedJson::Derived(serde_json::Value::Array(
+            sorted,
+        )))
+    }
+}
+
+fn compare_template_values(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+    key: Option<&str>,
+) -> std::cmp::Ordering {
+    let a = key.and_then(|key| a.get(key)).unwrap_or(a);
+    let b = key.and_then(|key| b.get(key)).unwrap_or(b);
+    match (a, b) {
+        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => a
+            .as_f64()
+            .partial_cmp(&b.as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (serde_json::Value::String(a), serde_json::Value::String(b)) => a.cmp(b),
+        (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a.cmp(b),
+        _ => value_type_rank(a)
+            .cmp(&value_type_rank(b))
+            .then_with(|| a.to_string().cmp(&b.to_string())),
+    }
+}
+
+fn value_type_rank(value: &serde_json::Value) -> u8 {
+    match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Bool(_) => 1,
+        serde_json::Value::Number(_) => 2,
+        serde_json::Value::String(_) => 3,
+        serde_json::Value::Array(_) => 4,
+        serde_json::Value::Object(_) => 5,
+    }
 }
 
 pub(crate) fn render_agents_context_message<'a>(
@@ -343,6 +489,17 @@ mod tests {
         })
     }
 
+    fn discovered_skill(description: &str, add_to_prompt: bool) -> DiscoveredSkill {
+        DiscoveredSkill {
+            source_id: "test-extension".into(),
+            description: description.to_owned(),
+            source: crate::discovery::DiscoveredSkillSource::BuiltIn {
+                content: std::borrow::Cow::Borrowed(""),
+            },
+            add_to_prompt,
+        }
+    }
+
     #[test]
     fn build_system_prompt_includes_cwd() {
         let skills = std::collections::HashMap::new();
@@ -358,6 +515,24 @@ mod tests {
         assert!(prompt.contains("Current working directory: /tmp/work"));
     }
 
+    /// Prompt templates are not HTML documents. Path-like context must render
+    /// exactly so the model can pass it back to shell/file tools.
+    #[test]
+    fn build_system_prompt_does_not_html_escape_cwd() {
+        let skills = std::collections::HashMap::new();
+        let prompt = build_system_prompt(
+            &skills,
+            "/tmp/a&b<quoted>",
+            None,
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+        );
+
+        assert!(prompt.contains("Current working directory: /tmp/a&b<quoted>"));
+        assert!(!prompt.contains("/tmp/a&amp;b&lt;quoted&gt;"));
+    }
+
     #[test]
     fn build_system_prompt_encourages_parallel_tool_calls() {
         let skills = std::collections::HashMap::new();
@@ -371,6 +546,141 @@ mod tests {
         );
         assert!(prompt.contains("parallel"));
         assert!(prompt.contains("make all independent tool calls in parallel"));
+    }
+
+    /// Role prompts are configuration templates. They should be rendered just
+    /// before insertion so prompts can refer to stable per-prompt context.
+    #[test]
+    fn build_system_prompt_renders_role_prompt_handlebars_context() {
+        let skills = std::collections::HashMap::new();
+        let role_prompt =
+            tau_proto::PromptContent::new("ROLE {{role.name}} is working in {{cwd}}.");
+        let role_extra = tau_proto::PromptContent::new("EXTRA {{role.name}}");
+
+        let prompt = build_system_prompt_with_template_context(
+            &skills,
+            "/tmp/work",
+            Some(&role_prompt),
+            Some(&role_extra),
+            None,
+            &tau_proto::PromptHook::new(),
+            RolePromptTemplateContext {
+                role_name: "smart",
+                cwd: "/tmp/work",
+            },
+        );
+
+        assert!(prompt.contains("ROLE smart is working in /tmp/work"));
+        assert!(prompt.contains("EXTRA smart"));
+        assert!(!prompt.contains("{{role.name}}"));
+    }
+
+    /// Templates receive the prompt-visible skills and can sort them
+    /// explicitly so custom role prompts control their presentation.
+    #[test]
+    fn build_system_prompt_exposes_sortable_skills_to_handlebars() {
+        let skills = std::collections::HashMap::from([
+            (
+                tau_proto::SkillName::from("zeta"),
+                discovered_skill("last skill", true),
+            ),
+            (
+                tau_proto::SkillName::from("alpha"),
+                discovered_skill("first skill", true),
+            ),
+            (
+                tau_proto::SkillName::from("hidden"),
+                discovered_skill("hidden skill", false),
+            ),
+        ]);
+        let role_prompt = tau_proto::PromptContent::new(
+            r#"Skills:
+{{#each (sort skills by="name")}}* {{name}} - {{description}}
+{{/each}}"#,
+        );
+
+        let prompt = build_system_prompt_with_template_context(
+            &skills,
+            "/tmp/work",
+            Some(&role_prompt),
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+            RolePromptTemplateContext {
+                role_name: "smart",
+                cwd: "/tmp/work",
+            },
+        );
+
+        let alpha = prompt.find("* alpha - first skill").expect("alpha skill");
+        let zeta = prompt.find("* zeta - last skill").expect("zeta skill");
+        assert!(alpha < zeta);
+        assert!(!prompt.contains("hidden skill"));
+    }
+
+    /// The built-in skills section is XML-shaped, so it must escape only that
+    /// section explicitly even though prompt templates otherwise render raw
+    /// text for paths and user-authored role instructions.
+    #[test]
+    fn build_system_prompt_xml_escapes_builtin_skill_section() {
+        let skills = std::collections::HashMap::from([(
+            tau_proto::SkillName::from("a&b"),
+            discovered_skill("use <fast> \"mode\"", true),
+        )]);
+
+        let prompt = build_system_prompt(
+            &skills,
+            "/tmp/work",
+            None,
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+        );
+
+        assert!(prompt.contains("<name>a&amp;b</name>"));
+        assert!(prompt.contains("<description>use &lt;fast&gt; &quot;mode&quot;</description>"));
+    }
+
+    /// Without a `by` hash, the sort helper sorts the items themselves rather
+    /// than assuming object-shaped values with a `name` field.
+    #[test]
+    fn build_system_prompt_sort_helper_sorts_scalar_items_without_default_key() {
+        let skills = std::collections::HashMap::new();
+        let role_prompt = tau_proto::PromptContent::new(
+            r#"{{#each (sort numbers)}}{{this}} {{/each}}
+{{#each (sort words)}}{{this}} {{/each}}"#,
+        );
+
+        let prompt = build_system_prompt_with_template_context(
+            &skills,
+            "/tmp/work",
+            Some(&role_prompt),
+            None,
+            None,
+            &tau_proto::PromptHook::new(),
+            RolePromptTemplateContext {
+                role_name: "smart",
+                cwd: "/tmp/work",
+            },
+        );
+
+        // Missing variables keep this role template from rendering in strict
+        // mode, so exercise the helper directly with the shared renderer.
+        let data = serde_json::json!({
+            "numbers": [10, 2, 1],
+            "words": ["zeta", "alpha", "middle"],
+        });
+        let handlebars = prompt_template_renderer();
+        let rendered = handlebars
+            .render_template(role_prompt.as_str(), &data)
+            .expect("template renders");
+
+        assert_eq!(
+            rendered,
+            "1 2 10 
+alpha middle zeta "
+        );
+        assert!(prompt.contains("Current working directory: /tmp/work"));
     }
 
     /// Orchestrator roles append the available sub-task roles after the

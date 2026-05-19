@@ -28,6 +28,7 @@ blake3.workspace = true
 bon.workspace = true
 ciborium.workspace = true
 dirs.workspace = true
+handlebars.workspace = true
 json5.workspace = true
 libc.workspace = true
 serde.workspace = true

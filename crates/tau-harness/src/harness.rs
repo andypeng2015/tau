@@ -53,8 +53,8 @@ use crate::model::{
     selected_params_for_role, thinking_summaries_for_model, verbosities_for_model,
 };
 use crate::prompt::{
-    assemble_conversation_from, assemble_prompt_context_from, build_system_prompt, cbor_map_bool,
-    render_agents_context_message,
+    RolePromptTemplateContext, assemble_conversation_from, assemble_prompt_context_from,
+    build_system_prompt_with_template_context, cbor_map_bool, render_agents_context_message,
 };
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::turn::{PromptSubmission, TurnState};
@@ -4927,13 +4927,14 @@ impl Harness {
             .unwrap_or(false)
             .then(|| self.available_sub_task_roles_prompt());
         let tool_prompt_hook = self.gather_tool_prompt_hook_for_role(role_name);
-        build_system_prompt(
+        build_system_prompt_with_template_context(
             &self.discovered_skills,
             cwd,
             role_prompt,
             current_role.and_then(|role| role.extra_prompt.as_ref()),
             available_sub_task_roles_prompt.as_ref(),
             &tool_prompt_hook,
+            RolePromptTemplateContext { role_name, cwd },
         )
     }
 
