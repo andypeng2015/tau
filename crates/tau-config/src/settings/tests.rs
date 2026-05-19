@@ -245,9 +245,9 @@ fn harness_roles_merge_with_built_ins() {
     assert_eq!(foreman.orchestrator, Some(true));
     assert!(
         foreman
-            .prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.as_str().contains("use the `delegate` tool"))
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str().contains("use the `delegate` tool"))
     );
 }
 
@@ -271,12 +271,12 @@ fn harness_foreman_partial_override_keeps_built_in_prompt_and_orchestrator_flag(
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     let foreman = &s.roles["foreman"];
     assert_eq!(foreman.orchestrator, Some(true));
-    assert!(
-        foreman
-            .prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.as_str().contains("self-contained instructions"))
-    );
+    assert!(foreman.prompt_fragments.iter().any(|fragment| {
+        fragment
+            .text
+            .as_str()
+            .contains("self-contained instructions")
+    }));
     assert_eq!(
         foreman.model.as_ref().map(ToString::to_string).as_deref(),
         Some("openai/gpt-5.5")
@@ -285,15 +285,14 @@ fn harness_foreman_partial_override_keeps_built_in_prompt_and_orchestrator_flag(
 
 #[test]
 fn harness_foreman_prompt_override_replaces_built_in_prompt() {
-    // A user-provided role prompt is an override of the built-in role prompt;
-    // extraPrompt remains the append point for additive instructions.
+    // User-provided role prompt fragments replace the built-in role fragments.
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
         dir.join("harness.json5"),
         r#"{
             roles: {
-                foreman: { prompt: "Custom foreman prompt." },
+                foreman: { promptFragments: [{ name: "foreman.custom", priority: 100, text: "Custom foreman prompt." }] },
             },
         }"#,
     )
@@ -302,14 +301,17 @@ fn harness_foreman_prompt_override_replaces_built_in_prompt() {
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     let foreman = &s.roles["foreman"];
     assert_eq!(
-        foreman.prompt.as_ref().map(|prompt| prompt.as_str()),
+        foreman
+            .prompt_fragments
+            .first()
+            .map(|fragment| fragment.text.as_str()),
         Some("Custom foreman prompt.")
     );
     assert_eq!(foreman.orchestrator, Some(true));
 }
 
 #[test]
-fn harness_role_prompt_fields_parse_as_plain_strings() {
+fn harness_role_prompt_fragments_parse_as_plain_strings() {
     // Role prompt customization must keep harness.json5 ergonomic: users write
     // prompt text directly instead of nested newtype objects.
     let td = TempDir::new().expect("tempdir");
@@ -319,8 +321,10 @@ fn harness_role_prompt_fields_parse_as_plain_strings() {
         r#"{
             roles: {
                 custom: {
-                    prompt: "You are a focused reviewer.",
-                    extraPrompt: "Prefer small patches.",
+                    promptFragments: [
+                        { name: "custom.reviewer", priority: 100, text: "You are a focused reviewer." },
+                        { name: "custom.patch-style", priority: 200, text: "Prefer small patches." },
+                    ],
                 },
             },
         }"#,
@@ -330,11 +334,15 @@ fn harness_role_prompt_fields_parse_as_plain_strings() {
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     let role = &s.roles["custom"];
     assert_eq!(
-        role.prompt.as_ref().map(|p| p.as_str()),
+        role.prompt_fragments
+            .first()
+            .map(|fragment| fragment.text.as_str()),
         Some("You are a focused reviewer.")
     );
     assert_eq!(
-        role.extra_prompt.as_ref().map(|p| p.as_str()),
+        role.prompt_fragments
+            .get(1)
+            .map(|fragment| fragment.text.as_str()),
         Some("Prefer small patches.")
     );
 }
@@ -344,21 +352,20 @@ fn harness_built_in_roles_load_from_json_with_foreman_prompt() {
     // Built-in role defaults live in built-in.harness.json5. Foreman has a
     // visible built-in prompt there; the individual-contributor roles do not.
     let s = HarnessSettings::built_in();
-    assert!(s.roles["smart"].prompt.is_none());
-    assert!(s.roles["deep"].prompt.is_none());
-    assert!(s.roles["rush"].prompt.is_none());
+    assert!(s.roles["smart"].prompt_fragments.is_empty());
+    assert!(s.roles["deep"].prompt_fragments.is_empty());
+    assert!(s.roles["rush"].prompt_fragments.is_empty());
     let foreman = &s.roles["foreman"];
     assert_eq!(foreman.orchestrator, Some(true));
-    let prompt = foreman.prompt.as_ref().expect("foreman prompt").as_str();
+    let prompt = foreman
+        .prompt_fragments
+        .first()
+        .expect("foreman prompt fragment")
+        .text
+        .as_str();
     assert!(prompt.contains("You are a foreman/orchestrator agent"));
     assert!(prompt.contains("use the `delegate` tool"));
     assert!(prompt.contains("available sub-task roles list"));
-    for (name, role) in &s.roles {
-        assert!(
-            role.extra_prompt.is_none(),
-            "built-in role {name} has extraPrompt"
-        );
-    }
 }
 
 #[test]
@@ -388,9 +395,9 @@ fn harness_default_roles_alias_still_loads() {
     assert_eq!(foreman.orchestrator, Some(true));
     assert!(
         foreman
-            .prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.as_str().contains("use the `delegate` tool"))
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str().contains("use the `delegate` tool"))
     );
     assert_eq!(
         foreman.model.as_ref().map(ToString::to_string).as_deref(),
