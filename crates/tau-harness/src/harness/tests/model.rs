@@ -399,7 +399,7 @@ fn role_baseline_ignores_persisted_role_overrides() {
     )
     .expect("write harness config");
     std::fs::write(
-        state_dir.join("harness.yaml"),
+        state_dir.join("harness.json"),
         r#"{
             "role_overrides": {
                 "smart": { "model": "openai/gpt-4.1", "effort": "low", "verbosity": "high" }
@@ -466,7 +466,7 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     )
     .expect("write harness config");
     std::fs::write(
-        state_dir.join("harness.yaml"),
+        state_dir.join("harness.json"),
         r#"{
             "last_selected_role": "smart",
             "role_overrides": {
@@ -508,7 +508,7 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     assert!(runtime_override.prompt_fragments.is_empty());
 
     save_role_overrides(&dirs, &selected_role, &roles);
-    let saved = std::fs::read_to_string(state_dir.join("harness.yaml")).expect("read state");
+    let saved = std::fs::read_to_string(state_dir.join("harness.json")).expect("read state");
     assert!(
         !saved.contains("description"),
         "saved state must strip description: {saved}"
@@ -592,7 +592,7 @@ fn load_roles_falls_back_to_smart_role_while_models_are_provider_owned() {
     )
     .expect("write harness config");
     std::fs::write(
-        state_dir.join("harness.yaml"),
+        state_dir.join("harness.json"),
         r#"{
             "last_selected_role": "default",
             "role_overrides": {
@@ -645,7 +645,7 @@ fn role_missing_fields_use_model_defaults() {
     )
     .expect("write harness config");
     std::fs::write(
-        state_dir.join("harness.yaml"),
+        state_dir.join("harness.json"),
         r#"{
             "last_selected_role": "plain"
         }"#,
@@ -920,7 +920,7 @@ fn selected_params_restore_each_field_from_role_override() {
     )
     .expect("write harness config");
     std::fs::write(
-        state_dir.join("harness.yaml"),
+        state_dir.join("harness.json"),
         r#"{
             "role_overrides": {
                 "smart": {

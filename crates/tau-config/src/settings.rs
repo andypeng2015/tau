@@ -21,7 +21,7 @@ use tau_proto::{ModelId, PromptContent, PromptPriority, ToolName};
 // `harness.yaml` as ordinary source files under
 // `crates/tau-config/config/`, embedded via `include_str!`. They are
 // layered underneath the user's own files at load time (see
-// `load_json5_layered_with_builtin` / `load_yaml_layered_with_builtin`) so user
+// `load_yaml_layered_with_builtin`) so user
 // partial overrides keep working without the public `CliSettings` /
 // `HarnessSettings` types having to carry a `#[serde(default)]` and a
 // synthesized `Default` impl that secretly parses a file.
@@ -626,9 +626,6 @@ pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, Setti
     load_yaml_layered_with_builtin(BUILT_IN_HARNESS_YAML, dirs.config_dir.as_deref(), "harness")
 }
 
-/// Stacks an embedded built-in JSON5 string underneath the user's files.
-/// `T` therefore doesn't need a `Default` impl — the built-in layer always
-/// supplies every required field.
 /// Stacks an embedded built-in YAML string underneath the user's files.
 /// `T` therefore doesn't need a `Default` impl — the built-in layer always
 /// supplies every required field.

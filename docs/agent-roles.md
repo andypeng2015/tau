@@ -111,4 +111,4 @@ The `<role>` argument completes existing roles, but any new name can be used to 
 
 `/role <role> delete` removes the runtime/persisted role override. It does not edit `roles` from configuration; built-in or configured roles come back on the next harness start.
 
-Runtime changes for built-in or configured roles are persisted in `~/.local/state/tau/harness.yaml` together with the last selected role. Role `description`, `prompt`, `orchestrator`, and `extraPrompt` remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
+Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json` together with the last selected role. Role `description`, prompt fragments, and `orchestrator` remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.

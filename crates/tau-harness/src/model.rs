@@ -289,16 +289,16 @@ pub(crate) fn clamp_thinking_summary(
     allowed.first().copied().unwrap_or(T::Off)
 }
 
-fn load_state_yaml(
+fn load_state_json(
     dirs: &tau_config::settings::TauDirs,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let Some(path) = dirs.state_dir.as_ref().map(|d| d.join("harness.yaml")) else {
+    let Some(path) = dirs.state_dir.as_ref().map(|d| d.join("harness.json")) else {
         return serde_json::Map::new();
     };
     let Ok(text) = std::fs::read_to_string(path) else {
         return serde_json::Map::new();
     };
-    serde_yaml_ng::from_str::<serde_json::Value>(&text)
+    serde_json::from_str::<serde_json::Value>(&text)
         .ok()
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default()
@@ -375,7 +375,7 @@ pub(crate) fn default_thinking_summary(
 }
 
 fn load_last_selected_role(dirs: &tau_config::settings::TauDirs) -> Option<String> {
-    let json = load_state_yaml(dirs);
+    let json = load_state_json(dirs);
     let role = json.get("last_selected_role")?.as_str()?.to_owned();
     (!role.is_empty()).then_some(role)
 }
@@ -388,7 +388,7 @@ fn role_without_config_metadata(mut role: AgentRole) -> AgentRole {
 }
 
 fn load_role_overrides(dirs: &tau_config::settings::TauDirs) -> HashMap<String, AgentRole> {
-    let json = load_state_yaml(dirs);
+    let json = load_state_json(dirs);
     let mut out = HashMap::new();
     if let Some(map) = json
         .get("role_overrides")
@@ -412,7 +412,7 @@ pub(crate) fn save_role_overrides(
     let Some(dir) = dirs.state_dir.as_ref() else {
         return;
     };
-    let path = dir.join("harness.yaml");
+    let path = dir.join("harness.json");
     let _ = std::fs::create_dir_all(dir);
     let mut json = serde_json::Map::new();
     json.insert(
@@ -433,7 +433,7 @@ pub(crate) fn save_role_overrides(
         "role_overrides".to_owned(),
         serde_json::Value::Object(overrides),
     );
-    let _ = serde_yaml_ng::to_string(&serde_json::Value::Object(json))
+    let _ = serde_json::to_string_pretty(&serde_json::Value::Object(json))
         .ok()
         .and_then(|s| std::fs::write(&path, s).ok());
 }

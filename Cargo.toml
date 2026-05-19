@@ -102,10 +102,7 @@ clap = { version = "4", default-features = false, features = [
   "usage",
 ] }
 comfy-table = { version = "7", default-features = false }
-config = { version = "0.15", default-features = false, features = [
-  "json5",
-  "yaml",
-] }
+config = { version = "0.15", default-features = false, features = ["yaml"] }
 crossterm = { version = "0.28", default-features = false, features = [
   "bracketed-paste",
   "events",
