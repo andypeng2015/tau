@@ -1144,7 +1144,7 @@ fn cbor_u64_field(map: &CborValue, field: &str) -> Option<u64> {
 }
 
 #[test]
-fn gather_tool_definitions_respects_role_tools_profile() {
+fn gather_tool_definitions_respects_role_tool_lists() {
     let td = TempDir::new().expect("tempdir");
     let config_dir = td.path().join("config");
     let state_dir = td.path().join("state");
@@ -1153,14 +1153,8 @@ fn gather_tool_definitions_respects_role_tools_profile() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            toolsProfiles: {
-                read_only: {
-                    shell: false,
-                    skill: false,
-                },
-            },
             roles: {
-                smart: { toolsProfile: "read_only" },
+                smart: { disableTools: ["shell", "skill"] },
             },
         }"#,
     )
@@ -1323,14 +1317,8 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            toolsProfiles: {
-                specialized: {
-                    shell: false,
-                    test_gpt_shell: true,
-                },
-            },
             roles: {
-                smart: { toolsProfile: "specialized" },
+                smart: { tools: ["test_gpt_shell"], disableTools: ["shell"] },
             },
         }"#,
     )

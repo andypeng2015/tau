@@ -115,6 +115,27 @@ fn parse_service_tier_update(value: &str) -> Result<Option<tau_proto::ServiceTie
 
 /// Parse one `/role <role> <setting> <value>` update into the typed protocol
 /// mutation shared by interactive chat and headless `tau send`.
+pub(crate) fn parse_tool_list_update(
+    value: &str,
+) -> Result<Option<Vec<tau_proto::ToolName>>, String> {
+    if is_reset_value(value) {
+        return Ok(None);
+    }
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            tau_proto::ToolName::try_new(name).ok_or_else(|| format!("invalid tool name: {name}"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn parse_disable_tool_list_update(value: &str) -> Result<Vec<tau_proto::ToolName>, String> {
+    Ok(parse_tool_list_update(value)?.unwrap_or_default())
+}
+
 pub(crate) fn parse_role_setting_update(
     setting: &str,
     value: &str,
@@ -167,12 +188,11 @@ pub(crate) fn parse_role_setting_update(
         "service-tier" => Ok(tau_proto::UiRoleUpdateAction::SetServiceTier {
             service_tier: parse_service_tier_update(value)?,
         }),
-        "tools-profile" => Ok(tau_proto::UiRoleUpdateAction::SetToolsProfile {
-            tools_profile: if is_reset_value(value) {
-                None
-            } else {
-                Some(value.to_owned())
-            },
+        "tools" => Ok(tau_proto::UiRoleUpdateAction::SetTools {
+            tools: parse_tool_list_update(value)?,
+        }),
+        "disable-tools" => Ok(tau_proto::UiRoleUpdateAction::SetDisableTools {
+            disable_tools: parse_disable_tool_list_update(value)?,
         }),
         _ => Err("unknown setting".to_owned()),
     }
@@ -1287,7 +1307,7 @@ fn handle_role_command(text: &str, writer: &WriterHandle, print_local: &impl Fn(
     let extra = parts.next();
     let Some(role) = role else {
         print_local(
-            "/role <role> [delete|model|effort|verbosity|thinking-summary|service-tier|tools-profile] [value]",
+            "/role <role> [delete|model|effort|verbosity|thinking-summary|service-tier|tools|disable-tools] [value]",
         );
         return;
     };

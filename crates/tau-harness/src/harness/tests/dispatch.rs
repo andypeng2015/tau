@@ -4191,18 +4191,12 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 service_tier: Some(tau_proto::ServiceTier::Flex),
                 prompt: Some(tau_proto::PromptContent::new("WORKER ROLE PROMPT")),
                 extra_prompt: Some(tau_proto::PromptContent::new("WORKER EXTRA PROMPT")),
-                tools_profile: Some("worker-tools".to_owned()),
+                tools: Some(vec![ToolName::new("allowed_tool")]),
+                disable_tools: vec![ToolName::new("denied_tool")],
                 ..Default::default()
             },
         ),
     ]);
-    h.tools_profiles.insert(
-        "worker-tools".to_owned(),
-        std::collections::HashMap::from([
-            (ToolName::new("allowed_tool"), true),
-            (ToolName::new("denied_tool"), false),
-        ]),
-    );
     h.registry.register_with_prompt_fragment(
         "conn-allowed-tool",
         tau_proto::ToolRegister {

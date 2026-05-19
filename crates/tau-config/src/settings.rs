@@ -281,37 +281,6 @@ impl CliState {
 // Harness settings
 // ---------------------------------------------------------------------------
 
-/// One named tools-profile: tool name -> enabled/disabled override.
-pub type ToolsProfile = HashMap<ToolName, bool>;
-/// All named tools-profiles loaded from `harness.yaml`.
-pub type ToolsProfiles = HashMap<String, ToolsProfile>;
-
-fn default_tools_profiles() -> ToolsProfiles {
-    HashMap::from([(
-        "gpt".to_owned(),
-        HashMap::from([
-            (ToolName::new("apply_patch"), true),
-            (ToolName::new("edit"), false),
-            (ToolName::new("find"), false),
-            (ToolName::new("gpt_shell"), true),
-            (ToolName::new("grep"), false),
-            (ToolName::new("ls"), false),
-            (ToolName::new("read"), false),
-            (ToolName::new("shell"), false),
-            (ToolName::new("write"), false),
-        ]),
-    )])
-}
-
-fn merge_default_tools_profiles(profiles: &mut ToolsProfiles) {
-    for (name, built_in_profile) in default_tools_profiles() {
-        let profile = profiles.entry(name).or_default();
-        for (tool_name, enabled) in built_in_profile {
-            profile.entry(tool_name).or_insert(enabled);
-        }
-    }
-}
-
 /// Harness/agent settings loaded from `harness.yaml`.
 ///
 /// Has no `Default` impl on purpose — the baseline lives in
@@ -345,11 +314,6 @@ pub struct HarnessSettings {
     /// settings; missing fields use provider/model fallbacks for the selected
     /// provider-published model.
     pub roles: HashMap<String, AgentRole>,
-
-    /// Named per-tool enablement overlays keyed by tool name. Each
-    /// role may opt into one profile via `toolsProfile`; profile
-    /// entries override an extension tool's `enabled_by_default` hint.
-    pub tools_profiles: ToolsProfiles,
 }
 
 #[derive(Deserialize)]
@@ -360,8 +324,6 @@ struct HarnessSettingsWire {
     roles: HashMap<String, AgentRole>,
     #[serde(default, rename = "defaultRoles")]
     default_roles: HashMap<String, AgentRole>,
-    #[serde(default, rename = "toolsProfiles")]
-    tools_profiles: ToolsProfiles,
 }
 
 impl<'de> Deserialize<'de> for HarnessSettings {
@@ -381,7 +343,6 @@ impl<'de> Deserialize<'de> for HarnessSettings {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
             roles,
-            tools_profiles: wire.tools_profiles,
         })
     }
 }
@@ -390,8 +351,7 @@ impl HarnessSettings {
     /// The fully-populated baseline that ships with tau, parsed from
     /// the embedded `built-in.harness.yaml`.
     pub fn built_in() -> Self {
-        let mut s: Self = parse_built_in_yaml("built-in.harness.yaml", BUILT_IN_HARNESS_YAML);
-        merge_default_tools_profiles(&mut s.tools_profiles);
+        let s: Self = parse_built_in_yaml("built-in.harness.yaml", BUILT_IN_HARNESS_YAML);
         s
     }
 
@@ -489,9 +449,18 @@ pub struct AgentRole {
     /// Additional role-specific prompt text appended after the role prompt.
     #[serde(skip_serializing_if = "Option::is_none", rename = "extraPrompt")]
     pub extra_prompt: Option<PromptContent>,
-    /// Name of the harness tools profile applied when this role is active.
-    #[serde(skip_serializing_if = "Option::is_none", rename = "toolsProfile")]
-    pub tools_profile: Option<String>,
+    /// Explicit internal tool names enabled for this role. When unset, tools
+    /// use their own default enablement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolName>>,
+    /// Internal tool names disabled for this role even if selected or enabled
+    /// by default.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "disableTools"
+    )]
+    pub disable_tools: Vec<ToolName>,
 }
 
 impl AgentRole {
@@ -523,8 +492,11 @@ impl AgentRole {
         if let Some(extra_prompt) = &override_role.extra_prompt {
             self.extra_prompt = Some(extra_prompt.clone());
         }
-        if let Some(tools_profile) = &override_role.tools_profile {
-            self.tools_profile = Some(tools_profile.clone());
+        if let Some(tools) = &override_role.tools {
+            self.tools = Some(tools.clone());
+        }
+        if !override_role.disable_tools.is_empty() {
+            self.disable_tools = override_role.disable_tools.clone();
         }
     }
 }
@@ -641,13 +613,7 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
-    let mut settings: HarnessSettings = load_yaml_layered_with_builtin(
-        BUILT_IN_HARNESS_YAML,
-        dirs.config_dir.as_deref(),
-        "harness",
-    )?;
-    merge_default_tools_profiles(&mut settings.tools_profiles);
-    Ok(settings)
+    load_yaml_layered_with_builtin(BUILT_IN_HARNESS_YAML, dirs.config_dir.as_deref(), "harness")
 }
 
 /// Stacks an embedded built-in JSON5 string underneath the user's files.

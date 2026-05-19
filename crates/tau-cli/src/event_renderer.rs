@@ -228,7 +228,8 @@ struct RoleCompletionDetails {
     verbosity: Option<String>,
     thinking_summary: Option<String>,
     service_tier: Option<String>,
-    tools_profile: Option<String>,
+    tools: Option<String>,
+    disable_tools: Option<String>,
     role_description: Option<String>,
 }
 
@@ -246,7 +247,8 @@ impl RoleCompletionDetails {
             verbosity: None,
             thinking_summary: None,
             service_tier: None,
-            tools_profile: None,
+            tools: None,
+            disable_tools: None,
             role_description: None,
         };
 
@@ -264,7 +266,8 @@ impl RoleCompletionDetails {
                 "verbosity" => details.verbosity = Some(value.to_owned()),
                 "thinking-summary" => details.thinking_summary = Some(value.to_owned()),
                 "service-tier" => details.service_tier = Some(value.to_owned()),
-                "tools-profile" => details.tools_profile = Some(value.to_owned()),
+                "tools" => details.tools = Some(value.to_owned()),
+                "disable-tools" => details.disable_tools = Some(value.to_owned()),
                 _ => {}
             }
         }
@@ -289,8 +292,11 @@ impl RoleCompletionDetails {
         if let Some(service_tier) = self.service_tier.as_deref() {
             parts.push(format!("st={service_tier}"));
         }
-        if let Some(tools_profile) = self.tools_profile.as_deref() {
-            parts.push(format!("tp={tools_profile}"));
+        if let Some(tools) = self.tools.as_deref() {
+            parts.push(format!("tools={tools}"));
+        }
+        if let Some(disable_tools) = self.disable_tools.as_deref() {
+            parts.push(format!("dt={disable_tools}"));
         }
         let mut summary = if parts.is_empty() {
             "no model".to_owned()
@@ -318,7 +324,8 @@ impl RoleCompletionDetails {
                 .unwrap_or("unset")
                 .to_owned(),
             "service-tier" => self.service_tier.as_deref().unwrap_or("unset").to_owned(),
-            "tools-profile" => self.tools_profile.as_deref().unwrap_or("unset").to_owned(),
+            "tools" => self.tools.as_deref().unwrap_or("unset").to_owned(),
+            "disable-tools" => self.disable_tools.as_deref().unwrap_or("unset").to_owned(),
             _ => "unset".to_owned(),
         }
     }
@@ -358,7 +365,8 @@ fn empty_role_completion_details() -> RoleCompletionDetails {
         verbosity: None,
         thinking_summary: None,
         service_tier: None,
-        tools_profile: None,
+        tools: None,
+        disable_tools: None,
         role_description: None,
     }
 }
@@ -377,9 +385,10 @@ fn role_setting_completions(
             details.current_description("thinking-summary"),
         ),
         ("service-tier", details.current_description("service-tier")),
+        ("tools", details.current_description("tools")),
         (
-            "tools-profile",
-            details.current_description("tools-profile"),
+            "disable-tools",
+            details.current_description("disable-tools"),
         ),
     ]
     .into_iter()
@@ -393,7 +402,7 @@ fn role_setting_value_completions(
     needle: &str,
 ) -> Vec<tau_cli_term::CompletionItem> {
     let values: &[&str] = match setting {
-        "model" | "tools-profile" => &["reset"],
+        "model" | "tools" | "disable-tools" => &["reset"],
         "effort" => &["reset", "off", "minimal", "low", "medium", "high", "xhigh"],
         "verbosity" => &["reset", "low", "medium", "high"],
         "thinking-summary" => &["reset", "off", "auto", "concise", "detailed"],
@@ -2901,7 +2910,7 @@ mod tests {
     #[test]
     fn role_details_abbreviate_description() {
         let details = RoleCompletionDetails::from_description(
-            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off, tools-profile=read_only",
+            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off, tools=read_only",
         );
 
         assert_eq!(
@@ -2931,7 +2940,7 @@ mod tests {
     #[test]
     fn role_details_report_single_current_field() {
         let details = RoleCompletionDetails::from_description(
-            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off, service-tier=fast, tools-profile=read_only",
+            "model=codex-dpcpw/gpt-5.5, effort=xhigh, verbosity=medium, thinking-summary=off, service-tier=fast, tools=read_only",
         );
 
         assert_eq!(details.current_description("model"), "codex-dpcpw/gpt-5.5");
@@ -2939,7 +2948,7 @@ mod tests {
         assert_eq!(details.current_description("verbosity"), "medium");
         assert_eq!(details.current_description("thinking-summary"), "off");
         assert_eq!(details.current_description("service-tier"), "fast");
-        assert_eq!(details.current_description("tools-profile"), "read_only");
+        assert_eq!(details.current_description("tools"), "read_only");
     }
 
     #[test]

@@ -123,7 +123,6 @@ fn selected_params_for_role_with_allowed(
 fn describe_role_inner(
     provider_models: &HashMap<ModelId, ProviderModelInfo>,
     roles: &HashMap<String, AgentRole>,
-    tools_profiles: &tau_config::settings::ToolsProfiles,
     role: &str,
     available: &[ModelId],
 ) -> String {
@@ -136,24 +135,41 @@ fn describe_role_inner(
         .service_tier
         .map(|tier| format!(", service-tier={}", tier.as_str()))
         .unwrap_or_default();
-    let tools_profile = current
-        .and_then(|r| r.tools_profile.as_deref())
-        .map(|name| {
-            if tools_profiles.contains_key(name) {
-                format!(", tools-profile={name}")
-            } else {
-                format!(", tools-profile={name} (missing)")
-            }
+    let tools = current
+        .and_then(|r| r.tools.as_ref())
+        .map(|tools| {
+            format!(
+                ", tools={}",
+                tools
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )
+        })
+        .unwrap_or_default();
+    let disable_tools = current
+        .filter(|r| !r.disable_tools.is_empty())
+        .map(|r| {
+            format!(
+                ", disable-tools={}",
+                r.disable_tools
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )
         })
         .unwrap_or_default();
     format!(
-        "model={}, effort={}, verbosity={}, thinking-summary={}{}{}",
+        "model={}, effort={}, verbosity={}, thinking-summary={}{}{}{}",
         model,
         params.effort,
         params.verbosity,
         params.thinking_summary,
         service_tier,
-        tools_profile
+        tools,
+        disable_tools
     )
 }
 
@@ -161,20 +177,13 @@ fn describe_role_inner(
 pub(crate) fn role_infos(
     provider_models: &HashMap<ModelId, ProviderModelInfo>,
     roles: &HashMap<String, AgentRole>,
-    tools_profiles: &tau_config::settings::ToolsProfiles,
     available: &[ModelId],
 ) -> Vec<tau_proto::HarnessRoleInfo> {
     let mut out: Vec<_> = roles
         .keys()
         .map(|name| tau_proto::HarnessRoleInfo {
             name: name.clone(),
-            description: describe_role_inner(
-                provider_models,
-                roles,
-                tools_profiles,
-                name,
-                available,
-            ),
+            description: describe_role_inner(provider_models, roles, name, available),
             role_description: roles.get(name).and_then(|role| role.description.clone()),
         })
         .collect();

@@ -1234,8 +1234,8 @@ pub struct ToolSpec {
     /// unconstrained text for custom tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<ToolFormat>,
-    /// Whether this tool should be advertised to the agent when no
-    /// role-level `toolsProfile` overrides its default.
+    /// Whether this tool should be advertised to the agent when the role has
+    /// no explicit `tools` allow-list and `disableTools` does not remove it.
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
     pub enabled_by_default: bool,
     /// Execution mode used by the harness dispatch state machine.
@@ -1910,12 +1910,19 @@ pub enum UiRoleUpdateAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service_tier: Option<ServiceTier>,
     },
-    /// Set or clear the role's tools profile.
-    SetToolsProfile {
-        /// Tools profile name to store, or `None` to use default tool
+    /// Set or clear the role's explicit tool allow-list.
+    SetTools {
+        /// Internal tool names to allow, or `None` to use default tool
         /// enablement.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        tools_profile: Option<String>,
+        tools: Option<Vec<ToolName>>,
+    },
+    /// Set the role's explicit tool block-list.
+    SetDisableTools {
+        /// Internal tool names to disable even when enabled by default or
+        /// explicitly allowed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        disable_tools: Vec<ToolName>,
     },
 }
 

@@ -114,51 +114,31 @@ fn harness_settings_user_override_wins_over_built_in() {
 }
 
 #[test]
-fn harness_settings_built_in_gpt_tools_profile() {
-    let s = HarnessSettings::built_in();
-    assert!(s.tools_profiles["gpt"]["apply_patch"]);
-    assert!(!s.tools_profiles["gpt"]["edit"]);
-    assert!(!s.tools_profiles["gpt"]["find"]);
-    assert!(s.tools_profiles["gpt"]["gpt_shell"]);
-    assert!(!s.tools_profiles["gpt"]["grep"]);
-    assert!(!s.tools_profiles["gpt"]["ls"]);
-    assert!(!s.tools_profiles["gpt"]["read"]);
-    assert!(!s.tools_profiles["gpt"]["shell"]);
-    assert!(!s.tools_profiles["gpt"]["write"]);
-}
-
-#[test]
-fn harness_settings_load_tools_profiles() {
+fn harness_settings_load_role_tool_lists() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-                toolsProfiles: {
-                    gpt: {
-                        edit: true,
-                    },
-                    read_only: {
-                        shell: false,
-                        write: false,
-                    },
-                },
-            }"#,
+            roles: {
+                smart: { tools: ["read", "grep"], disableTools: ["grep"] },
+            },
+        }"#,
     )
     .expect("write");
 
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
-    assert!(!s.tools_profiles["read_only"]["shell"]);
-    assert!(!s.tools_profiles["read_only"]["write"]);
-    assert!(s.tools_profiles["gpt"]["apply_patch"]);
-    assert!(s.tools_profiles["gpt"]["edit"]);
-    assert!(!s.tools_profiles["gpt"]["find"]);
-    assert!(s.tools_profiles["gpt"]["gpt_shell"]);
-    assert!(!s.tools_profiles["gpt"]["grep"]);
-    assert!(!s.tools_profiles["gpt"]["ls"]);
-    assert!(!s.tools_profiles["gpt"]["read"]);
-    assert!(!s.tools_profiles["gpt"]["shell"]);
-    assert!(!s.tools_profiles["gpt"]["write"]);
+    assert_eq!(
+        s.roles["smart"].tools.as_ref().expect("tools"),
+        &vec![
+            tau_proto::ToolName::new("read"),
+            tau_proto::ToolName::new("grep")
+        ]
+    );
+    assert_eq!(
+        s.roles["smart"].disable_tools,
+        vec![tau_proto::ToolName::new("grep")]
+    );
 }
 
 #[test]
@@ -187,8 +167,8 @@ fn harness_roles_merge_with_built_ins() {
         dir.join("harness.yaml"),
         r#"{
             roles: {
-                smart: { model: "openai/gpt-5.5", toolsProfile: "full" },
-                custom: { description: "Custom local role", effort: "medium", toolsProfile: "read_only" },
+                smart: { model: "openai/gpt-5.5", tools: ["read"] },
+                custom: { description: "Custom local role", effort: "medium", disableTools: ["shell"] },
                 deep: { model: "openai/gpt-5.5" },
             },
         }"#,
@@ -207,8 +187,8 @@ fn harness_roles_merge_with_built_ins() {
     );
     assert_eq!(s.roles["custom"].effort, Some(tau_proto::Effort::Medium));
     assert_eq!(
-        s.roles["custom"].tools_profile.as_deref(),
-        Some("read_only")
+        s.roles["custom"].disable_tools,
+        vec![tau_proto::ToolName::new("shell")]
     );
     assert_eq!(
         s.roles["smart"]
@@ -218,7 +198,10 @@ fn harness_roles_merge_with_built_ins() {
             .as_deref(),
         Some("openai/gpt-5.5")
     );
-    assert_eq!(s.roles["smart"].tools_profile.as_deref(), Some("full"));
+    assert_eq!(
+        s.roles["smart"].tools,
+        Some(vec![tau_proto::ToolName::new("read")])
+    );
 
     let deep = &s.roles["deep"];
     assert_eq!(
@@ -371,7 +354,7 @@ fn harness_default_roles_alias_still_loads() {
         dir.join("harness.yaml"),
         r#"{
             defaultRoles: {
-                custom: { effort: "medium", toolsProfile: "read_only" },
+                custom: { effort: "medium", tools: ["read"] },
                 foreman: { model: "openai/gpt-5.5" },
             },
         }"#,
@@ -381,8 +364,8 @@ fn harness_default_roles_alias_still_loads() {
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     assert_eq!(s.roles["custom"].effort, Some(tau_proto::Effort::Medium));
     assert_eq!(
-        s.roles["custom"].tools_profile.as_deref(),
-        Some("read_only")
+        s.roles["custom"].disable_tools,
+        vec![tau_proto::ToolName::new("shell")]
     );
     let foreman = &s.roles["foreman"];
     assert_eq!(foreman.orchestrator, Some(true));
@@ -401,8 +384,8 @@ fn harness_default_roles_alias_still_loads() {
 #[test]
 fn missing_user_files_load_the_built_in_baseline() {
     // With no user files present, the loader still returns fully populated
-    // settings from the embedded built-in layer plus harness-owned role/tool
-    // defaults. There is intentionally no model registry baseline anymore.
+    // settings from the embedded built-in layer plus harness-owned role defaults.
+    // There is intentionally no model registry baseline anymore.
     let td = TempDir::new().expect("tempdir");
     let _cli = load_cli_settings_in(&dirs_with_config(td.path())).expect("cli");
     let harness = load_harness_settings_in(&dirs_with_config(td.path())).expect("harness");
@@ -410,7 +393,6 @@ fn missing_user_files_load_the_built_in_baseline() {
     assert!(harness.roles.contains_key("deep"));
     assert!(harness.roles.contains_key("rush"));
     assert!(harness.roles.contains_key("foreman"));
-    assert!(harness.tools_profiles.contains_key("gpt"));
 }
 
 #[test]

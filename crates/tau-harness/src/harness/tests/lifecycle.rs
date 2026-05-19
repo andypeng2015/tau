@@ -265,13 +265,8 @@ fn role_disabled_tool_is_reported_without_dispatch() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            toolsProfiles: {
-                read_only: {
-                    shell: false,
-                },
-            },
             roles: {
-                smart: { toolsProfile: "read_only" },
+                smart: { disableTools: ["shell"] },
             },
         }"#,
     )

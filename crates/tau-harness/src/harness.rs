@@ -554,9 +554,6 @@ pub(crate) struct Harness {
     pub(crate) pending_provider_prompts: HashMap<SessionPromptId, tau_proto::ConnectionId>,
     /// Available agent roles.
     pub(crate) available_roles: std::collections::HashMap<String, tau_config::settings::AgentRole>,
-    /// Named role-selectable tool enablement overlays loaded from
-    /// `harness.yaml`.
-    pub(crate) tools_profiles: tau_config::settings::ToolsProfiles,
     /// Persisted role overrides loaded from state and changed at runtime.
     pub(crate) role_overrides: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Currently selected role. The resolved model is derived from this role
@@ -998,7 +995,6 @@ impl Harness {
             sessions_dir.clone(),
             harness_settings.session_retention(),
         );
-        let tools_profiles = harness_settings.tools_profiles.clone();
         let selected_params = tau_proto::ModelParams::default();
 
         let default_conversation_id = ConversationId::new("default");
@@ -1058,7 +1054,6 @@ impl Harness {
             provider_model_routes: HashMap::new(),
             pending_provider_prompts: HashMap::new(),
             available_roles,
-            tools_profiles,
             role_overrides,
             selected_role,
             selected_model,
@@ -1212,7 +1207,6 @@ impl Harness {
             sessions_dir.clone(),
             harness_settings.session_retention(),
         );
-        let tools_profiles = harness_settings.tools_profiles.clone();
         let selected_params = tau_proto::ModelParams::default();
 
         let default_conversation_id = ConversationId::new("default");
@@ -1272,7 +1266,6 @@ impl Harness {
             provider_model_routes: HashMap::new(),
             pending_provider_prompts: HashMap::new(),
             available_roles,
-            tools_profiles,
             role_overrides,
             selected_role,
             selected_model,
@@ -2644,7 +2637,6 @@ impl Harness {
                 roles: role_infos(
                     &self.provider_model_info,
                     &self.available_roles,
-                    &self.tools_profiles,
                     &self.available_models,
                 ),
             }),
@@ -3972,14 +3964,11 @@ impl Harness {
             tau_proto::UiRoleUpdateAction::SetServiceTier { service_tier } => {
                 next_role.service_tier = service_tier;
             }
-            tau_proto::UiRoleUpdateAction::SetToolsProfile { tools_profile } => {
-                if let Some(profile) = tools_profile.as_deref()
-                    && !self.tools_profiles.contains_key(profile)
-                {
-                    self.emit_info("/role: unknown tools-profile");
-                    return None;
-                }
-                next_role.tools_profile = tools_profile;
+            tau_proto::UiRoleUpdateAction::SetTools { tools } => {
+                next_role.tools = tools;
+            }
+            tau_proto::UiRoleUpdateAction::SetDisableTools { disable_tools } => {
+                next_role.disable_tools = disable_tools;
             }
         }
 
@@ -4042,7 +4031,6 @@ impl Harness {
                 roles: role_infos(
                     &self.provider_model_info,
                     &self.available_roles,
-                    &self.tools_profiles,
                     &self.available_models,
                 ),
             }),
@@ -5159,21 +5147,17 @@ impl Harness {
         })
     }
 
-    fn tools_profile_for_role(
-        &self,
-        role_name: &str,
-    ) -> Option<&tau_config::settings::ToolsProfile> {
-        let profile_name = self
-            .available_roles
-            .get(role_name)
-            .and_then(|role| role.tools_profile.as_deref())?;
-        self.tools_profiles.get(profile_name)
-    }
-
     fn is_tool_enabled_for_role(&self, spec: &tau_proto::ToolSpec, role_name: &str) -> bool {
-        self.tools_profile_for_role(role_name)
-            .and_then(|profile| profile.get(&spec.name).copied())
-            .unwrap_or(spec.enabled_by_default)
+        let Some(role) = self.available_roles.get(role_name) else {
+            return spec.enabled_by_default;
+        };
+        if role.disable_tools.iter().any(|name| name == &spec.name) {
+            return false;
+        }
+        match role.tools.as_ref() {
+            Some(tools) => tools.iter().any(|name| name == &spec.name),
+            None => spec.enabled_by_default,
+        }
     }
 
     fn maybe_emit_cache_miss_diagnostic(

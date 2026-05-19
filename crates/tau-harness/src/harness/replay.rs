@@ -104,7 +104,6 @@ impl Harness {
             roles: role_infos(
                 &self.provider_model_info,
                 &self.available_roles,
-                &self.tools_profiles,
                 &self.available_models,
             ),
         });

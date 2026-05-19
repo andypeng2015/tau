@@ -82,12 +82,7 @@ fn role_infos_include_configured_role_description() {
         },
     );
     let provider_models = provider_models([provider_model(model.clone(), 128_000)]);
-    let infos = role_infos(
-        &provider_models,
-        &roles,
-        &tau_config::settings::ToolsProfiles::default(),
-        &[model],
-    );
+    let infos = role_infos(&provider_models, &roles, &[model]);
 
     assert_eq!(infos.len(), 1);
     assert!(infos[0].description.contains("model=openai/gpt-4.1"));
