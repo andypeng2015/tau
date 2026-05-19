@@ -336,7 +336,8 @@ where
             model_visible_name: None,
             description: Some(
                 "Execute a shell command via `sh -c`. Non-zero exits and timeouts \
-                 are tool errors with stdout/stderr details. Prefer dedicated \
+                 are tool errors with output details. Output lines are prefixed \
+                 with `1 ` for stdout or `2 ` for stderr. Prefer dedicated \
                  tools like `read`, `grep`, and `find` when they fit."
                     .to_owned(),
             ),
@@ -369,7 +370,8 @@ where
             model_visible_name: Some(tau_proto::ToolName::new("shell_command")),
             description: Some(
                 "Run a shell command. Non-zero exits and timeouts are tool errors \
-                 with stdout/stderr details. For file changes, prefer apply_patch."
+                 with output details. Output lines are prefixed with `1 ` for stdout \
+                 or `2 ` for stderr. For file changes, prefer apply_patch."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,

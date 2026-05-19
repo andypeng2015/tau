@@ -45,18 +45,16 @@ pub(crate) fn run_command(
                 .with_args(display_args.clone())
                 .with_payload(display_payload.clone())
                 .with_details(command_details_value(CommandDetails {
-                    command: command.clone(),
-                    cwd: cwd.clone(),
                     status: None,
                     signal: None,
                     timed_out: false,
-                    timeout_secs: Some(timeout_secs),
                     exec_time_secs: None,
                     termination_reason: "start_error",
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    stdout_total: None,
-                    stderr_total: None,
+                    output: String::new(),
+                    total_lines: 0,
+                    total_bytes: 0,
+                    truncated: false,
+                    valid_utf8: true,
                 }))
         })?;
 
@@ -74,59 +72,24 @@ pub(crate) fn run_command(
     let signal = wait.signal;
     let success = wait.success;
 
-    // Truncate stdout/stderr from the tail (keep last lines — errors and
-    // final results are at the end).
-    let stdout_trunc = truncate_tail_from_tail(
-        &wait.stdout,
-        wait.stdout_total_lines,
-        wait.stdout_total_bytes,
+    let output_trunc = truncate_tail_from_tail(
+        &wait.output_tail,
+        wait.output_total_lines,
+        wait.output_total_bytes,
     );
-    let mut stderr_trunc = truncate_tail_from_tail(
-        &wait.stderr,
-        wait.stderr_total_lines,
-        wait.stderr_total_bytes,
-    );
-    let stdout_total = stdout_trunc
-        .was_truncated
-        .then_some((stdout_trunc.total_lines, stdout_trunc.total_bytes));
-    let stderr_total = stderr_trunc
-        .was_truncated
-        .then_some((stderr_trunc.total_lines, stderr_trunc.total_bytes));
-
-    let mut stderr_warnings = Vec::new();
-    if let Some(warning) =
-        non_utf8_warning(wait.stdout_had_invalid_utf8, wait.stderr_had_invalid_utf8)
-    {
-        stderr_warnings.push(warning);
-    }
-    if let Some(warning) =
-        truncation_warning(stdout_trunc.was_truncated, stderr_trunc.was_truncated)
-    {
-        stderr_warnings.push(warning);
-    }
-    stderr_trunc.content = stderr_with_warnings(&stderr_warnings, stderr_trunc.content);
-
-    let combined = if stdout_trunc.content.is_empty() {
-        stderr_trunc.content.clone()
-    } else if stderr_trunc.content.is_empty() {
-        stdout_trunc.content.clone()
-    } else {
-        format!("{}\n{}", stdout_trunc.content, stderr_trunc.content)
-    };
+    let combined = output_trunc.content.clone();
 
     let result = command_details_value(CommandDetails {
-        command: command.clone(),
-        cwd: cwd.clone(),
         status: status_code,
         signal,
         timed_out: wait.timed_out,
-        timeout_secs: Some(timeout_secs),
         exec_time_secs,
         termination_reason: wait.termination_reason,
-        stdout: stdout_trunc.content,
-        stderr: stderr_trunc.content,
-        stdout_total,
-        stderr_total,
+        output: output_trunc.content,
+        total_lines: wait.output_total_lines,
+        total_bytes: wait.output_total_bytes,
+        truncated: output_trunc.was_truncated,
+        valid_utf8: !wait.had_invalid_utf8,
     });
 
     if success {
@@ -372,7 +335,11 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
         }
     }
 
-    fn read_available<R: Read>(pipe: &mut Option<R>, capture: &mut CapturedStream) {
+    fn read_available<R: Read>(
+        pipe: &mut Option<R>,
+        stream: OutputStream,
+        capture: &mut CapturedOutput,
+    ) {
         let Some(pipe_ref) = pipe.as_mut() else {
             return;
         };
@@ -385,7 +352,7 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
                     close_pipe = true;
                     break;
                 }
-                Ok(n) => capture.push_bytes(&buf[..n]),
+                Ok(n) => capture.push_bytes(stream, &buf[..n]),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => {
                     close_pipe = true;
@@ -500,15 +467,14 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
         }
     });
 
-    let mut stdout = CapturedStream::default();
-    let mut stderr = CapturedStream::default();
+    let mut output = CapturedOutput::default();
     let mut status = None;
     let mut timed_out = false;
     let deadline = std::time::Instant::now() + timeout;
 
     loop {
-        read_available(&mut stdout_pipe, &mut stdout);
-        read_available(&mut stderr_pipe, &mut stderr);
+        read_available(&mut stdout_pipe, OutputStream::Stdout, &mut output);
+        read_available(&mut stderr_pipe, OutputStream::Stderr, &mut output);
         if collect_status(&status_rx, &mut status) {
             break;
         }
@@ -564,8 +530,8 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
 
     let drain_deadline = std::time::Instant::now() + DRAIN_AFTER_DONE;
     loop {
-        read_available(&mut stdout_pipe, &mut stdout);
-        read_available(&mut stderr_pipe, &mut stderr);
+        read_available(&mut stdout_pipe, OutputStream::Stdout, &mut output);
+        read_available(&mut stderr_pipe, OutputStream::Stderr, &mut output);
         let _ = collect_status(&status_rx, &mut status);
         if stdout_pipe.is_none() && stderr_pipe.is_none() {
             break;
@@ -602,9 +568,8 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
         }
     }
 
-    stdout.finish();
-    stderr.finish();
-    wait_result_from_parts(status, timed_out, stdout, stderr)
+    output.finish();
+    wait_result_from_parts(status, timed_out, output)
 }
 
 /// Wait for a child process with a timeout, preserving output even when
@@ -618,8 +583,8 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    let stdout_handle = std::thread::spawn(move || read_pipe(stdout_pipe));
-    let stderr_handle = std::thread::spawn(move || read_pipe(stderr_pipe));
+    let stdout_handle = std::thread::spawn(move || read_pipe(stdout_pipe, OutputStream::Stdout));
+    let stderr_handle = std::thread::spawn(move || read_pipe(stderr_pipe, OutputStream::Stderr));
 
     let deadline = std::time::Instant::now() + timeout;
     let mut timed_out = false;
@@ -640,9 +605,18 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
         std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(25)));
     };
 
-    let stdout = stdout_handle.join().unwrap_or_default();
-    let stderr = stderr_handle.join().unwrap_or_default();
-    wait_result_from_parts(status, timed_out, stdout, stderr)
+    let mut output = CapturedOutput::default();
+    let stdout_output = stdout_handle.join().unwrap_or_default();
+    output.mark_invalid_utf8(OutputStream::Stdout, stdout_output.had_invalid_utf8);
+    for line in stdout_output.lines {
+        output.push_line(line.stream, line.content);
+    }
+    let stderr_output = stderr_handle.join().unwrap_or_default();
+    output.mark_invalid_utf8(OutputStream::Stderr, stderr_output.had_invalid_utf8);
+    for line in stderr_output.lines {
+        output.push_line(line.stream, line.content);
+    }
+    wait_result_from_parts(status, timed_out, output)
 }
 
 #[cfg(unix)]
@@ -668,8 +642,7 @@ fn kill_process_group_by_pid(pid: u32) {
 fn wait_result_from_parts(
     status: Option<std::process::ExitStatus>,
     timed_out: bool,
-    stdout: CapturedStream,
-    stderr: CapturedStream,
+    output: CapturedOutput,
 ) -> WaitResult {
     let status_code = status.as_ref().and_then(|status| status.code());
     let signal = status.as_ref().and_then(exit_status_signal);
@@ -684,21 +657,14 @@ fn wait_result_from_parts(
         "unknown"
     };
 
-    let stdout_total_lines = stdout.total_lines();
-    let stderr_total_lines = stderr.total_lines();
-
     WaitResult {
         status_code,
         signal,
         success,
-        stdout: stdout.tail,
-        stderr: stderr.tail,
-        stdout_total_lines,
-        stdout_total_bytes: stdout.total_bytes,
-        stderr_total_lines,
-        stderr_total_bytes: stderr.total_bytes,
-        stdout_had_invalid_utf8: stdout.had_invalid_utf8,
-        stderr_had_invalid_utf8: stderr.had_invalid_utf8,
+        output_tail: output.render_tail(),
+        output_total_lines: output.total_lines,
+        output_total_bytes: output.total_bytes,
+        had_invalid_utf8: output.stdout.had_invalid_utf8 || output.stderr.had_invalid_utf8,
         timed_out,
         termination_reason,
     }
@@ -708,36 +674,117 @@ struct WaitResult {
     status_code: Option<i32>,
     signal: Option<i32>,
     success: bool,
-    stdout: String,
-    stderr: String,
-    stdout_total_lines: usize,
-    stdout_total_bytes: usize,
-    stderr_total_lines: usize,
-    stderr_total_bytes: usize,
-    stdout_had_invalid_utf8: bool,
-    stderr_had_invalid_utf8: bool,
+    output_tail: String,
+    output_total_lines: usize,
+    output_total_bytes: usize,
+    had_invalid_utf8: bool,
     timed_out: bool,
     termination_reason: &'static str,
 }
 
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl OutputStream {
+    fn fd_number(self) -> u8 {
+        match self {
+            Self::Stdout => 1,
+            Self::Stderr => 2,
+        }
+    }
+}
+
+struct OutputLine {
+    stream: OutputStream,
+    content: String,
+}
+
 #[derive(Default)]
-struct CapturedStream {
-    tail: String,
-    pending_utf8: Vec<u8>,
+struct CapturedOutput {
+    stdout: StreamDecoder,
+    stderr: StreamDecoder,
+    lines: Vec<OutputLine>,
+    total_lines: usize,
     total_bytes: usize,
-    newline_count: usize,
-    ends_with_newline: bool,
+}
+
+impl CapturedOutput {
+    const MAX_TAIL_BYTES: usize = MAX_OUTPUT_BYTES + MAX_OUTPUT_LINES * 3 + 8192;
+
+    fn push_bytes(&mut self, stream: OutputStream, bytes: &[u8]) {
+        let decoder = match stream {
+            OutputStream::Stdout => &mut self.stdout,
+            OutputStream::Stderr => &mut self.stderr,
+        };
+        for line in decoder.push_bytes(bytes) {
+            self.push_line(stream, line);
+        }
+    }
+
+    fn push_line(&mut self, stream: OutputStream, content: String) {
+        let separator_bytes = usize::from(self.total_lines != 0);
+        self.total_bytes += separator_bytes + formatted_output_line_len(stream, &content);
+        self.total_lines += 1;
+        self.lines.push(OutputLine { stream, content });
+        self.trim_tail();
+    }
+
+    fn finish(&mut self) {
+        for line in self.stdout.finish() {
+            self.push_line(OutputStream::Stdout, line);
+        }
+        for line in self.stderr.finish() {
+            self.push_line(OutputStream::Stderr, line);
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn mark_invalid_utf8(&mut self, stream: OutputStream, had_invalid_utf8: bool) {
+        if !had_invalid_utf8 {
+            return;
+        }
+        match stream {
+            OutputStream::Stdout => self.stdout.had_invalid_utf8 = true,
+            OutputStream::Stderr => self.stderr.had_invalid_utf8 = true,
+        }
+    }
+
+    fn render_tail(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| format_output_line(line.stream, &line.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn trim_tail(&mut self) {
+        let mut bytes = self.render_tail().len();
+        while (MAX_OUTPUT_LINES + 128 < self.lines.len() || Self::MAX_TAIL_BYTES < bytes)
+            && !self.lines.is_empty()
+        {
+            self.lines.remove(0);
+            bytes = self.render_tail().len();
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamDecoder {
+    pending_utf8: Vec<u8>,
+    pending_line: String,
     had_invalid_utf8: bool,
 }
 
-impl CapturedStream {
-    const MAX_TAIL_BYTES: usize = MAX_OUTPUT_BYTES + MAX_OUTPUT_LINES + 8192;
-
-    fn push_bytes(&mut self, bytes: &[u8]) {
+impl StreamDecoder {
+    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<String> {
         if bytes.is_empty() {
-            return;
+            return Vec::new();
         }
 
+        let mut lines = Vec::new();
         let mut merged;
         let mut remaining = if self.pending_utf8.is_empty() {
             bytes
@@ -750,17 +797,20 @@ impl CapturedStream {
         loop {
             match std::str::from_utf8(remaining) {
                 Ok(valid) => {
-                    self.push_str(valid);
+                    self.push_str(valid, &mut lines);
                     break;
                 }
                 Err(error) => {
                     let valid_up_to = error.valid_up_to();
                     if 0 < valid_up_to {
-                        self.push_str(std::str::from_utf8(&remaining[..valid_up_to]).unwrap_or(""));
+                        self.push_str(
+                            std::str::from_utf8(&remaining[..valid_up_to]).unwrap_or(""),
+                            &mut lines,
+                        );
                     }
                     if let Some(error_len) = error.error_len() {
                         self.had_invalid_utf8 = true;
-                        self.push_str("\u{fffd}");
+                        self.push_str("\u{fffd}", &mut lines);
                         remaining = &remaining[valid_up_to + error_len..];
                     } else {
                         self.pending_utf8 = remaining[valid_up_to..].to_vec();
@@ -769,113 +819,73 @@ impl CapturedStream {
                 }
             }
         }
+        lines
     }
 
-    fn push_str(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
+    fn push_str(&mut self, text: &str, lines: &mut Vec<String>) {
+        for segment in text.split_inclusive('\n') {
+            if let Some(line) = segment.strip_suffix('\n') {
+                self.pending_line.push_str(line);
+                lines.push(std::mem::take(&mut self.pending_line));
+            } else {
+                self.pending_line.push_str(segment);
+            }
         }
-
-        self.total_bytes += text.len();
-        self.newline_count += text
-            .as_bytes()
-            .iter()
-            .filter(|&&byte| byte == b'\n')
-            .count();
-        self.ends_with_newline = text.as_bytes().last().is_some_and(|byte| *byte == b'\n');
-        self.tail.push_str(text);
-        self.trim_tail();
     }
 
-    fn finish(&mut self) {
-        if self.pending_utf8.is_empty() {
-            return;
+    fn finish(&mut self) -> Vec<String> {
+        if !self.pending_utf8.is_empty() {
+            self.had_invalid_utf8 = true;
+            self.pending_utf8.clear();
+            self.pending_line.push('\u{fffd}');
         }
-        self.had_invalid_utf8 = true;
-        self.pending_utf8.clear();
-        self.push_str("\u{fffd}");
-    }
-
-    fn total_lines(&self) -> usize {
-        if self.total_bytes == 0 {
-            0
-        } else if self.ends_with_newline {
-            self.newline_count
+        if self.pending_line.is_empty() {
+            Vec::new()
         } else {
-            self.newline_count + 1
+            vec![std::mem::take(&mut self.pending_line)]
         }
-    }
-
-    fn trim_tail(&mut self) {
-        if self.tail.len() <= Self::MAX_TAIL_BYTES {
-            return;
-        }
-
-        let mut start = self.tail.len() - Self::MAX_TAIL_BYTES;
-        while start < self.tail.len() && !self.tail.is_char_boundary(start) {
-            start += 1;
-        }
-        self.tail.drain(..start);
     }
 }
 
+fn format_output_line(stream: OutputStream, content: &str) -> String {
+    format!("{} {content}", stream.fd_number())
+}
+
+fn formatted_output_line_len(stream: OutputStream, content: &str) -> usize {
+    format_output_line(stream, content).len()
+}
+
 #[cfg(not(unix))]
-fn read_pipe(pipe: Option<impl std::io::Read>) -> CapturedStream {
+#[derive(Default)]
+struct PipeOutput {
+    lines: Vec<OutputLine>,
+    had_invalid_utf8: bool,
+}
+
+#[cfg(not(unix))]
+fn read_pipe(pipe: Option<impl std::io::Read>, stream: OutputStream) -> PipeOutput {
     let Some(mut pipe) = pipe else {
-        return CapturedStream::default();
+        return PipeOutput::default();
     };
-    let mut output = CapturedStream::default();
+    let mut decoder = StreamDecoder::default();
+    let mut lines = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
         match pipe.read(&mut buf) {
             Ok(0) | Err(_) => break,
-            Ok(n) => output.push_bytes(&buf[..n]),
+            Ok(n) => {
+                lines.extend(decoder.push_bytes(&buf[..n]));
+            }
         }
     }
-    output.finish();
-    output
-}
-
-fn non_utf8_warning(stdout_invalid: bool, stderr_invalid: bool) -> Option<&'static str> {
-    match (stdout_invalid, stderr_invalid) {
-        (true, true) => Some(
-            "[tau-shell] warning: stdout and stderr contained non-UTF-8 bytes; invalid bytes were replaced",
-        ),
-        (true, false) => Some(
-            "[tau-shell] warning: stdout contained non-UTF-8 bytes; invalid bytes were replaced",
-        ),
-        (false, true) => Some(
-            "[tau-shell] warning: stderr contained non-UTF-8 bytes; invalid bytes were replaced",
-        ),
-        (false, false) => None,
+    lines.extend(decoder.finish());
+    PipeOutput {
+        lines: lines
+            .into_iter()
+            .map(|content| OutputLine { stream, content })
+            .collect(),
+        had_invalid_utf8: decoder.had_invalid_utf8,
     }
-}
-
-fn truncation_warning(stdout_truncated: bool, stderr_truncated: bool) -> Option<&'static str> {
-    match (stdout_truncated, stderr_truncated) {
-        (true, true) => {
-            Some("[tau-shell] warning: stdout and stderr were truncated; see truncation markers")
-        }
-        (true, false) => {
-            Some("[tau-shell] warning: stdout was truncated; see truncation marker in stdout")
-        }
-        (false, true) => {
-            Some("[tau-shell] warning: stderr was truncated; see truncation marker in stderr")
-        }
-        (false, false) => None,
-    }
-}
-
-fn stderr_with_warnings(warnings: &[&str], stderr: String) -> String {
-    if warnings.is_empty() {
-        return stderr;
-    }
-
-    let warning_text = warnings.join("\n");
-    if stderr.is_empty() {
-        return warning_text;
-    }
-    format!("{warning_text}\n{stderr}")
 }
 
 fn command_display_args(command: &str) -> String {
@@ -908,63 +918,47 @@ fn command_display_payload(command: &str) -> Option<ToolDisplayPayload> {
 }
 
 pub(crate) struct CommandDetails {
-    pub(crate) command: String,
-    pub(crate) cwd: Option<String>,
     pub(crate) status: Option<i32>,
     pub(crate) signal: Option<i32>,
     pub(crate) timed_out: bool,
-    pub(crate) timeout_secs: Option<u64>,
     pub(crate) exec_time_secs: Option<u64>,
     pub(crate) termination_reason: &'static str,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) stdout_total: Option<(usize, usize)>,
-    pub(crate) stderr_total: Option<(usize, usize)>,
+    pub(crate) output: String,
+    pub(crate) total_lines: usize,
+    pub(crate) total_bytes: usize,
+    pub(crate) truncated: bool,
+    pub(crate) valid_utf8: bool,
 }
 
 pub(crate) fn command_details_value(details: CommandDetails) -> CborValue {
     let CommandDetails {
-        command,
-        cwd,
         status,
         signal,
         timed_out,
-        timeout_secs,
         exec_time_secs,
         termination_reason,
-        stdout,
-        stderr,
-        stdout_total,
-        stderr_total,
+        output,
+        total_lines,
+        total_bytes,
+        truncated,
+        valid_utf8,
     } = details;
     let mut entries = vec![
         (
-            CborValue::Text("command".to_owned()),
-            CborValue::Text(command),
+            CborValue::Text("output".to_owned()),
+            CborValue::Text(output),
         ),
         (
-            CborValue::Text("stdout".to_owned()),
-            CborValue::Text(stdout.clone()),
+            CborValue::Text("total_lines".to_owned()),
+            CborValue::Integer((total_lines as i64).into()),
         ),
         (
-            CborValue::Text("stderr".to_owned()),
-            CborValue::Text(stderr.clone()),
+            CborValue::Text("total_bytes".to_owned()),
+            CborValue::Integer((total_bytes as i64).into()),
         ),
         (
-            CborValue::Text("stdout_lines".to_owned()),
-            CborValue::Integer((stdout.lines().count() as i64).into()),
-        ),
-        (
-            CborValue::Text("stdout_bytes".to_owned()),
-            CborValue::Integer((stdout.len() as i64).into()),
-        ),
-        (
-            CborValue::Text("stderr_lines".to_owned()),
-            CborValue::Integer((stderr.lines().count() as i64).into()),
-        ),
-        (
-            CborValue::Text("stderr_bytes".to_owned()),
-            CborValue::Integer((stderr.len() as i64).into()),
+            CborValue::Text("valid_utf8".to_owned()),
+            CborValue::Bool(valid_utf8),
         ),
         (
             CborValue::Text("timed_out".to_owned()),
@@ -975,8 +969,11 @@ pub(crate) fn command_details_value(details: CommandDetails) -> CborValue {
             CborValue::Text(termination_reason.to_owned()),
         ),
     ];
-    if let Some(cwd) = cwd {
-        entries.push((CborValue::Text("cwd".to_owned()), CborValue::Text(cwd)));
+    if truncated {
+        entries.push((
+            CborValue::Text("truncated".to_owned()),
+            CborValue::Bool(true),
+        ));
     }
     if let Some(status) = status {
         entries.push((
@@ -990,44 +987,10 @@ pub(crate) fn command_details_value(details: CommandDetails) -> CborValue {
             CborValue::Integer(signal.into()),
         ));
     }
-    if let Some(timeout_secs) = timeout_secs {
-        entries.push((
-            CborValue::Text("timeout_secs".to_owned()),
-            CborValue::Integer((timeout_secs as i64).into()),
-        ));
-    }
     if let Some(exec_time_secs) = exec_time_secs {
         entries.push((
             CborValue::Text("exec_time_secs".to_owned()),
             CborValue::Integer((exec_time_secs as i64).into()),
-        ));
-    }
-    if let Some((total_lines, total_bytes)) = stdout_total {
-        entries.push((
-            CborValue::Text("stdout_total_lines".to_owned()),
-            CborValue::Integer((total_lines as i64).into()),
-        ));
-        entries.push((
-            CborValue::Text("stdout_total_bytes".to_owned()),
-            CborValue::Integer((total_bytes as i64).into()),
-        ));
-        entries.push((
-            CborValue::Text("stdout_truncated".to_owned()),
-            CborValue::Bool(true),
-        ));
-    }
-    if let Some((total_lines, total_bytes)) = stderr_total {
-        entries.push((
-            CborValue::Text("stderr_total_lines".to_owned()),
-            CborValue::Integer((total_lines as i64).into()),
-        ));
-        entries.push((
-            CborValue::Text("stderr_total_bytes".to_owned()),
-            CborValue::Integer((total_bytes as i64).into()),
-        ));
-        entries.push((
-            CborValue::Text("stderr_truncated".to_owned()),
-            CborValue::Bool(true),
         ));
     }
     CborValue::Map(entries)
