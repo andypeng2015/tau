@@ -10,6 +10,7 @@ roles:
     description: Individual contributor using state of the art model. Good default for most tasks.
   manager:
     description: Role focused on splitting and delegation of tasks to other sub-agents.
+    effort: low
     promptFragments:
       - name: manager.instructions
         priority: 150
