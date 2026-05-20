@@ -50,6 +50,18 @@ fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
     crate::harness::run_echo_provider(r, w).map_err(|e| e.to_string())
 }
 
+#[test]
+fn render_self_knowledge_content_inserts_config_defaults() {
+    let rendered = crate::harness::render_self_knowledge_content(std::borrow::Cow::Borrowed(
+        "__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__\n__TAU_SELF_KNOWLEDGE_UI_CONFIG__",
+    ));
+
+    assert!(!rendered.contains("__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__"));
+    assert!(!rendered.contains("__TAU_SELF_KNOWLEDGE_UI_CONFIG__"));
+    assert!(rendered.contains("session_retention_days: 60"));
+    assert!(rendered.contains("show_thinking: true"));
+}
+
 /// Test-only helper that pushes a `UiPromptSubmitted` through the
 /// harness's normal publish path, which writes the durable per-session
 /// event and folds it into the SessionTree. Production code reaches

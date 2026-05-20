@@ -67,6 +67,11 @@ const BUILT_IN_SKILLS_SOURCE_ID: &str = "harness:built-in-skills";
 const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";
 const SELF_KNOWLEDGE_BUILD_DATE_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_BUILD_DATE__";
+const SELF_KNOWLEDGE_HARNESS_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__";
+const SELF_KNOWLEDGE_UI_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_UI_CONFIG__";
+const SELF_KNOWLEDGE_HARNESS_CONFIG: &str =
+    include_str!("../../tau-config/config/built-in.harness.yaml");
+const SELF_KNOWLEDGE_UI_CONFIG: &str = include_str!("../../tau-config/config/built-in.cli.yaml");
 
 fn load_system_prompt_templates(config_dir: Option<&Path>) -> HashMap<String, String> {
     let mut templates = built_in_system_prompt_templates();
@@ -247,19 +252,17 @@ fn built_in_discovered_skills() -> HashMap<tau_proto::SkillName, DiscoveredSkill
 fn render_self_knowledge_content(
     content: std::borrow::Cow<'static, str>,
 ) -> std::borrow::Cow<'static, str> {
-    let Some(last_modified) = crate::version::build_last_modified() else {
-        return std::borrow::Cow::Owned(
-            content
-                .replace(SELF_KNOWLEDGE_VERSION_TOKEN, env!("CARGO_PKG_VERSION"))
-                .replace(SELF_KNOWLEDGE_HASH_TOKEN, &crate::version::build_revision())
-                .replace(SELF_KNOWLEDGE_BUILD_DATE_TOKEN, "unknown"),
-        );
-    };
+    let last_modified = crate::version::build_last_modified().unwrap_or_else(|| "unknown".into());
     std::borrow::Cow::Owned(
         content
             .replace(SELF_KNOWLEDGE_VERSION_TOKEN, env!("CARGO_PKG_VERSION"))
             .replace(SELF_KNOWLEDGE_HASH_TOKEN, &crate::version::build_revision())
-            .replace(SELF_KNOWLEDGE_BUILD_DATE_TOKEN, &last_modified),
+            .replace(SELF_KNOWLEDGE_BUILD_DATE_TOKEN, &last_modified)
+            .replace(
+                SELF_KNOWLEDGE_HARNESS_CONFIG_TOKEN,
+                SELF_KNOWLEDGE_HARNESS_CONFIG,
+            )
+            .replace(SELF_KNOWLEDGE_UI_CONFIG_TOKEN, SELF_KNOWLEDGE_UI_CONFIG),
     )
 }
 

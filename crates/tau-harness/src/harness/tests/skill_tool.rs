@@ -917,7 +917,7 @@ fn built_in_tau_self_knowledge_skills_are_available_without_file_paths() {
 
     let prompt = build_system_prompt(&h.discovered_skills, &[]);
     assert!(prompt.contains("<name>tau-self-knowledge</name>"));
-    assert!(prompt.contains("Built-in information about Tau coding harness you are running in."));
+    assert!(prompt.contains("Use this skill when the user asks about the Tau coding agent"));
     assert!(!prompt.contains("<name>tau-self-knowledge-architecture</name>"));
     assert!(!prompt.contains("<name>tau-self-knowledge-config</name>"));
     assert!(!prompt.contains("<name>tau-self-knowledge-source-code</name>"));
