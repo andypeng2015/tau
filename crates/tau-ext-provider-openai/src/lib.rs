@@ -696,10 +696,7 @@ fn start_prompt_job(job: PromptJob, active_prompts: &mut usize, context: &Prompt
     let executor = context.prompt_executor.clone();
     let done_tx = context.worker_tx.clone();
     thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor(execution)));
-        if result.is_err() {
-            tracing::error!(target: LOG_TARGET, "prompt worker panicked");
-        }
+        executor(execution);
         let _ = done_tx.send(WorkerMessage::PromptDone { log_id });
     });
 }

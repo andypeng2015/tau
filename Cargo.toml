@@ -184,3 +184,6 @@ lto = "off"
 [profile.release]
 debug = false
 lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
