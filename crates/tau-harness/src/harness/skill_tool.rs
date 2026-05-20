@@ -272,9 +272,7 @@ impl Harness {
 
         let mut display = skill_ok_display(&display_args);
         display.stats = skill_search_stats(&outcome.hits);
-        if outcome.total_matches == 0 {
-            display.status_text = "ok: no matches".to_owned();
-        } else if outcome.truncated {
+        if outcome.truncated {
             display.status_text = format!(
                 "ok: showing {} of {} matches",
                 outcome.hits.len(),

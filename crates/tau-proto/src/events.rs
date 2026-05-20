@@ -1439,7 +1439,7 @@ pub struct ToolDisplay {
     /// Severity of the trailing status chip. Picks its themed color.
     pub status: ToolDisplayStatus,
     /// Status word/message rendered as the last chip (e.g. `"ok"`,
-    /// `"ok: no matches"`, `"regex parse error"`). For
+    /// `"regex parse error"`). For
     /// [`ToolDisplayStatus::Error`], this is the label without the
     /// generic `"err:"` prefix; renderers add that prefix and handle any
     /// width abbreviation needed for the current UI.

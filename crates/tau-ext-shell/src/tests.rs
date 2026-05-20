@@ -3515,6 +3515,31 @@ fn run_find_returns_matching_files() {
 }
 
 #[test]
+fn run_find_no_matches_uses_plain_ok_status() {
+    // Regression: the UI already renders the zero-match count, so the
+    // success chip should stay the generic `ok` instead of repeating
+    // `no matches` in the status text.
+    let tempdir = TempDir::new().expect("tempdir");
+    fs::write(tempdir.path().join("README.md"), "# hi\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("pattern".to_owned()),
+            CborValue::Text("**/*.rs".to_owned()),
+        ),
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(tempdir.path().display().to_string()),
+        ),
+    ]);
+    let output = run_find(&args).expect("find");
+
+    assert_eq!(output.display.status_text, "ok");
+    assert_eq!(output.display.stats.matches, Some(0));
+    assert_eq!(cbor_int_field(&output.result, "matches"), Some(0));
+}
+
+#[test]
 fn run_ls_lists_directory_contents() {
     let tempdir = TempDir::new().expect("tempdir");
     fs::create_dir_all(tempdir.path().join("src")).expect("mkdir");

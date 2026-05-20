@@ -72,7 +72,7 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
 
     if matches.is_empty() {
         let mut display = crate::display::ok_display(display_args.clone());
-        display.status_text = "ok: no matches".to_owned();
+        display.stats.matches = Some(0);
         return Ok(ToolOutput {
             result: CborValue::Map(vec![
                 (

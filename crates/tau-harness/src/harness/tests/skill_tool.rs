@@ -355,7 +355,7 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
     assert_eq!(display.stats.matches, Some(0));
     assert_eq!(display.stats.lines, None);
     assert_eq!(display.stats.bytes, None);
-    assert_eq!(display.status_text, "ok: no matches");
+    assert_eq!(display.status_text, "ok");
 
     // Opt into content search: now alpha and beta both match,
     // sorted alphabetically.
