@@ -194,6 +194,7 @@ impl Harness {
                             CborValue::Integer(read.total_bytes.into()),
                         ),
                     ]),
+                    kind: tau_proto::ToolResultKind::Final,
                     display: Some(display),
                     originator: tau_proto::PromptOriginator::User,
                 })
@@ -341,6 +342,7 @@ impl Harness {
                     CborValue::Text(guidance),
                 ),
             ]),
+            kind: tau_proto::ToolResultKind::Final,
             display: Some(display),
             originator: tau_proto::PromptOriginator::User,
         })

@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         CborValue::Null => CborValue::Text("null".to_owned()),
                         value => value,
                     },
+                    kind: tau_proto::ToolResultKind::Final,
                     display: None,
                     originator: tau_proto::PromptOriginator::User,
                 })))?;

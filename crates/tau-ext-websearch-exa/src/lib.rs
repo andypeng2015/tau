@@ -266,6 +266,7 @@ fn dispatch_tool_invoke(invoke: ToolInvoke, searcher: &dyn Searcher, tx: &mpsc::
                     tool_name: invoke.tool_name,
                     tool_type: tau_proto::ToolType::Function,
                     result: CborValue::Text(text),
+                    kind: tau_proto::ToolResultKind::Final,
                     display: Some(display),
                     originator: tau_proto::PromptOriginator::User,
                 })

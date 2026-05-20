@@ -13,7 +13,8 @@ use tau_proto::{
     ExtensionContextReady, Frame, FrameReader, FrameWriter, HarnessRolesAvailable, LogEventId,
     Message, SessionContextKey, SessionContextValue, SessionStarted, ToolBackgroundError,
     ToolBackgroundNotificationSuppress, ToolBackgroundResult, ToolCallId, ToolDisplay,
-    ToolDisplayStats, ToolError, ToolExecutionMode, ToolInvoke, ToolName, ToolResult, ToolSpec,
+    ToolDisplayStats, ToolError, ToolExecutionMode, ToolInvoke, ToolName, ToolResult,
+    ToolResultKind, ToolSpec,
 };
 
 pub const LOG_TARGET: &str = "core-subagents";
@@ -208,6 +209,7 @@ fn handle_ext_agent_query_result<W: Write>(
             tool_name,
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text(result.text),
+            kind: ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         };
@@ -460,10 +462,10 @@ impl WaitTracker {
             return Vec::new();
         }
         let call_id = result.call_id.clone();
-        if self.is_consumed(&call_id) {
+        if self.is_consumed(&call_id) || self.is_backgrounded(&call_id) {
             return Vec::new();
         }
-        if is_synthetic_background_result(&result) {
+        if result.kind == ToolResultKind::BackgroundPlaceholder {
             self.calls.insert(call_id, WaitCallState::Backgrounded);
             return Vec::new();
         }
@@ -674,6 +676,7 @@ fn write_wait_reply<W: Write>(
                 tool_name: reply.wait_tool_name,
                 tool_type: tau_proto::ToolType::Function,
                 result,
+                kind: ToolResultKind::Final,
                 display,
                 originator: tau_proto::PromptOriginator::User,
             })))?;
@@ -707,14 +710,6 @@ fn write_background_notification_suppress<W: Write>(
     )))?;
     writer.flush()?;
     Ok(())
-}
-
-fn is_synthetic_background_result(result: &ToolResult) -> bool {
-    matches!(
-        &result.result,
-        CborValue::Text(text)
-            if text == &format!("Tool call `{}` is running in the background.", result.call_id)
-    )
 }
 
 fn parse_wait_args(arguments: &CborValue) -> Result<ToolCallId, String> {
@@ -970,6 +965,19 @@ mod tests {
             tool_name: ToolName::new("shell"),
             tool_type: tau_proto::ToolType::Function,
             result,
+            kind: ToolResultKind::Final,
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }
+    }
+
+    fn background_placeholder(call_id: &str) -> ToolResult {
+        ToolResult {
+            call_id: call_id.into(),
+            tool_name: ToolName::new("shell"),
+            tool_type: tau_proto::ToolType::Function,
+            result: text("background placeholder"),
+            kind: ToolResultKind::BackgroundPlaceholder,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         }
@@ -1181,10 +1189,11 @@ mod tests {
             arguments: args(&[]),
             originator: tau_proto::PromptOriginator::User,
         });
-        tracker.record_tool_result(tool_result(
-            "call-1",
-            text("Tool call `call-1` is running in the background."),
-        ));
+        assert!(
+            tracker
+                .record_tool_result(background_placeholder("call-1"))
+                .is_empty()
+        );
         assert_eq!(
             tracker.start_wait("call-1".into(), wait_request("wait-1")),
             WaitStart::suppress("call-1".into())
@@ -1280,10 +1289,11 @@ mod tests {
             arguments: args(&[]),
             originator: tau_proto::PromptOriginator::User,
         });
-        tracker.record_tool_result(tool_result(
-            "call-1",
-            text("Tool call `call-1` is running in the background."),
-        ));
+        assert!(
+            tracker
+                .record_tool_result(background_placeholder("call-1"))
+                .is_empty()
+        );
         assert_eq!(
             tracker.start_wait("call-1".into(), wait_request("wait-1")),
             WaitStart::suppress("call-1".into())

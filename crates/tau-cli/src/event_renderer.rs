@@ -50,7 +50,7 @@ pub(crate) struct EventRenderer {
     /// cached delegate args/progress for in-place re-renders, and
     /// whether the call belongs to a sub-agent side-conversation (in
     /// which case the UI suppresses its progress and result events).
-    /// Entries are removed on `ToolResult`/`ToolError`.
+    /// Entries are removed on terminal logical completion events.
     tool_calls: HashMap<String, ToolCallState>,
     /// Wakes the timer thread whenever visible tool activity starts or stops.
     tool_timer: Option<ToolTimerNotifier>,
@@ -572,6 +572,9 @@ struct AgentActivity {
     active_prompts: HashSet<String>,
     /// Tool call ids emitted by any agent and not finished yet.
     active_tools: HashSet<String>,
+    /// Tool call ids whose foreground provider protocol has completed with a
+    /// synthetic placeholder, but whose real tool process is still running.
+    backgrounded_tools: HashSet<String>,
 }
 
 impl AgentActivity {
@@ -608,7 +611,19 @@ impl AgentActivity {
         self.active_tools.insert(call_id.to_string());
     }
 
+    fn background_tool(&mut self, call_id: &tau_proto::ToolCallId) {
+        self.backgrounded_tools.insert(call_id.to_string());
+        self.active_tools.insert(call_id.to_string());
+    }
+
     fn finish_tool(&mut self, call_id: &tau_proto::ToolCallId) {
+        if !self.backgrounded_tools.contains(call_id.as_str()) {
+            self.active_tools.remove(call_id.as_str());
+        }
+    }
+
+    fn finish_background_tool(&mut self, call_id: &tau_proto::ToolCallId) {
+        self.backgrounded_tools.remove(call_id.as_str());
         self.active_tools.remove(call_id.as_str());
     }
 
@@ -620,6 +635,7 @@ impl AgentActivity {
         self.optimistic_submissions = 0;
         self.active_prompts.clear();
         self.active_tools.clear();
+        self.backgrounded_tools.clear();
     }
 }
 
@@ -1570,9 +1586,24 @@ impl EventRenderer {
             }
             Event::ToolRequest(request) => self.agent_activity.start_tool(&request.call_id),
             Event::ToolInvoke(invoke) => self.agent_activity.start_tool(&invoke.call_id),
-            Event::ToolResult(result) => self.agent_activity.finish_tool(&result.call_id),
+            Event::ToolResult(result) => {
+                if result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder {
+                    self.agent_activity.background_tool(&result.call_id);
+                } else {
+                    self.agent_activity.finish_tool(&result.call_id);
+                }
+            }
             Event::ToolError(error) => self.agent_activity.finish_tool(&error.call_id),
-            Event::ToolCancelled(cancelled) => self.agent_activity.finish_tool(&cancelled.call_id),
+            Event::ToolBackgroundResult(result) => {
+                self.agent_activity.finish_background_tool(&result.call_id);
+            }
+            Event::ToolBackgroundError(error) => {
+                self.agent_activity.finish_background_tool(&error.call_id);
+            }
+            Event::ToolCancelled(cancelled) => {
+                self.agent_activity
+                    .finish_background_tool(&cancelled.call_id);
+            }
             Event::UiCancelPrompt(_) => self.agent_activity.clear_optimistic_submissions(),
             Event::SessionShutdown(_) => self.agent_activity.clear(),
             _ => {}
@@ -2313,6 +2344,14 @@ impl EventRenderer {
                 self.handle_tool_error(error, recorded_at);
                 true
             }
+            Event::ToolBackgroundResult(result) => {
+                self.handle_tool_background_result(result, recorded_at);
+                true
+            }
+            Event::ToolBackgroundError(error) => {
+                self.handle_tool_background_error(error, recorded_at);
+                true
+            }
             Event::ToolCancelled(cancelled) => {
                 self.handle_tool_cancelled(cancelled, recorded_at);
                 true
@@ -2473,6 +2512,9 @@ impl EventRenderer {
 
     fn handle_tool_result(&mut self, result: &tau_proto::ToolResult, recorded_at: UnixMicros) {
         let call_id = result.call_id.as_str();
+        if result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder {
+            return;
+        }
         // Sub-agent tool activity stays out of the user's transcript — its
         // progress is rolled up under the parent's `delegate` block by
         // `DelegateProgress`.
@@ -2486,6 +2528,40 @@ impl EventRenderer {
             Self::upsert_tool_duration_suffix(&mut display, duration);
         }
         let diff = Self::tool_result_diff(result);
+        self.record_tool_summary_result(
+            prior.summary_block_id,
+            result.display.as_ref(),
+            diff.as_ref(),
+            false,
+        );
+        self.record_tool_result_block(prior.block_id, display, diff);
+        self.render_model_status_after_tool_completion(known_main_tool);
+    }
+
+    fn handle_tool_background_result(
+        &mut self,
+        result: &tau_proto::ToolBackgroundResult,
+        recorded_at: UnixMicros,
+    ) {
+        let result = tau_proto::ToolResult {
+            call_id: result.call_id.clone(),
+            tool_name: result.tool_name.clone(),
+            tool_type: result.tool_type,
+            result: result.result.clone(),
+            kind: tau_proto::ToolResultKind::Final,
+            display: result.display.clone(),
+            originator: result.originator.clone(),
+        };
+        let Some((prior, known_main_tool)) =
+            self.take_finished_tool_call(result.call_id.as_str(), result.originator.is_user())
+        else {
+            return;
+        };
+        let mut display = Self::tool_result_display(&result, prior.delegate_last_progress.as_ref());
+        if let Some(duration) = Self::finished_tool_duration(&prior, recorded_at) {
+            Self::upsert_tool_duration_suffix(&mut display, duration);
+        }
+        let diff = Self::tool_result_diff(&result);
         self.record_tool_summary_result(
             prior.summary_block_id,
             result.display.as_ref(),
@@ -2569,6 +2645,34 @@ impl EventRenderer {
             return;
         };
         let mut display = Self::tool_error_display(error, prior.delegate_last_progress.as_ref());
+        if let Some(duration) = Self::finished_tool_duration(&prior, recorded_at) {
+            Self::upsert_tool_duration_suffix(&mut display, duration);
+        }
+        self.record_tool_summary_result(prior.summary_block_id, error.display.as_ref(), None, true);
+        self.record_plain_finished_tool_block(prior.block_id, display, "tool-error");
+        self.render_model_status_after_tool_completion(known_main_tool);
+    }
+
+    fn handle_tool_background_error(
+        &mut self,
+        error: &tau_proto::ToolBackgroundError,
+        recorded_at: UnixMicros,
+    ) {
+        let error = tau_proto::ToolError {
+            call_id: error.call_id.clone(),
+            tool_name: error.tool_name.clone(),
+            tool_type: error.tool_type,
+            message: error.message.clone(),
+            details: error.details.clone(),
+            display: error.display.clone(),
+            originator: error.originator.clone(),
+        };
+        let Some((prior, known_main_tool)) =
+            self.take_finished_tool_call(error.call_id.as_str(), error.originator.is_user())
+        else {
+            return;
+        };
+        let mut display = Self::tool_error_display(&error, prior.delegate_last_progress.as_ref());
         if let Some(duration) = Self::finished_tool_duration(&prior, recorded_at) {
             Self::upsert_tool_duration_suffix(&mut display, duration);
         }

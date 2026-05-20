@@ -21,7 +21,7 @@ use tau_proto::{
     SessionPromptId, SessionPromptPrewarmRequested, SessionPromptQueued, SessionPromptRecalled,
     TokenUsageStats, ToolBackgroundError, ToolBackgroundNotificationSuppress, ToolBackgroundResult,
     ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName,
-    ToolRequest, ToolResult, ToolType, UiCancelPrompt,
+    ToolRequest, ToolResult, ToolResultKind, ToolType, UiCancelPrompt,
 };
 
 use crate::conversation::{
@@ -5973,6 +5973,7 @@ impl Harness {
                 tool_name: tool.name,
                 tool_type: tool.tool_type,
                 result: CborValue::Text(content),
+                kind: ToolResultKind::BackgroundPlaceholder,
                 display: None,
                 originator: PromptOriginator::User,
             }),

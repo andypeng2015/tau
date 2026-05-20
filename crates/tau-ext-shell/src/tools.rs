@@ -1,6 +1,6 @@
 //! Tool registry: dispatches a `ToolInvoke` to the right handler.
 
-use tau_proto::{CborValue, Event, ToolError, ToolProgress, ToolResult};
+use tau_proto::{CborValue, Event, ToolError, ToolProgress, ToolResult, ToolResultKind};
 
 use crate::config::ShellConfig;
 use crate::display::{ToolFailure, ToolOutput};
@@ -40,6 +40,7 @@ pub(crate) fn execute_tool(
             tool_name: invoke.tool_name,
             tool_type: tau_proto::ToolType::Function,
             result: invoke.arguments,
+            kind: ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })];
@@ -80,6 +81,7 @@ pub(crate) fn execute_tool(
                 tool_name: invoke.tool_name,
                 tool_type: tau_proto::ToolType::Function,
                 result,
+                kind: ToolResultKind::Final,
                 display: Some(display),
                 originator: tau_proto::PromptOriginator::User,
             })),
@@ -127,6 +129,7 @@ fn wrap_pure(
             tool_name: invoke.tool_name,
             tool_type: tau_proto::ToolType::Function,
             result,
+            kind: ToolResultKind::Final,
             display: Some(display),
             originator: tau_proto::PromptOriginator::User,
         })],

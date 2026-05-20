@@ -3571,11 +3571,7 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
         event,
         Event::ToolResult(result)
             if result.call_id.as_str() == "slow-call"
-                && matches!(
-                    &result.result,
-                    CborValue::Text(text)
-                        if text == "Tool call `slow-call` is running in the background."
-                )
+                && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder
     )));
 
     let followup_spid = h
@@ -3613,6 +3609,7 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
             tool_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("real output".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         }),
@@ -4630,6 +4627,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_name: tau_proto::ToolName::new("websearch"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("fake result".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })),
@@ -5134,6 +5132,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_name: tau_proto::ToolName::new("delegate"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("nested answer".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })),
@@ -5467,6 +5466,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             tool_name: tau_proto::ToolName::new("delegate"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("outer answer".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })),

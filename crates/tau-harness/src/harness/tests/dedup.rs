@@ -42,6 +42,7 @@ fn run_tool_result(
             tool_name: name,
             tool_type: tau_proto::ToolType::Function,
             result,
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })),
@@ -468,6 +469,7 @@ fn dedup_refuses_to_self_point() {
         tool_name: ToolName::new("read"),
         tool_type: tau_proto::ToolType::Function,
         result: big.clone(),
+        kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::User,
     };

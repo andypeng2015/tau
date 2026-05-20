@@ -10,8 +10,8 @@ use tau_proto::{
     HarnessRoleSelected, HarnessRolesAvailable, HarnessVerbosityChanged, MessageItem,
     ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason, ServiceTier,
     SessionPromptCreated, SessionPromptQueued, SessionPromptSteered, SessionStartReason,
-    SessionStarted, ThinkingSummary, ToolCallItem, ToolCancelled, ToolResult, UiPromptSubmitted,
-    UiRoleUpdateAction, Verbosity,
+    SessionStarted, ThinkingSummary, ToolBackgroundResult, ToolCallItem, ToolCancelled, ToolResult,
+    UiPromptSubmitted, UiRoleUpdateAction, Verbosity,
 };
 
 use super::chat::{DraftSlot, is_local_slash_command, should_send_draft_snapshot};
@@ -295,6 +295,7 @@ fn new_session_clears_session_ui_state() {
                 CborValue::Text("fn main() {}\n".into()),
             ),
         ]),
+        kind: tau_proto::ToolResultKind::Final,
         display: Some(tau_proto::ToolDisplay {
             args: "src/lib.rs".into(),
             status: tau_proto::ToolDisplayStatus::Success,
@@ -504,6 +505,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_name: tau_proto::ToolName::new("grep"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("side result".into()),
+        kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
@@ -515,6 +517,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_name: tau_proto::ToolName::new("read"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("main result".into()),
+        kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::User,
     }));
@@ -551,6 +554,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_name: tau_proto::ToolName::new("grep"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("main result".into()),
+        kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::User,
     }));
@@ -1843,6 +1847,7 @@ fn running_tool_call_shows_ellipsis_until_result() {
                     CborValue::Text("fn main() {}\n".into()),
                 ),
             ]),
+            kind: tau_proto::ToolResultKind::Final,
             display: Some(tau_proto::ToolDisplay {
                 args: "src/main.rs".into(),
                 stats: tau_proto::ToolDisplayStats {
@@ -1861,6 +1866,69 @@ fn running_tool_call_shows_ellipsis_until_result() {
     sync(&handle);
     assert!(vt.screen_contains(80, "read src/main.rs 1L, 13B 2s ok"));
     assert!(!vt.screen_contains(80, "read src/main.rs …"));
+}
+
+#[test]
+fn backgrounded_tool_stays_visibly_running_until_background_result() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let in_progress = renderer.agent_in_progress_state();
+
+    renderer.handle_recorded_at(
+        &Event::ProviderResponseFinished(finished_response(
+            "sp-0",
+            vec![ContextItem::ToolCall(ToolCallItem {
+                call_id: "call-1".into(),
+                name: tau_proto::ToolName::new("shell"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(vec![(
+                    CborValue::Text("command".into()),
+                    CborValue::Text("sleep 10".into()),
+                )]),
+            })],
+        )),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
+    renderer.handle_recorded_at(
+        &Event::ToolResult(ToolResult {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new("shell"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Text("Tool call `call-1` is running in the background.".into()),
+            kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }),
+        tau_proto::UnixMicros::new(2_000_000),
+    );
+    sync(&handle);
+    assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(vt.screen_contains(80, "shell sleep 10 0s …"));
+    assert!(!vt.screen_contains(80, "shell 1s ok"));
+
+    renderer.handle_recorded_at(
+        &Event::ToolBackgroundResult(ToolBackgroundResult {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new("shell"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Text("done".into()),
+            display: Some(tau_proto::ToolDisplay {
+                args: "sleep 10".into(),
+                status: tau_proto::ToolDisplayStatus::Success,
+                status_text: "ok".into(),
+                ..Default::default()
+            }),
+            originator: tau_proto::PromptOriginator::User,
+        }),
+        tau_proto::UnixMicros::new(4_000_000),
+    );
+    sync(&handle);
+    assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(vt.screen_contains(80, "shell sleep 10 3s ok"));
 }
 
 #[test]
@@ -1951,6 +2019,7 @@ fn show_tools_summarize_turn_summarizes_tool_batch() {
         tool_name: tau_proto::ToolName::new("read"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Null,
+        kind: tau_proto::ToolResultKind::Final,
         display: Some(tau_proto::ToolDisplay {
             args: "src/main.rs".into(),
             stats: tau_proto::ToolDisplayStats {
@@ -2011,6 +2080,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
         tool_name: tau_proto::ToolName::new("read"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Null,
+        kind: tau_proto::ToolResultKind::Final,
         display: Some(tau_proto::ToolDisplay {
             args: "src/main.rs".into(),
             stats: tau_proto::ToolDisplayStats {
@@ -2049,6 +2119,7 @@ fn show_tools_summarize_prompt_aggregates_across_tool_followups() {
         tool_name: tau_proto::ToolName::new("grep"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Null,
+        kind: tau_proto::ToolResultKind::Final,
         display: Some(tau_proto::ToolDisplay {
             args: "foo".into(),
             stats: tau_proto::ToolDisplayStats {
@@ -2099,6 +2170,7 @@ fn show_tools_compact_hides_payload_body() {
             tool_name: tau_proto::ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Null,
+            kind: tau_proto::ToolResultKind::Final,
             display: Some(tau_proto::ToolDisplay {
                 args: "src/main.rs".into(),
                 stats: tau_proto::ToolDisplayStats {
@@ -2149,6 +2221,7 @@ fn show_tools_off_hides_tool_blocks() {
         tool_name: tau_proto::ToolName::new("read"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Null,
+        kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::User,
     }));
@@ -2173,6 +2246,7 @@ fn websearch_tool_result_shows_result_count_and_size() {
         result: CborValue::Text(
             "Title: One\nURL: https://one.example\n\nTitle: Two\nURL: https://two.example\n".into(),
         ),
+        kind: tau_proto::ToolResultKind::Final,
         display: Some(tau_proto::ToolDisplay {
             args: String::new(),
             stats: tau_proto::ToolDisplayStats {

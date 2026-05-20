@@ -112,6 +112,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
             tool_name: tau_proto::ToolName::new("echo"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("hello".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         }))

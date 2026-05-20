@@ -847,6 +847,7 @@ fn duplicate_tool_result_is_discarded() {
             tool_name: ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             result: tau_proto::CborValue::Text("stale data".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
         })),

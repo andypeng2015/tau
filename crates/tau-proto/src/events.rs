@@ -1397,12 +1397,22 @@ pub struct ToolInvoke {
     pub originator: PromptOriginator,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultKind {
+    #[default]
+    Final,
+    BackgroundPlaceholder,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub tool_type: ToolType,
     pub result: CborValue,
+    #[serde(default)]
+    pub kind: ToolResultKind,
     /// Optional UI display descriptor populated by the tool. When
     /// present, lets the renderer paint a uniform tool block without
     /// inspecting `result`'s tool-specific shape. This is operational

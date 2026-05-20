@@ -44,6 +44,7 @@ fn representative_events() -> Vec<Event> {
             tool_name: ToolName::new("echo"),
             tool_type: ToolType::Function,
             result: CborValue::Text("hello".to_owned()),
+            kind: ToolResultKind::Final,
             display: None,
             originator: PromptOriginator::User,
         }),
@@ -621,6 +622,19 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             event.name()
         );
     }
+}
+
+#[test]
+fn tool_result_kind_defaults_to_final_for_legacy_events() {
+    let result: ToolResult = serde_json::from_value(serde_json::json!({
+        "call_id": "call-1",
+        "tool_name": "read",
+        "tool_type": "function",
+        "result": "ok",
+        "originator": { "kind": "user" }
+    }))
+    .expect("legacy tool result decodes");
+    assert_eq!(result.kind, ToolResultKind::Final);
 }
 
 #[test]

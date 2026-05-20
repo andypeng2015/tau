@@ -102,7 +102,7 @@ standard tools.
 
 ### Background tools and `wait`
 
-Some tools can run in the background. The agent first receives a synthetic tool result saying:
+Some tools can run in the background. The agent first receives a synthetic tool result with `kind: background_placeholder` saying:
 
 ```
 Tool call `<tool_call_id>` is running in the background.
