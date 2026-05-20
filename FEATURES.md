@@ -89,23 +89,29 @@ backends thread through to the provider request:
 Defaults are normally selected through agent roles in `harness.yaml`:
 
 ```yaml
+promptFragments:
+  - name: user.short-plain-style
+    priority: 65
+    text: Keep answers short and plain, using only simple words.
+
 roles:
   engineer:
     description: Balanced coding assistant
     model: chatgpt/gpt-5.5
     effort: medium
-    toolsProfile: full
+    tools: [read, grep]
   assistant: { effort: off, serviceTier: fast }
-  manager: { orchestrator: true }
+  manager:
+    promptFragments:
+      - name: manager.workflow
+        priority: 66
+        text: Delegate non-trivial work.
 ```
 
 Roles can include a `description` shown after the model/knob summary in
-`/role ...` completions. Roles can also select a named `toolsProfile`, and
-orchestrator roles append an available sub-task role list to their prompt.
-Profiles live in `harness.yaml` under `toolsProfiles` and map tool names to booleans,
-overriding each tool's extension-declared `enabled_by_default` hint. Tau ships
-a built-in `gpt` profile that enables `apply_patch` while disabling direct
-file/search tools (`edit`, `write`, `read`, `grep`, `find`, and `ls`).
+`/role ...` completions. Top-level `promptFragments` apply to every role;
+per-role `promptFragments` apply only to that role. Roles can also use `tools`
+and `disableTools` to customize internal tool availability.
 
 `/model <role>` switches roles; `/role <role> <setting> <value>` edits role
 settings, with built-in/configured role overrides persisted. See
@@ -194,13 +200,11 @@ working directory, plus `$HOME/.agents*/skills` and
 machine- or user-specific instructions and skills that should usually be added
 to `.gitignore` instead of checked in.
 
-Role prompts are composable too: each `harness.yaml` role may set `prompt` to
-replace the role's built-in prompt, if any, and `extraPrompt` to append local
-instructions after the role prompt. Roles with `orchestrator: true` then get a
-sorted `Available sub-task roles` section appended after the effective role
-prompt. Extensions can also attach ordered prompt
-fragments to registered tools, so tool-specific instructions appear only when
-that tool is enabled for the active role.
+Prompt fragments are composable too: top-level `harness.yaml`
+`promptFragments` apply to every role, while `roles.<name>.promptFragments`
+apply only to that role. Fragments are ordered by priority with extension- and
+tool-provided fragments, so global style instructions, role guidance, and
+tool-specific instructions share one prompt assembly path.
 
 ### `provider-openai` — OpenAI Responses backend
 

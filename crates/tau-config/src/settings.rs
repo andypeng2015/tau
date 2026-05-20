@@ -353,6 +353,11 @@ pub struct HarnessSettings {
     /// settings; missing fields use provider/model fallbacks for the selected
     /// provider-published model.
     pub roles: HashMap<String, AgentRole>,
+
+    /// Top-level prompt fragments from harness config. Loaded settings also
+    /// fold these into every role's prompt fragments; this field preserves the
+    /// global source list for inspection and future config tooling.
+    pub prompt_fragments: Vec<RolePromptFragment>,
 }
 
 #[derive(Deserialize)]
@@ -363,6 +368,8 @@ struct HarnessSettingsWire {
     roles: HashMap<String, AgentRole>,
     #[serde(default, rename = "defaultRoles")]
     default_roles: HashMap<String, AgentRole>,
+    #[serde(default, rename = "promptFragments")]
+    prompt_fragments: Vec<RolePromptFragment>,
 }
 
 impl<'de> Deserialize<'de> for HarnessSettings {
@@ -375,6 +382,7 @@ impl<'de> Deserialize<'de> for HarnessSettings {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
             roles: wire.roles,
+            prompt_fragments: wire.prompt_fragments,
         };
         settings.apply_role_overrides(wire.default_roles);
         Ok(settings)
@@ -387,13 +395,16 @@ struct HarnessRoleOverrides {
     roles: HashMap<String, AgentRole>,
     #[serde(default, rename = "defaultRoles")]
     default_roles: HashMap<String, AgentRole>,
+    #[serde(default, rename = "promptFragments")]
+    prompt_fragments: Vec<RolePromptFragment>,
 }
 
 impl HarnessSettings {
     /// The fully-populated baseline that ships with tau, parsed from
     /// the embedded `built-in.harness.yaml`.
     pub fn built_in() -> Self {
-        let s: Self = parse_built_in_yaml("built-in.harness.yaml", BUILT_IN_HARNESS_YAML);
+        let mut s: Self = parse_built_in_yaml("built-in.harness.yaml", BUILT_IN_HARNESS_YAML);
+        s.apply_global_prompt_fragments_to_roles();
         s
     }
 
@@ -403,6 +414,24 @@ impl HarnessSettings {
                 .entry(name)
                 .and_modify(|role| role.apply_overrides_from(&override_role))
                 .or_insert(override_role);
+        }
+    }
+
+    fn apply_prompt_fragment_overrides(&mut self, fragments: Vec<RolePromptFragment>) {
+        for prompt_fragment in fragments {
+            if !self.prompt_fragments.contains(&prompt_fragment) {
+                self.prompt_fragments.push(prompt_fragment);
+            }
+        }
+    }
+
+    fn apply_global_prompt_fragments_to_roles(&mut self) {
+        for role in self.roles.values_mut() {
+            for prompt_fragment in &self.prompt_fragments {
+                if !role.prompt_fragments.contains(prompt_fragment) {
+                    role.prompt_fragments.push(prompt_fragment.clone());
+                }
+            }
         }
     }
 
@@ -683,16 +712,20 @@ pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, Setti
         "harness",
     )?;
 
-    // Generic YAML layering replaces arrays, but role prompt fragments are
-    // additive role metadata. Recompute only roles through the role merge path;
-    // all other harness fields keep the normal config-layer semantics.
+    // Generic YAML layering replaces arrays, but prompt fragments are additive
+    // metadata. Recompute roles and top-level prompt fragments through the
+    // domain merge path; all other harness fields keep normal config-layer
+    // semantics.
     let mut role_settings = HarnessSettings::built_in();
     for overrides in
         load_yaml_layer_files::<HarnessRoleOverrides>(dirs.config_dir.as_deref(), "harness")?
     {
+        role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
         role_settings.apply_role_overrides(overrides.roles);
         role_settings.apply_role_overrides(overrides.default_roles);
     }
+    role_settings.apply_global_prompt_fragments_to_roles();
+    settings.prompt_fragments = role_settings.prompt_fragments;
     settings.roles = role_settings.roles;
     Ok(settings)
 }

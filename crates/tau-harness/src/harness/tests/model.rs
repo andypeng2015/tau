@@ -481,6 +481,9 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
+            promptFragments: [
+                { name: "global.prompt", priority: 50, text: "CURRENT GLOBAL PROMPT" },
+            ],
             roles: {
                 engineer: {
                     description: "CURRENT CONFIG DESCRIPTION",
@@ -520,17 +523,20 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
         role.description.as_deref(),
         Some("CURRENT CONFIG DESCRIPTION")
     );
-    assert_eq!(
+    assert!(
         role.prompt_fragments
-            .first()
-            .map(|fragment| fragment.text.as_str()),
-        Some("CURRENT CONFIG PROMPT")
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "CURRENT GLOBAL PROMPT")
     );
-    assert_eq!(
+    assert!(
         role.prompt_fragments
-            .get(1)
-            .map(|fragment| fragment.text.as_str()),
-        Some("CURRENT CONFIG EXTRA")
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "CURRENT CONFIG PROMPT")
+    );
+    assert!(
+        role.prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "CURRENT CONFIG EXTRA")
     );
     let runtime_override = role_overrides.get("engineer").expect("runtime override");
     assert!(runtime_override.description.is_none());

@@ -10,8 +10,19 @@ A role can set:
 - `verbosity`: `low`, `medium`, or `high`
 - `thinkingSummary`: `off`, `auto`, `concise`, or `detailed`
 - `serviceTier`: `fast` or `flex`
-- `toolsProfile`: name of a tool-availability profile from `harness.yaml`
-- `orchestrator`: when true, append a sorted list of available sub-task roles to this role's prompt
+- `promptFragments`: role-specific prompt fragments
+- `promptOverride`: system prompt template name
+- `tools`: explicit internal tools enabled for this role
+- `disableTools`: internal tools disabled for this role
+
+Top-level `promptFragments` in `harness.yaml` apply to every role. Use them for global style or policy instructions:
+
+```yaml
+promptFragments:
+  - name: user.short-plain-style
+    priority: 65
+    text: Keep answers short and plain, using only simple words.
+```
 
 Roles live in `harness.yaml` under `roles`:
 
@@ -22,54 +33,24 @@ Roles live in `harness.yaml` under `roles`:
       description: "Balanced coding assistant",
       model: "chatgpt/gpt-5.3-codex",
       effort: "medium",
-      toolsProfile: "full",
+      tools: ["read", "grep"],
     },
     assistant: {
       effort: "off",
       serviceTier: "fast",
     },
     manager: {
-      orchestrator: true,
+      promptFragments: [
+        { name: "manager.workflow", priority: 66, text: "Delegate non-trivial work." },
+      ],
     },
-  },
+  }
 }
 ```
-
-Tool profiles themselves live in `harness.yaml` under `toolsProfiles`:
-
-```json5
-{
-  toolsProfiles: {
-    // Built in by default: prefer patch-style file mutation for GPT-family models.
-    gpt: {
-      apply_patch: true,
-      edit: false,
-      find: false,
-      grep: false,
-      ls: false,
-      read: false,
-      write: false,
-    },
-    full: {},
-    read_only: {
-      shell: false,
-      write: false,
-      edit: false,
-    },
-  },
-}
-```
-
-When a role selects `toolsProfile`, each listed tool name overrides that
-tool's extension-provided `enabled_by_default` setting. Tau includes a built-in
-`gpt` profile that enables `apply_patch` and disables direct file/search tools
-(`edit`, `write`, `read`, `grep`, `find`, and `ls`).
 
 Missing fields use provider-published fallback knobs for the role's resolved model.
 
 Tau ships built-in `assistant`, `engineer`, and `manager` roles. `engineer` is the startup fallback role and uses the same state-of-the-art individual-contributor defaults as the previous `smart` role. `assistant` is fast and lightweight with effort off. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
-
-When a role has `orchestrator: true`, Tau appends an `Available sub-task roles` section listing every role whose model is currently available so an orchestrator can pick an explicit role for delegated work. This list is appended even when the role's `prompt` is overridden.
 
 
 ## Selecting a role
@@ -84,7 +65,7 @@ Use `/model <role>` or `/role <role>`.
 Use:
 
 ```text
-/role <role> <delete|model|effort|verbosity|thinking-summary|service-tier|tools-profile> [value]
+/role <role> <delete|model|effort|verbosity|thinking-summary|service-tier|tools|disable-tools> [value]
 ```
 
 Examples:
@@ -93,7 +74,7 @@ Examples:
 /role engineer model chatgpt/gpt-5.3-codex
 /role assistant service-tier fast
 /role manager effort xhigh
-/role engineer tools-profile read_only
+/role engineer disable-tools shell
 /role temporary model anthropic/claude-sonnet-4-20250514
 /role temporary delete
 ```
@@ -106,6 +87,6 @@ The `<role>` argument completes existing roles, but any new name can be used to 
 
 `/role <role> delete` removes the runtime/persisted role override. It does not edit `roles` from configuration; built-in or configured roles come back on the next harness start.
 
-Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json` together with the last selected role. Role `description`, prompt fragments, and `orchestrator` remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
+Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json` together with the last selected role. Role `description` and both global and role prompt fragments remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
 
 Prompt fragment priorities sort ascending. Use priorities below `100` for role/persona instructions that should appear before generated context sections such as skills and AGENTS.md. Use high priorities for epilogue context; Tau's built-in current-working-directory fragment uses `900` so it stays at the end of the prompt.

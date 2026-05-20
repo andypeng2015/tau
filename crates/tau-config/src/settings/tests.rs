@@ -252,6 +252,9 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
             extensions: {
                 mything: { command: ["mything"] },
             },
+            promptFragments: [
+                { name: "global.local", priority: 60, text: "Local global instruction." },
+            ],
             roles: {
                 manager: { promptFragments: [{ name: "manager.local", priority: 170, text: "Local manager instruction." }] },
             },
@@ -266,6 +269,9 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
             extensions: {
                 mything: { suffix: ["--flag"] },
             },
+            promptFragments: [
+                { name: "global.drop-in", priority: 70, text: "Drop-in global instruction." },
+            ],
             roles: {
                 manager: { promptFragments: [{ name: "manager.drop-in", priority: 180, text: "Drop-in manager instruction." }] },
             },
@@ -282,6 +288,16 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
     assert_eq!(
         s.extensions["mything"].suffix.as_ref().expect("suffix"),
         &vec!["--flag".to_owned()]
+    );
+    assert!(
+        s.prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Local global instruction.")
+    );
+    assert!(
+        s.prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Drop-in global instruction.")
     );
     let manager = &s.roles["manager"];
     assert!(
@@ -302,6 +318,69 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
             .iter()
             .any(|fragment| fragment.text.as_str() == "Drop-in manager instruction.")
     );
+    assert!(
+        manager
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Local global instruction.")
+    );
+    assert!(
+        manager
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Drop-in global instruction.")
+    );
+}
+
+#[test]
+fn harness_global_prompt_fragments_apply_to_all_roles() {
+    // Top-level prompt fragments are role-independent style/context hooks. They
+    // must apply to built-in roles and roles created by user config without
+    // duplicating the same fragment when a drop-in repeats it exactly.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            promptFragments: [
+                { name: "global.simple", priority: 65, text: "Use simple words." },
+            ],
+            roles: {
+                custom: { model: "openai/custom" },
+            },
+        }"#,
+    )
+    .expect("write harness");
+    std::fs::create_dir(dir.join("harness.d")).expect("mkdir harness.d");
+    std::fs::write(
+        dir.join("harness.d").join("01-repeat.yaml"),
+        r#"{
+            promptFragments: [
+                { name: "global.simple", priority: 65, text: "Use simple words." },
+            ],
+        }"#,
+    )
+    .expect("write drop-in");
+
+    let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+    assert_eq!(
+        s.prompt_fragments
+            .iter()
+            .filter(|fragment| fragment.name == "global.simple")
+            .count(),
+        1
+    );
+    for role_name in ["assistant", "engineer", "manager", "custom"] {
+        let role = &s.roles[role_name];
+        assert_eq!(
+            role.prompt_fragments
+                .iter()
+                .filter(|fragment| fragment.name == "global.simple")
+                .count(),
+            1,
+            "global fragment should apply once to {role_name}"
+        );
+    }
 }
 
 #[test]
