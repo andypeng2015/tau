@@ -37,7 +37,7 @@
 - `cargo check --workspace --all-targets` or `just check` — check Rust code
 - `cargo nextest run` or `just test` — run tests
 - `treefmt` or `just format` — format code
-- `selfci check` — full local CI verification; WARNING: slow, try running in parallel and/or only as a final verification step
+- `selfci check` — full local CI verification; WARNING: slow, but independent of working copy state, so it can run safely in parallel, even while modifying other files; prefer to run in parallel and/or only as a final verification step
 
 ## Definition of done
 
