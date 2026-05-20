@@ -231,6 +231,73 @@ fn cli_settings_drop_in_layers_on_top_of_base() {
 }
 
 #[test]
+fn harness_drop_in_layers_merge_through_domain_overrides() {
+    // Harness files are applied as sparse overrides one layer at a time. This
+    // keeps role prompt fragments additive across the built-in baseline,
+    // harness.yaml, and harness.d/*.yaml instead of letting generic YAML array
+    // replacement discard earlier fragments before role merging can run.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            session_retention_days: 7,
+            extensions: {
+                mything: { command: ["mything"] },
+            },
+            roles: {
+                manager: { promptFragments: [{ name: "manager.local", priority: 170, text: "Local manager instruction." }] },
+            },
+        }"#,
+    )
+    .expect("write harness");
+    std::fs::create_dir(dir.join("harness.d")).expect("mkdir harness.d");
+    std::fs::write(
+        dir.join("harness.d").join("01-extra.yaml"),
+        r#"{
+            session_retention_days: 14,
+            extensions: {
+                mything: { suffix: ["--flag"] },
+            },
+            roles: {
+                manager: { promptFragments: [{ name: "manager.drop-in", priority: 180, text: "Drop-in manager instruction." }] },
+            },
+        }"#,
+    )
+    .expect("write drop-in");
+
+    let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+    assert_eq!(s.session_retention_days, 14);
+    assert_eq!(
+        s.extensions["mything"].command.as_ref().expect("command"),
+        &vec!["mything".to_owned()]
+    );
+    assert_eq!(
+        s.extensions["mything"].suffix.as_ref().expect("suffix"),
+        &vec!["--flag".to_owned()]
+    );
+    let manager = &s.roles["manager"];
+    assert!(
+        manager
+            .prompt_fragments
+            .iter()
+            .any(|fragment| { fragment.text.as_str().contains("delegating to sub-agents") })
+    );
+    assert!(
+        manager
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Local manager instruction.")
+    );
+    assert!(
+        manager
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Drop-in manager instruction.")
+    );
+}
+
+#[test]
 fn harness_roles_merge_with_built_ins() {
     // Roles are harness-owned now. This keeps the old merge behavior while
     // locking the source of truth to harness.yaml instead of a model registry.
@@ -336,8 +403,10 @@ fn harness_manager_partial_override_keeps_built_in_prompt_fragments() {
 }
 
 #[test]
-fn harness_manager_prompt_override_replaces_built_in_prompt() {
-    // User-provided role prompt fragments replace the built-in role fragments.
+fn harness_manager_prompt_fragments_extend_built_in_prompt_fragments() {
+    // User-provided role prompt fragments are added to the built-in role
+    // fragments so partial manager customization does not disable delegation
+    // instructions.
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
@@ -352,12 +421,17 @@ fn harness_manager_prompt_override_replaces_built_in_prompt() {
 
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
     let manager = &s.roles["manager"];
-    assert_eq!(
+    assert!(manager.prompt_fragments.iter().any(|fragment| {
+        fragment
+            .text
+            .as_str()
+            .contains("self-contained instructions")
+    }));
+    assert!(
         manager
             .prompt_fragments
-            .first()
-            .map(|fragment| fragment.text.as_str()),
-        Some("Custom manager prompt.")
+            .iter()
+            .any(|fragment| fragment.text.as_str() == "Custom manager prompt.")
     );
 }
 

@@ -19,12 +19,9 @@ use tau_proto::{ModelId, PromptContent, PromptPriority, ToolName};
 //
 // Tau ships its baseline `cli.yaml`, `cli-bindings.json5` and
 // `harness.yaml` as ordinary source files under
-// `crates/tau-config/config/`, embedded via `include_str!`. They are
-// layered underneath the user's own files at load time (see
-// `load_yaml_layered_with_builtin`) so user
-// partial overrides keep working without the public `CliSettings` /
-// `HarnessSettings` types having to carry a `#[serde(default)]` and a
-// synthesized `Default` impl that secretly parses a file.
+// `crates/tau-config/config/`, embedded via `include_str!`. They are layered
+// underneath user files, with a small role-merge pass for role metadata whose
+// semantics differ from generic YAML array replacement.
 // ---------------------------------------------------------------------------
 
 const BUILT_IN_CLI_YAML: &str = include_str!("../config/built-in.cli.yaml");
@@ -326,9 +323,9 @@ impl CliState {
 /// Harness/agent settings loaded from `harness.yaml`.
 ///
 /// Has no `Default` impl on purpose — the baseline lives in
-/// `config/built-in.harness.yaml` and is layered in by the loader.
-/// Use [`HarnessSettings::built_in`] when you need a fresh,
-/// populated value in a test or fallback.
+/// `config/built-in.harness.yaml` and is layered in by the loader. Use
+/// [`HarnessSettings::built_in`] when you need a fresh, populated value in a
+/// test or fallback.
 #[derive(Clone, Debug)]
 pub struct HarnessSettings {
     /// Number of days to keep inactive session state directories.
@@ -374,19 +371,22 @@ impl<'de> Deserialize<'de> for HarnessSettings {
         D: serde::Deserializer<'de>,
     {
         let wire = HarnessSettingsWire::deserialize(deserializer)?;
-        let mut roles = wire.roles;
-        for (name, legacy_role) in wire.default_roles {
-            roles
-                .entry(name)
-                .and_modify(|role| role.apply_overrides_from(&legacy_role))
-                .or_insert(legacy_role);
-        }
-        Ok(Self {
+        let mut settings = Self {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
-            roles,
-        })
+            roles: wire.roles,
+        };
+        settings.apply_role_overrides(wire.default_roles);
+        Ok(settings)
     }
+}
+
+#[derive(Deserialize)]
+struct HarnessRoleOverrides {
+    #[serde(default)]
+    roles: HashMap<String, AgentRole>,
+    #[serde(default, rename = "defaultRoles")]
+    default_roles: HashMap<String, AgentRole>,
 }
 
 impl HarnessSettings {
@@ -395,6 +395,15 @@ impl HarnessSettings {
     pub fn built_in() -> Self {
         let s: Self = parse_built_in_yaml("built-in.harness.yaml", BUILT_IN_HARNESS_YAML);
         s
+    }
+
+    fn apply_role_overrides(&mut self, roles: HashMap<String, AgentRole>) {
+        for (name, override_role) in roles {
+            self.roles
+                .entry(name)
+                .and_modify(|role| role.apply_overrides_from(&override_role))
+                .or_insert(override_role);
+        }
     }
 
     #[must_use]
@@ -524,8 +533,10 @@ impl AgentRole {
         if let Some(service_tier) = override_role.service_tier {
             self.service_tier = Some(service_tier);
         }
-        if !override_role.prompt_fragments.is_empty() {
-            self.prompt_fragments = override_role.prompt_fragments.clone();
+        for prompt_fragment in &override_role.prompt_fragments {
+            if !self.prompt_fragments.contains(prompt_fragment) {
+                self.prompt_fragments.push(prompt_fragment.clone());
+            }
         }
         if let Some(prompt_override) = &override_role.prompt_override {
             self.prompt_override = Some(prompt_override.clone());
@@ -666,7 +677,24 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
-    load_yaml_layered_with_builtin(BUILT_IN_HARNESS_YAML, dirs.config_dir.as_deref(), "harness")
+    let mut settings: HarnessSettings = load_yaml_layered_with_builtin(
+        BUILT_IN_HARNESS_YAML,
+        dirs.config_dir.as_deref(),
+        "harness",
+    )?;
+
+    // Generic YAML layering replaces arrays, but role prompt fragments are
+    // additive role metadata. Recompute only roles through the role merge path;
+    // all other harness fields keep the normal config-layer semantics.
+    let mut role_settings = HarnessSettings::built_in();
+    for overrides in
+        load_yaml_layer_files::<HarnessRoleOverrides>(dirs.config_dir.as_deref(), "harness")?
+    {
+        role_settings.apply_role_overrides(overrides.roles);
+        role_settings.apply_role_overrides(overrides.default_roles);
+    }
+    settings.roles = role_settings.roles;
+    Ok(settings)
 }
 
 /// Stacks an embedded built-in YAML string underneath the user's files.
@@ -677,45 +705,76 @@ fn load_yaml_layered_with_builtin<T: for<'de> Deserialize<'de>>(
     dir: Option<&Path>,
     name: &str,
 ) -> Result<T, SettingsError> {
-    let mut builder = config::Config::builder()
+    let builder = config::Config::builder()
         .add_source(config::File::from_str(built_in_text, config::FileFormat::Yaml).required(true));
-
-    if let Some(dir) = dir {
-        let base_path = dir.join(format!("{name}.yaml"));
-        if base_path.exists() {
-            builder = builder.add_source(
-                config::File::from(base_path)
-                    .format(config::FileFormat::Yaml)
-                    .required(true),
-            );
-        }
-
-        let drop_dir = dir.join(format!("{name}.d"));
-        if drop_dir.is_dir() {
-            let mut paths: Vec<PathBuf> = std::fs::read_dir(&drop_dir)
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                })
-                .collect();
-            paths.sort();
-            for path in paths {
-                builder = builder.add_source(
-                    config::File::from(path)
-                        .format(config::FileFormat::Yaml)
-                        .required(true),
-                );
-            }
-        }
-    }
-
+    let builder = add_yaml_file_sources(builder, dir, name);
     builder
         .build()?
         .try_deserialize()
         .map_err(SettingsError::from)
+}
+
+fn load_yaml_layer_files<T: for<'de> Deserialize<'de>>(
+    dir: Option<&Path>,
+    name: &str,
+) -> Result<Vec<T>, SettingsError> {
+    yaml_layer_paths(dir, name)
+        .into_iter()
+        .map(|path| {
+            config::Config::builder()
+                .add_source(
+                    config::File::from(path)
+                        .format(config::FileFormat::Yaml)
+                        .required(true),
+                )
+                .build()?
+                .try_deserialize()
+                .map_err(SettingsError::from)
+        })
+        .collect()
+}
+
+fn add_yaml_file_sources(
+    mut builder: config::ConfigBuilder<config::builder::DefaultState>,
+    dir: Option<&Path>,
+    name: &str,
+) -> config::ConfigBuilder<config::builder::DefaultState> {
+    for path in yaml_layer_paths(dir, name) {
+        builder = builder.add_source(
+            config::File::from(path)
+                .format(config::FileFormat::Yaml)
+                .required(true),
+        );
+    }
+    builder
+}
+
+fn yaml_layer_paths(dir: Option<&Path>, name: &str) -> Vec<PathBuf> {
+    let Some(dir) = dir else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+    let base_path = dir.join(format!("{name}.yaml"));
+    if base_path.exists() {
+        paths.push(base_path);
+    }
+
+    let drop_dir = dir.join(format!("{name}.d"));
+    if drop_dir.is_dir() {
+        let mut drop_in_paths: Vec<PathBuf> = std::fs::read_dir(&drop_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|ext| ext == "yaml" || ext == "yml")
+            })
+            .collect();
+        drop_in_paths.sort();
+        paths.extend(drop_in_paths);
+    }
+    paths
 }
 
 #[cfg(test)]
