@@ -1379,19 +1379,19 @@ fn internal_prompt_events_are_hidden() {
     // up in the user's transcript or queued prompt area.
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
-        text: "Tool call `bg` is complete.".into(),
+        text: "[tau-internal] Tool call `bg` is complete.".into(),
         message_class: tau_proto::PromptMessageClass::Internal,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
-        text: "Tool call `queued` is complete.".into(),
+        text: "[tau-internal] Tool call `queued` is complete.".into(),
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     renderer.handle(&Event::SessionPromptSteered(SessionPromptSteered {
         session_id: "s1".into(),
-        text: "Tool call `steered` is complete.".into(),
+        text: "[tau-internal] Tool call `steered` is complete.".into(),
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     sync(&handle);

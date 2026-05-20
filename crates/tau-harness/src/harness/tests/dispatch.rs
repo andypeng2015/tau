@@ -1,5 +1,8 @@
+use tau_proto::ToolBackgroundNotificationSuppress;
+
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
+use crate::harness::background_completion_prompt;
 
 fn responses_backend() -> tau_proto::ProviderBackend {
     tau_proto::ProviderBackend {
@@ -3626,22 +3629,17 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
         .conversations
         .get(&parent_cid)
         .expect("parent conversation remains live");
-    assert!(
-        parent
-            .pending_prompts
-            .iter()
-            .any(|prompt| prompt.text == "Tool call `slow-call` is complete."
-                && prompt.is_internal())
-    );
+    assert!(parent.pending_prompts.iter().any(|prompt| prompt.text
+        == background_completion_prompt(&"slow-call".into())
+        && prompt.is_internal()));
 
     h.shutdown().expect("shutdown");
 }
 
-/// A real error arriving after the foreground background placeholder is a
-/// background terminal event, not a second normal tool error. The completion
-/// steering prompt uses the exact agent-visible text promised by the protocol.
+/// A suppression event removes the internal model steering prompt while keeping
+/// the real late background error event visible to the event log.
 #[test]
-fn background_late_error_is_background_error_and_queues_exact_prompt() {
+fn background_notification_suppression_keeps_error_event_but_skips_prompt() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -3696,6 +3694,13 @@ fn background_late_error_is_background_error_and_queues_exact_prompt() {
 
     h.handle_extension_event_inner(
         "conn-fail",
+        Event::ToolBackgroundNotificationSuppress(ToolBackgroundNotificationSuppress {
+            call_id: "fail-call".into(),
+        }),
+    )
+    .expect("suppress background prompt");
+    h.handle_extension_event_inner(
+        "conn-fail",
         Event::ToolError(tau_proto::ToolError {
             call_id: "fail-call".into(),
             tool_name: ToolName::new("fail"),
@@ -3724,8 +3729,46 @@ fn background_late_error_is_background_error_and_queues_exact_prompt() {
     assert!(
         conv.pending_prompts
             .iter()
-            .any(|prompt| prompt.text == "Tool call `fail-call` is complete."
-                && prompt.is_internal())
+            .all(|prompt| prompt.text != background_completion_prompt(&"fail-call".into()))
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Suppression can arrive after a background completion prompt was queued but
+/// before the agent saw it; in that case the queued internal prompt is removed.
+#[test]
+fn background_notification_suppression_removes_queued_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg".into();
+
+    h.conversations
+        .get_mut(&cid)
+        .expect("default conversation exists")
+        .pending_prompts
+        .push_back(PendingPrompt::internal(background_completion_prompt(
+            &call_id,
+        )));
+    assert!(
+        h.conversations
+            .get(&cid)
+            .expect("default conversation exists")
+            .pending_prompts
+            .iter()
+            .any(|prompt| prompt.text == background_completion_prompt(&call_id))
+    );
+
+    h.suppress_background_completion_prompt(call_id.clone());
+    assert!(
+        h.conversations
+            .get(&cid)
+            .expect("default conversation exists")
+            .pending_prompts
+            .iter()
+            .all(|prompt| prompt.text != background_completion_prompt(&call_id))
     );
 
     h.shutdown().expect("shutdown");
@@ -3746,9 +3789,10 @@ fn recall_queued_prompt_skips_internal_prompts() {
         .expect("default conversation exists");
     conv.pending_prompts
         .push_back(PendingPrompt::user("user followup".to_owned()));
-    conv.pending_prompts.push_back(PendingPrompt::internal(
-        "Tool call `bg` is complete.".to_owned(),
-    ));
+    conv.pending_prompts
+        .push_back(PendingPrompt::internal(background_completion_prompt(
+            &"bg".into(),
+        )));
 
     h.handle_recall_queued_prompt(&"s1".into());
 
@@ -3761,7 +3805,7 @@ fn recall_queued_prompt_skips_internal_prompts() {
         .pending_prompts
         .front()
         .expect("internal prompt remains");
-    assert_eq!(remaining.text, "Tool call `bg` is complete.");
+    assert_eq!(remaining.text, background_completion_prompt(&"bg".into()));
     assert!(remaining.is_internal());
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,

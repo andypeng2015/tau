@@ -704,7 +704,7 @@ mod tests {
 
         let internal_event = Event::SessionPromptSteered(tau_proto::SessionPromptSteered {
             session_id: "s1".into(),
-            text: "Tool call `bg` is complete.".to_owned(),
+            text: "[tau-internal] Tool call `bg` is complete.".to_owned(),
             message_class: tau_proto::PromptMessageClass::Internal,
         });
         assert_eq!(user_prompt_text(&internal_event), None);

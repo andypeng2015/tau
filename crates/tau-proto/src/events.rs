@@ -198,6 +198,8 @@ impl EventName {
         Self::from_static(EventCategory::Tool, "background_result");
     pub const TOOL_BACKGROUND_ERROR: Self =
         Self::from_static(EventCategory::Tool, "background_error");
+    pub const TOOL_BACKGROUND_NOTIFICATION_SUPPRESS: Self =
+        Self::from_static(EventCategory::Tool, "background_notification_suppress");
     pub const TOOL_PROGRESS: Self = Self::from_static(EventCategory::Tool, "progress");
     pub const TOOL_CANCEL: Self = Self::from_static(EventCategory::Tool, "cancel");
     pub const TOOL_CANCELLED: Self = Self::from_static(EventCategory::Tool, "cancelled");
@@ -1465,6 +1467,13 @@ pub struct ToolBackgroundError {
     pub display: Option<ToolDisplay>,
     #[serde(default)]
     pub originator: PromptOriginator,
+}
+
+/// Suppresses the model-visible internal completion prompt for a backgrounded
+/// tool call. The real background result/error event is still emitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolBackgroundNotificationSuppress {
+    pub call_id: ToolCallId,
 }
 
 /// UI display descriptor for one finished tool call.
@@ -3068,6 +3077,8 @@ pub enum Event {
     ToolBackgroundResult(ToolBackgroundResult),
     #[serde(rename = "tool.background_error")]
     ToolBackgroundError(ToolBackgroundError),
+    #[serde(rename = "tool.background_notification_suppress")]
+    ToolBackgroundNotificationSuppress(ToolBackgroundNotificationSuppress),
     #[serde(rename = "tool.progress")]
     ToolProgress(ToolProgress),
     #[serde(rename = "tool.cancel")]
@@ -3221,6 +3232,9 @@ impl Event {
             Self::ToolError(_) => EventName::TOOL_ERROR,
             Self::ToolBackgroundResult(_) => EventName::TOOL_BACKGROUND_RESULT,
             Self::ToolBackgroundError(_) => EventName::TOOL_BACKGROUND_ERROR,
+            Self::ToolBackgroundNotificationSuppress(_) => {
+                EventName::TOOL_BACKGROUND_NOTIFICATION_SUPPRESS
+            }
             Self::ToolProgress(_) => EventName::TOOL_PROGRESS,
             Self::ToolCancel(_) => EventName::TOOL_CANCEL,
             Self::ToolCancelled(_) => EventName::TOOL_CANCELLED,

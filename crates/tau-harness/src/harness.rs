@@ -2,7 +2,7 @@
 //! store, and the live extensions; routes every event between the agent,
 //! tools, and clients.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,9 +19,9 @@ use tau_proto::{
     ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderResponseFinished, ProviderStopReason,
     ProviderTokenUsage, SessionCompactionRequested, SessionId, SessionPromptCreated,
     SessionPromptId, SessionPromptPrewarmRequested, SessionPromptQueued, SessionPromptRecalled,
-    TokenUsageStats, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem,
-    ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName, ToolRequest, ToolResult,
-    ToolType, UiCancelPrompt,
+    TokenUsageStats, ToolBackgroundError, ToolBackgroundNotificationSuppress, ToolBackgroundResult,
+    ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName,
+    ToolRequest, ToolResult, ToolType, UiCancelPrompt,
 };
 
 use crate::conversation::{
@@ -76,6 +76,10 @@ const SELF_KNOWLEDGE_UI_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_UI_CONFIG__";
 const SELF_KNOWLEDGE_HARNESS_CONFIG: &str =
     include_str!("../../tau-config/config/built-in.harness.yaml");
 const SELF_KNOWLEDGE_UI_CONFIG: &str = include_str!("../../tau-config/config/built-in.cli.yaml");
+
+pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
+    format!("[tau-internal] Tool call `{call_id}` is complete.")
+}
 
 fn load_system_prompt_templates(config_dir: Option<&Path>) -> HashMap<String, String> {
     let mut templates = built_in_system_prompt_templates();
@@ -672,6 +676,10 @@ pub(crate) struct Harness {
     pub(crate) completed_prompts: std::collections::HashSet<SessionPromptId>,
     /// Pure scheduler state for queued and in-flight tool invocations.
     pub(crate) tool_turn: ToolTurnMachine,
+    /// Backgrounded calls whose real completion should not enqueue an internal
+    /// model-visible steering prompt. The real result/error event is still
+    /// published normally.
+    pub(crate) suppressed_background_completion_prompts: HashSet<ToolCallId>,
     /// Prompt ids canceled by `/cancel`. Late agent events for these
     /// prompts are ignored and never folded into session state.
     pub(crate) canceled_prompts: std::collections::HashSet<SessionPromptId>,
@@ -1081,6 +1089,7 @@ impl Harness {
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
+            suppressed_background_completion_prompts: HashSet::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             pending_ext_agent_queries: VecDeque::new(),
@@ -1294,6 +1303,7 @@ impl Harness {
             initialized_sessions: std::collections::HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
+            suppressed_background_completion_prompts: HashSet::new(),
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             pending_ext_agent_queries: VecDeque::new(),
@@ -1907,6 +1917,9 @@ impl Harness {
             Event::ToolError(error) => self.session_id_for_tool_call(&error.call_id),
             Event::ToolBackgroundResult(result) => self.session_id_for_tool_call(&result.call_id),
             Event::ToolBackgroundError(error) => self.session_id_for_tool_call(&error.call_id),
+            Event::ToolBackgroundNotificationSuppress(suppress) => {
+                self.session_id_for_tool_call(&suppress.call_id)
+            }
             Event::ToolCancelled(cancelled) => self.session_id_for_tool_call(&cancelled.call_id),
             Event::ToolProgress(progress) => self.session_id_for_tool_call(&progress.call_id),
             Event::ShellCommandFinished(finished) => Some(finished.session_id.clone()),
@@ -2365,6 +2378,11 @@ impl Harness {
                         result.call_id
                     ));
                 }
+            }
+            Event::ToolBackgroundNotificationSuppress(ToolBackgroundNotificationSuppress {
+                call_id,
+            }) => {
+                self.suppress_background_completion_prompt(call_id);
             }
             Event::ToolError(mut error) => {
                 if self.tool_turn.is_backgrounded(&error.call_id) {
@@ -6037,13 +6055,29 @@ impl Harness {
     }
 
     fn queue_background_completion_prompt(&mut self, cid: &ConversationId, call_id: &ToolCallId) {
+        if self
+            .suppressed_background_completion_prompts
+            .contains(call_id)
+        {
+            return;
+        }
         if let Some(conv) = self.conversations.get_mut(cid) {
             conv.pending_prompts
-                .push_back(PendingPrompt::internal(format!(
-                    "Tool call `{call_id}` is complete."
+                .push_back(PendingPrompt::internal(background_completion_prompt(
+                    call_id,
                 )));
         }
         self.try_advance_queue();
+    }
+
+    fn suppress_background_completion_prompt(&mut self, call_id: ToolCallId) {
+        self.suppressed_background_completion_prompts
+            .insert(call_id.clone());
+        let prompt = background_completion_prompt(&call_id);
+        for conv in self.conversations.values_mut() {
+            conv.pending_prompts
+                .retain(|pending| pending.text != prompt);
+        }
     }
 
     fn transfer_background_completion_target_before_teardown(&mut self, cid: &ConversationId) {
@@ -6814,6 +6848,9 @@ fn stamp_tool_event_originator(event: Event, originator: tau_proto::PromptOrigin
         Event::ToolBackgroundError(mut e) => {
             e.originator = originator;
             Event::ToolBackgroundError(e)
+        }
+        Event::ToolBackgroundNotificationSuppress(e) => {
+            Event::ToolBackgroundNotificationSuppress(e)
         }
         other => other,
     }

@@ -12,8 +12,8 @@ use tau_proto::{
     Ack, BackgroundSupport, CborValue, Event, ExtAgentQuery, ExtSessionContextPublish,
     ExtensionContextReady, Frame, FrameReader, FrameWriter, HarnessRolesAvailable, LogEventId,
     Message, SessionContextKey, SessionContextValue, SessionStarted, ToolBackgroundError,
-    ToolBackgroundResult, ToolCallId, ToolDisplay, ToolDisplayStats, ToolError, ToolExecutionMode,
-    ToolInvoke, ToolName, ToolResult, ToolSpec,
+    ToolBackgroundNotificationSuppress, ToolBackgroundResult, ToolCallId, ToolDisplay,
+    ToolDisplayStats, ToolError, ToolExecutionMode, ToolInvoke, ToolName, ToolResult, ToolSpec,
 };
 
 pub const LOG_TARGET: &str = "core-subagents";
@@ -43,6 +43,7 @@ where
             tau_proto::EventName::TOOL_ERROR,
             tau_proto::EventName::TOOL_BACKGROUND_RESULT,
             tau_proto::EventName::TOOL_BACKGROUND_ERROR,
+            tau_proto::EventName::TOOL_BACKGROUND_NOTIFICATION_SUPPRESS,
             tau_proto::EventName::EXTENSION_AGENT_QUERY_RESULT,
             tau_proto::EventName::SESSION_STARTED,
             tau_proto::EventName::HARNESS_ROLES_AVAILABLE,
@@ -145,6 +146,19 @@ fn write_wait_replies<W: Write>(
     Ok(())
 }
 
+fn write_wait_start<W: Write>(
+    start: WaitStart,
+    writer: &mut FrameWriter<BufWriter<W>>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(call_id) = start.suppress_call_id {
+        write_background_notification_suppress(call_id, writer)?;
+    }
+    if let Some(reply) = start.reply {
+        write_wait_reply(reply, writer)?;
+    }
+    Ok(())
+}
+
 fn handle_ext_agent_query_result<W: Write>(
     result: tau_proto::ExtAgentQueryResult,
     state: &mut RunState,
@@ -241,10 +255,8 @@ fn handle_tool_invoke<W: Write>(
 ) -> Result<(), Box<dyn Error>> {
     match invoke.tool_name.as_str() {
         WAIT_TOOL_NAME => {
-            let reply = wait_tracker.handle_wait_invoke(invoke);
-            if let Some(reply) = reply {
-                write_wait_reply(reply, writer)?;
-            }
+            let start = wait_tracker.handle_wait_invoke(invoke);
+            write_wait_start(start, writer)?;
             return Ok(());
         }
         DELEGATE_TOOL_NAME => wait_tracker.record_tool_invoke(&invoke),
@@ -340,6 +352,13 @@ struct WaitReply {
     wait_call_id: ToolCallId,
     wait_tool_name: ToolName,
     kind: WaitReplyKind,
+    suppress_call_id: Option<ToolCallId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+struct WaitStart {
+    reply: Option<WaitReply>,
+    suppress_call_id: Option<ToolCallId>,
 }
 
 #[derive(Default)]
@@ -355,11 +374,11 @@ impl WaitTracker {
             .or_insert(WaitCallState::Pending);
     }
 
-    fn handle_wait_invoke(&mut self, invoke: ToolInvoke) -> Option<WaitReply> {
+    fn handle_wait_invoke(&mut self, invoke: ToolInvoke) -> WaitStart {
         let target = match parse_wait_args(&invoke.arguments) {
             Ok(target) => target,
             Err(message) => {
-                return Some(wait_error_reply(
+                return WaitStart::reply(wait_error_reply(
                     invoke.call_id,
                     invoke.tool_name,
                     message,
@@ -374,52 +393,63 @@ impl WaitTracker {
         self.start_wait(target, wait)
     }
 
-    fn start_wait(&mut self, target: ToolCallId, wait: WaitRequest) -> Option<WaitReply> {
+    fn start_wait(&mut self, target: ToolCallId, wait: WaitRequest) -> WaitStart {
         if self.waiters.contains_key(&target) {
-            return Some(wait_error_reply(
+            return WaitStart::reply(wait_error_reply(
                 wait.call_id,
                 wait.tool_name,
-                format!("Tool call {target} is unknown or already has a waiter."),
+                "existing wait for this tool already in progress".to_owned(),
                 None,
             ));
         }
 
         let state = self.calls.remove(&target);
         match state {
-            Some(state @ (WaitCallState::Pending | WaitCallState::Backgrounded)) => {
-                self.calls.insert(target.clone(), state);
+            Some(WaitCallState::Pending) => {
+                self.calls.insert(target.clone(), WaitCallState::Pending);
                 self.waiters.insert(target, wait);
-                None
+                WaitStart::default()
+            }
+            Some(WaitCallState::Backgrounded) => {
+                self.calls
+                    .insert(target.clone(), WaitCallState::Backgrounded);
+                self.waiters.insert(target.clone(), wait);
+                WaitStart::suppress(target)
             }
             Some(WaitCallState::NormalReturned) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
-                Some(wait_result_reply(
+                WaitStart::reply(wait_error_reply(
                     wait.call_id,
                     wait.tool_name,
-                    CborValue::Text(normal_returned_message(&target)),
+                    format!("Tool call {target} returned normally, not backgrounded"),
                     None,
                 ))
             }
             Some(WaitCallState::BackgroundResult(result)) => {
-                self.calls.insert(target, WaitCallState::Consumed);
-                Some(wait_result_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    result.result,
-                    result.display,
-                ))
-            }
-            Some(WaitCallState::BackgroundError(error)) => {
-                self.calls.insert(target, WaitCallState::Consumed);
-                Some(
-                    wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
-                        .with_display(error.display),
+                self.calls.insert(target.clone(), WaitCallState::Consumed);
+                WaitStart::reply_with_suppress(
+                    wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display),
+                    target,
                 )
             }
-            Some(WaitCallState::Consumed) | None => Some(wait_error_reply(
+            Some(WaitCallState::BackgroundError(error)) => {
+                self.calls.insert(target.clone(), WaitCallState::Consumed);
+                WaitStart::reply_with_suppress(
+                    wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
+                        .with_display(error.display),
+                    target,
+                )
+            }
+            Some(WaitCallState::Consumed) => WaitStart::reply(wait_error_reply(
                 wait.call_id,
                 wait.tool_name,
-                format!("Unknown or already returned tool call: {target}"),
+                format!("result for tool call {target} already consumed"),
+                None,
+            )),
+            None => WaitStart::reply(wait_error_reply(
+                wait.call_id,
+                wait.tool_name,
+                format!("unknown tool call: {target}"),
                 None,
             )),
         }
@@ -547,15 +577,14 @@ impl WaitTracker {
         };
         self.calls.insert(call_id.clone(), WaitCallState::Consumed);
         match state {
-            WaitCallState::BackgroundResult(result) => vec![wait_result_reply(
-                wait.call_id,
-                wait.tool_name,
-                result.result,
-                result.display,
-            )],
+            WaitCallState::BackgroundResult(result) => vec![
+                wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display)
+                    .with_suppress(call_id.clone()),
+            ],
             WaitCallState::BackgroundError(error) => vec![
                 wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
-                    .with_display(error.display),
+                    .with_display(error.display)
+                    .with_suppress(call_id.clone()),
             ],
             _ => Vec::new(),
         }
@@ -569,6 +598,34 @@ impl WaitReply {
         }
         self
     }
+
+    fn with_suppress(mut self, call_id: ToolCallId) -> Self {
+        self.suppress_call_id = Some(call_id);
+        self
+    }
+}
+
+impl WaitStart {
+    fn reply(reply: WaitReply) -> Self {
+        Self {
+            reply: Some(reply),
+            suppress_call_id: None,
+        }
+    }
+
+    fn suppress(call_id: ToolCallId) -> Self {
+        Self {
+            reply: None,
+            suppress_call_id: Some(call_id),
+        }
+    }
+
+    fn reply_with_suppress(reply: WaitReply, call_id: ToolCallId) -> Self {
+        Self {
+            reply: Some(reply),
+            suppress_call_id: Some(call_id),
+        }
+    }
 }
 
 fn wait_result_reply(
@@ -581,6 +638,7 @@ fn wait_result_reply(
         wait_call_id,
         wait_tool_name,
         kind: WaitReplyKind::Result { result, display },
+        suppress_call_id: None,
     }
 }
 
@@ -598,6 +656,7 @@ fn wait_error_reply(
             details,
             display: None,
         },
+        suppress_call_id: None,
     }
 }
 
@@ -605,6 +664,9 @@ fn write_wait_reply<W: Write>(
     reply: WaitReply,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
+    if let Some(call_id) = reply.suppress_call_id.clone() {
+        write_background_notification_suppress(call_id, writer)?;
+    }
     match reply.kind {
         WaitReplyKind::Result { result, display } => {
             writer.write_frame(&Frame::Event(Event::ToolResult(ToolResult {
@@ -636,8 +698,15 @@ fn write_wait_reply<W: Write>(
     Ok(())
 }
 
-fn normal_returned_message(call_id: &ToolCallId) -> String {
-    format!("Tool call {call_id} is complete and result was returned normally already.")
+fn write_background_notification_suppress<W: Write>(
+    call_id: ToolCallId,
+    writer: &mut FrameWriter<BufWriter<W>>,
+) -> Result<(), Box<dyn Error>> {
+    writer.write_frame(&Frame::Event(Event::ToolBackgroundNotificationSuppress(
+        ToolBackgroundNotificationSuppress { call_id },
+    )))?;
+    writer.flush()?;
+    Ok(())
 }
 
 fn is_synthetic_background_result(result: &ToolResult) -> bool {
@@ -871,6 +940,14 @@ mod tests {
         }
     }
 
+    fn expect_wait_reply(start: WaitStart) -> WaitReply {
+        start.reply.expect("wait should reply")
+    }
+
+    fn assert_wait_pending(start: WaitStart) {
+        assert_eq!(start, WaitStart::default());
+    }
+
     fn tool_result(call_id: &str, result: CborValue) -> ToolResult {
         ToolResult {
             call_id: call_id.into(),
@@ -1006,36 +1083,34 @@ mod tests {
     #[test]
     fn wait_unknown_call_id_errors() {
         let mut tracker = WaitTracker::default();
-        let reply = tracker
-            .start_wait("missing".into(), wait_request("wait-1"))
-            .expect("unknown call replies immediately");
-        assert!(matches!(reply.kind, WaitReplyKind::Error { .. }));
+        let start = tracker.start_wait("missing".into(), wait_request("wait-1"));
+        let reply = start.reply.expect("unknown call replies immediately");
+        assert!(matches!(
+            reply.kind,
+            WaitReplyKind::Error { message, .. } if message.contains("unknown tool call")
+        ));
     }
 
     /// Foreground completions already went back to the model through the normal
-    /// tool result path; wait reports that fact once rather than duplicating
-    /// the original payload.
+    /// tool result path; wait returns a clear error instead of duplicating the
+    /// original payload.
     #[test]
-    fn wait_normal_foreground_returns_already_returned_message_once() {
+    fn wait_normal_foreground_returns_not_backgrounded_error_once() {
         let mut tracker = WaitTracker::default();
         tracker.record_tool_result(tool_result("call-1", text("done")));
 
-        let first = tracker
-            .start_wait("call-1".into(), wait_request("wait-1"))
-            .expect("completed call replies");
-        assert_eq!(
+        let first = tracker.start_wait("call-1".into(), wait_request("wait-1"));
+        let first = first.reply.expect("completed call replies");
+        assert!(matches!(
             first.kind,
-            WaitReplyKind::Result {
-                result: text(
-                    "Tool call call-1 is complete and result was returned normally already."
-                ),
-                display: None,
-            }
-        );
-        let second = tracker
-            .start_wait("call-1".into(), wait_request("wait-2"))
-            .expect("second wait errors");
-        assert!(matches!(second.kind, WaitReplyKind::Error { .. }));
+            WaitReplyKind::Error { message, .. } if message.contains("returned normally, not backgrounded")
+        ));
+        let second = tracker.start_wait("call-1".into(), wait_request("wait-2"));
+        let second = second.reply.expect("second wait errors");
+        assert!(matches!(
+            second.kind,
+            WaitReplyKind::Error { message, .. } if message.contains("already consumed")
+        ));
     }
 
     /// A background result is returned exactly once with its original CBOR
@@ -1045,9 +1120,7 @@ mod tests {
         let mut tracker = WaitTracker::default();
         tracker.record_background_result(background_result("call-1", text("real result")));
 
-        let first = tracker
-            .start_wait("call-1".into(), wait_request("wait-1"))
-            .expect("background call replies");
+        let first = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-1")));
         assert_eq!(
             first.kind,
             WaitReplyKind::Result {
@@ -1055,10 +1128,30 @@ mod tests {
                 display: None,
             }
         );
-        let second = tracker
-            .start_wait("call-1".into(), wait_request("wait-2"))
-            .expect("second wait errors");
+        let second = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-2")));
         assert!(matches!(second.kind, WaitReplyKind::Error { .. }));
+    }
+
+    /// Duplicate waits for the same still-pending target fail immediately so
+    /// the extension never has two wait tool calls racing to consume one
+    /// result.
+    #[test]
+    fn duplicate_wait_for_pending_call_errors() {
+        let mut tracker = WaitTracker::default();
+        tracker.record_tool_invoke(&ToolInvoke {
+            call_id: "call-1".into(),
+            tool_name: ToolName::new("shell"),
+            arguments: args(&[]),
+            originator: tau_proto::PromptOriginator::User,
+        });
+        assert_wait_pending(tracker.start_wait("call-1".into(), wait_request("wait-1")));
+
+        let second = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-2")));
+        assert!(matches!(
+            second.kind,
+            WaitReplyKind::Error { message, .. }
+                if message == "existing wait for this tool already in progress"
+        ));
     }
 
     /// A synthetic foreground background placeholder keeps wait pending until
@@ -1076,10 +1169,9 @@ mod tests {
             "call-1",
             text("Tool call `call-1` is running in the background."),
         ));
-        assert!(
-            tracker
-                .start_wait("call-1".into(), wait_request("wait-1"))
-                .is_none()
+        assert_eq!(
+            tracker.start_wait("call-1".into(), wait_request("wait-1")),
+            WaitStart::suppress("call-1".into())
         );
 
         let replies = tracker.record_background_result(background_result("call-1", text("real")));
@@ -1100,9 +1192,7 @@ mod tests {
         let mut tracker = WaitTracker::default();
         tracker.record_background_error(background_error("call-1", "boom"));
 
-        let first = tracker
-            .start_wait("call-1".into(), wait_request("wait-1"))
-            .expect("background error replies");
+        let first = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-1")));
         assert_eq!(
             first.kind,
             WaitReplyKind::Error {
@@ -1111,9 +1201,7 @@ mod tests {
                 display: None,
             }
         );
-        let second = tracker
-            .start_wait("call-1".into(), wait_request("wait-2"))
-            .expect("second wait errors");
+        let second = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-2")));
         assert!(matches!(second.kind, WaitReplyKind::Error { .. }));
     }
 
@@ -1128,11 +1216,7 @@ mod tests {
             arguments: args(&[]),
             originator: tau_proto::PromptOriginator::User,
         });
-        assert!(
-            tracker
-                .start_wait("call-1".into(), wait_request("wait-1"))
-                .is_none()
-        );
+        assert_wait_pending(tracker.start_wait("call-1".into(), wait_request("wait-1")));
 
         let replies = tracker.record_tool_result(tool_result("call-1", text("done")));
         assert_eq!(replies.len(), 1);
@@ -1156,11 +1240,7 @@ mod tests {
             arguments: args(&[]),
             originator: tau_proto::PromptOriginator::User,
         });
-        assert!(
-            tracker
-                .start_wait("call-1".into(), wait_request("wait-1"))
-                .is_none()
-        );
+        assert_wait_pending(tracker.start_wait("call-1".into(), wait_request("wait-1")));
 
         let replies = tracker.record_delegate_tool_result(tool_result("call-1", text("done")));
         assert_eq!(replies.len(), 1);
@@ -1169,9 +1249,7 @@ mod tests {
                 .record_tool_result(tool_result("call-1", text("done")))
                 .is_empty()
         );
-        let second = tracker
-            .start_wait("call-1".into(), wait_request("wait-2"))
-            .expect("consumed call errors");
+        let second = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-2")));
         assert!(matches!(second.kind, WaitReplyKind::Error { .. }));
     }
 
@@ -1190,10 +1268,9 @@ mod tests {
             "call-1",
             text("Tool call `call-1` is running in the background."),
         ));
-        assert!(
-            tracker
-                .start_wait("call-1".into(), wait_request("wait-1"))
-                .is_none()
+        assert_eq!(
+            tracker.start_wait("call-1".into(), wait_request("wait-1")),
+            WaitStart::suppress("call-1".into())
         );
 
         let replies = tracker.record_delegate_tool_result(tool_result("call-1", text("real")));
@@ -1203,9 +1280,7 @@ mod tests {
                 .record_background_result(background_result("call-1", text("real")))
                 .is_empty()
         );
-        let second = tracker
-            .start_wait("call-1".into(), wait_request("wait-2"))
-            .expect("consumed call errors");
+        let second = expect_wait_reply(tracker.start_wait("call-1".into(), wait_request("wait-2")));
         assert!(matches!(second.kind, WaitReplyKind::Error { .. }));
     }
 

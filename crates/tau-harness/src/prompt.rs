@@ -571,6 +571,15 @@ mod tests {
         assert!(prompt.contains("make all independent tool calls in parallel"));
     }
 
+    #[test]
+    fn build_system_prompt_explains_tau_internal_marker() {
+        let skills = std::collections::HashMap::new();
+        let prompt = build_system_prompt(&skills, &[]);
+        assert!(prompt.contains("[tau-internal]"));
+        assert!(prompt.contains("background tool notifications"));
+        assert!(prompt.contains("[tau-dedup]"));
+    }
+
     /// Role prompts are configuration templates. They should be rendered just
     /// before insertion so prompts can refer to stable per-prompt context.
     #[test]
