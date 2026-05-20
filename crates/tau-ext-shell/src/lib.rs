@@ -579,7 +579,7 @@ fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
 fn shell_cwd_prompt_fragment() -> PromptFragment {
     PromptFragment::new(
         "shell.cwd",
-        PromptPriority::new(10),
+        PromptPriority::new(900),
         PromptContent::new(
             "{{#each session_context.cwd}}{{#if @first}}Current working directory: \
              {{value}}{{/if}}{{/each}}",

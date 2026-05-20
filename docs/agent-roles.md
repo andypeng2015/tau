@@ -107,3 +107,5 @@ The `<role>` argument completes existing roles, but any new name can be used to 
 `/role <role> delete` removes the runtime/persisted role override. It does not edit `roles` from configuration; built-in or configured roles come back on the next harness start.
 
 Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json` together with the last selected role. Role `description`, prompt fragments, and `orchestrator` remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
+
+Prompt fragment priorities sort ascending. Use priorities below `100` for role/persona instructions that should appear before generated context sections such as skills and AGENTS.md. Use high priorities for epilogue context; Tau's built-in current-working-directory fragment uses `900` so it stays at the end of the prompt.

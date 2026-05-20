@@ -386,6 +386,13 @@ pub enum EventSelector {
 }
 
 /// System-prompt fragment priority. Lower numeric values render first.
+///
+/// The built-in system templates use coarse priority bands: priorities below
+/// 100 render before generated context sections such as skills, while 100 and
+/// above render afterward. Use below-100 values for role/persona instructions
+/// and high values for epilogue-style context. For example, the shell extension
+/// publishes the current working directory at priority 900 so it stays near the
+/// end of the prompt.
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]

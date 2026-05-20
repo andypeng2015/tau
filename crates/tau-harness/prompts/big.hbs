@@ -55,6 +55,12 @@ When searching for text or files, prefer using `rg` or `rg --files` respectively
 
 Tau deduplicates tool result outputs. `[tau-dedup]` results are not errors, but an optimization pointing at an earlier identical result.
 
+{{#each prompt_fragments}}
+{{#if early}}
+{{trim content}}
+
+{{/if}}
+{{/each~}}
 ## Working With The User
 
 You have two ways of communicating with users:
@@ -89,12 +95,11 @@ In your workspace you have skills the user created. A **skill** is a guide for p
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.
 
 {{/if~}}
-{{#if prompt_fragments~}}
-{{#each prompt_fragments~}}
-{{#unless @first~}}
+{{#if prompt_fragments}}
+{{#each prompt_fragments}}
+{{#unless early}}
+{{trim content}}{{#unless @last}}
 
-{{/unless~}}
-{{{content}}}
-
-{{/each~}}
-{{/if~}}
+{{/unless}}{{#if @last}}
+{{/if}}{{/unless}}{{/each~}}
+{{/if}}

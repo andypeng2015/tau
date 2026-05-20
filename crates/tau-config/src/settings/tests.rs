@@ -412,6 +412,8 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
         .expect("manager prompt fragment")
         .text
         .as_str();
+    assert_eq!(manager.prompt_fragments[0].priority, PromptPriority::new(5));
+    assert_eq!(manager.prompt_fragments[1].priority, PromptPriority::new(6));
     assert!(prompt.contains("You are a planning and orchestration agent"));
     assert!(prompt.contains("delegating to sub-agents"));
     assert!(prompt.contains("available sub-task roles list"));

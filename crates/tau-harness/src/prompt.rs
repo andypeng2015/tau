@@ -170,6 +170,7 @@ fn rendered_prompt_fragment_template_parts(
                 "name": fragment.name,
                 "priority": fragment.priority.get(),
                 "content": content,
+                "early": fragment.priority.get() < 100,
             }))
         })
         .collect(),
@@ -181,6 +182,7 @@ fn prompt_template_renderer() -> handlebars::Handlebars<'static> {
     handlebars.set_strict_mode(true);
     handlebars.register_escape_fn(handlebars::no_escape);
     handlebars.register_helper("sort", Box::new(SortHelper));
+    handlebars.register_helper("trim", Box::new(TrimHelper));
     handlebars.register_helper("xml_escape", Box::new(XmlEscapeHelper));
     handlebars
 }
@@ -208,6 +210,29 @@ fn prompt_template_skills(
         .collect();
     skills.sort_by(|a, b| compare_template_values(a, b, Some("name")));
     skills
+}
+
+struct TrimHelper;
+
+impl handlebars::HelperDef for TrimHelper {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &handlebars::Helper<'rc>,
+        _: &'reg handlebars::Handlebars<'reg>,
+        _: &'rc handlebars::Context,
+        _: &mut handlebars::RenderContext<'reg, 'rc>,
+    ) -> Result<handlebars::ScopedJson<'rc>, handlebars::RenderError> {
+        use handlebars::JsonRender;
+
+        let Some(value) = h.param(0) else {
+            return Ok(handlebars::ScopedJson::Derived(serde_json::Value::String(
+                String::new(),
+            )));
+        };
+        Ok(handlebars::ScopedJson::Derived(serde_json::Value::String(
+            value.value().render().trim().to_owned(),
+        )))
+    }
 }
 
 struct XmlEscapeHelper;
@@ -502,7 +527,7 @@ mod tests {
     fn cwd_prompt_fragment() -> tau_proto::PromptFragment {
         tau_proto::PromptFragment::new(
             "shell.cwd",
-            tau_proto::PromptPriority::new(10),
+            tau_proto::PromptPriority::new(900),
             "{{#each session_context.cwd}}{{#if @first}}Current working directory: {{value}}{{/if}}{{/each}}",
         )
     }
@@ -754,9 +779,9 @@ alpha middle zeta "
             serde_json::json!({}),
         );
         let rendered = data["prompt_fragments"].as_array().expect("fragments");
-
         assert_eq!(rendered[0]["name"], serde_json::json!("a"));
         assert_eq!(rendered[0]["priority"], serde_json::json!(10));
+        assert_eq!(rendered[0]["early"], serde_json::json!(true));
         assert_eq!(rendered[1]["name"], serde_json::json!("c"));
         assert_eq!(rendered[2]["name"], serde_json::json!("b"));
     }
@@ -817,34 +842,37 @@ alpha middle zeta "
         assert!(!prompt.contains("BAD {{missing.value}}"));
     }
 
-    /// Role prompt overrides, role extra prompts, and prompt fragments are
-    /// distinct layers. This pins their composition order so adding more hook
-    /// contributors later does not accidentally move tool instructions before
-    /// role instructions or ignore hook priority ordering.
+    /// Prompt priorities are split into coarse bands by the system template:
+    /// role/persona fragments below 100 render before generated context such as
+    /// skills, while higher-priority fragments render afterward. The cwd
+    /// fragment is intentionally late so it remains the prompt epilogue.
     #[test]
     fn build_system_prompt_composes_role_and_prompt_fragments_in_order() {
-        let skills = std::collections::HashMap::new();
+        let skills = std::collections::HashMap::from([(
+            tau_proto::SkillName::from("test-skill"),
+            discovered_skill("test skill", true),
+        )]);
         let fragments = vec![
+            tau_proto::PromptFragment::new(
+                "manager.instructions",
+                tau_proto::PromptPriority::new(5),
+                "ROLE PROMPT",
+            ),
+            tau_proto::PromptFragment::new(
+                "manager.extra",
+                tau_proto::PromptPriority::new(6),
+                "ROLE EXTRA",
+            ),
             cwd_prompt_fragment(),
             tau_proto::PromptFragment::new(
                 "tool.early",
-                tau_proto::PromptPriority::new(20),
+                tau_proto::PromptPriority::new(120),
                 "TOOL EARLY",
             ),
             tau_proto::PromptFragment::new(
                 "tool.late",
-                tau_proto::PromptPriority::new(30),
+                tau_proto::PromptPriority::new(130),
                 "TOOL LATE",
-            ),
-            tau_proto::PromptFragment::new(
-                "engineer.instructions",
-                tau_proto::PromptPriority::new(100),
-                "ROLE PROMPT",
-            ),
-            tau_proto::PromptFragment::new(
-                "engineer.extra",
-                tau_proto::PromptPriority::new(101),
-                "ROLE EXTRA",
             ),
         ];
 
@@ -862,6 +890,9 @@ alpha middle zeta "
             },
         );
 
+        let skills = prompt
+            .find("Skills provide specialized instructions")
+            .expect("skills section should render");
         let base = prompt
             .find("Current working directory: /tmp/work")
             .expect("base Tau system prompt should render cwd");
@@ -877,10 +908,49 @@ alpha middle zeta "
         let late = prompt
             .find("TOOL LATE")
             .expect("later-priority tool prompt should be rendered");
-        assert!(base < early);
-        assert!(early < late);
-        assert!(late < role);
         assert!(role < extra);
+        assert!(extra < skills);
+        assert!(skills < early);
+        assert!(early < late);
+        assert!(late < base);
+        assert!(
+            prompt
+                .trim_end()
+                .ends_with("Current working directory: /tmp/work")
+        );
+    }
+
+    /// Prompt fragments can come from YAML block scalars and Handlebars
+    /// whitespace control. Normalize boundaries so fragments do not run
+    /// together and do not add trailing blank space to the system prompt.
+    #[test]
+    fn build_system_prompt_normalizes_prompt_fragment_spacing() {
+        let skills = std::collections::HashMap::new();
+        let prompt = build_system_prompt_with_template_context(
+            BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
+            &skills,
+            &[
+                tau_proto::PromptFragment::new(
+                    "role.manager.instructions",
+                    tau_proto::PromptPriority::new(5),
+                    "\nROLE PROMPT\n\n",
+                ),
+                tau_proto::PromptFragment::new(
+                    "shell.cwd",
+                    tau_proto::PromptPriority::new(900),
+                    "Current working directory: /tmp/work",
+                ),
+            ],
+            serde_json::json!({}),
+            RolePromptTemplateContext {
+                role_name: "manager",
+            },
+        );
+
+        assert!(prompt.contains("ROLE PROMPT\n\nCurrent working directory: /tmp/work"));
+        assert!(!prompt.contains("ROLE PROMPTCurrent working directory"));
+        assert!(prompt.ends_with('\n'));
+        assert!(!prompt.ends_with("\n\n"));
     }
 
     /// Empty hook entries are ignored without adding a blank prompt section.

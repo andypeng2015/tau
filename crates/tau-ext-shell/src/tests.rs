@@ -264,6 +264,10 @@ fn startup_registers_shell_cwd_prompt_fragment() {
             }
             Event::ExtPromptFragmentPublish(publish) => {
                 assert_eq!(publish.fragment.name, "shell.cwd");
+                assert_eq!(
+                    publish.fragment.priority,
+                    tau_proto::PromptPriority::new(900)
+                );
                 assert!(
                     publish
                         .fragment

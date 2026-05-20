@@ -4,6 +4,12 @@ You can call multiple tools in a single response. If you intend to call multiple
 
 Tau deduplicates tool result outputs. `[tau-dedup]` results are not errors, but an optimization pointing at an earlier identical result.
 
+{{#each prompt_fragments}}
+{{#if early}}
+{{trim content}}
+
+{{/if}}
+{{/each~}}
 {{#if skills~}}
 Skills provide specialized instructions for specific tasks.
 Below are skills you should be initially aware of. Use the skill tool to load a skill, and search for more skills.
@@ -18,12 +24,11 @@ Below are skills you should be initially aware of. Use the skill tool to load a 
 </available_skills>
 
 {{/if~}}
-{{#if prompt_fragments~}}
-{{#each prompt_fragments~}}
-{{#unless @first~}}
+{{#if prompt_fragments}}
+{{#each prompt_fragments}}
+{{#unless early}}
+{{trim content}}{{#unless @last}}
 
-{{/unless~}}
-{{{content}}}
-
-{{/each~}}
-{{/if~}}
+{{/unless}}{{#if @last}}
+{{/if}}{{/unless}}{{/each~}}
+{{/if}}

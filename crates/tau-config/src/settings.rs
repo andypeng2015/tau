@@ -546,7 +546,9 @@ pub struct RolePromptFragment {
     /// Stable fragment name, preferably namespaced by role or purpose.
     pub name: String,
     /// Priority controlling placement among all prompt fragments. Lower values
-    /// render earlier.
+    /// render earlier. Values below 100 are intended for role/persona
+    /// instructions that should precede generated context; high values are for
+    /// epilogue-style context such as the current working directory.
     pub priority: PromptPriority,
     /// Handlebars template text rendered into the system prompt.
     pub text: PromptContent,

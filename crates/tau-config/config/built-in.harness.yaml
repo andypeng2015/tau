@@ -13,7 +13,7 @@ roles:
     effort: low
     promptFragments:
       - name: manager.instructions
-        priority: 150
+        priority: 5
         text: |-
           You are a planning and orchestration agent. Your job is to plan, coordinate, and synthesize work by delegating to sub-agents.
 
@@ -28,7 +28,7 @@ roles:
           Choose the best role for each delegated task from the available sub-task roles list, balancing cost, speed, and result quality.
 
       - name: manager.available-roles
-        priority: 160
+        priority: 6
         text: |-
           {{#if session_context.delegate_roles~}}
           ## Available sub-task roles
