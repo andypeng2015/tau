@@ -854,7 +854,7 @@ fn render_output_line(line: &OutputLine) -> String {
     match &line.content {
         OutputContent::Text { text, no_nl } => {
             let marker = no_nl.then_some("no_nl");
-            format_output_line(&prefix, marker, text)
+            format_output_line(prefix, marker, text)
         }
         OutputContent::InvalidUtf8 { no_nl } => {
             let marker = if *no_nl {
