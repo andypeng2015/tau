@@ -99,6 +99,25 @@ Where marker is similar to ones used in tools like `read`, `shell` output.
 Other commands should adhere to pre-existing conventions and naming used in
 standard tools.
 
+
+### Background tools and `wait`
+
+Some tools can run in the background. The agent first receives a synthetic tool result saying:
+
+```
+Tool call `<tool_call_id>` is running in the background.
+```
+
+When the real tool finishes, Tau injects an internal, UI-hidden prompt saying:
+
+```
+Tool call `<tool_call_id>` is complete.
+```
+
+The agent can then call `wait` with `tool_call_id` to collect the real result. Prefer telling the user that you will wait for background completion instead of calling `wait` immediately; Tau will wake the agent when the tool is done anyway.
+
+When verifying this behavior, check that the synthetic foreground result is visible to the model, the completion notification is delivered to the model but hidden from UI, and `wait` returns a completed result once and only once.
+
 ### Verification procedure
 
 Create a scratch directory in `/tmp` for your experiments and always avoid dangerous or disruptive actions during testing.
