@@ -319,10 +319,7 @@ pub(crate) fn build_delegate_completion_display(
     details: &CborValue,
     error: Option<&str>,
 ) -> ToolDisplay {
-    let response_text = match details {
-        CborValue::Text(text) => text.as_str(),
-        _ => "",
-    };
+    let response_text = delegate_response_text(details);
     let mut display = cached.cloned().unwrap_or_else(|| ToolDisplay {
         args: String::new(),
         ..Default::default()
@@ -339,6 +336,22 @@ pub(crate) fn build_delegate_completion_display(
         }
     }
     display
+}
+
+fn delegate_response_text(details: &CborValue) -> &str {
+    match details {
+        CborValue::Text(text) => text.as_str(),
+        CborValue::Map(entries) => entries
+            .iter()
+            .find_map(|(key, value)| match (key, value) {
+                (CborValue::Text(key), CborValue::Text(text)) if key == "output" => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => "",
+    }
 }
 
 fn tool_suffix(text: String, status: ToolStatus) -> ToolSuffixSegment {

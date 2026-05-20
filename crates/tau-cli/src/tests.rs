@@ -2483,6 +2483,40 @@ fn delegate_completion_replaces_input_stats_with_output_stats() {
 }
 
 #[test]
+fn delegate_completion_uses_output_stats_from_duration_result_map() {
+    use tau_proto::{ToolDisplay, ToolDisplayStats, ToolDisplayStatus};
+
+    let cached = ToolDisplay {
+        args: "[audit]".into(),
+        stats: ToolDisplayStats {
+            matches: None,
+            lines: Some(10),
+            bytes: Some(200),
+        },
+        status: ToolDisplayStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
+        ..Default::default()
+    };
+    let details = CborValue::Map(vec![
+        (
+            CborValue::Text("output".into()),
+            CborValue::Text("ok\nmore".into()),
+        ),
+        (
+            CborValue::Text("duration_seconds".into()),
+            CborValue::Integer(6.into()),
+        ),
+    ]);
+
+    let display = build_delegate_completion_display(Some(&cached), &details, None);
+
+    assert_eq!(display.args, "[audit]");
+    assert_eq!(display.stats, ToolDisplayStats::for_text("ok\nmore"));
+    assert_eq!(display.status, ToolDisplayStatus::Success);
+    assert_eq!(display.status_text, "ok");
+}
+
+#[test]
 fn delegate_completion_clears_input_stats_for_empty_output() {
     use tau_proto::{ToolDisplay, ToolDisplayStats, ToolDisplayStatus};
 

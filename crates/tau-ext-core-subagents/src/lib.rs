@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::time::{Duration, Instant};
 
 use tau_proto::{
     Ack, BackgroundSupport, CborValue, Event, ExtAgentQuery, ExtSessionContextPublish,
@@ -23,6 +24,7 @@ pub const TOOL_NAME: &str = DELEGATE_TOOL_NAME;
 pub const WAIT_TOOL_NAME: &str = "wait";
 
 const DELEGATE_PREFIX: &str = include_str!("../prompts/delegate_prefix.md");
+const SLOW_DELEGATE_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
     tau_extension::init_logging_for(LOG_TARGET);
@@ -74,11 +76,17 @@ struct RunState {
     ///
     /// Cleanup relies on the harness invariant that every `ExtAgentQuery` is
     /// answered by exactly one terminal `ExtAgentQueryResult`.
-    pending: HashMap<String, (tau_proto::ToolCallId, tau_proto::ToolName)>,
+    pending: HashMap<String, PendingDelegate>,
     next_query_id: u64,
     current_session_id: Option<tau_proto::SessionId>,
     latest_roles: Vec<serde_json::Value>,
     wait_tracker: WaitTracker,
+}
+
+struct PendingDelegate {
+    call_id: ToolCallId,
+    tool_name: ToolName,
+    started_at: Instant,
 }
 
 fn handle_frame<W: Write>(
@@ -165,7 +173,7 @@ fn handle_ext_agent_query_result<W: Write>(
     state: &mut RunState,
     writer: &mut FrameWriter<BufWriter<W>>,
 ) -> Result<(), Box<dyn Error>> {
-    let Some((call_id, tool_name)) = state.pending.remove(&result.query_id) else {
+    let Some(pending) = state.pending.remove(&result.query_id) else {
         tracing::warn!(
             target: LOG_TARGET,
             query_id = %result.query_id,
@@ -173,6 +181,9 @@ fn handle_ext_agent_query_result<W: Write>(
         );
         return Ok(());
     };
+    let duration_seconds = delegate_duration_seconds(pending.started_at.elapsed());
+    let call_id = pending.call_id;
+    let tool_name = pending.tool_name;
 
     if let Some(error) = result.error {
         tracing::debug!(
@@ -186,7 +197,7 @@ fn handle_ext_agent_query_result<W: Write>(
             tool_name,
             tool_type: tau_proto::ToolType::Function,
             message: error,
-            details: None,
+            details: delegate_error_details(duration_seconds),
             display: None,
             originator: tau_proto::PromptOriginator::User,
         };
@@ -208,7 +219,7 @@ fn handle_ext_agent_query_result<W: Write>(
             call_id,
             tool_name,
             tool_type: tau_proto::ToolType::Function,
-            result: CborValue::Text(result.text),
+            result: delegate_result_value(result.text, duration_seconds),
             kind: ToolResultKind::Final,
             display: None,
             originator: tau_proto::PromptOriginator::User,
@@ -223,6 +234,44 @@ fn handle_ext_agent_query_result<W: Write>(
     }
     writer.flush()?;
     Ok(())
+}
+
+fn delegate_duration_seconds(elapsed: Duration) -> Option<u64> {
+    if Duration::from_secs(SLOW_DELEGATE_EXEC_TIME_THRESHOLD_SECS) < elapsed {
+        Some(elapsed.as_secs_f64().ceil() as u64)
+    } else {
+        None
+    }
+}
+
+fn delegate_result_value(text: String, duration_seconds: Option<u64>) -> CborValue {
+    let Some(duration_seconds) = duration_seconds else {
+        return CborValue::Text(text);
+    };
+    CborValue::Map(delegate_detail_entries(Some(text), duration_seconds))
+}
+
+fn delegate_error_details(duration_seconds: Option<u64>) -> Option<CborValue> {
+    duration_seconds
+        .map(|duration_seconds| CborValue::Map(delegate_detail_entries(None, duration_seconds)))
+}
+
+fn delegate_detail_entries(
+    output: Option<String>,
+    duration_seconds: u64,
+) -> Vec<(CborValue, CborValue)> {
+    let mut entries = Vec::new();
+    if let Some(output) = output {
+        entries.push((
+            CborValue::Text("output".to_owned()),
+            CborValue::Text(output),
+        ));
+    }
+    entries.push((
+        CborValue::Text("duration_seconds".to_owned()),
+        CborValue::Integer((duration_seconds as i64).into()),
+    ));
+    entries
 }
 
 fn handle_roles_available<W: Write>(
@@ -250,7 +299,7 @@ fn handle_roles_available<W: Write>(
 
 fn handle_tool_invoke<W: Write>(
     invoke: ToolInvoke,
-    pending: &mut HashMap<String, (tau_proto::ToolCallId, tau_proto::ToolName)>,
+    pending: &mut HashMap<String, PendingDelegate>,
     next_query_id: &mut u64,
     wait_tracker: &mut WaitTracker,
     writer: &mut FrameWriter<BufWriter<W>>,
@@ -302,7 +351,14 @@ fn handle_tool_invoke<W: Write>(
         role = ?parsed.role,
         "dispatching delegation",
     );
-    pending.insert(query_id.clone(), (invoke.call_id, invoke.tool_name));
+    pending.insert(
+        query_id.clone(),
+        PendingDelegate {
+            call_id: invoke.call_id,
+            tool_name: invoke.tool_name,
+            started_at: Instant::now(),
+        },
+    );
     writer.write_frame(&Frame::Event(Event::ExtAgentQuery(ExtAgentQuery {
         query_id,
         instruction: format!("{DELEGATE_PREFIX}{}", parsed.prompt),
@@ -932,6 +988,58 @@ mod tests {
 
     fn text(s: &str) -> CborValue {
         CborValue::Text(s.to_owned())
+    }
+
+    fn map_field<'a>(value: &'a CborValue, name: &str) -> Option<&'a CborValue> {
+        let CborValue::Map(entries) = value else {
+            return None;
+        };
+        entries.iter().find_map(|(key, value)| match key {
+            CborValue::Text(key) if key == name => Some(value),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn delegate_duration_seconds_matches_shell_semantics() {
+        // Delegate results use the same slow-call header behavior as `shell`:
+        // omit exact-threshold calls, and round slower calls up to whole seconds.
+        assert_eq!(delegate_duration_seconds(Duration::from_secs(5)), None);
+        assert_eq!(
+            delegate_duration_seconds(Duration::from_millis(5_001)),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn delegate_result_adds_duration_header_only_for_slow_calls() {
+        // Keep fast delegate payloads as plain text for compatibility, but use
+        // an `output` map when a slow-call `duration_seconds` header is needed.
+        assert_eq!(
+            delegate_result_value("answer".to_owned(), None),
+            text("answer")
+        );
+
+        let value = delegate_result_value("answer".to_owned(), Some(6));
+        assert_eq!(map_field(&value, "output"), Some(&text("answer")));
+        assert_eq!(
+            map_field(&value, "duration_seconds"),
+            Some(&CborValue::Integer(6.into()))
+        );
+    }
+
+    #[test]
+    fn delegate_error_details_adds_duration_header_only_for_slow_calls() {
+        // Slow failed delegate calls should expose the same duration header;
+        // fast failures keep `details` empty for compatibility.
+        assert_eq!(delegate_error_details(None), None);
+
+        let details = delegate_error_details(Some(6)).expect("details");
+        assert_eq!(map_field(&details, "output"), None);
+        assert_eq!(
+            map_field(&details, "duration_seconds"),
+            Some(&CborValue::Integer(6.into()))
+        );
     }
 
     fn wait_request(call_id: &str) -> WaitRequest {
