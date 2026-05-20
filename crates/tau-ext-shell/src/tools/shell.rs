@@ -51,8 +51,6 @@ pub(crate) fn run_command(
                     total_seconds: None,
                     termination_reason: "start_error",
                     output: String::new(),
-                    total_lines: 0,
-                    total_bytes: 0,
                     truncated: false,
                     valid_utf8: true,
                 }))
@@ -86,8 +84,6 @@ pub(crate) fn run_command(
         total_seconds,
         termination_reason: wait.termination_reason,
         output: output_trunc.content,
-        total_lines: wait.output_total_lines,
-        total_bytes: wait.output_total_bytes,
         truncated: output_trunc.was_truncated,
         valid_utf8: !wait.had_invalid_utf8,
     });
@@ -924,8 +920,6 @@ pub(crate) struct CommandDetails {
     pub(crate) total_seconds: Option<u64>,
     pub(crate) termination_reason: &'static str,
     pub(crate) output: String,
-    pub(crate) total_lines: usize,
-    pub(crate) total_bytes: usize,
     pub(crate) truncated: bool,
     pub(crate) valid_utf8: bool,
 }
@@ -938,25 +932,13 @@ pub(crate) fn command_details_value(details: CommandDetails) -> CborValue {
         total_seconds,
         termination_reason,
         output,
-        total_lines,
-        total_bytes,
         truncated,
         valid_utf8,
     } = details;
-    let mut entries = vec![
-        (
-            CborValue::Text("output".to_owned()),
-            CborValue::Text(output),
-        ),
-        (
-            CborValue::Text("total_lines".to_owned()),
-            CborValue::Integer((total_lines as i64).into()),
-        ),
-        (
-            CborValue::Text("total_bytes".to_owned()),
-            CborValue::Integer((total_bytes as i64).into()),
-        ),
-    ];
+    let mut entries = vec![(
+        CborValue::Text("output".to_owned()),
+        CborValue::Text(output),
+    )];
     if !valid_utf8 {
         entries.push((
             CborValue::Text("valid_utf8".to_owned()),

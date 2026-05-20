@@ -2268,11 +2268,8 @@ fn shell_tool_reports_truncation_marker_and_original_totals() {
     let combined = cbor_map_text(&output.result, "output").expect("output");
     assert!(combined.starts_with("[Showing lines "));
     assert!(combined.contains("\n1 x") || combined.contains("\n2 e"));
-    assert_eq!(
-        cbor_int_field(&output.result, "total_lines"),
-        Some((line_count * 2) as i128)
-    );
-    assert!(0 < cbor_int_field(&output.result, "total_bytes").expect("total_bytes"));
+    assert!(cbor_map_field(&output.result, "total_lines").is_none());
+    assert!(cbor_map_field(&output.result, "total_bytes").is_none());
     assert_eq!(cbor_bool_field(&output.result, "truncated"), Some(true));
 }
 
@@ -2337,7 +2334,7 @@ fn shell_tool_timeout_preserves_partial_output() {
     assert!(error.message.contains("command timed out after 1s"));
     let details = error.details.as_ref().expect("details");
     assert_eq!(cbor_map_text(details, "output"), Some("1 before"));
-    assert_eq!(cbor_int_field(details, "total_lines"), Some(1));
+    assert!(cbor_map_field(details, "total_lines").is_none());
     assert_eq!(cbor_bool_field(details, "timed_out"), Some(true));
     assert!(cbor_int_field(details, "timeout_secs").is_none());
     assert_eq!(
@@ -2437,9 +2434,7 @@ fn shell_tool_bounded_huge_output_reports_original_totals() {
     assert!(combined.starts_with("[Showing lines "));
     assert!(combined.len() < byte_count);
     assert_eq!(cbor_bool_field(&output.result, "truncated"), Some(true));
-    assert!(
-        (byte_count as i128) < cbor_int_field(&output.result, "total_bytes").expect("total_bytes")
-    );
+    assert!(cbor_map_field(&output.result, "total_bytes").is_none());
 }
 
 #[test]
@@ -2683,14 +2678,12 @@ fn command_details_value_records_combined_output_stats() {
         total_seconds: None,
         termination_reason: "exit",
         output: "1 hi\n2 oops".to_owned(),
-        total_lines: 2,
-        total_bytes: 11,
         truncated: false,
         valid_utf8: true,
     });
     assert_eq!(cbor_map_text(&details, "output"), Some("1 hi\n2 oops"));
-    assert_eq!(cbor_int_field(&details, "total_lines"), Some(2));
-    assert_eq!(cbor_int_field(&details, "total_bytes"), Some(11));
+    assert!(cbor_map_field(&details, "total_lines").is_none());
+    assert!(cbor_map_field(&details, "total_bytes").is_none());
     assert!(cbor_map_field(&details, "valid_utf8").is_none());
     assert!(cbor_map_field(&details, "timed_out").is_none());
     assert!(cbor_map_field(&details, "termination_reason").is_none());
@@ -2707,8 +2700,6 @@ fn command_details_value_records_slow_command_exec_time() {
         total_seconds: Some(6),
         termination_reason: "exit",
         output: String::new(),
-        total_lines: 0,
-        total_bytes: 0,
         truncated: false,
         valid_utf8: true,
     });
