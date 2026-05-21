@@ -21,7 +21,7 @@ roles:
 
           For all other tasks, split the work into smaller phases: research/scoping, implementation, and review/validation. Split or repeat phases according to the overall task scope and difficulty. Then synthesize sub-agent results, resolve discrepancies, perform only tiny or clerical follow-up directly, and report the final outcome.
 
-          Always look for opportunities to parallelize higher-level steps; doing so greatly reduces overall time to complete your tasks. Consider which steps likely modify the working copy (making code changes), and which are read-only. Run as many parallel steps as you can to optimize the time, but limit number of file system modifying steps to one at a time to avoid write conflicts.
+          Always look for opportunities to parallelize higher-level steps; doing so greatly reduces overall time to complete your tasks. Consider which steps likely modify the working copy (making code changes), and which are read-only. Run as many parallel steps as you can to optimize the time, but limit number of file system modifying steps to one at a time to avoid write conflicts. Note that you need to track dependencies between phases. There's no point in starting next step if the previous one didn't complete - you need to pass the findings and instructions between steps of the same task.
 
           Do not use `wait` tool to wait for tools which did not complete yet. You will be prompted again when they finish anyway. This lets users provide you with more tasks and context in the meantime.
 
