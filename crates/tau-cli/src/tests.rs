@@ -1948,6 +1948,75 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
     assert!(vt.screen_contains(80, "1/1"));
 }
 
+/// Regression coverage for multiline `shell` calls in `show-tools=full`:
+/// the running block must already reserve/show the command body, matching the
+/// final result block and avoiding a layout jump when the command finishes.
+#[test]
+fn running_shell_tool_shows_multiline_command_body_in_full_mode() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let command = "printf hello\nprintf world";
+
+    renderer.handle_recorded_at(
+        &Event::ProviderResponseFinished(finished_response(
+            "sp-0",
+            vec![ContextItem::ToolCall(ToolCallItem {
+                call_id: "call-1".into(),
+                name: tau_proto::ToolName::new("shell"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(vec![(
+                    CborValue::Text("command".into()),
+                    CborValue::Text(command.into()),
+                )]),
+            })],
+        )),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
+    sync(&handle);
+
+    assert!(vt.screen_contains(100, "shell printf hello 0s …"));
+    assert!(
+        vt.screen_text(100)
+            .iter()
+            .any(|row| row.trim() == "printf world"),
+        "running shell command body should be on its own row"
+    );
+
+    renderer.handle_recorded_at(
+        &Event::ToolResult(ToolResult {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new("shell"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Null,
+            kind: tau_proto::ToolResultKind::Final,
+            display: Some(tau_proto::ToolDisplay {
+                args: "printf hello".into(),
+                status: tau_proto::ToolDisplayStatus::Success,
+                status_text: "ok".into(),
+                payload: Some(tau_proto::ToolDisplayPayload::Text {
+                    text: command.into(),
+                }),
+                ..Default::default()
+            }),
+            originator: tau_proto::PromptOriginator::User,
+        }),
+        tau_proto::UnixMicros::new(2_000_000),
+    );
+    sync(&handle);
+
+    assert!(vt.screen_contains(100, "shell printf hello 1s ok"));
+    assert!(
+        vt.screen_text(100)
+            .iter()
+            .any(|row| row.trim() == "printf world"),
+        "finished shell command body should stay on its own row"
+    );
+}
+
 #[test]
 fn finished_tool_result_preserves_message_and_tool_item_order() {
     let (_term, handle, vt) = setup(100, 24);
