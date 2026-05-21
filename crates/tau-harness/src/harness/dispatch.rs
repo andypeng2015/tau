@@ -41,6 +41,41 @@ impl Harness {
         self.dispatch_prompt_for_conversation(&cid, PendingPrompt::user(text))
     }
 
+    /// Publish one pending prompt as a `UiPromptSubmitted` event on `cid`'s
+    /// branch without dispatching an agent prompt yet.
+    ///
+    /// Callers that publish additional prompt-bearing events in the same batch
+    /// can use this helper and then call
+    /// [`Self::dispatch_prompt_after_publish_idle`] once the full batch has
+    /// been queued. That keeps interception from sending the agent a prompt
+    /// that only contains the first committed user-message event.
+    pub(crate) fn publish_pending_prompt_for_conversation(
+        &mut self,
+        cid: &ConversationId,
+        prompt: impl Into<PendingPrompt>,
+    ) -> Result<(), HarnessError> {
+        let prompt = prompt.into();
+        let (session_id, originator) = match self.conversations.get(cid) {
+            Some(c) => (c.session_id.clone(), c.originator.clone()),
+            None => {
+                return Err(HarnessError::Participant(format!(
+                    "publish_pending_prompt_for_conversation: unknown conversation `{cid}`"
+                )));
+            }
+        };
+        self.publish_for_conversation(
+            cid,
+            Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
+                session_id,
+                text: prompt.text,
+                message_class: prompt.message_class,
+                originator,
+                ctx_id: None,
+            }),
+        );
+        Ok(())
+    }
+
     /// Dispatches one prompt for `cid`: publishes the
     /// `UiPromptSubmitted` event (head-bounced via
     /// `publish_for_conversation` so it lands on the conversation's
@@ -54,25 +89,7 @@ impl Harness {
         cid: &ConversationId,
         prompt: impl Into<PendingPrompt>,
     ) -> Result<(), HarnessError> {
-        let prompt = prompt.into();
-        let (session_id, originator) = match self.conversations.get(cid) {
-            Some(c) => (c.session_id.clone(), c.originator.clone()),
-            None => {
-                return Err(HarnessError::Participant(format!(
-                    "dispatch_prompt_for_conversation: unknown conversation `{cid}`"
-                )));
-            }
-        };
-        self.publish_for_conversation(
-            cid,
-            Event::UiPromptSubmitted(tau_proto::UiPromptSubmitted {
-                session_id: session_id.clone(),
-                text: prompt.text,
-                message_class: prompt.message_class,
-                originator,
-                ctx_id: None,
-            }),
-        );
+        self.publish_pending_prompt_for_conversation(cid, prompt)?;
         // If the publish parked in interception (or queued behind one
         // that is), defer the agent dispatch until this user-prompt
         // event actually commits. If it committed inline, the helper

@@ -5650,14 +5650,29 @@ impl Harness {
             }),
         );
 
+        let folded_background_prompts =
+            self.fold_queued_background_completion_prompts(&pending.target_cid);
         match pending.resume {
-            PendingCompactionResume::UserPrompt(text) => self
-                .dispatch_prompt_for_conversation(&pending.target_cid, PendingPrompt::user(text)),
-            PendingCompactionResume::FollowupTurn => {
-                self.send_prompt_to_agent_for(&pending.target_cid);
+            PendingCompactionResume::UserPrompt(text) => {
+                self.publish_pending_prompt_for_conversation(
+                    &pending.target_cid,
+                    PendingPrompt::user(text),
+                )?;
+                self.dispatch_prompt_after_publish_idle(&pending.target_cid);
                 Ok(())
             }
-            PendingCompactionResume::None => Ok(()),
+            PendingCompactionResume::FollowupTurn => {
+                self.dispatch_prompt_after_publish_idle(&pending.target_cid);
+                Ok(())
+            }
+            PendingCompactionResume::None => {
+                if folded_background_prompts {
+                    self.dispatch_prompt_after_publish_idle(&pending.target_cid);
+                } else {
+                    self.try_advance_queue();
+                }
+                Ok(())
+            }
         }
     }
 
@@ -6523,7 +6538,63 @@ impl Harness {
         }
     }
 
-    /// Drain any user prompts queued on `cid` while the agent was in
+    fn publish_prompts_as_steered(&mut self, cid: &ConversationId, prompts: Vec<PendingPrompt>) {
+        let session_id = match self.conversations.get(cid) {
+            Some(c) => c.session_id.clone(),
+            None => return,
+        };
+        for prompt in prompts {
+            self.publish_for_conversation(
+                cid,
+                Event::SessionPromptSteered(tau_proto::SessionPromptSteered {
+                    session_id: session_id.clone(),
+                    text: prompt.text,
+                    message_class: prompt.message_class,
+                }),
+            );
+        }
+    }
+
+    fn fold_queued_background_completion_prompts(&mut self, cid: &ConversationId) -> bool {
+        let completion_texts: HashSet<String> = self
+            .background_completion_targets
+            .iter()
+            .filter(|&(call_id, owner)| {
+                owner == cid
+                    && !self
+                        .suppressed_background_completion_prompts
+                        .contains(call_id)
+            })
+            .map(|(call_id, _)| background_completion_prompt(call_id))
+            .collect();
+        if completion_texts.is_empty() {
+            return false;
+        }
+        let prompts: Vec<PendingPrompt> = self
+            .conversations
+            .get_mut(cid)
+            .map(|conv| {
+                let mut folded = Vec::new();
+                let mut retained = VecDeque::with_capacity(conv.pending_prompts.len());
+                while let Some(prompt) = conv.pending_prompts.pop_front() {
+                    if prompt.is_internal() && completion_texts.contains(&prompt.text) {
+                        folded.push(prompt);
+                    } else {
+                        retained.push_back(prompt);
+                    }
+                }
+                conv.pending_prompts = retained;
+                folded
+            })
+            .unwrap_or_default();
+        if prompts.is_empty() {
+            return false;
+        }
+        self.publish_prompts_as_steered(cid, prompts);
+        true
+    }
+
+    /// Drain any prompts queued on `cid` while the agent was in
     /// flight, and publish a `SessionPromptSteered` event for each. The
     /// folder in `SessionTree::apply_event` appends them as
     /// `UserMessage` entries on this conversation's branch, so the
@@ -6535,28 +6606,15 @@ impl Harness {
     /// arriving on an idle conversation go through
     /// `dispatch_prompt_for_conversation`, which already publishes its
     /// own `UiPromptSubmitted`. Folding here exists specifically to
-    /// give a queued prompt a chance to ride the next per-round prompt
+    /// give queued prompts a chance to ride the next per-round prompt
     /// rather than waiting for the whole turn to terminate.
     fn fold_pending_prompts_as_steered(&mut self, cid: &ConversationId) {
-        let session_id = match self.conversations.get(cid) {
-            Some(c) => c.session_id.clone(),
-            None => return,
-        };
         let pending: Vec<PendingPrompt> = self
             .conversations
             .get_mut(cid)
             .map(|c| c.pending_prompts.drain(..).collect())
             .unwrap_or_default();
-        for prompt in pending {
-            self.publish_for_conversation(
-                cid,
-                Event::SessionPromptSteered(tau_proto::SessionPromptSteered {
-                    session_id: session_id.clone(),
-                    text: prompt.text,
-                    message_class: prompt.message_class,
-                }),
-            );
-        }
+        self.publish_prompts_as_steered(cid, pending);
     }
 
     fn execute_agent_tool_call(

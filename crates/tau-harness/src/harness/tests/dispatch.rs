@@ -3115,6 +3115,354 @@ fn enable_remote_compaction_for_test_model(h: &mut Harness) {
     );
 }
 
+fn instant_background_test_tool_spec(name: &str) -> ToolSpec {
+    ToolSpec {
+        name: ToolName::new(name),
+        model_visible_name: None,
+        description: None,
+        parameters: None,
+        tool_type: tau_proto::ToolType::Function,
+        format: None,
+        enabled_by_default: true,
+        execution_mode: ToolExecutionMode::Shared,
+        background_support: Some(tau_proto::BackgroundSupport::Instant),
+    }
+}
+
+fn start_manual_compaction_for_test(
+    h: &mut Harness,
+    cid: &ConversationId,
+) -> (ConversationId, SessionPromptId) {
+    h.handle_compact_request("s1".into());
+    h.prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            h.pending_compactions
+                .contains_key(prompt_cid)
+                .then_some((prompt_cid.clone(), spid.clone()))
+        })
+        .filter(|(summary_cid, _)| summary_cid != cid)
+        .expect("compaction prompt")
+}
+
+fn finish_compaction_for_test(
+    h: &mut Harness,
+    summary_spid: SessionPromptId,
+    cid: &ConversationId,
+) {
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: summary_spid,
+        output_items: vec![openai_compaction_summary_item("compacted branch")],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: HARNESS_CONNECTION_ID.into(),
+            query_id: format!("auto-compact-{cid}"),
+        },
+        backend: Some(responses_backend()),
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("summary finished");
+}
+
+fn active_prompt_for(h: &Harness, cid: &ConversationId) -> SessionPromptId {
+    h.conversations
+        .get(cid)
+        .expect("conversation exists")
+        .in_flight_prompt
+        .clone()
+        .expect("active prompt")
+}
+
+fn start_background_tool_and_finish_placeholder_turn(
+    h: &mut Harness,
+    cid: &ConversationId,
+    call_id: &str,
+    tool_name: &str,
+) {
+    h.publish_for_conversation(
+        cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: format!("run {tool_name}"),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    let spid: SessionPromptId = format!("sp-{call_id}").into();
+    seed_agent_thinking(h, cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid.clone());
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: call_id.into(),
+            name: ToolName::new(tool_name),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("start background tool");
+    assert!(h.tool_turn.is_backgrounded(&ToolCallId::from(call_id)));
+
+    let placeholder_followup = active_prompt_for(h, cid);
+    h.handle_provider_response_finished(provider_text_response(
+        &placeholder_followup,
+        "placeholder acknowledged",
+    ))
+    .expect("finish placeholder followup");
+    assert!(matches!(
+        h.conversations
+            .get(cid)
+            .expect("conversation exists")
+            .turn_state,
+        ConversationTurnState::Idle
+    ));
+}
+
+/// Regression: a user prompt submitted during manual compaction used to remain
+/// queued forever because `Resume::None` restored the conversation to `Idle`
+/// but never re-ran the normal pending-prompt drain.
+#[test]
+fn manual_compaction_drains_user_prompt_queued_while_compacting() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+
+    let cid = h.default_conversation_id.clone();
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "earlier question".to_owned(),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    let (_summary_cid, summary_spid) = start_manual_compaction_for_test(&mut h, &cid);
+
+    let submission = h
+        .submit_user_prompt("s1".into(), "queued after compact".to_owned())
+        .expect("submit");
+    assert_eq!(submission, PromptSubmission::Queued);
+    finish_compaction_for_test(&mut h, summary_spid, &cid);
+
+    let prompt_spid = active_prompt_for(&h, &cid);
+    let prompt = read_prompt_created(&h, &prompt_spid);
+    assert_eq!(
+        prompt.context_items.last().and_then(text_part),
+        Some("queued after compact")
+    );
+    assert!(h.conversations[&cid].pending_prompts.is_empty());
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: a background tool can complete while manual compaction holds the
+/// owning conversation in `Compacting`. Finishing compaction must fold that
+/// internal completion notice and dispatch it instead of leaving it queued.
+#[test]
+fn background_completion_during_manual_compaction_is_dispatched_after_finish() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+    let _tool_events = connect_test_tool(&mut h, "conn-bg");
+    h.registry
+        .register("conn-bg", instant_background_test_tool_spec("slow_bg"));
+
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-during-compact".into();
+    start_background_tool_and_finish_placeholder_turn(&mut h, &cid, call_id.as_str(), "slow_bg");
+    let (_summary_cid, summary_spid) = start_manual_compaction_for_test(&mut h, &cid);
+
+    h.handle_extension_event_inner(
+        "conn-bg",
+        Event::ToolResult(final_tool_result(
+            call_id.as_str(),
+            "slow_bg",
+            "background output",
+        )),
+    )
+    .expect("background result during compaction");
+    assert!(h.conversations[&cid].pending_prompts.iter().any(|prompt| {
+        prompt.is_internal() && prompt.text == background_completion_prompt(&call_id)
+    }));
+
+    finish_compaction_for_test(&mut h, summary_spid, &cid);
+
+    let prompt_spid = active_prompt_for(&h, &cid);
+    let prompt = read_prompt_created(&h, &prompt_spid);
+    assert!(
+        prompt.context_items.iter().any(|item| {
+            text_part(item) == Some(background_completion_prompt(&call_id).as_str())
+        })
+    );
+    assert!(h.conversations[&cid].pending_prompts.is_empty());
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: auto-compaction holds the triggering user prompt out of the log.
+/// If a background completion arrives before the summary finishes, the resumed
+/// prompt must include both the internal completion notice and the held user
+/// text in one dispatch, with the internal notice folded first.
+#[test]
+fn background_completion_during_user_prompt_compaction_precedes_held_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+    let _tool_events = connect_test_tool(&mut h, "conn-bg-held");
+    h.registry.register(
+        "conn-bg-held",
+        instant_background_test_tool_spec("slow_held"),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-held".into();
+    start_background_tool_and_finish_placeholder_turn(&mut h, &cid, call_id.as_str(), "slow_held");
+    h.current_session_state.context_input_tokens = Some(950);
+    h.current_session_state.context_percent_used = Some(95);
+
+    h.dispatch_user_prompt("s1".into(), "new question".to_owned())
+        .expect("dispatch starts compaction");
+    let (_summary_cid, summary_spid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            h.pending_compactions
+                .contains_key(prompt_cid)
+                .then_some((prompt_cid.clone(), spid.clone()))
+        })
+        .expect("compaction prompt");
+
+    h.handle_extension_event_inner(
+        "conn-bg-held",
+        Event::ToolResult(final_tool_result(
+            call_id.as_str(),
+            "slow_held",
+            "held background output",
+        )),
+    )
+    .expect("background result during held prompt compaction");
+    finish_compaction_for_test(&mut h, summary_spid, &cid);
+
+    let prompt_spid = active_prompt_for(&h, &cid);
+    let prompt = read_prompt_created(&h, &prompt_spid);
+    let completion_pos = prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some(background_completion_prompt(&call_id).as_str()))
+        .expect("completion notice in resumed prompt");
+    let user_pos = prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some("new question"))
+        .expect("held user prompt in resumed prompt");
+    assert!(completion_pos < user_pos);
+    assert!(h.conversations[&cid].pending_prompts.is_empty());
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: compaction is transcript-only. A real background result that
+/// arrives while the transcript is compacting must remain available to the
+/// process-local wait tracker, and the wait result must fold onto the compacted
+/// branch rather than resurrecting pre-compaction history.
+#[test]
+fn wait_after_compaction_returns_background_result_completed_during_compaction() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    enable_remote_compaction_for_test_model(&mut h);
+    let _tool_events = connect_test_tool(&mut h, "conn-bg-wait");
+    h.registry.register(
+        "conn-bg-wait",
+        instant_background_test_tool_spec("slow_wait"),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-wait".into();
+    start_background_tool_and_finish_placeholder_turn(&mut h, &cid, call_id.as_str(), "slow_wait");
+    let (_summary_cid, summary_spid) = start_manual_compaction_for_test(&mut h, &cid);
+    h.handle_extension_event_inner(
+        "conn-bg-wait",
+        Event::ToolResult(final_tool_result(
+            call_id.as_str(),
+            "slow_wait",
+            "waited output",
+        )),
+    )
+    .expect("background result during compaction");
+    finish_compaction_for_test(&mut h, summary_spid, &cid);
+
+    let notification_spid = active_prompt_for(&h, &cid);
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: notification_spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "wait-call-after-compact".into(),
+            name: ToolName::new("wait"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("tool_call_id".to_owned()),
+                CborValue::Text(call_id.to_string()),
+            )]),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("wait response after compaction");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-call-after-compact"
+                && matches!(&result.result, CborValue::Text(text) if text == "waited output")
+    )));
+    let followup_spid = active_prompt_for(&h, &cid);
+    let prompt = read_prompt_created(&h, &followup_spid);
+    assert!(
+        prompt
+            .context_items
+            .iter()
+            .any(|item| matches!(item, ContextItem::Compaction(_)))
+    );
+    assert!(
+        prompt
+            .context_items
+            .iter()
+            .filter_map(tool_call_id)
+            .any(|id| id == "wait-call-after-compact")
+    );
+    assert!(
+        prompt
+            .context_items
+            .iter()
+            .filter_map(tool_result_id)
+            .any(|id| id == "wait-call-after-compact")
+    );
+    let visible_text: Vec<&str> = prompt.context_items.iter().filter_map(text_part).collect();
+    assert!(visible_text.iter().all(|text| {
+        !text.contains("run slow_wait") && !text.contains("placeholder acknowledged")
+    }));
+
+    h.shutdown().expect("shutdown");
+}
+
 #[test]
 fn delegate_followup_auto_compacts_from_own_context_signal() {
     // Sub-agent sessions are normal conversations: if their own
