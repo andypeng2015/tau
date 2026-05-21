@@ -82,6 +82,10 @@ Emitted by the provider backend that owns the selected model.
   item order via `output_items`, plus optional usage, provider
   response id, backend metadata, and echoed originator. Routed by the
   harness based on the originator.
+- **`provider.tool_result`** / **`provider.tool_error`** — Provider-facing
+  terminal tool-call completions. These satisfy provider protocol state and
+  fold into prompt history, but are not logical UI tool completions. The
+  synthetic background placeholder uses `provider.tool_result` only.
 
 ## Tools
 
@@ -99,14 +103,17 @@ the agent requests calls, and the harness orchestrates dispatch.
   transcript truth.
 - **`tool.invoke`** *(harness)* — The harness has decided to run a
   request and is dispatching it to the tool's implementing extension.
-- **`tool.result`** *(extension/harness)* — Successful runtime tool
+- **`tool.result`** *(extension/harness)* — Successful logical runtime tool
   completion, by call id, with tool-owned `result` plus optional UI
-  `display` metadata and echoed originator. This event shape remains
-  operational and renderer-friendly. The durable transcript fold uses
-  a separate terminal tool-result fact shape (`tool_type`, `status`,
-  `output`) derived by the harness/runtime layer.
-- **`tool.error`** *(extension)* — Tool failure with a message and
-  optional structured details. Operational only; transient.
+  `display` metadata and echoed originator. This event is renderer-facing.
+  Provider-only terminal completions use `provider.tool_result` instead.
+- **`tool.error`** *(extension)* — Logical tool failure with a message and
+  optional structured details. Operational only; transient. Provider-only
+  terminal failures use `provider.tool_error` instead.
+- **`tool.background_result`** / **`tool.background_error`** *(harness)* —
+  Logical notification that a backgrounded tool later completed for real.
+  The earlier synthetic placeholder is provider-facing only and is not
+  emitted as `tool.result`.
 - **`tool.progress`** *(extension)* — In-flight progress update with an
   optional message and current/total counters. Transient.
 - **`tool.cancel`** *(harness)* — The harness asks an extension to

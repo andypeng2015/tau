@@ -685,6 +685,18 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         .expect("finished");
 
     drive_harness_until_call_completes(&mut h, "c1");
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "c1"
+                && result.kind == tau_proto::ToolResultKind::Final
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ProviderToolResult(result)
+            if result.call_id.as_str() == "c1"
+                && result.kind == tau_proto::ToolResultKind::Final
+    )));
     drive_harness_until_call_completes(&mut h, "c2");
     drive_harness_until_call_completes(&mut h, "c3");
 
@@ -3567,6 +3579,12 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
 
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
+        Event::ProviderToolResult(result)
+            if result.call_id.as_str() == "slow-call"
+                && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder
+    )));
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
         Event::ToolResult(result)
             if result.call_id.as_str() == "slow-call"
                 && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder
@@ -4067,12 +4085,18 @@ fn instant_delegate_placeholder_is_committed_before_side_prompt() {
     while let Some(entry) = h.event_log.get_next_from(seq) {
         seq = entry.seq + 1;
         match &entry.event {
-            Event::ToolResult(result)
+            Event::ProviderToolResult(result)
                 if result.call_id.as_str() == "delegate-call"
                     && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder =>
             {
                 placeholder_count += 1;
                 placeholder_seq.get_or_insert(entry.seq);
+            }
+            Event::ToolResult(result)
+                if result.call_id.as_str() == "delegate-call"
+                    && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder =>
+            {
+                panic!("background placeholder must not be a logical tool.result");
             }
             Event::SessionPromptCreated(prompt)
                 if h.prompt_conversations

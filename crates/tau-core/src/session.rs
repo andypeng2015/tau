@@ -376,14 +376,14 @@ impl SessionTree {
                 }
                 Some(node_id)
             }
-            Event::ToolRequest(_) => None,
-            Event::ToolResult(result) => self.record_terminal_tool_result(ToolResultItem {
+            Event::ToolRequest(_) | Event::ToolResult(_) | Event::ToolError(_) => None,
+            Event::ProviderToolResult(result) => self.record_terminal_tool_result(ToolResultItem {
                 call_id: result.call_id.clone(),
                 tool_type: result.tool_type,
                 status: ToolResultStatus::Success,
                 output: tau_proto::ToolResponse::from_cbor(&result.result),
             }),
-            Event::ToolError(error) => self.record_terminal_tool_result(ToolResultItem {
+            Event::ProviderToolError(error) => self.record_terminal_tool_result(ToolResultItem {
                 call_id: error.call_id.clone(),
                 tool_type: error.tool_type,
                 status: ToolResultStatus::Error {
@@ -445,8 +445,10 @@ impl SessionTree {
                 }
                 Ok(())
             }
-            Event::ToolResult(result) => self.validate_terminal_tool_result(&result.call_id),
-            Event::ToolError(error) => self.validate_terminal_tool_result(&error.call_id),
+            Event::ProviderToolResult(result) => {
+                self.validate_terminal_tool_result(&result.call_id)
+            }
+            Event::ProviderToolError(error) => self.validate_terminal_tool_result(&error.call_id),
             Event::ToolCancelled(cancelled) => {
                 self.validate_terminal_tool_result(&cancelled.call_id)
             }

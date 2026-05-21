@@ -1050,7 +1050,7 @@ alpha middle zeta "
                 CborValue::Integer(1.into()),
             ),
         ]);
-        tree.apply_event(&Event::ToolError(ToolError {
+        tree.apply_event(&Event::ProviderToolError(ToolError {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new("shell"),
             tool_type: tau_proto::ToolType::Function,

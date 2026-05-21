@@ -225,6 +225,9 @@ impl EventName {
         Self::from_static(EventCategory::Extension, "agent_query_result");
     pub const PROVIDER_MODELS_UPDATED: Self =
         Self::from_static(EventCategory::Provider, "models_updated");
+    pub const PROVIDER_TOOL_RESULT: Self =
+        Self::from_static(EventCategory::Provider, "tool_result");
+    pub const PROVIDER_TOOL_ERROR: Self = Self::from_static(EventCategory::Provider, "tool_error");
     pub const PROVIDER_PROMPT_SUBMITTED: Self =
         Self::from_static(EventCategory::Provider, "prompt_submitted");
     pub const PROVIDER_RESPONSE_UPDATED: Self =
@@ -3119,6 +3122,10 @@ pub enum Event {
     ExtensionEvent(CustomEvent),
     #[serde(rename = "provider.models_updated")]
     ProviderModelsUpdated(ProviderModelsUpdated),
+    #[serde(rename = "provider.tool_result")]
+    ProviderToolResult(ToolResult),
+    #[serde(rename = "provider.tool_error")]
+    ProviderToolError(ToolError),
 
     // Harness info
     #[serde(rename = "harness.info")]
@@ -3253,6 +3260,8 @@ impl Event {
             Self::ExtAgentQueryResult(_) => EventName::EXTENSION_AGENT_QUERY_RESULT,
             Self::ExtensionEvent(event) => event.name.clone(),
             Self::ProviderModelsUpdated(_) => EventName::PROVIDER_MODELS_UPDATED,
+            Self::ProviderToolResult(_) => EventName::PROVIDER_TOOL_RESULT,
+            Self::ProviderToolError(_) => EventName::PROVIDER_TOOL_ERROR,
             Self::HarnessInfo(_) => EventName::HARNESS_INFO,
             Self::HarnessSessionDir(_) => EventName::HARNESS_SESSION_DIR,
             Self::HarnessUiDir(_) => EventName::HARNESS_UI_DIR,

@@ -937,7 +937,9 @@ fn session_tree_supports_branching() {
 }
 
 #[test]
-fn session_tree_groups_terminal_tool_results_under_assistant_response() {
+fn session_tree_folds_only_provider_tool_results_under_assistant_response() {
+    // Logical `tool.result` is a UI/runtime event. Only the provider-facing
+    // terminal fact closes the provider transcript round in prompt history.
     let tempdir = TempDir::new().expect("tempdir should exist");
     let store_path = tempdir.path().join("state");
 
@@ -964,21 +966,30 @@ fn session_tree_groups_terminal_tool_results_under_assistant_response() {
             }),
         )
         .expect("assistant response should persist");
+    let result = ToolResult {
+        call_id: "call-1".into(),
+        tool_name: tau_proto::ToolName::new("read"),
+        tool_type: ToolType::Function,
+        result: CborValue::Text("README".to_owned()),
+        kind: tau_proto::ToolResultKind::Final,
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    };
     store
-        .append_session_event(
-            "session-1",
-            None,
-            Event::ToolResult(ToolResult {
-                call_id: "call-1".into(),
-                tool_name: tau_proto::ToolName::new("read"),
-                tool_type: ToolType::Function,
-                result: CborValue::Text("README".to_owned()),
-                kind: tau_proto::ToolResultKind::Final,
-                display: None,
-                originator: tau_proto::PromptOriginator::User,
-            }),
-        )
-        .expect("tool result event should persist");
+        .append_session_event("session-1", None, Event::ToolResult(result.clone()))
+        .expect("logical tool result event should persist without folding");
+    assert_eq!(
+        store
+            .session("session-1")
+            .expect("session should load")
+            .current_branch()
+            .len(),
+        2,
+        "logical tool.result must not close the provider transcript round",
+    );
+    store
+        .append_session_event("session-1", None, Event::ProviderToolResult(result))
+        .expect("provider tool result event should persist");
 
     let reopened = SessionStore::open(&store_path).expect("store should reopen");
     let tree = reopened
@@ -997,6 +1008,59 @@ fn session_tree_groups_terminal_tool_results_under_assistant_response() {
             }],
         }
     );
+}
+
+#[test]
+fn session_tree_folds_provider_tool_result_into_prompt_history() {
+    // Background placeholders are provider-facing terminal completions, not
+    // logical UI tool results. They still have to close the tool round in the
+    // durable prompt history so the next provider prompt is valid.
+    let tempdir = TempDir::new().expect("tempdir should exist");
+    let store_path = tempdir.path().join("state");
+
+    let mut store = SessionStore::open(&store_path).expect("store should open");
+    let _ = store_user_message(&mut store, "session-1", "run slow tool");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderResponseFinished(ProviderResponseFinished {
+                session_prompt_id: "sp-tools".into(),
+                output_items: vec![ContextItem::ToolCall(ToolCallItem {
+                    call_id: "call-1".into(),
+                    name: tau_proto::ToolName::new("slow"),
+                    tool_type: ToolType::Function,
+                    arguments: CborValue::Null,
+                })],
+                stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+                originator: tau_proto::PromptOriginator::User,
+                usage: None,
+                backend: None,
+                provider_response_id: None,
+                ws_pool_delta: None,
+            }),
+        )
+        .expect("assistant response should persist");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderToolResult(ToolResult {
+                call_id: "call-1".into(),
+                tool_name: tau_proto::ToolName::new("slow"),
+                tool_type: ToolType::Function,
+                result: CborValue::Text("background placeholder".to_owned()),
+                kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("provider tool result event should persist");
+
+    let tree = store.session("session-1").expect("session should load");
+    let branch = tree.current_branch();
+    assert_eq!(branch.len(), 3);
+    assert!(matches!(branch[2], SessionEntry::ToolResults { .. }));
 }
 
 #[test]
@@ -1118,7 +1182,7 @@ fn session_store_rejects_duplicate_terminal_tool_result_before_persisting() {
         .append_session_event(
             "session-1",
             None,
-            Event::ToolResult(ToolResult {
+            Event::ProviderToolResult(ToolResult {
                 call_id: "call-1".into(),
                 tool_name: tau_proto::ToolName::new("read"),
                 tool_type: ToolType::Function,
@@ -1134,7 +1198,7 @@ fn session_store_rejects_duplicate_terminal_tool_result_before_persisting() {
         .append_session_event(
             "session-1",
             None,
-            Event::ToolResult(ToolResult {
+            Event::ProviderToolResult(ToolResult {
                 call_id: "call-1".into(),
                 tool_name: tau_proto::ToolName::new("read"),
                 tool_type: ToolType::Function,
@@ -1160,7 +1224,7 @@ fn session_store_rejects_duplicate_terminal_tool_result_before_persisting() {
         .append_session_event(
             "session-1",
             None,
-            Event::ToolResult(ToolResult {
+            Event::ProviderToolResult(ToolResult {
                 call_id: "call-2".into(),
                 tool_name: tau_proto::ToolName::new("read"),
                 tool_type: ToolType::Function,

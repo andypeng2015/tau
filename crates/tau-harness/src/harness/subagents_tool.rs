@@ -245,8 +245,7 @@ impl Harness {
             if self.tool_turn.is_backgrounded(&call_id) {
                 self.handle_background_tool_result(HARNESS_CONNECTION_ID, event);
             } else {
-                self.publish_for_conversation(&owner_cid, Event::ToolResult(event.clone()));
-                self.record_wait_tool_result(event);
+                self.publish_terminal_tool_result(Some(&owner_cid), None, event);
                 self.on_tool_call_complete(call_id.as_str());
                 self.clear_tool_call_tracking(call_id.as_str());
             }

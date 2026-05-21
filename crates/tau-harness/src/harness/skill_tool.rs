@@ -115,12 +115,11 @@ impl Harness {
         // Publish, then drop the in-flight tracking — order matters:
         // `session_id_for_event` reads `tool_conversations` to
         // attribute the persisted record before we clear it.
-        match &result_event {
-            Event::ToolResult(result) => self.record_wait_tool_result(result.clone()),
-            Event::ToolError(error) => self.record_wait_tool_error(error.clone()),
-            _ => {}
+        match result_event {
+            Event::ToolResult(result) => self.publish_terminal_tool_result(Some(cid), None, result),
+            Event::ToolError(error) => self.publish_terminal_tool_error(Some(cid), None, error),
+            event => self.publish_for_conversation(cid, event),
         }
-        self.publish_for_conversation(cid, result_event);
         self.on_tool_call_complete(&call.id);
         self.clear_tool_call_tracking(call_id.as_str());
 

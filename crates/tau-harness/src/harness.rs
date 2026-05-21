@@ -1524,6 +1524,29 @@ impl Harness {
         self.publish_for_conversation_from(cid, None, event);
     }
 
+    fn publish_terminal_tool_result(
+        &mut self,
+        cid: Option<&ConversationId>,
+        source: Option<&str>,
+        result: ToolResult,
+    ) {
+        match cid {
+            Some(cid) => {
+                self.publish_for_conversation_from(cid, source, Event::ToolResult(result.clone()));
+                self.publish_for_conversation_from(
+                    cid,
+                    source,
+                    Event::ProviderToolResult(result.clone()),
+                );
+            }
+            None => {
+                self.publish_event(source, Event::ToolResult(result.clone()));
+                self.publish_event(source, Event::ProviderToolResult(result.clone()));
+            }
+        }
+        self.record_wait_tool_result(result);
+    }
+
     fn publish_terminal_tool_error(
         &mut self,
         cid: Option<&ConversationId>,
@@ -1532,9 +1555,17 @@ impl Harness {
     ) {
         match cid {
             Some(cid) => {
-                self.publish_for_conversation_from(cid, source, Event::ToolError(error.clone()))
+                self.publish_for_conversation_from(cid, source, Event::ToolError(error.clone()));
+                self.publish_for_conversation_from(
+                    cid,
+                    source,
+                    Event::ProviderToolError(error.clone()),
+                );
             }
-            None => self.publish_event(source, Event::ToolError(error.clone())),
+            None => {
+                self.publish_event(source, Event::ToolError(error.clone()));
+                self.publish_event(source, Event::ProviderToolError(error.clone()));
+            }
         }
         self.record_wait_tool_error(error);
     }
@@ -1907,7 +1938,11 @@ impl Harness {
         if transient
             && !matches!(
                 event,
-                Event::ToolResult(_) | Event::ToolError(_) | Event::ToolCancelled(_)
+                Event::ToolResult(_)
+                    | Event::ToolError(_)
+                    | Event::ProviderToolResult(_)
+                    | Event::ProviderToolError(_)
+                    | Event::ToolCancelled(_)
             )
         {
             return Ok(None);
@@ -1963,8 +1998,12 @@ impl Harness {
                 self.session_id_for_prompt(&finished.session_prompt_id)
             }
             Event::ToolRequest(request) => self.session_id_for_tool_call(&request.call_id),
-            Event::ToolResult(result) => self.session_id_for_tool_call(&result.call_id),
-            Event::ToolError(error) => self.session_id_for_tool_call(&error.call_id),
+            Event::ToolResult(result) | Event::ProviderToolResult(result) => {
+                self.session_id_for_tool_call(&result.call_id)
+            }
+            Event::ToolError(error) | Event::ProviderToolError(error) => {
+                self.session_id_for_tool_call(&error.call_id)
+            }
             Event::ToolBackgroundResult(result) => self.session_id_for_tool_call(&result.call_id),
             Event::ToolBackgroundError(error) => self.session_id_for_tool_call(&error.call_id),
             Event::ToolCancelled(cancelled) => self.session_id_for_tool_call(&cancelled.call_id),
@@ -2405,12 +2444,7 @@ impl Harness {
                     // *parent* branch — folding the result there
                     // misplaces it and produces orphan ToolUse blocks
                     // when the parent conv is later re-prompted.
-                    self.publish_for_conversation_from(
-                        &cid,
-                        Some(source_id),
-                        Event::ToolResult(result.clone()),
-                    );
-                    self.record_wait_tool_result(result);
+                    self.publish_terminal_tool_result(Some(&cid), Some(source_id), result);
                     self.on_tool_call_complete(&call_id);
                     self.clear_tool_call_tracking(&call_id);
                 } else {
@@ -2430,12 +2464,7 @@ impl Harness {
                         error.tool_type = tool.tool_type;
                     }
                     self.dedup_tool_error(&cid, &mut error);
-                    self.publish_for_conversation_from(
-                        &cid,
-                        Some(source_id),
-                        Event::ToolError(error.clone()),
-                    );
-                    self.record_wait_tool_error(error);
+                    self.publish_terminal_tool_error(Some(&cid), Some(source_id), error);
                     self.on_tool_call_complete(&call_id);
                     self.clear_tool_call_tracking(&call_id);
                 } else {
@@ -6059,7 +6088,7 @@ impl Harness {
             display: None,
             originator: PromptOriginator::User,
         };
-        self.publish_for_conversation(&cid, Event::ToolResult(result.clone()));
+        self.publish_for_conversation(&cid, Event::ProviderToolResult(result.clone()));
         self.record_wait_tool_result(result);
     }
 
@@ -6965,6 +6994,14 @@ fn stamp_tool_event_originator(event: Event, originator: tau_proto::PromptOrigin
         Event::ToolError(mut e) => {
             e.originator = originator;
             Event::ToolError(e)
+        }
+        Event::ProviderToolResult(mut e) => {
+            e.originator = originator;
+            Event::ProviderToolResult(e)
+        }
+        Event::ProviderToolError(mut e) => {
+            e.originator = originator;
+            Event::ProviderToolError(e)
         }
         Event::ToolBackgroundResult(mut e) => {
             e.originator = originator;
