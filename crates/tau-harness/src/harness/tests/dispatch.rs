@@ -5012,7 +5012,7 @@ fn user_prompt_preempts_in_flight_non_tool_ext_side_conversation() {
 /// Regression: a sub-agent's `Shared` tool call must not be gated by the
 /// parent's still-in-flight `Exclusive` `delegate` call. The parent's
 /// delegate only resolves once the sub-agent's tools have run, so a
-/// global shared/exclusive gate produces a self-deadlock — the main
+/// global execution-mode gate produces a self-deadlock — the main
 /// symptom we hit in `tau-agent-m2dpw4`'s event log.
 #[test]
 fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() {
@@ -6167,6 +6167,56 @@ fn shared_ext_agent_queries_start_concurrently() {
     h.shutdown().expect("shutdown");
 }
 
+/// Update sub-agent queries may overlap with shared research, but only one
+/// update lane runs at a time. A blocked update also acts as a FIFO barrier so
+/// later independent shared work cannot jump ahead and starve updates.
+#[test]
+fn update_ext_agent_query_overlaps_with_shared_and_blocks_later_fifo_jump() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-a");
+    let _ = connect_test_tool(&mut h, "conn-b");
+    let _ = connect_test_tool(&mut h, "conn-c");
+    let _ = connect_test_tool(&mut h, "conn-d");
+
+    h.handle_ext_agent_query(
+        "conn-a",
+        ext_query("q-update-active", ToolExecutionMode::Update),
+    )
+    .expect("active update query");
+    let active_update_cid = ext_query_cid(&h, "q-update-active").expect("active update started");
+    h.handle_ext_agent_query(
+        "conn-b",
+        ext_query("q-shared-active", ToolExecutionMode::Shared),
+    )
+    .expect("active shared query");
+    h.handle_ext_agent_query(
+        "conn-c",
+        ext_query("q-update-blocked", ToolExecutionMode::Update),
+    )
+    .expect("blocked update query");
+    h.handle_ext_agent_query(
+        "conn-d",
+        ext_query("q-later-shared", ToolExecutionMode::Shared),
+    )
+    .expect("later shared query");
+
+    assert!(ext_query_cid(&h, "q-shared-active").is_some());
+    assert!(ext_query_cid(&h, "q-update-blocked").is_none());
+    assert!(ext_query_cid(&h, "q-later-shared").is_none());
+    assert_eq!(h.pending_ext_agent_queries.len(), 2);
+
+    finish_ext_query(&mut h, &active_update_cid, "q-update-active");
+
+    assert!(ext_query_cid(&h, "q-update-blocked").is_some());
+    assert!(ext_query_cid(&h, "q-later-shared").is_some());
+    assert!(h.pending_ext_agent_queries.is_empty());
+
+    h.shutdown().expect("shutdown");
+}
+
 /// An Exclusive sub-agent is process-global for independent sub-agent work: it
 /// waits for all incompatible side conversations and then blocks later shared
 /// or exclusive `ExtAgentQuery`s until its result is routed back.
@@ -6284,6 +6334,42 @@ fn nested_ext_agent_query_under_active_exclusive_is_allowed() {
     assert_ne!(outer_cid, nested_cid);
     assert!(h.pending_ext_agent_queries.is_empty());
     assert_eq!(h.active_ext_agent_queries.len(), 2);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Unlike exclusive sub-agent work, update sub-agents only overlap with shared
+/// descendants. A nested update must wait for the parent update to finish so
+/// two update lanes are never active together.
+#[test]
+fn nested_update_ext_agent_query_under_active_update_waits() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _ = connect_test_tool(&mut h, "conn-delegate");
+
+    h.handle_ext_agent_query(
+        "conn-delegate",
+        ext_query("q-outer", ToolExecutionMode::Update),
+    )
+    .expect("outer query");
+    let outer_cid = ext_query_cid(&h, "q-outer").expect("outer started");
+
+    h.tool_conversations
+        .insert("nested-call".into(), outer_cid.clone());
+    let mut nested = ext_query("q-nested", ToolExecutionMode::Update);
+    nested.tool_call_id = Some("nested-call".into());
+    nested.task_name = Some("nested".to_owned());
+    h.handle_ext_agent_query("conn-delegate", nested)
+        .expect("nested query");
+
+    assert!(ext_query_cid(&h, "q-nested").is_none());
+    assert_eq!(h.pending_ext_agent_queries.len(), 1);
+
+    finish_ext_query(&mut h, &outer_cid, "q-outer");
+    assert!(ext_query_cid(&h, "q-nested").is_some());
+    assert!(h.pending_ext_agent_queries.is_empty());
 
     h.shutdown().expect("shutdown");
 }

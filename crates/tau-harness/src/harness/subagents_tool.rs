@@ -369,14 +369,14 @@ fn delegate_tool_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::new(DELEGATE_TOOL_NAME),
         model_visible_name: None,
-        description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` can overlap globally. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers.".to_owned()),
+        description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` or compatible `execution_mode: \"update\"` can overlap globally. Use `execution_mode: \"update\"` when the sub-agent may update shared state and should not overlap with another update or exclusive sub-agent. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers.".to_owned()),
         tool_type: ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
             "properties": {
                 "task_name": { "type": "string", "description": "Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs." },
                 "prompt": { "type": "string", "description": "Self-contained task for the sub-agent. The sub-agent's conversation starts fresh — it has NO access to this conversation's history, your earlier tool results, or files you've read. State everything it needs: the goal, the relevant facts (absolute file paths, exact symbols, snippets you've already extracted), any constraints, what counts as 'done', and the format of the answer you want back. Treat it like briefing a teammate who just walked into the room. Terse command-style prompts produce shallow work; missing context produces wrong answers." },
-                "execution_mode": { "type": "string", "enum": ["shared", "exclusive"], "description": "Use `shared` when the sub-task can safely overlap globally with other shared sub-agent delegations. Use `exclusive` when it must run alone: it waits for all other sub-agent delegations and blocks later independent ones. Default: `shared`." },
+                "execution_mode": { "type": "string", "enum": ["shared", "update", "exclusive"], "description": "Use `shared` when the sub-task can safely overlap globally with other shared/update sub-agent delegations. Use `update` when it may change shared state: it can overlap with shared sub-agents, but not update or exclusive ones. Use `exclusive` when it must run alone: it waits for all other sub-agent delegations and blocks later independent ones. Default: `shared`." },
                 "role": { "type": "string", "description": "Optional sub-agent role to use. When omitted, Tau defaults delegate calls to `engineer` if that role is available and enabled." }
             },
             "required": ["task_name", "prompt"]
@@ -406,6 +406,7 @@ fn wait_tool_spec() -> ToolSpec {
     }
 }
 
+#[derive(Debug)]
 struct DelegateArgs {
     task_name: String,
     prompt: String,
@@ -440,11 +441,16 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
                 CborValue::Text(text) if text == "shared" => {
                     execution_mode = Some(ToolExecutionMode::Shared)
                 }
+                CborValue::Text(text) if text == "update" => {
+                    execution_mode = Some(ToolExecutionMode::Update)
+                }
                 CborValue::Text(text) if text == "exclusive" => {
                     execution_mode = Some(ToolExecutionMode::Exclusive)
                 }
                 CborValue::Text(_) => {
-                    return Err("`execution_mode` must be `shared` or `exclusive`".to_owned());
+                    return Err(
+                        "`execution_mode` must be `shared`, `update`, or `exclusive`".to_owned(),
+                    );
                 }
                 _ => return Err("`execution_mode` must be a string".to_owned()),
             },
@@ -922,4 +928,55 @@ fn parse_wait_args(arguments: &CborValue) -> Result<ToolCallId, String> {
         }
     }
     Err("missing string argument: tool_call_id".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delegate_args_with_mode(mode: &str) -> CborValue {
+        CborValue::Map(vec![
+            (
+                CborValue::Text("task_name".to_owned()),
+                CborValue::Text("task".to_owned()),
+            ),
+            (
+                CborValue::Text("prompt".to_owned()),
+                CborValue::Text("do the task".to_owned()),
+            ),
+            (
+                CborValue::Text("execution_mode".to_owned()),
+                CborValue::Text(mode.to_owned()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn delegate_tool_schema_advertises_update_execution_mode() {
+        let spec = delegate_tool_spec();
+        let parameters = spec.parameters.expect("parameters");
+        assert_eq!(
+            parameters["properties"]["execution_mode"]["enum"],
+            serde_json::json!(["shared", "update", "exclusive"])
+        );
+    }
+
+    /// Delegate accepts the `update` mode advertised in the tool schema and
+    /// forwards it to the global sub-agent scheduler.
+    #[test]
+    fn delegate_args_accept_update_execution_mode() {
+        let parsed = parse_delegate_args(&delegate_args_with_mode("update")).expect("parse");
+        assert_eq!(parsed.execution_mode, ToolExecutionMode::Update);
+    }
+
+    /// Bad mode diagnostics list every accepted spelling so model-visible tool
+    /// errors are actionable.
+    #[test]
+    fn delegate_args_execution_mode_error_mentions_update() {
+        let error = parse_delegate_args(&delegate_args_with_mode("mutating")).expect_err("error");
+        assert_eq!(
+            error,
+            "`execution_mode` must be `shared`, `update`, or `exclusive`"
+        );
+    }
 }

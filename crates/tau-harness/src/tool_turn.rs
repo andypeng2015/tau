@@ -22,7 +22,7 @@ pub(crate) struct PendingToolInvocation {
     pub(crate) conversation_id: ConversationId,
     /// Tool call payload to route when selected.
     pub(crate) invocation: AgentToolCall,
-    /// Shared/exclusive mode resolved at enqueue time.
+    /// Execution mode resolved at enqueue time.
     pub(crate) execution_mode: ToolExecutionMode,
     /// Foreground/background support resolved at enqueue time.
     pub(crate) background_support: BackgroundSupport,
@@ -272,6 +272,7 @@ impl ToolTurnMachine {
     }
 
     /// Whether `conversation_id` has in-flight work.
+    #[cfg(test)]
     pub(crate) fn any_in_flight_for(&self, conversation_id: &ConversationId) -> bool {
         self.in_flight_tool_execution_modes
             .values()
@@ -322,12 +323,8 @@ impl ToolTurnMachine {
             if blocked_convs.contains(&pending.conversation_id) {
                 continue;
             }
-            let compatible = match pending.execution_mode {
-                ToolExecutionMode::Shared => {
-                    !self.has_exclusive_in_flight_for(&pending.conversation_id)
-                }
-                ToolExecutionMode::Exclusive => !self.any_in_flight_for(&pending.conversation_id),
-            };
+            let compatible = !self
+                .has_incompatible_in_flight_for(&pending.conversation_id, pending.execution_mode);
             if compatible {
                 return Some(idx);
             }
@@ -336,13 +333,16 @@ impl ToolTurnMachine {
         None
     }
 
-    fn has_exclusive_in_flight_for(&self, conversation_id: &ConversationId) -> bool {
+    fn has_incompatible_in_flight_for(
+        &self,
+        conversation_id: &ConversationId,
+        execution_mode: ToolExecutionMode,
+    ) -> bool {
         self.in_flight_tool_execution_modes
             .values()
             .any(|in_flight| {
                 &in_flight.conversation_id == conversation_id
-                    && in_flight.foreground_pending
-                    && matches!(in_flight.execution_mode, ToolExecutionMode::Exclusive)
+                    && !execution_mode.can_overlap_with(in_flight.execution_mode)
             })
     }
 }
@@ -392,6 +392,52 @@ mod tests {
         assert_eq!(pop_id(&mut machine).as_deref(), Some("a"));
         assert_eq!(pop_id(&mut machine).as_deref(), Some("b"));
         assert_eq!(machine.in_flight_len(), 2);
+    }
+
+    #[test]
+    fn update_runs_with_shared_but_not_another_update() {
+        let mut machine = ToolTurnMachine::default();
+        let conv = cid("conv");
+        push(&mut machine, &conv, "shared", ToolExecutionMode::Shared);
+        push(&mut machine, &conv, "update-a", ToolExecutionMode::Update);
+        push(&mut machine, &conv, "update-b", ToolExecutionMode::Update);
+        push(
+            &mut machine,
+            &conv,
+            "shared-behind",
+            ToolExecutionMode::Shared,
+        );
+
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("shared"));
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("update-a"));
+        assert_eq!(pop_id(&mut machine), None);
+        assert_eq!(machine.pending_len(), 2);
+        assert_eq!(
+            machine.pending(0).unwrap().invocation.id.as_str(),
+            "update-b"
+        );
+        assert_eq!(
+            machine.pending(1).unwrap().invocation.id.as_str(),
+            "shared-behind"
+        );
+    }
+
+    #[test]
+    fn exclusive_waits_while_same_conversation_update_is_in_flight() {
+        let mut machine = ToolTurnMachine::default();
+        let conv = cid("conv");
+        push(&mut machine, &conv, "update", ToolExecutionMode::Update);
+        push(
+            &mut machine,
+            &conv,
+            "exclusive",
+            ToolExecutionMode::Exclusive,
+        );
+
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("update"));
+        assert_eq!(pop_id(&mut machine), None);
+        machine.mark_complete(&ToolCallId::from("update"));
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("exclusive"));
     }
 
     #[test]
@@ -619,6 +665,42 @@ mod tests {
         assert_eq!(action, ForegroundAction::None);
         assert!(machine.next_background_deadline().is_none());
         assert_eq!(pop_id(&mut machine), None);
+    }
+
+    /// Backgrounding closes the model-visible foreground, but the real call
+    /// still holds its execution-mode lane until the actual result arrives.
+    /// Without this, a long-running update shell command could be backgrounded
+    /// and a second update could start while it is still mutating state.
+    #[test]
+    fn backgrounded_update_still_blocks_incompatible_calls_until_real_completion() {
+        let mut machine = ToolTurnMachine::default();
+        let conv = cid("conv");
+        machine.push(
+            conv.clone(),
+            call("update"),
+            ToolExecutionMode::Update,
+            BackgroundSupport::Instant,
+        );
+        machine.push(
+            conv.clone(),
+            call("shared"),
+            ToolExecutionMode::Shared,
+            BackgroundSupport::Never,
+        );
+        machine.push(
+            conv,
+            call("second-update"),
+            ToolExecutionMode::Update,
+            BackgroundSupport::Never,
+        );
+
+        machine.pop_dispatchable(Instant::now()).expect("dispatch");
+        assert!(machine.mark_backgrounded(&"update".into()));
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("shared"));
+        assert_eq!(pop_id(&mut machine), None);
+
+        machine.mark_complete(&"update".into());
+        assert_eq!(pop_id(&mut machine).as_deref(), Some("second-update"));
     }
 
     /// A late real result removes actual-running state exactly once after the

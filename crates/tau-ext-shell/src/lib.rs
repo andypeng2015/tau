@@ -378,7 +378,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Update,
             background_support: None,
         },
         ToolSpec {
@@ -418,7 +418,7 @@ where
             })),
             format: None,
             enabled_by_default: false,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Update,
             background_support: None,
         },
     ]);

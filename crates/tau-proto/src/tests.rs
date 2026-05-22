@@ -694,8 +694,8 @@ fn prompt_message_class_defaults_to_user_for_legacy_events() {
     assert_eq!(internal["message_class"], serde_json::json!("internal"));
 }
 
-/// Tool specs serialize the current shared/exclusive execution-mode field while
-/// still accepting the former field name and enum values from older extensions.
+/// Tool specs serialize the current execution-mode field while still accepting
+/// the former field name and enum values from older extensions.
 #[test]
 fn tool_spec_defaults_and_execution_mode_compatibility() {
     let parsed: ToolSpec = serde_json::from_value(serde_json::json!({
@@ -707,6 +707,14 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
     .expect("deserialize tool spec");
     assert!(parsed.enabled_by_default);
     assert_eq!(parsed.execution_mode, ToolExecutionMode::Shared);
+
+    let update: ToolSpec = serde_json::from_value(serde_json::json!({
+        "name": "shell",
+        "tool_type": "function",
+        "execution_mode": "update"
+    }))
+    .expect("deserialize update tool spec");
+    assert_eq!(update.execution_mode, ToolExecutionMode::Update);
 
     let legacy_shared: ToolSpec = serde_json::from_value(serde_json::json!({
         "name": "legacy_shared",
@@ -765,6 +773,23 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
         serialized["enabled_by_default"],
         serde_json::Value::Bool(false)
     );
+}
+
+#[test]
+fn tool_execution_mode_overlap_matrix_matches_scheduler_contract() {
+    use ToolExecutionMode::{Exclusive, Shared, Update};
+
+    assert!(Shared.can_overlap_with(Shared));
+    assert!(Shared.can_overlap_with(Update));
+    assert!(Update.can_overlap_with(Shared));
+    assert!(!Update.can_overlap_with(Update));
+    assert!(!Update.can_overlap_with(Exclusive));
+    assert!(!Exclusive.can_overlap_with(Shared));
+    assert!(!Exclusive.can_overlap_with(Update));
+    assert!(!Exclusive.can_overlap_with(Exclusive));
+    assert!(!Shared.blocks_fifo_when_waiting());
+    assert!(Update.blocks_fifo_when_waiting());
+    assert!(Exclusive.blocks_fifo_when_waiting());
 }
 
 /// Prompt fragment primitives are transparent on the wire so config and
@@ -856,6 +881,14 @@ fn ext_agent_query_execution_mode_defaults_to_shared() {
     }))
     .expect("deserialize exclusive ext agent query");
     assert_eq!(exclusive.execution_mode, ToolExecutionMode::Exclusive);
+
+    let update: ExtAgentQuery = serde_json::from_value(serde_json::json!({
+        "query_id": "q3",
+        "instruction": "edit carefully",
+        "execution_mode": "update"
+    }))
+    .expect("deserialize update ext agent query");
+    assert_eq!(update.execution_mode, ToolExecutionMode::Update);
 }
 
 /// `DelegateProgress.role` is additive UI metadata. Omitting it must keep older

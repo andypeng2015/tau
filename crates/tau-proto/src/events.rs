@@ -1264,10 +1264,11 @@ pub struct ToolSpec {
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
     pub enabled_by_default: bool,
     /// Execution mode used by the harness dispatch state machine.
-    /// Shared calls may overlap with each other; exclusive calls run
-    /// alone within their conversation. Unknown / unset declarations
-    /// default to [`ToolExecutionMode::Exclusive`] so extensions that
-    /// haven't been updated don't silently lose ordering.
+    /// Shared calls may overlap with shared/update calls; update calls may
+    /// overlap only with shared calls; exclusive calls run alone within their
+    /// conversation. Unknown / unset declarations default to
+    /// [`ToolExecutionMode::Exclusive`] so extensions that haven't been updated
+    /// don't silently lose ordering.
     #[serde(default, alias = "side_effects")]
     pub execution_mode: ToolExecutionMode,
     /// Whether the harness may close the model-visible foreground turn before
@@ -1293,15 +1294,38 @@ const fn is_true(value: &bool) -> bool {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionMode {
-    /// May run concurrently with other shared calls in the same conversation.
+    /// May run concurrently with shared and update calls in the same
+    /// conversation.
     #[serde(alias = "pure")]
     Shared,
+    /// May run concurrently with shared calls, but not with update or exclusive
+    /// calls in the same conversation.
+    Update,
     /// Must run alone within its conversation. Independent conversations can
     /// run their own exclusive calls in parallel. Default so tools that do not
     /// explicitly opt in to shared scheduling are treated conservatively.
     #[default]
     #[serde(alias = "mutating")]
     Exclusive,
+}
+
+impl ToolExecutionMode {
+    /// Return whether a queued call in `self` may overlap with an already
+    /// running call in `active`.
+    #[must_use]
+    pub const fn can_overlap_with(self, active: Self) -> bool {
+        matches!(
+            (self, active),
+            (Self::Shared, Self::Shared | Self::Update) | (Self::Update, Self::Shared)
+        )
+    }
+
+    /// Return whether this mode, once blocked at the front of a queue, should
+    /// stop later otherwise-compatible work from jumping ahead.
+    #[must_use]
+    pub const fn blocks_fifo_when_waiting(self) -> bool {
+        matches!(self, Self::Update | Self::Exclusive)
+    }
 }
 
 /// Backward-compatible name for [`ToolExecutionMode`].
@@ -1822,9 +1846,10 @@ pub struct ExtAgentQuery {
     pub role: Option<String>,
     /// Global sub-agent scheduling mode enforced by the harness.
     ///
-    /// Shared queries may overlap with other shared sub-agent queries.
-    /// Exclusive queries wait until no incompatible sub-agent query is active,
-    /// then block later independent sub-agent queries until they finish.
+    /// Shared queries may overlap with shared/update sub-agent queries. Update
+    /// queries may overlap only with shared sub-agent queries. Exclusive
+    /// queries wait until no incompatible sub-agent query is active, then
+    /// block later independent sub-agent queries until they finish.
     /// Defaults to Shared for compatibility with older extensions that did
     /// not declare global scheduling needs.
     #[serde(default = "default_ext_agent_query_execution_mode")]

@@ -923,7 +923,7 @@ pub(crate) struct Harness {
     /// side-conversation that is generating them.
     pending_compactions: std::collections::HashMap<ConversationId, PendingCompaction>,
     /// Extension-started side-agent conversations waiting for the harness-owned
-    /// global shared/exclusive scheduler. This queue is independent from normal
+    /// global execution-mode scheduler. This queue is independent from normal
     /// per-conversation tool scheduling and applies to every `ExtAgentQuery`,
     /// whether it came from delegate, notifications, or a future extension.
     pending_ext_agent_queries: VecDeque<PendingExtAgentQuery>,
@@ -4158,7 +4158,7 @@ impl Harness {
     }
 
     /// Queue an extension-started sub-agent request onto the harness-owned
-    /// global shared/exclusive scheduler.
+    /// global execution-mode scheduler.
     ///
     /// Normal tool calls still use the per-conversation scheduler in
     /// `drain_pending_tool_invocations`. This queue is only for
@@ -4223,15 +4223,19 @@ impl Harness {
     /// Rules:
     /// - Shared may start when no incompatible active Exclusive sub-agent
     ///   exists.
+    /// - Update may start when no incompatible active Update or Exclusive
+    ///   sub-agent exists.
     /// - Exclusive may start when no incompatible active sub-agent exists.
-    /// - FIFO is preserved for independent work: once an Exclusive reaches the
-    ///   front and is blocked, later independent Shared queries do not jump it.
+    /// - FIFO is preserved for independent work: once an Update or Exclusive
+    ///   reaches the front and is blocked, later independent compatible queries
+    ///   do not jump it.
     /// - Reentrant descendants of an active Exclusive are allowed to pass as
     ///   part of that exclusive subtree. Without this exception, an exclusive
     ///   delegate that asks its own sub-agent to delegate would deadlock behind
-    ///   itself. Descendancy is computed from the side conversation's stored
-    ///   parent conversation, with the older `parent_tool_call_id` mapping as a
-    ///   fallback for manually seeded tests.
+    ///   itself. Update does not get this exception because it is only meant to
+    ///   share with Shared work. Descendancy is computed from the side
+    ///   conversation's stored parent conversation, with the older
+    ///   `parent_tool_call_id` mapping as a fallback for manually seeded tests.
     fn drain_pending_ext_agent_queries(&mut self) -> Result<(), HarnessError> {
         loop {
             let Some(idx) = self.next_dispatchable_ext_agent_query_index() else {
@@ -4246,20 +4250,16 @@ impl Harness {
     }
 
     fn next_dispatchable_ext_agent_query_index(&self) -> Option<usize> {
-        let mut blocked_exclusive_ahead = false;
+        let mut blocked_barrier_ahead = false;
         for (idx, pending) in self.pending_ext_agent_queries.iter().enumerate() {
             let can_start = self.ext_agent_query_can_start(pending);
             if !can_start {
-                if matches!(
-                    pending.query.execution_mode,
-                    tau_proto::ToolExecutionMode::Exclusive
-                ) {
-                    blocked_exclusive_ahead = true;
+                if pending.query.execution_mode.blocks_fifo_when_waiting() {
+                    blocked_barrier_ahead = true;
                 }
                 continue;
             }
-            if blocked_exclusive_ahead
-                && !self.query_belongs_to_active_exclusive(&pending.parent_cid)
+            if blocked_barrier_ahead && !self.query_belongs_to_active_exclusive(&pending.parent_cid)
             {
                 continue;
             }
@@ -4293,15 +4293,7 @@ impl Harness {
         {
             return false;
         }
-        match candidate_mode {
-            tau_proto::ToolExecutionMode::Shared => {
-                matches!(
-                    active.execution_mode,
-                    tau_proto::ToolExecutionMode::Exclusive
-                )
-            }
-            tau_proto::ToolExecutionMode::Exclusive => true,
-        }
+        !candidate_mode.can_overlap_with(active.execution_mode)
     }
 
     fn query_belongs_to_active_exclusive(&self, parent_cid: &ConversationId) -> bool {
@@ -4316,7 +4308,7 @@ impl Harness {
                     active.execution_mode,
                     tau_proto::ToolExecutionMode::Exclusive
                 )
-                .then(|| active_cid)
+                .then_some(active_cid)
                 .filter(|active_cid| self.conversation_descends_from(cid, active_cid))
                 .cloned()
             })
@@ -6793,9 +6785,13 @@ impl Harness {
             // local head so the user's next interactive prompt
             // continues on the main branch instead of the side branch.
             self.snap_to_default_conversation();
+            // Release before removing the side conversation so any queued
+            // descendants can still resolve their parent conversation while
+            // starting. Active descendants keep their own copied state after
+            // the parent is torn down.
+            self.release_ext_agent_query(&cid);
             self.transfer_background_completion_target_before_teardown(&cid);
             self.conversations.remove(&cid);
-            self.release_ext_agent_query(&cid);
             self.try_advance_queue();
             return Ok(());
         }
@@ -6840,9 +6836,9 @@ impl Harness {
                 self.apply_pending_cancel_for_conversation(&cid);
                 return Ok(());
             }
-            // Enqueue in the order the agent emitted them. Dispatch is
-            // done by `drain_pending_tool_invocations`, which respects
-            // the shared/exclusive ordering rule.
+            // Enqueue in the order the agent emitted them. Dispatch is done by
+            // `drain_pending_tool_invocations`, which respects the execution
+            // mode ordering rules.
             for (call, mode, background_support) in normalized_calls {
                 self.tool_turn
                     .push(cid.clone(), call, mode, background_support);
