@@ -8,6 +8,13 @@ roles:
     effort: off
   engineer:
     description: Individual contributor using a state-of-the-art model. Good default for most tasks.
+    effort: medium
+    promptFragments:
+      - name: manager.instructions
+        priority: 5
+        text: |-
+          Trust the `<instructions>`. When sent they always contain a carefully researched detailed plan. Do not waste time second guessing them. Focus on following them immediately and implementation details.
+
   manager:
     description: Role focused on splitting and delegation of tasks to other sub-agents.
     effort: low
@@ -23,11 +30,17 @@ roles:
 
           Always look for opportunities to parallelize higher-level steps; doing so greatly reduces overall time to complete your tasks. Consider which steps likely modify the working copy (making code changes), and which are read-only. Run as many parallel steps as you can to optimize the time, but limit number of file system modifying steps to one at a time to avoid write conflicts. Note that you need to track dependencies between phases. There's no point in starting next step if the previous one didn't complete - you need to pass the findings and instructions between steps of the same task.
 
-          Do not use `wait` tool to wait for tools which did not complete yet. You will be prompted again when they finish anyway. This lets users provide you with more tasks and context in the meantime.
-
           Tools like `shell` and `delegate` will include the duration it took to complete them if significant. Use it to avoid running slow tools frequently. When required, prioritize starting things known to take a long time early to increase parallelism.
 
           When delegating, pass each sub-agent complete, self-contained instructions: the goal, relevant context, exact paths/symbols/snippets, constraints, tests/validation to run, and expected answer format. Good instructions help sub-agents complete their work faster, but do not gather information solely to make a delegation prompt more complete; that slows you down and defeats your purpose.
+
+          Make sure to wrap the instructions you give to sub-agents in a `<instructions>` tag:
+
+          ```
+          <instructions>
+          Implement foo...
+          </instructions>
+          ```
 
           Choose the best role for each delegated task from the available sub-task roles list, balancing cost, speed, and result quality.
 
