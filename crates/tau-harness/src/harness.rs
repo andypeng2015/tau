@@ -3840,7 +3840,7 @@ impl Harness {
     }
 
     fn fail_pending_tool_calls_for_connection(&mut self, connection_id: &str) {
-        let failed_call_ids: Vec<ToolCallId> = self
+        let mut failed_call_ids: Vec<ToolCallId> = self
             .pending_tool_providers
             .iter()
             .filter_map(|(call_id, provider_id)| {
@@ -3851,6 +3851,11 @@ impl Harness {
                 }
             })
             .collect();
+        // Keep disconnect cleanup deterministic; queued work is drained only
+        // after the whole sorted batch is terminalized below.
+        failed_call_ids.sort();
+
+        let mut completed_foreground_calls: Vec<(ToolCallId, ConversationId)> = Vec::new();
 
         for call_id in failed_call_ids {
             let Some(tool) = self.pending_tools.get(&call_id).cloned() else {
@@ -3868,9 +3873,13 @@ impl Harness {
             if self.tool_turn.is_backgrounded(&call_id) {
                 error.message = extension_disconnected_background_tool_call_error_message(&call_id);
                 if self.tool_conversations.contains_key(call_id.as_str()) {
-                    self.handle_background_tool_error(Some(HARNESS_CONNECTION_ID), error);
+                    self.handle_background_tool_error_without_advancing(
+                        Some(HARNESS_CONNECTION_ID),
+                        error,
+                    );
                 } else {
                     self.publish_terminal_tool_error(None, Some(HARNESS_CONNECTION_ID), error);
+                    self.tool_turn.mark_complete(&call_id);
                     self.clear_tool_call_tracking(call_id.as_str());
                 }
                 continue;
@@ -3881,24 +3890,30 @@ impl Harness {
             // the snap, sibling side conversations could leave
             // `tree.head` on the wrong branch and the fold would land
             // there instead. Complete the failed in-flight calls without
-            // draining queued calls yet; disconnect handling unregisters
-            // the dead provider first, then drains the scheduler after all
-            // interrupted calls have been terminalized.
-            if let Some(cid) = self.tool_conversations.get(call_id.as_str()).cloned() {
-                self.publish_terminal_tool_error(Some(&cid), Some(HARNESS_CONNECTION_ID), error);
+            // draining queued calls or advancing prompts yet; disconnect
+            // handling unregisters the dead provider first, then drains
+            // the scheduler and completes turns after all interrupted calls
+            // have been terminalized.
+            let owner = self.tool_conversations.get(call_id.as_str()).cloned();
+            if let Some(cid) = owner.as_ref() {
+                self.publish_terminal_tool_error(Some(cid), Some(HARNESS_CONNECTION_ID), error);
             } else {
                 // No conversation attribution — fall back to the
                 // unsnapped publish so the error still reaches the
                 // bus / log.
                 self.publish_terminal_tool_error(None, Some(HARNESS_CONNECTION_ID), error);
             }
-            self.on_tool_call_complete_without_draining(call_id.as_str());
+            if let Some(cid) = self.finish_tool_call_runtime_state(call_id.as_str()) {
+                completed_foreground_calls.push((call_id.clone(), cid));
+            }
             self.clear_tool_call_tracking(call_id.as_str());
         }
 
-        if let Err(error) = self.drain_pending_tool_invocations() {
-            self.emit_info(&format!("queued tool dispatch failed: {error}"));
+        self.drain_pending_tool_invocations_or_report();
+        for (call_id, cid) in completed_foreground_calls {
+            self.maybe_complete_agent_turn_for(&cid, call_id.as_str());
         }
+        self.try_advance_queue();
     }
 
     fn try_respawn_supervised_extension(
@@ -7274,11 +7289,15 @@ impl Harness {
         if let Some(cid) = owner {
             self.emit_delegate_progress(&cid);
         }
+        self.drain_pending_tool_invocations_or_report();
+        self.maybe_complete_agent_turn(call_id);
+        self.try_advance_queue();
+    }
+
+    fn drain_pending_tool_invocations_or_report(&mut self) {
         if let Err(error) = self.drain_pending_tool_invocations() {
             self.emit_info(&format!("queued tool dispatch failed: {error}"));
         }
-        self.maybe_complete_agent_turn(call_id);
-        self.try_advance_queue();
     }
 
     fn handle_background_tool_result(&mut self, source_id: &str, mut result: ToolResult) {
@@ -7290,11 +7309,7 @@ impl Harness {
             result.tool_name = tool.name.clone();
             result.tool_type = tool.tool_type;
         }
-        self.tool_turn.mark_complete(&call_id);
-        if let Some(conv) = self.conversations.get_mut(&cid) {
-            conv.tools_in_flight = conv.tools_in_flight.saturating_sub(1);
-        }
-        self.emit_delegate_progress(&cid);
+        self.finish_tool_call_runtime_state(call_id.as_str());
         let background = ToolBackgroundResult {
             call_id: result.call_id,
             tool_name: result.tool_name,
@@ -7312,10 +7327,31 @@ impl Harness {
         self.background_completion_targets
             .insert(call_id.clone(), cid.clone());
         self.queue_background_completion_prompt(&cid, &call_id);
+        // Keep the completion prompt queued before draining. If an unblocked
+        // queued call closes the tool round, `maybe_complete_agent_turn` can
+        // fold this background notification into that follow-up prompt.
+        self.drain_pending_tool_invocations_or_report();
         self.clear_tool_call_tracking(call_id.as_str());
     }
 
-    fn handle_background_tool_error(&mut self, source: Option<&str>, mut error: ToolError) {
+    fn handle_background_tool_error(&mut self, source: Option<&str>, error: ToolError) {
+        self.handle_background_tool_error_inner(source, error, true);
+    }
+
+    fn handle_background_tool_error_without_advancing(
+        &mut self,
+        source: Option<&str>,
+        error: ToolError,
+    ) {
+        self.handle_background_tool_error_inner(source, error, false);
+    }
+
+    fn handle_background_tool_error_inner(
+        &mut self,
+        source: Option<&str>,
+        mut error: ToolError,
+        advance_after_queue: bool,
+    ) {
         let Some(cid) = self.tool_conversations.get(&error.call_id).cloned() else {
             return;
         };
@@ -7341,11 +7377,36 @@ impl Harness {
         self.publish_terminal_background_error(&cid, source, background);
         self.background_completion_targets
             .insert(call_id.clone(), cid.clone());
-        self.queue_background_completion_prompt(&cid, &call_id);
+        if advance_after_queue {
+            self.queue_background_completion_prompt(&cid, &call_id);
+            // Keep the completion prompt queued before draining. If an unblocked
+            // queued call closes the tool round, `maybe_complete_agent_turn` can
+            // fold this background notification into that follow-up prompt.
+            self.drain_pending_tool_invocations_or_report();
+        } else {
+            self.queue_background_completion_prompt_without_advancing(&cid, &call_id);
+        }
         self.clear_tool_call_tracking(call_id.as_str());
     }
 
     fn queue_background_completion_prompt(&mut self, cid: &ConversationId, call_id: &ToolCallId) {
+        self.queue_background_completion_prompt_inner(cid, call_id, true);
+    }
+
+    fn queue_background_completion_prompt_without_advancing(
+        &mut self,
+        cid: &ConversationId,
+        call_id: &ToolCallId,
+    ) {
+        self.queue_background_completion_prompt_inner(cid, call_id, false);
+    }
+
+    fn queue_background_completion_prompt_inner(
+        &mut self,
+        cid: &ConversationId,
+        call_id: &ToolCallId,
+        advance_queue: bool,
+    ) {
         if self
             .suppressed_background_completion_prompts
             .contains(call_id)
@@ -7364,7 +7425,9 @@ impl Harness {
             conv.pending_prompts
                 .push_back(PendingPrompt::internal(prompt));
         }
-        self.try_advance_queue();
+        if advance_queue {
+            self.try_advance_queue();
+        }
     }
 
     fn suppress_background_completion_prompt(&mut self, call_id: ToolCallId) {
@@ -7489,11 +7552,18 @@ impl Harness {
         self.on_tool_call_complete_inner(call_id, true);
     }
 
-    fn on_tool_call_complete_without_draining(&mut self, call_id: &str) {
-        self.on_tool_call_complete_inner(call_id, false);
+    fn on_tool_call_complete_inner(&mut self, call_id: &str, drain_queued: bool) {
+        let owner = self.finish_tool_call_runtime_state(call_id);
+        if drain_queued {
+            self.drain_pending_tool_invocations_or_report();
+        }
+        if let Some(cid) = owner {
+            self.maybe_complete_agent_turn_for(&cid, call_id);
+        }
+        self.try_advance_queue();
     }
 
-    fn on_tool_call_complete_inner(&mut self, call_id: &str, drain_queued: bool) {
+    fn finish_tool_call_runtime_state(&mut self, call_id: &str) -> Option<ConversationId> {
         let owned: ToolCallId = call_id.to_owned().into();
         self.tool_turn.mark_complete(&owned);
         // `tool_conversations` is still populated here: the call
@@ -7507,14 +7577,10 @@ impl Harness {
         {
             conv.tools_in_flight = conv.tools_in_flight.saturating_sub(1);
         }
-        if let Some(cid) = owner {
-            self.emit_delegate_progress(&cid);
+        if let Some(cid) = owner.as_ref() {
+            self.emit_delegate_progress(cid);
         }
-        if drain_queued && let Err(error) = self.drain_pending_tool_invocations() {
-            self.emit_info(&format!("queued tool dispatch failed: {error}"));
-        }
-        self.maybe_complete_agent_turn(call_id);
-        self.try_advance_queue();
+        owner
     }
 
     /// Bump the per-conversation tool counters for a freshly-started
@@ -7534,7 +7600,11 @@ impl Harness {
         let Some(cid) = self.tool_conversations.get(completed_call_id).cloned() else {
             return;
         };
-        let should_send = if let Some(conv) = self.conversations.get_mut(&cid) {
+        self.maybe_complete_agent_turn_for(&cid, completed_call_id);
+    }
+
+    fn maybe_complete_agent_turn_for(&mut self, cid: &ConversationId, completed_call_id: &str) {
+        let should_send = if let Some(conv) = self.conversations.get_mut(cid) {
             if let ConversationTurnState::ToolsRunning { remaining_calls } = &mut conv.turn_state {
                 remaining_calls.retain(|id| id.as_str() != completed_call_id);
                 if remaining_calls.is_empty() {
@@ -7550,8 +7620,8 @@ impl Harness {
             false
         };
         if should_send {
-            self.fold_pending_prompts_as_steered(&cid);
-            if self.maybe_start_auto_compaction_for_followup(&cid) {
+            self.fold_pending_prompts_as_steered(cid);
+            if self.maybe_start_auto_compaction_for_followup(cid) {
                 return;
             }
             // If folding the steered prompts parked any of them in
@@ -7560,7 +7630,7 @@ impl Harness {
             // until the whole publish chain drains. Waiting for only
             // one user-message commit is not enough when several
             // steered prompts are queued behind one interceptor.
-            self.dispatch_prompt_after_publish_idle(&cid);
+            self.dispatch_prompt_after_publish_idle(cid);
         }
     }
 

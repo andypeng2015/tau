@@ -300,6 +300,22 @@ fn background_result_count(h: &Harness, call_id: &str) -> usize {
         .count()
 }
 
+fn background_placeholder_count(h: &Harness, call_id: &str) -> usize {
+    h.store
+        .session_events("s1")
+        .expect("session events")
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.event,
+                Event::ProviderToolResult(result)
+                    if result.call_id.as_str() == call_id
+                        && result.kind == tau_proto::ToolResultKind::BackgroundPlaceholder
+            )
+        })
+        .count()
+}
+
 fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) -> bool) -> bool {
     let mut seq = 0;
     while let Some(entry) = h.event_log.get_next_from(seq) {
@@ -309,6 +325,32 @@ fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) 
         }
     }
     false
+}
+
+fn event_log_position(h: &Harness, matches_event: impl Fn(&Event) -> bool) -> Option<u64> {
+    let mut seq = 0;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        if matches_event(&entry.event) {
+            return Some(entry.seq);
+        }
+    }
+    None
+}
+
+fn event_log_position_after(
+    h: &Harness,
+    after_seq: u64,
+    matches_event: impl Fn(&Event) -> bool,
+) -> Option<u64> {
+    let mut seq = after_seq + 1;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        if matches_event(&entry.event) {
+            return Some(entry.seq);
+        }
+    }
+    None
 }
 
 fn event_log_contains_any_source(h: &Harness, matches_event: impl Fn(&Event) -> bool) -> bool {
@@ -339,6 +381,18 @@ fn shared_test_tool_spec(name: &str) -> ToolSpec {
 fn exclusive_test_tool_spec(name: &str) -> ToolSpec {
     ToolSpec {
         execution_mode: ToolExecutionMode::Exclusive,
+        ..shared_test_tool_spec(name)
+    }
+}
+
+fn scheduled_test_tool_spec(
+    name: &str,
+    execution_mode: ToolExecutionMode,
+    background_support: tau_proto::BackgroundSupport,
+) -> ToolSpec {
+    ToolSpec {
+        execution_mode,
+        background_support: Some(background_support),
         ..shared_test_tool_spec(name)
     }
 }
@@ -599,6 +653,528 @@ fn finish_ext_query(h: &mut Harness, cid: &ConversationId, query_id: &str) {
         ws_pool_delta: None,
     })
     .expect("finish ext query");
+}
+
+/// Regression: a backgrounded update call still owns the serialized lane after
+/// the synthetic placeholder closes its foreground. When the real background
+/// result arrives, the harness must drain the queued tool scheduler so the next
+/// update from the same model response can start.
+#[test]
+fn background_result_drains_queued_update_tool_call() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let tool_events = connect_test_tool(&mut h, "conn-bg-result-drain");
+    h.registry.register(
+        "conn-bg-result-drain",
+        scheduled_test_tool_spec(
+            "bg_update",
+            ToolExecutionMode::Update,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+    h.registry.register(
+        "conn-bg-result-drain",
+        scheduled_test_tool_spec(
+            "queued_update",
+            ToolExecutionMode::Update,
+            tau_proto::BackgroundSupport::Never,
+        ),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-bg-result-drain".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid);
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "bg-update-running".into(),
+                name: ToolName::new("bg_update"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "queued-update".into(),
+                name: ToolName::new("queued_update"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("tool response");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec!["bg-update-running".to_owned()]
+    );
+    assert_eq!(background_placeholder_count(&h, "bg-update-running"), 1);
+    assert!(h.tool_turn.is_backgrounded(&"bg-update-running".into()));
+    assert_eq!(h.tool_turn.pending_len(), 1);
+
+    h.handle_extension_event_inner(
+        "conn-bg-result-drain",
+        Event::ToolResult(final_tool_result(
+            "bg-update-running",
+            "bg_update",
+            "background output",
+        )),
+    )
+    .expect("background result accepted");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec!["bg-update-running".to_owned(), "queued-update".to_owned()]
+    );
+    assert_eq!(background_result_count(&h, "bg-update-running"), 1);
+    assert!(!h.tool_turn.is_backgrounded(&"bg-update-running".into()));
+    assert_eq!(h.tool_turn.pending_len(), 0);
+    assert!(!h.pending_tool_providers.contains_key("bg-update-running"));
+    assert!(h.pending_tool_providers.contains_key("queued-update"));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: background errors free the same actual-running scheduler lane as
+/// background results. This covers an exclusive call blocking a queued update
+/// so both serialized modes use the background-error drain path.
+#[test]
+fn background_error_drains_update_queued_behind_exclusive() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let tool_events = connect_test_tool(&mut h, "conn-bg-error-drain");
+    h.registry.register(
+        "conn-bg-error-drain",
+        scheduled_test_tool_spec(
+            "bg_exclusive",
+            ToolExecutionMode::Exclusive,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+    h.registry.register(
+        "conn-bg-error-drain",
+        scheduled_test_tool_spec(
+            "queued_update_after_error",
+            ToolExecutionMode::Update,
+            tau_proto::BackgroundSupport::Never,
+        ),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-bg-error-drain".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid);
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "bg-exclusive-running".into(),
+                name: ToolName::new("bg_exclusive"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "queued-update-after-error".into(),
+                name: ToolName::new("queued_update_after_error"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("tool response");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec!["bg-exclusive-running".to_owned()]
+    );
+    assert_eq!(background_placeholder_count(&h, "bg-exclusive-running"), 1);
+    assert!(h.tool_turn.is_backgrounded(&"bg-exclusive-running".into()));
+    assert_eq!(h.tool_turn.pending_len(), 1);
+
+    h.handle_extension_event_inner(
+        "conn-bg-error-drain",
+        Event::ToolError(tool_error(
+            "bg-exclusive-running",
+            "bg_exclusive",
+            "background failure",
+        )),
+    )
+    .expect("background error accepted");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec![
+            "bg-exclusive-running".to_owned(),
+            "queued-update-after-error".to_owned(),
+        ]
+    );
+    assert_eq!(background_error_count(&h, "bg-exclusive-running"), 1);
+    assert!(!h.tool_turn.is_backgrounded(&"bg-exclusive-running".into()));
+    assert_eq!(h.tool_turn.pending_len(), 0);
+    assert!(
+        !h.pending_tool_providers
+            .contains_key("bg-exclusive-running")
+    );
+    assert!(
+        h.pending_tool_providers
+            .contains_key("queued-update-after-error")
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: disconnect cleanup can synthesize errors for more than one
+/// backgrounded call from the same dead provider. The queued scheduler must not
+/// drain between those errors, or a newly-unblocked call can start before the
+/// whole disconnect batch is visible to the conversation.
+#[test]
+fn disconnect_background_errors_drain_queued_tools_after_batch() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let dead_events = connect_test_tool(&mut h, "conn-bg-disconnect-batch");
+    let live_events = connect_test_tool(&mut h, "conn-bg-disconnect-live");
+    h.registry.register(
+        "conn-bg-disconnect-batch",
+        scheduled_test_tool_spec(
+            "dead_bg_shared",
+            ToolExecutionMode::Shared,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+    h.registry.register(
+        "conn-bg-disconnect-batch",
+        scheduled_test_tool_spec(
+            "dead_bg_update",
+            ToolExecutionMode::Update,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+    h.registry.register(
+        "conn-bg-disconnect-live",
+        scheduled_test_tool_spec(
+            "live_queued_update",
+            ToolExecutionMode::Update,
+            tau_proto::BackgroundSupport::Never,
+        ),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-bg-disconnect-batch".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid);
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "b-bg-shared".into(),
+                name: ToolName::new("dead_bg_shared"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "a-bg-update".into(),
+                name: ToolName::new("dead_bg_update"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "z-queued-update".into(),
+                name: ToolName::new("live_queued_update"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("tool response");
+
+    assert_eq!(
+        tool_invoke_call_ids(&dead_events),
+        vec!["b-bg-shared".to_owned(), "a-bg-update".to_owned()]
+    );
+    assert!(tool_invoke_call_ids(&live_events).is_empty());
+    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert!(h.tool_turn.is_backgrounded(&"a-bg-update".into()));
+    assert!(h.tool_turn.is_backgrounded(&"b-bg-shared".into()));
+
+    h.handle_disconnect("conn-bg-disconnect-batch");
+
+    assert_eq!(
+        tool_invoke_call_ids(&live_events),
+        vec!["z-queued-update".to_owned()]
+    );
+    assert_eq!(background_error_count(&h, "a-bg-update"), 1);
+    assert_eq!(background_error_count(&h, "b-bg-shared"), 1);
+    assert!(!h.pending_tool_providers.contains_key("a-bg-update"));
+    assert!(!h.pending_tool_providers.contains_key("b-bg-shared"));
+    assert_eq!(
+        h.pending_tool_providers
+            .get("z-queued-update")
+            .map(|provider_id| provider_id.as_str()),
+        Some("conn-bg-disconnect-live")
+    );
+
+    let update_error_seq = event_log_position(&h, |event| {
+        matches!(
+            event,
+            Event::ToolBackgroundError(error) if error.call_id.as_str() == "a-bg-update"
+        )
+    })
+    .expect("update background error");
+    let shared_error_seq = event_log_position(&h, |event| {
+        matches!(
+            event,
+            Event::ToolBackgroundError(error) if error.call_id.as_str() == "b-bg-shared"
+        )
+    })
+    .expect("shared background error");
+    let queued_request_seq = event_log_position(&h, |event| {
+        matches!(
+            event,
+            Event::ToolRequest(request) if request.call_id.as_str() == "z-queued-update"
+        )
+    })
+    .expect("queued request");
+    assert!(update_error_seq < queued_request_seq);
+    assert!(shared_error_seq < queued_request_seq);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: when an idle conversation has more than one backgrounded call on
+/// a disconnected provider, the harness must record every synthetic background
+/// error before it dispatches the first internal completion prompt back to the
+/// model. Dispatching after the first error would let the follow-up miss later
+/// failures from the same disconnect batch.
+#[test]
+fn disconnect_idle_multi_background_errors_dispatch_prompt_after_batch() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _dead_events = connect_test_tool(&mut h, "conn-bg-idle-disconnect");
+    h.registry.register(
+        "conn-bg-idle-disconnect",
+        scheduled_test_tool_spec(
+            "dead_bg_one",
+            ToolExecutionMode::Shared,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+    h.registry.register(
+        "conn-bg-idle-disconnect",
+        scheduled_test_tool_spec(
+            "dead_bg_two",
+            ToolExecutionMode::Shared,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-bg-idle-disconnect".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid.clone());
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "a-bg-idle".into(),
+                name: ToolName::new("dead_bg_one"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "b-bg-idle".into(),
+                name: ToolName::new("dead_bg_two"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("background tool response");
+
+    let followup_spid = match &h
+        .conversations
+        .get(&cid)
+        .expect("conversation remains live")
+        .turn_state
+    {
+        ConversationTurnState::AgentThinking { session_prompt_id } => session_prompt_id.clone(),
+        state => panic!("expected placeholder follow-up prompt, got {state:?}"),
+    };
+    h.handle_provider_response_finished(provider_text_response(
+        &followup_spid,
+        "placeholders observed",
+    ))
+    .expect("finish placeholder follow-up");
+    assert!(matches!(
+        h.conversations
+            .get(&cid)
+            .expect("conversation remains live")
+            .turn_state,
+        ConversationTurnState::Idle
+    ));
+
+    h.handle_disconnect("conn-bg-idle-disconnect");
+
+    let first_error_seq = event_log_position(&h, |event| {
+        matches!(
+            event,
+            Event::ToolBackgroundError(error) if error.call_id.as_str() == "a-bg-idle"
+        )
+    })
+    .expect("first background error");
+    let second_error_seq = event_log_position_after(&h, first_error_seq, |event| {
+        matches!(
+            event,
+            Event::ToolBackgroundError(error) if error.call_id.as_str() == "b-bg-idle"
+        )
+    })
+    .expect("second background error");
+    let prompt_after_first_error_seq = event_log_position_after(&h, first_error_seq, |event| {
+        matches!(event, Event::SessionPromptCreated(_))
+    })
+    .expect("background completion follow-up prompt");
+    assert!(second_error_seq < prompt_after_first_error_seq);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: a disconnect batch can contain a foreground call that completes
+/// the model's tool round plus a later background error. The foreground failure
+/// must not complete the agent turn and dispatch a follow-up until the
+/// background error from the same dead provider has also been recorded.
+#[test]
+fn disconnect_mixed_foreground_and_background_errors_dispatch_prompt_after_batch() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let dead_events = connect_test_tool(&mut h, "conn-mixed-disconnect");
+    h.registry.register(
+        "conn-mixed-disconnect",
+        scheduled_test_tool_spec(
+            "dead_foreground",
+            ToolExecutionMode::Shared,
+            tau_proto::BackgroundSupport::Never,
+        ),
+    );
+    h.registry.register(
+        "conn-mixed-disconnect",
+        scheduled_test_tool_spec(
+            "dead_background",
+            ToolExecutionMode::Shared,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-mixed-disconnect".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid.clone());
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "a-foreground-disconnect".into(),
+                name: ToolName::new("dead_foreground"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "b-background-disconnect".into(),
+                name: ToolName::new("dead_background"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("mixed tool response");
+
+    assert_eq!(
+        tool_invoke_call_ids(&dead_events),
+        vec![
+            "a-foreground-disconnect".to_owned(),
+            "b-background-disconnect".to_owned(),
+        ]
+    );
+    assert!(
+        h.tool_turn
+            .is_backgrounded(&"b-background-disconnect".into())
+    );
+    assert!(matches!(
+        h.conversations
+            .get(&cid)
+            .expect("conversation remains live")
+            .turn_state,
+        ConversationTurnState::ToolsRunning { .. }
+    ));
+
+    h.handle_disconnect("conn-mixed-disconnect");
+
+    let foreground_error_seq = event_log_position(&h, |event| {
+        matches!(
+            event,
+            Event::ToolError(error) if error.call_id.as_str() == "a-foreground-disconnect"
+        )
+    })
+    .expect("foreground synthetic error");
+    let background_error_seq = event_log_position_after(&h, foreground_error_seq, |event| {
+        matches!(
+            event,
+            Event::ToolBackgroundError(error)
+                if error.call_id.as_str() == "b-background-disconnect"
+        )
+    })
+    .expect("background synthetic error");
+    let prompt_after_foreground_error_seq =
+        event_log_position_after(&h, foreground_error_seq, |event| {
+            matches!(event, Event::SessionPromptCreated(_))
+        })
+        .expect("post-disconnect follow-up prompt");
+    assert!(background_error_seq < prompt_after_foreground_error_seq);
+
+    h.shutdown().expect("shutdown");
 }
 
 /// A tool result from any connection other than the routed provider must not
