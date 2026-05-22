@@ -26,7 +26,8 @@ pub use policy::{
     SubscriptionPolicyError,
 };
 pub use session::{
-    NodeId, PersistedSessionEvent, SessionEntry, SessionMeta, SessionNode, SessionTree,
+    BackgroundToolCallState, BackgroundToolCompletion, BackgroundToolPlaceholder, NodeId,
+    PersistedSessionEvent, SessionEntry, SessionMeta, SessionNode, SessionTree,
 };
 pub use session_store::{
     AppendOutcome, SessionStore, SessionStoreError, list_session_metas, session_is_locked,

@@ -186,6 +186,92 @@ fn restore_notice_event_count(h: &Harness) -> usize {
         .count()
 }
 
+fn restored_background_notice(call_id: &str) -> String {
+    format!(
+        "{}: true\n\nBackground tool call `{call_id}` was interrupted due to session restart. Side effects may have occurred.",
+        tau_proto::TAU_INTERNAL_HEADER_NAME
+    )
+}
+
+fn seed_background_placeholder(state_dir: &Path, call_id: &str, tool_name: &str) {
+    let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::UiPromptSubmitted(UiPromptSubmitted {
+                session_id: "s1".into(),
+                text: format!("run {tool_name}"),
+                message_class: tau_proto::PromptMessageClass::User,
+                originator: tau_proto::PromptOriginator::User,
+                ctx_id: None,
+            }),
+        )
+        .expect("seed prior user message");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ProviderResponseFinished(ProviderResponseFinished {
+                session_prompt_id: format!("sp-{call_id}").into(),
+                output_items: vec![ContextItem::ToolCall(ToolCallItem {
+                    call_id: call_id.into(),
+                    name: ToolName::new(tool_name),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments: CborValue::Map(Vec::new()),
+                })],
+                stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+                usage: None,
+                originator: tau_proto::PromptOriginator::User,
+                backend: None,
+                provider_response_id: None,
+                ws_pool_delta: None,
+            }),
+        )
+        .expect("seed background tool call");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ProviderToolResult(ToolResult {
+                call_id: call_id.into(),
+                tool_name: ToolName::new(tool_name),
+                tool_type: tau_proto::ToolType::Function,
+                result: CborValue::Text(format!(
+                    "{}: true\n\nTool call `{call_id}` is running in the background.",
+                    tau_proto::TAU_INTERNAL_HEADER_NAME
+                )),
+                kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("seed background placeholder");
+}
+
+fn background_error_count(h: &Harness, call_id: &str) -> usize {
+    h.store
+        .session_events("s1")
+        .expect("session events")
+        .iter()
+        .filter(|entry| {
+            matches!(&entry.event, Event::ToolBackgroundError(error) if error.call_id.as_str() == call_id)
+        })
+        .count()
+}
+
+fn background_result_count(h: &Harness, call_id: &str) -> usize {
+    h.store
+        .session_events("s1")
+        .expect("session events")
+        .iter()
+        .filter(|entry| {
+            matches!(&entry.event, Event::ToolBackgroundResult(result) if result.call_id.as_str() == call_id)
+        })
+        .count()
+}
+
 fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) -> bool) -> bool {
     let mut seq = 0;
     while let Some(entry) = h.event_log.get_next_from(seq) {
@@ -2570,6 +2656,165 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
         assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
         assert_eq!(restore_notice_event_count(&h), 1);
 
+        h.shutdown().expect("shutdown");
+    }
+}
+
+/// Regression: a background placeholder without a later background result/error
+/// means the real tool was lost across cold restore. Resume must publish a
+/// durable background error, fold an internal interruption note before the next
+/// user prompt, and let `wait` consume the restored error instead of hanging.
+#[test]
+fn resumed_lost_background_tool_gets_error_and_wait_returns() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_background_placeholder(&sp, "lost-bg", "slow_bg");
+
+    let mut h =
+        quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    let notice = restored_background_notice("lost-bg");
+
+    assert_eq!(background_error_count(&h, "lost-bg"), 1);
+    assert!(event_log_contains(
+        &h,
+        HARNESS_CONNECTION_ID,
+        |event| matches!(
+            event,
+            Event::ToolBackgroundError(error)
+                if error.call_id.as_str() == "lost-bg" && error.message == notice
+        )
+    ));
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::SessionPromptCreated(_)
+    )));
+
+    h.submit_user_prompt("s1".into(), "after restore".to_owned())
+        .expect("submit first resumed prompt");
+    let first_spid: SessionPromptId = "sp-0".into();
+    let first_prompt = read_prompt_created(&h, &first_spid);
+    let notice_pos = first_prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some(notice.as_str()))
+        .expect("background interruption notice in first prompt");
+    let user_pos = first_prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some("after restore"))
+        .expect("user prompt in first prompt");
+    assert!(notice_pos < user_pos);
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: first_spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "wait-lost-bg".into(),
+            name: ToolName::new("wait"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(vec![(
+                CborValue::Text("tool_call_id".to_owned()),
+                CborValue::Text("lost-bg".to_owned()),
+            )]),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("wait for restored background call");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolError(error)
+            if error.call_id.as_str() == "wait-lost-bg" && error.message == notice
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Resume should treat existing background results/errors as terminal. They are
+/// replayed into the wait tracker, but no restored interruption error is
+/// appended over the real outcome.
+#[test]
+fn resume_keeps_existing_background_completions() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_background_placeholder(&sp, "finished-bg", "slow_bg");
+    seed_background_placeholder(&sp, "failed-bg", "slow_bg");
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+                call_id: "finished-bg".into(),
+                tool_name: ToolName::new("slow_bg"),
+                tool_type: tau_proto::ToolType::Function,
+                result: CborValue::Text("finished".to_owned()),
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("seed background result");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ToolBackgroundError(tau_proto::ToolBackgroundError {
+                call_id: "failed-bg".into(),
+                tool_name: ToolName::new("slow_bg"),
+                tool_type: tau_proto::ToolType::Function,
+                message: "real failure".to_owned(),
+                details: None,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("seed background error");
+    drop(store);
+
+    let mut h =
+        quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+
+    assert_eq!(background_result_count(&h, "finished-bg"), 1);
+    assert_eq!(background_error_count(&h, "finished-bg"), 0);
+    assert_eq!(background_error_count(&h, "failed-bg"), 1);
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolBackgroundError(error)
+            if error.message == restored_background_notice(error.call_id.as_str())
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// The restored background error is durable. A later cold resume must observe
+/// the existing error and avoid appending a duplicate.
+#[test]
+fn repeated_resume_does_not_duplicate_background_errors() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_background_placeholder(&sp, "lost-once", "slow_bg");
+
+    {
+        let mut h =
+            quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+                .expect("first resume");
+        assert_eq!(background_error_count(&h, "lost-once"), 1);
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&sp, "s1");
+
+    {
+        let mut h =
+            quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+                .expect("second resume");
+        assert_eq!(background_error_count(&h, "lost-once"), 1);
         h.shutdown().expect("shutdown");
     }
 }

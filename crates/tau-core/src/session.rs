@@ -14,8 +14,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tau_proto::{
     ConnectionId, ContentPart, ContextItem, ContextRole, Event, LogEventId, MessageItem,
-    ProviderBackend, ProviderTokenUsage, SessionId, ToolCallId, ToolCallItem, ToolResultItem,
-    ToolResultStatus, UnixMicros,
+    PromptOriginator, ProviderBackend, ProviderTokenUsage, SessionId, ToolBackgroundError,
+    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolName, ToolResultItem, ToolResultKind,
+    ToolResultStatus, ToolType, UnixMicros,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +68,37 @@ struct PendingToolRound {
     assistant_node_id: NodeId,
     call_order: Vec<ToolCallId>,
     terminal_results: HashMap<ToolCallId, ToolResultItem>,
+}
+
+/// A synthetic provider placeholder that moved a tool call to the background.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackgroundToolPlaceholder {
+    /// Tool call id whose provider round was closed by the placeholder.
+    pub call_id: ToolCallId,
+    /// Model-visible tool name recorded on the placeholder.
+    pub tool_name: ToolName,
+    /// Tool type recorded on the placeholder.
+    pub tool_type: ToolType,
+    /// Prompt originator recorded on the placeholder.
+    pub originator: PromptOriginator,
+}
+
+/// Durable completion, if any, for a backgrounded tool call.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackgroundToolCompletion {
+    /// The backgrounded tool eventually returned successfully.
+    Result(ToolBackgroundResult),
+    /// The backgrounded tool eventually returned an error.
+    Error(ToolBackgroundError),
+}
+
+/// Background state reconstructed from durable events for one tool call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackgroundToolCallState {
+    /// The placeholder that closed the provider-visible tool round.
+    pub placeholder: BackgroundToolPlaceholder,
+    /// The later real background completion, when one is present.
+    pub completion: Option<BackgroundToolCompletion>,
 }
 
 // `NodeId` lives on the wire (tree-folding events carry their own
@@ -200,6 +232,115 @@ impl SessionTree {
             }
         }
         calls
+    }
+
+    /// Returns backgrounded tool calls on `head`'s branch and any durable
+    /// background completion recorded for them.
+    ///
+    /// The provider-visible placeholder is stored as a `ProviderToolResult`
+    /// with [`ToolResultKind::BackgroundPlaceholder`]. The later real outcome
+    /// is stored separately as `ToolBackgroundResult` or
+    /// `ToolBackgroundError` and does not fold into the prompt tree, so
+    /// callers must pass the durable event log alongside the tree.
+    #[must_use]
+    pub fn background_tool_calls_from(
+        &self,
+        head: Option<NodeId>,
+        events: &[PersistedSessionEvent],
+    ) -> Vec<BackgroundToolCallState> {
+        let branch_call_ids = self.tool_call_ids_from_branch(head);
+        if branch_call_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut order = Vec::new();
+        let mut states = HashMap::new();
+        let mut completions = HashMap::new();
+        for entry in events {
+            match &entry.event {
+                Event::ProviderToolResult(result) => {
+                    if result.kind != ToolResultKind::BackgroundPlaceholder
+                        || !branch_call_ids.contains(&result.call_id)
+                    {
+                        continue;
+                    }
+                    if states.contains_key(&result.call_id) {
+                        continue;
+                    }
+                    order.push(result.call_id.clone());
+                    states.insert(
+                        result.call_id.clone(),
+                        BackgroundToolCallState {
+                            placeholder: BackgroundToolPlaceholder {
+                                call_id: result.call_id.clone(),
+                                tool_name: result.tool_name.clone(),
+                                tool_type: result.tool_type,
+                                originator: result.originator.clone(),
+                            },
+                            completion: completions.get(&result.call_id).cloned(),
+                        },
+                    );
+                }
+                Event::ToolBackgroundResult(result) => {
+                    if !branch_call_ids.contains(&result.call_id) {
+                        continue;
+                    }
+                    let completion = BackgroundToolCompletion::Result(result.clone());
+                    completions.insert(result.call_id.clone(), completion.clone());
+                    if let Some(state) = states.get_mut(&result.call_id) {
+                        state.completion = Some(completion);
+                    }
+                }
+                Event::ToolBackgroundError(error) => {
+                    if !branch_call_ids.contains(&error.call_id) {
+                        continue;
+                    }
+                    let completion = BackgroundToolCompletion::Error(error.clone());
+                    completions.insert(error.call_id.clone(), completion.clone());
+                    if let Some(state) = states.get_mut(&error.call_id) {
+                        state.completion = Some(completion);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        order
+            .into_iter()
+            .filter_map(|call_id| states.remove(&call_id))
+            .collect()
+    }
+
+    /// Returns background placeholders on `head`'s branch that lack a real
+    /// background result or error in the durable event log.
+    #[must_use]
+    pub fn unresolved_background_tool_calls_from(
+        &self,
+        head: Option<NodeId>,
+        events: &[PersistedSessionEvent],
+    ) -> Vec<BackgroundToolPlaceholder> {
+        self.background_tool_calls_from(head, events)
+            .into_iter()
+            .filter(|state| state.completion.is_none())
+            .map(|state| state.placeholder)
+            .collect()
+    }
+
+    fn tool_call_ids_from_branch(&self, head: Option<NodeId>) -> HashSet<ToolCallId> {
+        let mut call_ids = HashSet::new();
+        for node_id in self.branch_node_ids_from(head) {
+            let Some(SessionEntry::AssistantResponse { output_items, .. }) =
+                self.node(node_id).map(|node| &node.entry)
+            else {
+                continue;
+            };
+            for item in output_items {
+                if let ContextItem::ToolCall(call) = item {
+                    call_ids.insert(call.call_id.clone());
+                }
+            }
+        }
+        call_ids
     }
 
     fn branch_node_ids_from(&self, head: Option<NodeId>) -> Vec<NodeId> {

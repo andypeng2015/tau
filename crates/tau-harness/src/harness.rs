@@ -95,7 +95,7 @@ pub(crate) fn restore_notice_prompt() -> String {
     )
 }
 
-fn event_is_restore_notice(event: &Event, text: &str) -> bool {
+fn event_is_internal_prompt_text(event: &Event, text: &str) -> bool {
     match event {
         Event::UiPromptSubmitted(prompt) => {
             prompt.message_class.is_internal() && prompt.text == text
@@ -113,6 +113,13 @@ fn event_is_restore_notice(event: &Event, text: &str) -> bool {
 fn restored_tool_call_error_message(call_id: &ToolCallId) -> String {
     format!(
         "{}: true\n\nTool call `{call_id}` was interrupted due to session restart. Side effects may have occurred.",
+        tau_proto::TAU_INTERNAL_HEADER_NAME
+    )
+}
+
+fn restored_background_tool_call_error_message(call_id: &ToolCallId) -> String {
+    format!(
+        "{}: true\n\nBackground tool call `{call_id}` was interrupted due to session restart. Side effects may have occurred.",
         tau_proto::TAU_INTERNAL_HEADER_NAME
     )
 }
@@ -723,6 +730,9 @@ pub(crate) struct Harness {
     /// Resumed sessions that still need a one-shot internal restore notice
     /// folded immediately before the next real user prompt.
     pub(crate) pending_restore_notice_sessions: HashSet<SessionId>,
+    /// Per-background-tool restore notes that should be folded immediately
+    /// before the next real user prompt, not dispatched as standalone turns.
+    pub(crate) pending_restore_background_notices: HashMap<SessionId, Vec<String>>,
     /// Session prompt IDs that have already been completed by the agent.
     /// Used to dedupe duplicate `ProviderResponseFinished` events that can
     /// arise under at-least-once delivery (e.g. an agent that reconnects
@@ -1150,6 +1160,7 @@ impl Harness {
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
             pending_restore_notice_sessions: HashSet::new(),
+            pending_restore_background_notices: HashMap::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
@@ -1367,6 +1378,7 @@ impl Harness {
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
             pending_restore_notice_sessions: HashSet::new(),
+            pending_restore_background_notices: HashMap::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
@@ -4782,6 +4794,7 @@ impl Harness {
         self.pending_provider_prompts.clear();
         self.pending_compactions.clear();
         self.pending_restore_notice_sessions.clear();
+        self.pending_restore_background_notices.clear();
         self.pending_ext_agent_queries.clear();
         self.active_ext_agent_queries.clear();
         self.subagents = SubagentToolState::default();
@@ -4860,16 +4873,19 @@ impl Harness {
         self.store.sessions_dir().to_path_buf()
     }
 
-    fn restore_notice_already_persisted(&self, session_id: &SessionId) -> bool {
-        let notice = restore_notice_prompt();
+    fn internal_prompt_already_persisted(&self, session_id: &SessionId, text: &str) -> bool {
         self.store
             .session_events(session_id.as_str())
             .map(|events| {
                 events
                     .iter()
-                    .any(|entry| event_is_restore_notice(&entry.event, &notice))
+                    .any(|entry| event_is_internal_prompt_text(&entry.event, text))
             })
             .unwrap_or(false)
+    }
+
+    fn restore_notice_already_persisted(&self, session_id: &SessionId) -> bool {
+        self.internal_prompt_already_persisted(session_id, &restore_notice_prompt())
     }
 
     fn queue_restore_notice_for_resumed_session(&mut self, session_id: &SessionId) {
@@ -4884,26 +4900,68 @@ impl Harness {
             .insert(session_id.clone());
     }
 
-    /// Consume the pending restore notice for the default conversation, if the
+    fn queue_restore_background_notices_for_resumed_session(&mut self, session_id: &SessionId) {
+        if session_id != &self.current_session_id {
+            return;
+        }
+        let mut seen = HashSet::new();
+        let mut notices = Vec::new();
+        for state in self.restored_background_tool_states(session_id) {
+            let Some(tau_core::BackgroundToolCompletion::Error(error)) = state.completion else {
+                continue;
+            };
+            let notice = restored_background_tool_call_error_message(&error.call_id);
+            if error.message != notice || !seen.insert(notice.clone()) {
+                continue;
+            }
+            if self.internal_prompt_already_persisted(session_id, &notice) {
+                continue;
+            }
+            notices.push(notice);
+        }
+        if notices.is_empty() {
+            self.pending_restore_background_notices.remove(session_id);
+        } else {
+            self.pending_restore_background_notices
+                .insert(session_id.clone(), notices);
+        }
+    }
+
+    /// Consume pending restore notices for the default conversation, if the
     /// next prompt is the first real user prompt after a resumed startup.
-    pub(crate) fn take_pending_restore_notice_for_user_prompt(
+    pub(crate) fn take_pending_restore_prompts_for_user_prompt(
         &mut self,
         cid: &ConversationId,
-    ) -> Option<PendingPrompt> {
+    ) -> Vec<PendingPrompt> {
         if cid != &self.default_conversation_id {
-            return None;
+            return Vec::new();
         }
-        let session_id = self.conversations.get(cid)?.session_id.clone();
+        let Some(session_id) = self
+            .conversations
+            .get(cid)
+            .map(|conv| conv.session_id.clone())
+        else {
+            return Vec::new();
+        };
         if session_id != self.current_session_id {
-            return None;
+            return Vec::new();
         }
+
+        let mut prompts = Vec::new();
         if self.restore_notice_already_persisted(&session_id) {
             self.pending_restore_notice_sessions.remove(&session_id);
-            return None;
+        } else if self.pending_restore_notice_sessions.remove(&session_id) {
+            prompts.push(PendingPrompt::internal(restore_notice_prompt()));
         }
-        self.pending_restore_notice_sessions
-            .remove(&session_id)
-            .then(|| PendingPrompt::internal(restore_notice_prompt()))
+
+        if let Some(notices) = self.pending_restore_background_notices.remove(&session_id) {
+            for notice in notices {
+                if !self.internal_prompt_already_persisted(&session_id, &notice) {
+                    prompts.push(PendingPrompt::internal(notice));
+                }
+            }
+        }
+        prompts
     }
 
     fn repair_restored_foreground_tool_calls(&mut self, session_id: &SessionId) -> usize {
@@ -4940,6 +4998,82 @@ impl Harness {
         count
     }
 
+    fn restored_background_tool_states(
+        &self,
+        session_id: &SessionId,
+    ) -> Vec<tau_core::BackgroundToolCallState> {
+        if session_id != &self.current_session_id {
+            return Vec::new();
+        }
+        let Some(head) = self
+            .conversations
+            .get(&self.default_conversation_id)
+            .map(|conv| conv.head)
+        else {
+            return Vec::new();
+        };
+        let Ok(events) = self.store.session_events(session_id.as_str()) else {
+            return Vec::new();
+        };
+        self.store
+            .session(session_id.as_str())
+            .map(|tree| tree.background_tool_calls_from(head, &events))
+            .unwrap_or_default()
+    }
+
+    fn seed_restored_wait_background_completions(&mut self, session_id: &SessionId) {
+        for state in self.restored_background_tool_states(session_id) {
+            match state.completion {
+                Some(tau_core::BackgroundToolCompletion::Result(result)) => {
+                    self.record_wait_background_result(result);
+                }
+                Some(tau_core::BackgroundToolCompletion::Error(error)) => {
+                    self.record_wait_background_error(error);
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn repair_restored_background_tool_calls(&mut self, session_id: &SessionId) -> usize {
+        if session_id != &self.current_session_id {
+            return 0;
+        }
+        let cid = self.default_conversation_id.clone();
+        let Some(head) = self.conversations.get(&cid).map(|conv| conv.head) else {
+            return 0;
+        };
+        let Ok(events) = self.store.session_events(session_id.as_str()) else {
+            return 0;
+        };
+        let calls = self
+            .store
+            .session(session_id.as_str())
+            .map(|tree| tree.unresolved_background_tool_calls_from(head, &events))
+            .unwrap_or_default();
+        let count = calls.len();
+        for call in calls {
+            let error = ToolBackgroundError {
+                call_id: call.call_id.clone(),
+                tool_name: call.tool_name,
+                tool_type: call.tool_type,
+                message: restored_background_tool_call_error_message(&call.call_id),
+                details: None,
+                display: None,
+                originator: call.originator,
+            };
+            self.publish_terminal_background_error(&cid, Some(HARNESS_CONNECTION_ID), error);
+        }
+        count
+    }
+
+    fn repair_restored_session_tool_state(&mut self, session_id: &SessionId) {
+        self.repair_restored_foreground_tool_calls(session_id);
+        self.repair_restored_background_tool_calls(session_id);
+        self.seed_restored_wait_background_completions(session_id);
+        self.queue_restore_background_notices_for_resumed_session(session_id);
+    }
+
     pub(crate) fn start_session_init(
         &mut self,
         session_id: SessionId,
@@ -4951,7 +5085,7 @@ impl Harness {
         let waiting_on = self.session_init_provider_ids();
         if waiting_on.is_empty() {
             if matches!(reason, tau_proto::SessionStartReason::Resume) {
-                self.repair_restored_foreground_tool_calls(&session_id);
+                self.repair_restored_session_tool_state(&session_id);
             }
             if let Err(error) = self.complete_session_init(session_id) {
                 self.emit_info(&format!("failed to initialize session: {error}"));
@@ -4976,7 +5110,7 @@ impl Harness {
             }),
         );
         if matches!(reason, tau_proto::SessionStartReason::Resume) {
-            self.repair_restored_foreground_tool_calls(&session_id);
+            self.repair_restored_session_tool_state(&session_id);
         }
     }
 
@@ -5779,12 +5913,12 @@ impl Harness {
             self.fold_queued_background_completion_prompts(&pending.target_cid);
         match pending.resume {
             PendingCompactionResume::UserPrompt(text) => {
-                if let Some(restore_notice) =
-                    self.take_pending_restore_notice_for_user_prompt(&pending.target_cid)
+                for restore_prompt in
+                    self.take_pending_restore_prompts_for_user_prompt(&pending.target_cid)
                 {
                     self.publish_pending_prompt_for_conversation(
                         &pending.target_cid,
-                        restore_notice,
+                        restore_prompt,
                     )?;
                 }
                 self.publish_pending_prompt_for_conversation(
@@ -6747,10 +6881,11 @@ impl Harness {
             .get_mut(cid)
             .map(|c| c.pending_prompts.drain(..).collect())
             .unwrap_or_default();
-        if let Some(user_prompt_pos) = pending.iter().position(|prompt| !prompt.is_internal())
-            && let Some(restore_notice) = self.take_pending_restore_notice_for_user_prompt(cid)
-        {
-            pending.insert(user_prompt_pos, restore_notice);
+        if let Some(user_prompt_pos) = pending.iter().position(|prompt| !prompt.is_internal()) {
+            let restore_prompts = self.take_pending_restore_prompts_for_user_prompt(cid);
+            if !restore_prompts.is_empty() {
+                pending.splice(user_prompt_pos..user_prompt_pos, restore_prompts);
+            }
         }
         self.publish_prompts_as_steered(cid, pending);
     }

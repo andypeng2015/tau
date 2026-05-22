@@ -1120,6 +1120,136 @@ fn session_tree_folds_provider_tool_result_into_prompt_history() {
 }
 
 #[test]
+fn session_tree_reports_unfinished_background_placeholders() {
+    // Background placeholders close the provider round, while the real
+    // background result/error is a separate durable event. Restore repair needs
+    // to find placeholders on the current branch that never received that final
+    // background event.
+    let tempdir = TempDir::new().expect("tempdir should exist");
+    let store_path = tempdir.path().join("state");
+
+    let mut store = SessionStore::open(&store_path).expect("store should open");
+    let _ = store_user_message(&mut store, "session-1", "run slow tool");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderResponseFinished(provider_response_tool_call("sp-bg", "call-bg")),
+        )
+        .expect("assistant response should persist");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderToolResult(ToolResult {
+                call_id: "call-bg".into(),
+                tool_name: tau_proto::ToolName::new("slow"),
+                tool_type: ToolType::Function,
+                result: CborValue::Text("background placeholder".to_owned()),
+                kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("placeholder should persist");
+
+    let events = store
+        .session_events("session-1")
+        .expect("session events should load");
+    let tree = store.session("session-1").expect("session should load");
+    let unresolved = tree.unresolved_background_tool_calls_from(tree.head(), &events);
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].call_id.as_str(), "call-bg");
+    assert_eq!(unresolved[0].tool_name.as_str(), "slow");
+}
+
+#[test]
+fn session_tree_ignores_finished_background_placeholders() {
+    // A placeholder with a later ToolBackgroundResult or ToolBackgroundError is
+    // already repaired and must not be reported as lost on resume.
+    let tempdir = TempDir::new().expect("tempdir should exist");
+    let store_path = tempdir.path().join("state");
+
+    let mut store = SessionStore::open(&store_path).expect("store should open");
+    let _ = store_user_message(&mut store, "session-1", "run slow tools");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderResponseFinished(provider_response_tool_calls(
+                "sp-bg-finished",
+                &["call-result", "call-error"],
+            )),
+        )
+        .expect("assistant response should persist");
+    for call_id in ["call-result", "call-error"] {
+        store
+            .append_session_event(
+                "session-1",
+                None,
+                Event::ProviderToolResult(ToolResult {
+                    call_id: call_id.into(),
+                    tool_name: tau_proto::ToolName::new("slow"),
+                    tool_type: ToolType::Function,
+                    result: CborValue::Text("background placeholder".to_owned()),
+                    kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+                    display: None,
+                    originator: tau_proto::PromptOriginator::User,
+                }),
+            )
+            .expect("placeholder should persist");
+    }
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+                call_id: "call-result".into(),
+                tool_name: tau_proto::ToolName::new("slow"),
+                tool_type: ToolType::Function,
+                result: CborValue::Text("done".to_owned()),
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("background result should persist");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ToolBackgroundError(tau_proto::ToolBackgroundError {
+                call_id: "call-error".into(),
+                tool_name: tau_proto::ToolName::new("slow"),
+                tool_type: ToolType::Function,
+                message: "failed".to_owned(),
+                details: None,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("background error should persist");
+
+    let events = store
+        .session_events("session-1")
+        .expect("session events should load");
+    let tree = store.session("session-1").expect("session should load");
+    assert!(
+        tree.unresolved_background_tool_calls_from(tree.head(), &events)
+            .is_empty()
+    );
+    let states = tree.background_tool_calls_from(tree.head(), &events);
+    assert_eq!(states.len(), 2);
+    assert!(matches!(
+        states[0].completion,
+        Some(crate::BackgroundToolCompletion::Result(_))
+    ));
+    assert!(matches!(
+        states[1].completion,
+        Some(crate::BackgroundToolCompletion::Error(_))
+    ));
+}
+
+#[test]
 fn session_store_rejects_duplicate_tool_call_ids_before_persisting() {
     // Regression for the item-model migration: malformed provider output
     // must not be appended to the durable log before validation, because

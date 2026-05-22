@@ -90,13 +90,16 @@ impl Harness {
         prompt: impl Into<PendingPrompt>,
     ) -> Result<(), HarnessError> {
         let prompt = prompt.into();
-        if !prompt.is_internal()
-            && let Some(restore_notice) = self.take_pending_restore_notice_for_user_prompt(cid)
-        {
-            self.publish_pending_prompt_for_conversation(cid, restore_notice)?;
-            self.publish_pending_prompt_for_conversation(cid, prompt)?;
-            self.dispatch_prompt_after_publish_idle(cid);
-            return Ok(());
+        if !prompt.is_internal() {
+            let restore_prompts = self.take_pending_restore_prompts_for_user_prompt(cid);
+            if !restore_prompts.is_empty() {
+                for restore_prompt in restore_prompts {
+                    self.publish_pending_prompt_for_conversation(cid, restore_prompt)?;
+                }
+                self.publish_pending_prompt_for_conversation(cid, prompt)?;
+                self.dispatch_prompt_after_publish_idle(cid);
+                return Ok(());
+            }
         }
 
         self.publish_pending_prompt_for_conversation(cid, prompt)?;
