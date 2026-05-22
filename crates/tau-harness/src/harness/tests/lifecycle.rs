@@ -459,7 +459,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         file_path: PathBuf::from("/repo/AGENTS.md"),
         content: format!("# Root\n- {marker}\n"),
     });
-    h.pending_restore_notice_sessions.insert("s1".into());
+    h.pending_restore_notice_sessions.insert("s1".into(), None);
     h.turn_state = TurnState::InitializingSession {
         session_id: "s1".into(),
         reason: tau_proto::SessionStartReason::Resume,
@@ -478,7 +478,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
     assert!(matches!(h.turn_state, TurnState::Idle));
     assert_eq!(count_marker_injections(&h), 1);
     assert!(
-        h.pending_restore_notice_sessions.contains("s1"),
+        h.pending_restore_notice_sessions.contains_key("s1"),
         "restore notice queue should be independent from AGENTS.md injection"
     );
 

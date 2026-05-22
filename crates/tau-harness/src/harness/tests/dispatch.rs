@@ -1,6 +1,9 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
-use crate::harness::{PendingTool, background_completion_prompt, restore_notice_prompt};
+use crate::harness::{
+    PendingTool, background_completion_prompt, is_restore_notice_prompt_text,
+    restore_notice_prompt_for_elapsed,
+};
 
 fn responses_backend() -> tau_proto::ProviderBackend {
     tau_proto::ProviderBackend {
@@ -145,11 +148,16 @@ fn provider_text_response(spid: &SessionPromptId, text: &str) -> ProviderRespons
 }
 
 fn seed_prior_user_message(state_dir: &Path, text: &str) {
+    seed_prior_user_message_at(state_dir, text, tau_proto::UnixMicros::now());
+}
+
+fn seed_prior_user_message_at(state_dir: &Path, text: &str, recorded_at: tau_proto::UnixMicros) {
     let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
     let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
     store
-        .append_session_event(
+        .append_session_event_at(
             "s1",
+            None,
             None,
             Event::UiPromptSubmitted(UiPromptSubmitted {
                 session_id: "s1".into(),
@@ -158,6 +166,7 @@ fn seed_prior_user_message(state_dir: &Path, text: &str) {
                 originator: tau_proto::PromptOriginator::User,
                 ctx_id: None,
             }),
+            recorded_at,
         )
         .expect("seed prior user message");
 }
@@ -170,8 +179,24 @@ fn context_text_count(prompt: &SessionPromptCreated, text: &str) -> usize {
         .count()
 }
 
+fn restore_notice_context_text(prompt: &SessionPromptCreated) -> Option<&str> {
+    prompt
+        .context_items
+        .iter()
+        .filter_map(text_part)
+        .find(|text| is_restore_notice_prompt_text(text))
+}
+
+fn restore_notice_context_count(prompt: &SessionPromptCreated) -> usize {
+    prompt
+        .context_items
+        .iter()
+        .filter_map(text_part)
+        .filter(|text| is_restore_notice_prompt_text(text))
+        .count()
+}
+
 fn restore_notice_event_count(h: &Harness) -> usize {
-    let notice = restore_notice_prompt();
     h.store
         .session_events("s1")
         .expect("session events")
@@ -180,7 +205,8 @@ fn restore_notice_event_count(h: &Harness) -> usize {
             matches!(
                 &entry.event,
                 Event::UiPromptSubmitted(prompt)
-                    if prompt.message_class.is_internal() && prompt.text == notice
+                    if prompt.message_class.is_internal()
+                        && is_restore_notice_prompt_text(&prompt.text)
             )
         })
         .count()
@@ -2559,6 +2585,33 @@ fn queued_prompt_extends_completed_first_prompt() {
     h.shutdown().expect("shutdown");
 }
 
+#[test]
+fn restore_notice_elapsed_format_uses_minutes_hours_and_days() {
+    // The restore notice is model-visible hidden context, so keep the elapsed
+    // wording compact and deterministic while still warning about outside
+    // changes since the durable transcript stopped.
+    assert!(
+        restore_notice_prompt_for_elapsed(Some(Duration::from_secs(59)))
+            .contains("Less than 1 minute has passed since the last recorded session event")
+    );
+    assert!(
+        restore_notice_prompt_for_elapsed(Some(Duration::from_secs(60)))
+            .contains("1 minute has passed since the last recorded session event")
+    );
+    assert!(
+        restore_notice_prompt_for_elapsed(Some(Duration::from_secs(42 * 60)))
+            .contains("42 minutes have passed since the last recorded session event")
+    );
+    assert!(
+        restore_notice_prompt_for_elapsed(Some(Duration::from_secs(2 * 60 * 60)))
+            .contains("2 hours have passed since the last recorded session event")
+    );
+    assert!(
+        restore_notice_prompt_for_elapsed(Some(Duration::from_secs(3 * 24 * 60 * 60)))
+            .contains("3 days have passed since the last recorded session event")
+    );
+}
+
 /// Regression: a cold-resumed session needs one hidden restore notice in the
 /// first provider prompt, but startup itself must not send that notice as a
 /// standalone turn or as prewarm-only context.
@@ -2566,12 +2619,16 @@ fn queued_prompt_extends_completed_first_prompt() {
 fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
-    seed_prior_user_message(&sp, "before restore");
+    let two_hours_ago = tau_proto::UnixMicros::new(
+        tau_proto::UnixMicros::now()
+            .get()
+            .saturating_sub(2 * 60 * 60 * 1_000_000),
+    );
+    seed_prior_user_message_at(&sp, "before restore", two_hours_ago);
 
     let mut h =
         quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
             .expect("resume");
-    let notice = restore_notice_prompt();
 
     assert!(h.prompt_conversations.is_empty());
     assert!(!event_log_contains_any_source(&h, |event| matches!(
@@ -2584,7 +2641,7 @@ fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
             if prewarm
                 .context_items
                 .iter()
-                .any(|item| text_part(item) == Some(notice.as_str()))
+                .any(|item| text_part(item).is_some_and(is_restore_notice_prompt_text))
     )));
     assert_eq!(restore_notice_event_count(&h), 0);
 
@@ -2595,16 +2652,20 @@ fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
     let notice_pos = prompt
         .context_items
         .iter()
-        .position(|item| text_part(item) == Some(notice.as_str()))
+        .position(|item| text_part(item).is_some_and(is_restore_notice_prompt_text))
         .expect("restore notice in first prompt");
     let user_pos = prompt
         .context_items
         .iter()
         .position(|item| text_part(item) == Some("after restore"))
         .expect("user prompt in first prompt");
+    let notice = restore_notice_context_text(&prompt).expect("restore notice text");
 
     assert!(notice_pos < user_pos);
-    assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
+    assert!(notice.contains("Previous session was interrupted and restored."));
+    assert!(notice.contains("2 hours have passed since the last recorded session event"));
+    assert!(notice.contains("state of the world might have changed"));
+    assert_eq!(restore_notice_context_count(&prompt), 1);
     assert_eq!(restore_notice_event_count(&h), 1);
 
     h.shutdown().expect("shutdown");
@@ -2618,9 +2679,8 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     seed_prior_user_message(&sp, "before restore");
-    let notice = restore_notice_prompt();
 
-    {
+    let notice = {
         let mut h =
             quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
                 .expect("first resume");
@@ -2629,7 +2689,10 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
             .expect("submit first resumed prompt");
         let first_spid: SessionPromptId = "sp-0".into();
         let first_prompt = read_prompt_created(&h, &first_spid);
-        assert_eq!(context_text_count(&first_prompt, notice.as_str()), 1);
+        let notice = restore_notice_context_text(&first_prompt)
+            .expect("restore notice")
+            .to_owned();
+        assert_eq!(restore_notice_context_count(&first_prompt), 1);
 
         h.handle_provider_response_finished(provider_text_response(&first_spid, "first answer"))
             .expect("finish first prompt");
@@ -2638,10 +2701,12 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
         let second_spid: SessionPromptId = "sp-1".into();
         let second_prompt = read_prompt_created(&h, &second_spid);
         assert_eq!(context_text_count(&second_prompt, notice.as_str()), 1);
+        assert_eq!(restore_notice_context_count(&second_prompt), 1);
         assert_eq!(restore_notice_event_count(&h), 1);
 
         h.shutdown().expect("shutdown");
-    }
+        notice
+    };
     wait_for_session_unlock(&sp, "s1");
 
     {
@@ -2654,6 +2719,7 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
         let spid: SessionPromptId = "sp-0".into();
         let prompt = read_prompt_created(&h, &spid);
         assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
+        assert_eq!(restore_notice_context_count(&prompt), 1);
         assert_eq!(restore_notice_event_count(&h), 1);
 
         h.shutdown().expect("shutdown");

@@ -86,13 +86,80 @@ pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
     )
 }
 
+const RESTORE_NOTICE_BODY_PREFIX: &str = "Previous session was interrupted and restored.";
+
 /// Text for the one-shot model-visible notice folded into the first user turn
 /// after a cold session resume.
-pub(crate) fn restore_notice_prompt() -> String {
+pub(crate) fn restore_notice_prompt(
+    last_recorded_at: Option<tau_proto::UnixMicros>,
+    now: tau_proto::UnixMicros,
+) -> String {
+    restore_notice_prompt_for_elapsed_inner(restore_notice_elapsed(last_recorded_at, now))
+}
+
+/// Test helper that formats the restore notice for a fixed elapsed duration.
+#[cfg(test)]
+pub(crate) fn restore_notice_prompt_for_elapsed(elapsed: Option<Duration>) -> String {
+    restore_notice_prompt_for_elapsed_inner(elapsed)
+}
+
+fn restore_notice_prompt_for_elapsed_inner(elapsed: Option<Duration>) -> String {
+    let timing = elapsed.map_or_else(
+        || "The state of the world might have changed since the last session.".to_owned(),
+        |elapsed| {
+            format!(
+                "{} since the last recorded session event, and the state of the world might have changed.",
+                format_restore_notice_elapsed(elapsed)
+            )
+        },
+    );
     format!(
-        "{} Previous session was interrupted and restored.",
+        "{} {RESTORE_NOTICE_BODY_PREFIX} {timing}",
         crate::INTERNAL_MARKER
     )
+}
+
+fn restore_notice_elapsed(
+    last_recorded_at: Option<tau_proto::UnixMicros>,
+    now: tau_proto::UnixMicros,
+) -> Option<Duration> {
+    let last = last_recorded_at?;
+    if last.get() == 0 || now.get() < last.get() {
+        return None;
+    }
+    Some(Duration::from_micros(now.get() - last.get()))
+}
+
+fn format_restore_notice_elapsed(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return "Less than 1 minute has passed".to_owned();
+    }
+
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format_elapsed_count(minutes, "minute");
+    }
+
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format_elapsed_count(hours, "hour");
+    }
+
+    format_elapsed_count(hours / 24, "day")
+}
+
+fn format_elapsed_count(count: u64, unit: &str) -> String {
+    let suffix = if count == 1 { "" } else { "s" };
+    let verb = if count == 1 { "has" } else { "have" };
+    format!("{count} {unit}{suffix} {verb} passed")
+}
+
+/// Returns true when `text` is the hidden one-shot restore notice.
+pub(crate) fn is_restore_notice_prompt_text(text: &str) -> bool {
+    text.strip_prefix(crate::INTERNAL_MARKER)
+        .and_then(|text| text.strip_prefix(" "))
+        .is_some_and(|text| text.starts_with(RESTORE_NOTICE_BODY_PREFIX))
 }
 
 fn event_is_internal_prompt_text(event: &Event, text: &str) -> bool {
@@ -105,6 +172,21 @@ fn event_is_internal_prompt_text(event: &Event, text: &str) -> bool {
         }
         Event::SessionUserMessageInjected(injected) => {
             injected.message_class.is_internal() && injected.text == text
+        }
+        _ => false,
+    }
+}
+
+fn event_is_internal_restore_notice(event: &Event) -> bool {
+    match event {
+        Event::UiPromptSubmitted(prompt) => {
+            prompt.message_class.is_internal() && is_restore_notice_prompt_text(&prompt.text)
+        }
+        Event::SessionPromptSteered(steered) => {
+            steered.message_class.is_internal() && is_restore_notice_prompt_text(&steered.text)
+        }
+        Event::SessionUserMessageInjected(injected) => {
+            injected.message_class.is_internal() && is_restore_notice_prompt_text(&injected.text)
         }
         _ => false,
     }
@@ -728,8 +810,9 @@ pub(crate) struct Harness {
     /// Sessions whose AGENTS/skill discovery has completed.
     pub(crate) initialized_sessions: std::collections::HashSet<SessionId>,
     /// Resumed sessions that still need a one-shot internal restore notice
-    /// folded immediately before the next real user prompt.
-    pub(crate) pending_restore_notice_sessions: HashSet<SessionId>,
+    /// folded immediately before the next real user prompt, with the last
+    /// durable event timestamp seen before resume when available.
+    pub(crate) pending_restore_notice_sessions: HashMap<SessionId, Option<tau_proto::UnixMicros>>,
     /// Per-background-tool restore notes that should be folded immediately
     /// before the next real user prompt, not dispatched as standalone turns.
     pub(crate) pending_restore_background_notices: HashMap<SessionId, Vec<String>>,
@@ -1161,7 +1244,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
-            pending_restore_notice_sessions: HashSet::new(),
+            pending_restore_notice_sessions: HashMap::new(),
             pending_restore_background_notices: HashMap::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
@@ -1379,7 +1462,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
-            pending_restore_notice_sessions: HashSet::new(),
+            pending_restore_notice_sessions: HashMap::new(),
             pending_restore_background_notices: HashMap::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
@@ -4890,7 +4973,26 @@ impl Harness {
     }
 
     fn restore_notice_already_persisted(&self, session_id: &SessionId) -> bool {
-        self.internal_prompt_already_persisted(session_id, &restore_notice_prompt())
+        self.store
+            .session_events(session_id.as_str())
+            .map(|events| {
+                events
+                    .iter()
+                    .any(|entry| event_is_internal_restore_notice(&entry.event))
+            })
+            .unwrap_or(false)
+    }
+
+    fn last_recorded_session_event_at(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<tau_proto::UnixMicros> {
+        self.store
+            .session_events(session_id.as_str())
+            .ok()?
+            .iter()
+            .rev()
+            .find_map(|entry| (entry.recorded_at.get() != 0).then_some(entry.recorded_at))
     }
 
     fn queue_restore_notice_for_resumed_session(&mut self, session_id: &SessionId) {
@@ -4901,8 +5003,9 @@ impl Harness {
             self.pending_restore_notice_sessions.remove(session_id);
             return;
         }
+        let last_recorded_at = self.last_recorded_session_event_at(session_id);
         self.pending_restore_notice_sessions
-            .insert(session_id.clone());
+            .insert(session_id.clone(), last_recorded_at);
     }
 
     fn queue_restore_background_notices_for_resumed_session(&mut self, session_id: &SessionId) {
@@ -4955,8 +5058,13 @@ impl Harness {
         let mut prompts = Vec::new();
         if self.restore_notice_already_persisted(&session_id) {
             self.pending_restore_notice_sessions.remove(&session_id);
-        } else if self.pending_restore_notice_sessions.remove(&session_id) {
-            prompts.push(PendingPrompt::internal(restore_notice_prompt()));
+        } else if let Some(last_recorded_at) =
+            self.pending_restore_notice_sessions.remove(&session_id)
+        {
+            prompts.push(PendingPrompt::internal(restore_notice_prompt(
+                last_recorded_at,
+                tau_proto::UnixMicros::now(),
+            )));
         }
 
         if let Some(notices) = self.pending_restore_background_notices.remove(&session_id) {
