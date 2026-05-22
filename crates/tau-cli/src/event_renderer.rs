@@ -1947,7 +1947,7 @@ impl EventRenderer {
         let block = self.submitted_prompt_block(
             tau_themes::names::SYSTEM_INFO,
             format!(
-                "Messages from {} to {}:\n{}",
+                "Message from {} to {}:\n{}",
                 message.sender_id, message.recipient_id, message.message
             ),
         );

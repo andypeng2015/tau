@@ -3,7 +3,7 @@
 The harness-owned `message` tool lets an agent send an asynchronous short text note to the user or to another agent. Every sent message is recorded as an `agent.message` event and shown in the UI as:
 
 ```text
-Messages from <sender> to <recipient>:
+Message from <sender> to <recipient>:
 <message>
 ```
 

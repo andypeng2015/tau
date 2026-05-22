@@ -267,7 +267,7 @@ fn agent_messages_render_all_recipients_as_history() {
         message: "hello worker".to_owned(),
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "Messages from manager_11111111 to engineer_22222222:"));
+    assert!(vt.screen_contains(80, "Message from manager_11111111 to engineer_22222222:"));
     assert!(vt.screen_contains(80, "hello worker"));
 
     for idx in 0..20 {
@@ -280,7 +280,7 @@ fn agent_messages_render_all_recipients_as_history() {
         }));
     }
     sync(&handle);
-    assert!(!vt.screen_contains(80, "Messages from manager_11111111 to engineer_22222222:"));
+    assert!(!vt.screen_contains(80, "Message from manager_11111111 to engineer_22222222:"));
 }
 
 #[test]

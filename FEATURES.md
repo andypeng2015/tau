@@ -248,7 +248,7 @@ results. Unless the `delegate` call supplies `role`, delegated sub-agents defaul
 to the `engineer` role. The delegate placeholder and final result include
 `self_agent_id` and `sub_agent_id`; pass `sub_agent_id` to the `message` tool
 for live agent-to-agent notes. `message` can also target the special recipient `user`;
-all messages are rendered in the UI as `Messages from <sender> to <recipient>:`.
+all messages are rendered in the UI as `Message from <sender> to <recipient>:`.
 When `role` is supplied, or when the default `engineer` role is used, the
 sub-agent runs with that role's resolved model, model parameters, system prompt,
 and tool profile/filtering. The sub-agent starts with a *fresh* context — only
