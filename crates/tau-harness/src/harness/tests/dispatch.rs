@@ -130,6 +130,20 @@ fn tool_result_id(item: &ContextItem) -> Option<&str> {
     }
 }
 
+fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
+    let CborValue::Map(entries) = value else {
+        return None;
+    };
+    entries.iter().find_map(|(entry_key, entry_value)| {
+        matches!(entry_key, CborValue::Text(text) if text == key)
+            .then_some(entry_value)
+            .and_then(|value| match value {
+                CborValue::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+    })
+}
+
 fn provider_text_response(spid: &SessionPromptId, text: &str) -> ProviderResponseFinished {
     ProviderResponseFinished {
         session_prompt_id: spid.clone(),
@@ -550,6 +564,16 @@ fn final_tool_result(call_id: &str, tool_name: &str, text: &str) -> ToolResult {
         kind: tau_proto::ToolResultKind::Final,
         display: None,
         originator: tau_proto::PromptOriginator::User,
+    }
+}
+
+fn wait_no_args_call(call_id: &str) -> AgentToolCall {
+    AgentToolCall {
+        id: call_id.into(),
+        name: ToolName::new("wait"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(Vec::new()),
+        display: None,
     }
 }
 
@@ -3546,6 +3570,131 @@ fn resume_keeps_existing_background_completions() {
     h.shutdown().expect("shutdown");
 }
 
+/// Completed background results restored from the session log should be
+/// available to `wait({})`, not only to exact-id waits.
+#[test]
+fn resumed_completed_background_result_can_be_consumed_by_no_arg_wait() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_background_placeholder(&sp, "restored-any", "slow_bg");
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+                call_id: "restored-any".into(),
+                tool_name: ToolName::new("slow_bg"),
+                tool_type: tau_proto::ToolType::Function,
+                result: CborValue::Text("restored output".to_owned()),
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            }),
+        )
+        .expect("seed background result");
+    drop(store);
+
+    let mut h =
+        quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    h.submit_user_prompt("s1".into(), "collect restored background".to_owned())
+        .expect("submit first resumed prompt");
+    let spid: SessionPromptId = "sp-0".into();
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "wait-restored-any".into(),
+            name: ToolName::new("wait"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("wait on restored completion");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-restored-any"
+                && cbor_map_text(&result.result, "original_tool_call_id") == Some("restored-any")
+                && cbor_map_text(&result.result, "output") == Some("restored output")
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Restored no-arg waits must replay completions by durable completion order,
+/// not by the earlier provider-placeholder order.
+#[test]
+fn resumed_no_arg_wait_uses_restored_completion_event_order() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_background_placeholder(&sp, "restored-a", "slow_bg");
+    seed_background_placeholder(&sp, "restored-b", "slow_bg");
+    let sessions_dir = tau_config::settings::sessions_dir_of(&sp);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    for (call_id, text) in [
+        ("restored-b", "first restored output"),
+        ("restored-a", "second restored output"),
+    ] {
+        store
+            .append_session_event(
+                "s1",
+                None,
+                Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+                    call_id: call_id.into(),
+                    tool_name: ToolName::new("slow_bg"),
+                    tool_type: tau_proto::ToolType::Function,
+                    result: CborValue::Text(text.to_owned()),
+                    display: None,
+                    originator: tau_proto::PromptOriginator::User,
+                }),
+            )
+            .expect("seed background result");
+    }
+    drop(store);
+
+    let mut h =
+        quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    let cid = h.default_conversation_id.clone();
+    h.handle_wait_tool_call(
+        &cid,
+        &wait_no_args_call("wait-restored-first"),
+        ToolName::new("wait"),
+    )
+    .expect("consume first restored completion");
+    h.handle_wait_tool_call(
+        &cid,
+        &wait_no_args_call("wait-restored-second"),
+        ToolName::new("wait"),
+    )
+    .expect("consume second restored completion");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-restored-first"
+                && cbor_map_text(&result.result, "original_tool_call_id") == Some("restored-b")
+                && cbor_map_text(&result.result, "output") == Some("first restored output")
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-restored-second"
+                && cbor_map_text(&result.result, "original_tool_call_id") == Some("restored-a")
+                && cbor_map_text(&result.result, "output") == Some("second restored output")
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
 /// The restored background error is durable. A later cold resume must observe
 /// the existing error and avoid appending a duplicate.
 #[test]
@@ -4434,6 +4583,120 @@ fn wait_returns_internal_background_error_after_extension_disconnect() {
             if error.call_id.as_str() == "wait-bg-disconnect"
                 && error.message == expected
     )));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// A no-arg wait that is already blocked when its background call completes
+/// must consume the result and suppress the normal internal completion prompt.
+#[test]
+fn no_arg_wait_before_background_completion_suppresses_completion_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _tool_events = connect_test_tool(&mut h, "conn-bg-any-before");
+    h.registry.register(
+        "conn-bg-any-before",
+        instant_background_test_tool_spec("slow_any_before"),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-any-before".into();
+    start_background_tool_and_finish_placeholder_turn(
+        &mut h,
+        &cid,
+        call_id.as_str(),
+        "slow_any_before",
+    );
+
+    let wait_call = wait_no_args_call("wait-any-before");
+    h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
+        .expect("start no-arg wait");
+    h.handle_extension_event_inner(
+        "conn-bg-any-before",
+        Event::ToolResult(final_tool_result(
+            call_id.as_str(),
+            "slow_any_before",
+            "background done",
+        )),
+    )
+    .expect("background result");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-any-before"
+                && cbor_map_text(&result.result, "original_tool_call_id") == Some(call_id.as_str())
+                && cbor_map_text(&result.result, "output") == Some("background done")
+    )));
+    let completion_prompt = background_completion_prompt(&call_id);
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::SessionPromptSteered(steered) if steered.text == completion_prompt
+    )));
+    assert!(
+        h.conversations[&cid]
+            .pending_prompts
+            .iter()
+            .all(|prompt| prompt.text != completion_prompt)
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// If a completion notice is queued but not steered yet, `wait({})` should
+/// remove it while returning the already-completed background result.
+#[test]
+fn no_arg_wait_after_background_completion_removes_queued_completion_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-any-after".into();
+
+    h.background_completion_targets
+        .insert(call_id.clone(), cid.clone());
+    h.record_wait_background_result(tau_proto::ToolBackgroundResult {
+        call_id: call_id.clone(),
+        tool_name: ToolName::new("slow_any_after"),
+        tool_type: tau_proto::ToolType::Function,
+        result: CborValue::Text("already done".to_owned()),
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    });
+    seed_tools_running(&mut h, &cid, Vec::new());
+    h.queue_background_completion_prompt(&cid, &call_id);
+    let completion_prompt = background_completion_prompt(&call_id);
+    assert!(
+        h.conversations[&cid]
+            .pending_prompts
+            .iter()
+            .any(|prompt| prompt.text == completion_prompt && prompt.is_internal())
+    );
+
+    let wait_call = wait_no_args_call("wait-any-after");
+    h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
+        .expect("consume queued completion");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == "wait-any-after"
+                && cbor_map_text(&result.result, "original_tool_call_id") == Some(call_id.as_str())
+                && cbor_map_text(&result.result, "output") == Some("already done")
+    )));
+    assert!(
+        h.suppressed_background_completion_prompts
+            .contains(&call_id)
+    );
+    assert!(
+        h.conversations[&cid]
+            .pending_prompts
+            .iter()
+            .all(|prompt| prompt.text != completion_prompt)
+    );
 
     h.shutdown().expect("shutdown");
 }

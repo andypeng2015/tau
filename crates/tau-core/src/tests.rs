@@ -1249,6 +1249,75 @@ fn session_tree_ignores_finished_background_placeholders() {
     ));
 }
 
+/// Restored wait replay depends on completion-event order, not on the order in
+/// which background placeholders closed their provider-visible tool rounds.
+#[test]
+fn session_tree_orders_finished_background_states_by_completion_event() {
+    let tempdir = TempDir::new().expect("tempdir should exist");
+    let store_path = tempdir.path().join("state");
+
+    let mut store = SessionStore::open(&store_path).expect("store should open");
+    let _ = store_user_message(&mut store, "session-1", "run slow tools");
+    store
+        .append_session_event(
+            "session-1",
+            None,
+            Event::ProviderResponseFinished(provider_response_tool_calls(
+                "sp-bg-order",
+                &["call-a", "call-b"],
+            )),
+        )
+        .expect("assistant response should persist");
+    for call_id in ["call-a", "call-b"] {
+        store
+            .append_session_event(
+                "session-1",
+                None,
+                Event::ProviderToolResult(ToolResult {
+                    call_id: call_id.into(),
+                    tool_name: tau_proto::ToolName::new("slow"),
+                    tool_type: ToolType::Function,
+                    result: CborValue::Text("background placeholder".to_owned()),
+                    kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
+                    display: None,
+                    originator: tau_proto::PromptOriginator::User,
+                }),
+            )
+            .expect("placeholder should persist");
+    }
+    for (call_id, text) in [("call-b", "first done"), ("call-a", "second done")] {
+        store
+            .append_session_event(
+                "session-1",
+                None,
+                Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+                    call_id: call_id.into(),
+                    tool_name: tau_proto::ToolName::new("slow"),
+                    tool_type: ToolType::Function,
+                    result: CborValue::Text(text.to_owned()),
+                    display: None,
+                    originator: tau_proto::PromptOriginator::User,
+                }),
+            )
+            .expect("background result should persist");
+    }
+
+    let events = store
+        .session_events("session-1")
+        .expect("session events should load");
+    let tree = store.session("session-1").expect("session should load");
+    let states = tree.background_tool_calls_from(tree.head(), &events);
+
+    assert_eq!(states.len(), 2);
+    assert_eq!(
+        states
+            .iter()
+            .map(|state| state.placeholder.call_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call-b", "call-a"]
+    );
+}
+
 #[test]
 fn session_store_rejects_duplicate_tool_call_ids_before_persisting() {
     // Regression for the item-model migration: malformed provider output

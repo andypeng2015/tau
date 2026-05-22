@@ -241,7 +241,9 @@ impl SessionTree {
     /// with [`ToolResultKind::BackgroundPlaceholder`]. The later real outcome
     /// is stored separately as `ToolBackgroundResult` or
     /// `ToolBackgroundError` and does not fold into the prompt tree, so
-    /// callers must pass the durable event log alongside the tree.
+    /// callers must pass the durable event log alongside the tree. Completed
+    /// calls are returned in durable completion-event order; unfinished
+    /// placeholders follow in provider-placeholder order.
     #[must_use]
     pub fn background_tool_calls_from(
         &self,
@@ -253,7 +255,9 @@ impl SessionTree {
             return Vec::new();
         }
 
-        let mut order = Vec::new();
+        let mut placeholder_order = Vec::new();
+        let mut completion_order = Vec::new();
+        let mut completion_order_seen = HashSet::new();
         let mut states = HashMap::new();
         let mut completions = HashMap::new();
         for entry in events {
@@ -267,7 +271,7 @@ impl SessionTree {
                     if states.contains_key(&result.call_id) {
                         continue;
                     }
-                    order.push(result.call_id.clone());
+                    placeholder_order.push(result.call_id.clone());
                     states.insert(
                         result.call_id.clone(),
                         BackgroundToolCallState {
@@ -287,6 +291,9 @@ impl SessionTree {
                     }
                     let completion = BackgroundToolCompletion::Result(result.clone());
                     completions.insert(result.call_id.clone(), completion.clone());
+                    if completion_order_seen.insert(result.call_id.clone()) {
+                        completion_order.push(result.call_id.clone());
+                    }
                     if let Some(state) = states.get_mut(&result.call_id) {
                         state.completion = Some(completion);
                     }
@@ -297,6 +304,9 @@ impl SessionTree {
                     }
                     let completion = BackgroundToolCompletion::Error(error.clone());
                     completions.insert(error.call_id.clone(), completion.clone());
+                    if completion_order_seen.insert(error.call_id.clone()) {
+                        completion_order.push(error.call_id.clone());
+                    }
                     if let Some(state) = states.get_mut(&error.call_id) {
                         state.completion = Some(completion);
                     }
@@ -305,10 +315,18 @@ impl SessionTree {
             }
         }
 
-        order
-            .into_iter()
-            .filter_map(|call_id| states.remove(&call_id))
-            .collect()
+        let mut ordered = Vec::new();
+        for call_id in completion_order {
+            if let Some(state) = states.remove(&call_id) {
+                ordered.push(state);
+            }
+        }
+        for call_id in placeholder_order {
+            if let Some(state) = states.remove(&call_id) {
+                ordered.push(state);
+            }
+        }
+        ordered
     }
 
     /// Returns background placeholders on `head`'s branch that lack a real

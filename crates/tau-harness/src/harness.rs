@@ -7467,6 +7467,7 @@ impl Harness {
                 self.background_completion_targets
                     .insert(call_id.clone(), target_cid.clone());
             }
+            self.transfer_wait_background_owner_before_teardown(&call_id, cid, &target_cid);
             self.transfer_queued_background_completion_prompt(cid, &target_cid, &call_id);
         }
     }

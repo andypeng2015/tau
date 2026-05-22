@@ -1,6 +1,6 @@
 //! Harness-owned `delegate` and `wait` tools.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use tau_proto::{
@@ -93,30 +93,67 @@ impl Harness {
 
     pub(crate) fn record_wait_tool_request(&mut self, call_id: &ToolCallId) {
         if let Some(tool) = self.pending_tools.get(call_id) {
-            self.subagents
-                .wait_tracker
-                .record_tool_invoke(call_id.clone(), tool.name.clone());
+            let owner = self.wait_owner_for_call(call_id);
+            self.subagents.wait_tracker.record_tool_invoke(
+                call_id.clone(),
+                tool.name.clone(),
+                owner,
+            );
         }
     }
 
     pub(crate) fn record_wait_tool_result(&mut self, result: ToolResult) {
-        let replies = self.subagents.wait_tracker.record_tool_result(result);
+        let owner = self.wait_owner_for_call(&result.call_id);
+        let replies = self
+            .subagents
+            .wait_tracker
+            .record_tool_result(result, owner);
         self.publish_wait_replies(replies);
     }
 
     pub(crate) fn record_wait_tool_error(&mut self, error: ToolError) {
-        let replies = self.subagents.wait_tracker.record_tool_error(error);
+        let owner = self.wait_owner_for_call(&error.call_id);
+        let replies = self.subagents.wait_tracker.record_tool_error(error, owner);
         self.publish_wait_replies(replies);
     }
 
     pub(crate) fn record_wait_background_result(&mut self, result: ToolBackgroundResult) {
-        let replies = self.subagents.wait_tracker.record_background_result(result);
+        let owner = self.wait_owner_for_call(&result.call_id);
+        let replies = self
+            .subagents
+            .wait_tracker
+            .record_background_result(result, owner);
         self.publish_wait_replies(replies);
     }
 
     pub(crate) fn record_wait_background_error(&mut self, error: ToolBackgroundError) {
-        let replies = self.subagents.wait_tracker.record_background_error(error);
+        let owner = self.wait_owner_for_call(&error.call_id);
+        let replies = self
+            .subagents
+            .wait_tracker
+            .record_background_error(error, owner);
         self.publish_wait_replies(replies);
+    }
+
+    /// Move the wait tracker's background-call ownership during
+    /// side-conversation teardown.
+    pub(crate) fn transfer_wait_background_owner_before_teardown(
+        &mut self,
+        call_id: &ToolCallId,
+        source: &ConversationId,
+        target: &ConversationId,
+    ) {
+        self.subagents
+            .wait_tracker
+            .transfer_call_owner(call_id, source, target);
+    }
+
+    fn wait_owner_for_call(&self, call_id: &ToolCallId) -> ConversationId {
+        self.tool_conversations
+            .get(call_id)
+            .or_else(|| self.background_completion_targets.get(call_id))
+            .cloned()
+            .unwrap_or_else(|| self.default_conversation_id.clone())
     }
 
     pub(crate) fn interrupt_active_waits(&mut self) {
@@ -195,6 +232,7 @@ impl Harness {
         let call_id: ToolCallId = call.id.clone();
         self.track_harness_owned_tool_request(cid, call, &visible_tool_name);
         let start = self.subagents.wait_tracker.handle_wait_invoke(
+            cid,
             call_id,
             visible_tool_name,
             &call.arguments,
@@ -392,12 +430,11 @@ fn wait_tool_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::new(WAIT_TOOL_NAME),
         model_visible_name: None,
-        description: Some("Wait for a tool call by `tool_call_id` and return its completed result. Tau will notify you via marked internal messages about tool calls running in the background, and when they complete. Prefer calling this after Tau reports completion for efficiency reasons; it also works for calls that are still running.".to_owned()),
+        description: Some("Wait for background tool calls. With `tool_call_id`, wait for that specific background call. Without `tool_call_id`, wait for the first background call in this conversation to finish and return its `original_tool_call_id`. Already-finished matching results return immediately. Tau will notify you via marked internal messages about background calls completing; `wait({})` consumes one completion and suppresses that completion notice.".to_owned()),
         tool_type: ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
-            "properties": { "tool_call_id": { "type": "string", "description": "The tool call id to wait for." } },
-            "required": ["tool_call_id"]
+            "properties": { "tool_call_id": { "type": "string", "description": "Optional. When set, wait for this specific background tool call. When omitted, wait for the first background tool call in this conversation to finish." } }
         })),
         format: None,
         enabled_by_default: true,
@@ -511,6 +548,14 @@ fn delegate_detail_entries(
     entries
 }
 
+const ORIGINAL_TOOL_CALL_ID_HEADER: &str = "original_tool_call_id";
+
+#[derive(Clone, Debug, PartialEq)]
+enum WaitTarget {
+    Exact(ToolCallId),
+    AnyBackground,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum WaitCallState {
     Pending,
@@ -565,17 +610,27 @@ struct WaitCancel {
 struct WaitTracker {
     calls: HashMap<ToolCallId, WaitCallState>,
     waiters: HashMap<ToolCallId, WaitRequest>,
+    any_waiters: HashMap<ConversationId, WaitRequest>,
+    call_owners: HashMap<ToolCallId, ConversationId>,
+    completion_order: VecDeque<ToolCallId>,
 }
 
 impl WaitTracker {
-    fn record_tool_invoke(&mut self, call_id: ToolCallId, tool_name: ToolName) {
+    fn record_tool_invoke(
+        &mut self,
+        call_id: ToolCallId,
+        tool_name: ToolName,
+        owner: ConversationId,
+    ) {
         if tool_name.as_str() != WAIT_TOOL_NAME {
+            self.call_owners.insert(call_id.clone(), owner);
             self.calls.entry(call_id).or_insert(WaitCallState::Pending);
         }
     }
 
     fn handle_wait_invoke(
         &mut self,
+        owner: &ConversationId,
         call_id: ToolCallId,
         tool_name: ToolName,
         arguments: &CborValue,
@@ -591,10 +646,14 @@ impl WaitTracker {
                 ));
             }
         };
-        self.start_wait(target, WaitRequest { call_id, tool_name })
+        let wait = WaitRequest { call_id, tool_name };
+        match target {
+            WaitTarget::Exact(target) => self.start_exact_wait(target, wait),
+            WaitTarget::AnyBackground => self.start_any_wait(owner.clone(), wait),
+        }
     }
 
-    fn start_wait(&mut self, target: ToolCallId, wait: WaitRequest) -> WaitStart {
+    fn start_exact_wait(&mut self, target: ToolCallId, wait: WaitRequest) -> WaitStart {
         if self.waiters.contains_key(&target) {
             return WaitStart::reply(wait_error_reply(
                 wait.call_id,
@@ -627,6 +686,7 @@ impl WaitTracker {
             }
             Some(WaitCallState::BackgroundResult(result)) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
+                self.remove_completed(&target);
                 WaitStart::reply_with_suppress(
                     wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display),
                     target,
@@ -634,6 +694,7 @@ impl WaitTracker {
             }
             Some(WaitCallState::BackgroundError(error)) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
+                self.remove_completed(&target);
                 WaitStart::reply_with_suppress(
                     wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
                         .with_display(error.display),
@@ -655,11 +716,80 @@ impl WaitTracker {
         }
     }
 
-    fn record_tool_result(&mut self, result: ToolResult) -> Vec<WaitReply> {
+    fn start_any_wait(&mut self, owner: ConversationId, wait: WaitRequest) -> WaitStart {
+        if self.any_waiters.contains_key(&owner) {
+            return WaitStart::reply(wait_error_reply(
+                wait.call_id,
+                wait.tool_name,
+                "existing wait for a background tool call in this conversation already in progress"
+                    .to_owned(),
+                None,
+            ));
+        }
+        if let Some(target) = self.oldest_completed_for_owner(&owner) {
+            return self.consume_completed_for_any(target, wait);
+        }
+        if self.has_running_background_for_owner(&owner) {
+            self.any_waiters.insert(owner, wait);
+            return WaitStart::default();
+        }
+        WaitStart::reply(wait_error_reply(
+            wait.call_id,
+            wait.tool_name,
+            "no background tool calls are running or completed in this conversation".to_owned(),
+            None,
+        ))
+    }
+
+    fn consume_completed_for_any(&mut self, target: ToolCallId, wait: WaitRequest) -> WaitStart {
+        let Some(state) = self.calls.remove(&target) else {
+            return WaitStart::reply(wait_error_reply(
+                wait.call_id,
+                wait.tool_name,
+                format!("unknown tool call: `{target}`"),
+                None,
+            ));
+        };
+        self.calls.insert(target.clone(), WaitCallState::Consumed);
+        self.remove_completed(&target);
+        match state {
+            WaitCallState::BackgroundResult(result) => WaitStart::reply_with_suppress(
+                wait_result_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    result_with_original_tool_call_id(&target, result.result),
+                    result.display,
+                ),
+                target,
+            ),
+            WaitCallState::BackgroundError(error) => WaitStart::reply_with_suppress(
+                wait_error_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    error.message,
+                    details_with_original_tool_call_id(&target, error.details),
+                )
+                .with_display(error.display),
+                target,
+            ),
+            other => {
+                self.calls.insert(target.clone(), other);
+                WaitStart::reply(wait_error_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    format!("tool call `{target}` has no completed background result"),
+                    None,
+                ))
+            }
+        }
+    }
+
+    fn record_tool_result(&mut self, result: ToolResult, owner: ConversationId) -> Vec<WaitReply> {
         if result.tool_name.as_str() == WAIT_TOOL_NAME {
             return Vec::new();
         }
         let call_id = result.call_id.clone();
+        self.call_owners.insert(call_id.clone(), owner);
         if self.is_consumed(&call_id) || self.is_backgrounded(&call_id) {
             return Vec::new();
         }
@@ -680,11 +810,12 @@ impl WaitTracker {
         Vec::new()
     }
 
-    fn record_tool_error(&mut self, error: ToolError) -> Vec<WaitReply> {
+    fn record_tool_error(&mut self, error: ToolError, owner: ConversationId) -> Vec<WaitReply> {
         if error.tool_name.as_str() == WAIT_TOOL_NAME {
             return Vec::new();
         }
         let call_id = error.call_id.clone();
+        self.call_owners.insert(call_id.clone(), owner);
         if self.is_consumed(&call_id) {
             return Vec::new();
         }
@@ -699,52 +830,90 @@ impl WaitTracker {
         Vec::new()
     }
 
-    fn record_background_result(&mut self, result: ToolBackgroundResult) -> Vec<WaitReply> {
+    fn record_background_result(
+        &mut self,
+        result: ToolBackgroundResult,
+        owner: ConversationId,
+    ) -> Vec<WaitReply> {
         if result.tool_name.as_str() == WAIT_TOOL_NAME {
             return Vec::new();
         }
         let call_id = result.call_id.clone();
+        self.call_owners.insert(call_id.clone(), owner.clone());
         if self.is_consumed(&call_id) {
             return Vec::new();
         }
+        if let Some(wait) = self.waiters.remove(&call_id) {
+            self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+            self.remove_completed(&call_id);
+            let mut replies = vec![
+                wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display)
+                    .with_suppress(call_id.clone()),
+            ];
+            replies.extend(self.finish_any_waiter_if_no_candidates(&owner));
+            return replies;
+        }
+        if let Some(wait) = self.any_waiters.remove(&owner) {
+            self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+            self.remove_completed(&call_id);
+            return vec![
+                wait_result_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    result_with_original_tool_call_id(&call_id, result.result),
+                    result.display,
+                )
+                .with_suppress(call_id),
+            ];
+        }
         self.calls
             .insert(call_id.clone(), WaitCallState::BackgroundResult(result));
-        self.resolve_waiter_with_background(&call_id)
+        self.push_completed(call_id);
+        Vec::new()
     }
 
-    fn record_background_error(&mut self, error: ToolBackgroundError) -> Vec<WaitReply> {
+    fn record_background_error(
+        &mut self,
+        error: ToolBackgroundError,
+        owner: ConversationId,
+    ) -> Vec<WaitReply> {
         if error.tool_name.as_str() == WAIT_TOOL_NAME {
             return Vec::new();
         }
         let call_id = error.call_id.clone();
+        self.call_owners.insert(call_id.clone(), owner.clone());
         if self.is_consumed(&call_id) {
             return Vec::new();
         }
-        self.calls
-            .insert(call_id.clone(), WaitCallState::BackgroundError(error));
-        self.resolve_waiter_with_background(&call_id)
-    }
-
-    fn resolve_waiter_with_background(&mut self, call_id: &ToolCallId) -> Vec<WaitReply> {
-        let Some(wait) = self.waiters.remove(call_id) else {
-            return Vec::new();
-        };
-        let Some(state) = self.calls.remove(call_id) else {
-            return Vec::new();
-        };
-        self.calls.insert(call_id.clone(), WaitCallState::Consumed);
-        match state {
-            WaitCallState::BackgroundResult(result) => vec![
-                wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display)
-                    .with_suppress(call_id.clone()),
-            ],
-            WaitCallState::BackgroundError(error) => vec![
+        if let Some(wait) = self.waiters.remove(&call_id) {
+            self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+            self.remove_completed(&call_id);
+            let mut replies = vec![
                 wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
                     .with_display(error.display)
                     .with_suppress(call_id.clone()),
-            ],
-            _ => Vec::new(),
+            ];
+            replies.extend(self.finish_any_waiter_if_no_candidates(&owner));
+            return replies;
         }
+        if let Some(wait) = self.any_waiters.remove(&owner) {
+            self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+            self.remove_completed(&call_id);
+            return vec![
+                wait_error_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    error.message,
+                    details_with_original_tool_call_id(&call_id, error.details),
+                )
+                .with_display(error.display)
+                .with_suppress(call_id),
+            ];
+        }
+        self.calls
+            .insert(call_id.clone(), WaitCallState::BackgroundError(error));
+        self.push_completed(call_id);
+        Vec::new()
     }
 
     fn record_tool_cancelled(&mut self, call_ids: &HashSet<ToolCallId>) -> WaitCancel {
@@ -752,6 +921,10 @@ impl WaitTracker {
             return WaitCancel::default();
         }
 
+        let cancelled_owners: HashSet<ConversationId> = call_ids
+            .iter()
+            .filter_map(|call_id| self.call_owners.get(call_id).cloned())
+            .collect();
         let mut cancelled = WaitCancel::default();
         let waiters = std::mem::take(&mut self.waiters);
         for (target, wait) in waiters {
@@ -783,6 +956,28 @@ impl WaitTracker {
 
         for call_id in call_ids {
             self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+            self.remove_completed(call_id);
+        }
+
+        let any_waiters = std::mem::take(&mut self.any_waiters);
+        for (owner, wait) in any_waiters {
+            if call_ids.contains(&wait.call_id) {
+                continue;
+            }
+            if self.oldest_completed_for_owner(&owner).is_some()
+                || self.has_running_background_for_owner(&owner)
+            {
+                self.any_waiters.insert(owner, wait);
+            } else if cancelled_owners.contains(&owner) {
+                cancelled.replies.push(wait_error_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    "background tool call in this conversation was cancelled".to_owned(),
+                    None,
+                ));
+            } else {
+                self.any_waiters.insert(owner, wait);
+            }
         }
 
         cancelled
@@ -790,7 +985,7 @@ impl WaitTracker {
 
     fn interrupt_active_waits(&mut self) -> Vec<WaitReply> {
         let waiters = std::mem::take(&mut self.waiters);
-        waiters
+        let mut replies: Vec<WaitReply> = waiters
             .into_iter()
             .map(|(target, wait)| {
                 let mut reply = wait_interrupted_reply(wait.call_id, wait.tool_name, &target);
@@ -799,13 +994,90 @@ impl WaitTracker {
                 }
                 reply
             })
-            .collect()
+            .collect();
+        replies.extend(
+            std::mem::take(&mut self.any_waiters)
+                .into_values()
+                .map(|wait| wait_interrupted_any_reply(wait.call_id, wait.tool_name)),
+        );
+        replies
+    }
+
+    fn transfer_call_owner(
+        &mut self,
+        call_id: &ToolCallId,
+        source: &ConversationId,
+        target: &ConversationId,
+    ) {
+        if !self.calls.contains_key(call_id) {
+            return;
+        }
+        match self.call_owners.get(call_id) {
+            Some(owner) if owner != source => {}
+            _ => {
+                self.call_owners.insert(call_id.clone(), target.clone());
+            }
+        }
+    }
+
+    fn finish_any_waiter_if_no_candidates(&mut self, owner: &ConversationId) -> Vec<WaitReply> {
+        if self.oldest_completed_for_owner(owner).is_some()
+            || self.has_running_background_for_owner(owner)
+        {
+            return Vec::new();
+        }
+        let Some(wait) = self.any_waiters.remove(owner) else {
+            return Vec::new();
+        };
+        vec![wait_error_reply(
+            wait.call_id,
+            wait.tool_name,
+            "no background tool calls are running or completed in this conversation".to_owned(),
+            None,
+        )]
+    }
+
+    fn oldest_completed_for_owner(&self, owner: &ConversationId) -> Option<ToolCallId> {
+        self.completion_order.iter().find_map(|call_id| {
+            (self.call_owners.get(call_id) == Some(owner) && self.is_completed(call_id))
+                .then_some(call_id.clone())
+        })
+    }
+
+    fn has_running_background_for_owner(&self, owner: &ConversationId) -> bool {
+        self.calls.iter().any(|(call_id, state)| {
+            matches!(state, WaitCallState::Backgrounded)
+                && self.call_owners.get(call_id) == Some(owner)
+        })
+    }
+
+    fn push_completed(&mut self, call_id: ToolCallId) {
+        if self
+            .completion_order
+            .iter()
+            .all(|existing| existing != &call_id)
+        {
+            self.completion_order.push_back(call_id);
+        }
+    }
+
+    fn remove_completed(&mut self, call_id: &ToolCallId) {
+        self.completion_order.retain(|existing| existing != call_id);
     }
 
     fn is_backgrounded(&self, call_id: &ToolCallId) -> bool {
         self.calls
             .get(call_id)
             .is_some_and(|state| matches!(state, WaitCallState::Backgrounded))
+    }
+
+    fn is_completed(&self, call_id: &ToolCallId) -> bool {
+        self.calls.get(call_id).is_some_and(|state| {
+            matches!(
+                state,
+                WaitCallState::BackgroundResult(_) | WaitCallState::BackgroundError(_)
+            )
+        })
     }
 
     fn is_consumed(&self, call_id: &ToolCallId) -> bool {
@@ -907,7 +1179,55 @@ fn wait_interrupted_reply(
     )
 }
 
-fn parse_wait_args(arguments: &CborValue) -> Result<ToolCallId, String> {
+fn wait_interrupted_any_reply(wait_call_id: ToolCallId, wait_tool_name: ToolName) -> WaitReply {
+    wait_result_reply(
+        wait_call_id,
+        wait_tool_name,
+        CborValue::Text(format!(
+            "{}: true\n\nWaiting for a background tool call in this conversation was interrupted because user input is queued. Try again later.",
+            tau_proto::TAU_INTERNAL_HEADER_NAME
+        )),
+        None,
+    )
+}
+
+fn result_with_original_tool_call_id(
+    original_call_id: &ToolCallId,
+    result: CborValue,
+) -> CborValue {
+    let header = original_tool_call_id_entry(original_call_id);
+    match result {
+        CborValue::Map(mut entries) => {
+            entries.insert(0, header);
+            CborValue::Map(entries)
+        }
+        other => CborValue::Map(vec![header, (CborValue::Text("output".to_owned()), other)]),
+    }
+}
+
+fn details_with_original_tool_call_id(
+    original_call_id: &ToolCallId,
+    details: Option<CborValue>,
+) -> Option<CborValue> {
+    let header = original_tool_call_id_entry(original_call_id);
+    Some(match details {
+        Some(CborValue::Map(mut entries)) => {
+            entries.insert(0, header);
+            CborValue::Map(entries)
+        }
+        Some(other) => CborValue::Map(vec![header, (CborValue::Text("details".to_owned()), other)]),
+        None => CborValue::Map(vec![header]),
+    })
+}
+
+fn original_tool_call_id_entry(original_call_id: &ToolCallId) -> (CborValue, CborValue) {
+    (
+        CborValue::Text(ORIGINAL_TOOL_CALL_ID_HEADER.to_owned()),
+        CborValue::Text(original_call_id.to_string()),
+    )
+}
+
+fn parse_wait_args(arguments: &CborValue) -> Result<WaitTarget, String> {
     let CborValue::Map(entries) = arguments else {
         return Err("arguments must be an object".to_owned());
     };
@@ -920,14 +1240,14 @@ fn parse_wait_args(arguments: &CborValue) -> Result<ToolCallId, String> {
                     if text.is_empty() {
                         Err("`tool_call_id` must not be empty".to_owned())
                     } else {
-                        Ok(text.to_owned().into())
+                        Ok(WaitTarget::Exact(text.to_owned().into()))
                     }
                 }
                 _ => Err("`tool_call_id` must be a string".to_owned()),
             };
         }
     }
-    Err("missing string argument: tool_call_id".to_owned())
+    Ok(WaitTarget::AnyBackground)
 }
 
 #[cfg(test)]
@@ -949,6 +1269,124 @@ mod tests {
                 CborValue::Text(mode.to_owned()),
             ),
         ])
+    }
+
+    fn conv(id: &str) -> ConversationId {
+        ConversationId::new(id)
+    }
+
+    fn wait_args_empty() -> CborValue {
+        CborValue::Map(Vec::new())
+    }
+
+    fn wait_args_exact(call_id: &str) -> CborValue {
+        CborValue::Map(vec![(
+            CborValue::Text("tool_call_id".to_owned()),
+            CborValue::Text(call_id.to_owned()),
+        )])
+    }
+
+    fn wait_tool_name() -> ToolName {
+        ToolName::new(WAIT_TOOL_NAME)
+    }
+
+    fn slow_tool_name() -> ToolName {
+        ToolName::new("slow")
+    }
+
+    fn background_placeholder(call_id: &str) -> ToolResult {
+        ToolResult {
+            call_id: call_id.into(),
+            tool_name: slow_tool_name(),
+            tool_type: ToolType::Function,
+            result: CborValue::Text("still running".to_owned()),
+            kind: ToolResultKind::BackgroundPlaceholder,
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }
+    }
+
+    fn background_result(call_id: &str, text: &str) -> ToolBackgroundResult {
+        ToolBackgroundResult {
+            call_id: call_id.into(),
+            tool_name: slow_tool_name(),
+            tool_type: ToolType::Function,
+            result: CborValue::Text(text.to_owned()),
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }
+    }
+
+    fn background_error(
+        call_id: &str,
+        message: &str,
+        details: Option<CborValue>,
+    ) -> ToolBackgroundError {
+        ToolBackgroundError {
+            call_id: call_id.into(),
+            tool_name: slow_tool_name(),
+            tool_type: ToolType::Function,
+            message: message.to_owned(),
+            details,
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }
+    }
+
+    fn start_wait_any(
+        tracker: &mut WaitTracker,
+        owner: &ConversationId,
+        call_id: &str,
+    ) -> WaitStart {
+        tracker.handle_wait_invoke(owner, call_id.into(), wait_tool_name(), &wait_args_empty())
+    }
+
+    fn start_wait_exact(
+        tracker: &mut WaitTracker,
+        owner: &ConversationId,
+        wait_call_id: &str,
+        target_call_id: &str,
+    ) -> WaitStart {
+        tracker.handle_wait_invoke(
+            owner,
+            wait_call_id.into(),
+            wait_tool_name(),
+            &wait_args_exact(target_call_id),
+        )
+    }
+
+    fn start_reply(start: WaitStart) -> WaitReply {
+        start.reply.expect("wait reply")
+    }
+
+    fn reply_result(reply: WaitReply) -> CborValue {
+        match reply.kind {
+            WaitReplyKind::Result { result, .. } => result,
+            other => panic!("expected result reply, got {other:?}"),
+        }
+    }
+
+    fn reply_error(reply: WaitReply) -> (String, Option<CborValue>) {
+        match reply.kind {
+            WaitReplyKind::Error {
+                message, details, ..
+            } => (message, details),
+            other => panic!("expected error reply, got {other:?}"),
+        }
+    }
+
+    fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
+        let CborValue::Map(entries) = value else {
+            return None;
+        };
+        entries.iter().find_map(|(entry_key, entry_value)| {
+            matches!(entry_key, CborValue::Text(text) if text == key)
+                .then_some(entry_value)
+                .and_then(|value| match value {
+                    CborValue::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+        })
     }
 
     #[test]
@@ -978,5 +1416,314 @@ mod tests {
             error,
             "`execution_mode` must be `shared`, `update`, or `exclusive`"
         );
+    }
+
+    /// The no-arg form is intentional, so the agent-visible schema must not
+    /// force `tool_call_id` even though the exact-id form remains available.
+    #[test]
+    fn wait_tool_schema_does_not_require_tool_call_id() {
+        let spec = wait_tool_spec();
+        let parameters = spec.parameters.expect("parameters");
+        let required = parameters
+            .get("required")
+            .and_then(serde_json::Value::as_array);
+
+        assert!(required.is_none_or(|items| {
+            items
+                .iter()
+                .all(|item| item.as_str() != Some("tool_call_id"))
+        }));
+    }
+
+    /// `wait({})` is now the shorthand for waiting on any background
+    /// completion scoped to the current conversation.
+    #[test]
+    fn wait_args_omitted_tool_call_id_parse_as_any_background() {
+        assert_eq!(
+            parse_wait_args(&wait_args_empty()),
+            Ok(WaitTarget::AnyBackground)
+        );
+        let unrelated = CborValue::Map(vec![(
+            CborValue::Text("unused".to_owned()),
+            CborValue::Text("ignored".to_owned()),
+        )]);
+        assert_eq!(parse_wait_args(&unrelated), Ok(WaitTarget::AnyBackground));
+    }
+
+    /// Invalid explicit ids still fail early so a typo does not silently turn
+    /// into a broad no-arg wait.
+    #[test]
+    fn wait_args_reject_non_string_and_empty_tool_call_id() {
+        let non_string = CborValue::Map(vec![(
+            CborValue::Text("tool_call_id".to_owned()),
+            CborValue::Bool(true),
+        )]);
+        assert_eq!(
+            parse_wait_args(&non_string),
+            Err("`tool_call_id` must be a string".to_owned())
+        );
+        assert_eq!(
+            parse_wait_args(&wait_args_exact("   ")),
+            Err("`tool_call_id` must not be empty".to_owned())
+        );
+    }
+
+    /// Completed any-waits must use deterministic finish order, not HashMap
+    /// iteration order. The call that finishes first is consumed first even if
+    /// its id sorts after a later completion.
+    #[test]
+    fn no_arg_wait_consumes_oldest_completed_background_result_for_owner() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        assert!(
+            tracker
+                .record_background_result(
+                    background_result("bg-b", "first finished"),
+                    owner.clone()
+                )
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .record_background_result(
+                    background_result("bg-a", "second finished"),
+                    owner.clone()
+                )
+                .is_empty()
+        );
+
+        let first = start_wait_any(&mut tracker, &owner, "wait-first");
+        assert_eq!(
+            first.suppress_call_id.as_ref().map(|id| id.as_str()),
+            Some("bg-b")
+        );
+        let first_result = reply_result(start_reply(first));
+        assert_eq!(
+            cbor_map_text(&first_result, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("bg-b")
+        );
+        assert_eq!(
+            cbor_map_text(&first_result, "output"),
+            Some("first finished")
+        );
+
+        let second = start_wait_any(&mut tracker, &owner, "wait-second");
+        assert_eq!(
+            second.suppress_call_id.as_ref().map(|id| id.as_str()),
+            Some("bg-a")
+        );
+        let second_result = reply_result(start_reply(second));
+        assert_eq!(
+            cbor_map_text(&second_result, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("bg-a")
+        );
+        assert_eq!(
+            cbor_map_text(&second_result, "output"),
+            Some("second finished")
+        );
+    }
+
+    /// If a same-conversation background call is still running, `wait({})`
+    /// must block and resolve when the first matching completion arrives.
+    #[test]
+    fn no_arg_wait_blocks_on_running_background_call_and_resolves() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        tracker.record_tool_invoke("bg-run".into(), slow_tool_name(), owner.clone());
+        assert!(
+            tracker
+                .record_tool_result(background_placeholder("bg-run"), owner.clone())
+                .is_empty()
+        );
+
+        let start = start_wait_any(&mut tracker, &owner, "wait-any");
+        assert!(start.reply.is_none());
+        assert!(start.suppress_call_id.is_none());
+
+        let replies = tracker.record_background_result(background_result("bg-run", "done"), owner);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(
+            replies[0].suppress_call_id.as_ref().map(|id| id.as_str()),
+            Some("bg-run")
+        );
+        let result = reply_result(replies.into_iter().next().expect("reply"));
+        assert_eq!(
+            cbor_map_text(&result, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("bg-run")
+        );
+        assert_eq!(cbor_map_text(&result, "output"), Some("done"));
+    }
+
+    /// Background errors are completions too. A no-arg wait must return the
+    /// error and include the original background id in provider-visible
+    /// details.
+    #[test]
+    fn no_arg_wait_returns_background_error_with_original_id_details() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        let details = CborValue::Map(vec![(
+            CborValue::Text("hint".to_owned()),
+            CborValue::Text("bad input".to_owned()),
+        )]);
+        assert!(
+            tracker
+                .record_background_error(
+                    background_error("bg-fail", "boom", Some(details)),
+                    owner.clone()
+                )
+                .is_empty()
+        );
+
+        let reply = start_reply(start_wait_any(&mut tracker, &owner, "wait-error"));
+        let (message, details) = reply_error(reply);
+        assert_eq!(message, "boom");
+        let details = details.expect("details");
+        assert_eq!(
+            cbor_map_text(&details, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("bg-fail")
+        );
+        assert_eq!(cbor_map_text(&details, "hint"), Some("bad input"));
+    }
+
+    /// When an exact waiter and an any-waiter can both see the same completion,
+    /// the exact waiter gets the result and the any-waiter does not consume a
+    /// duplicate copy.
+    #[test]
+    fn explicit_waiter_wins_over_any_waiter_for_same_completion() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        tracker.record_tool_invoke("bg-run".into(), slow_tool_name(), owner.clone());
+        assert!(
+            tracker
+                .record_tool_result(background_placeholder("bg-run"), owner.clone())
+                .is_empty()
+        );
+        assert!(
+            start_wait_any(&mut tracker, &owner, "wait-any")
+                .reply
+                .is_none()
+        );
+        assert!(
+            start_wait_exact(&mut tracker, &owner, "wait-exact", "bg-run")
+                .reply
+                .is_none()
+        );
+
+        let replies = tracker.record_background_result(background_result("bg-run", "done"), owner);
+        assert!(replies.iter().any(|reply| {
+            reply.wait_call_id.as_str() == "wait-exact"
+                && matches!(reply.kind, WaitReplyKind::Result { .. })
+        }));
+        assert!(replies.iter().all(|reply| {
+            reply.wait_call_id.as_str() != "wait-any"
+                || matches!(reply.kind, WaitReplyKind::Error { .. })
+        }));
+    }
+
+    /// Parallel duplicate no-arg waits in one conversation would be ambiguous:
+    /// only one waiter may consume the next completion.
+    #[test]
+    fn duplicate_no_arg_waits_in_same_conversation_error() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        tracker.record_tool_invoke("bg-run".into(), slow_tool_name(), owner.clone());
+        assert!(
+            tracker
+                .record_tool_result(background_placeholder("bg-run"), owner.clone())
+                .is_empty()
+        );
+        assert!(
+            start_wait_any(&mut tracker, &owner, "wait-one")
+                .reply
+                .is_none()
+        );
+
+        let (message, details) = reply_error(start_reply(start_wait_any(
+            &mut tracker,
+            &owner,
+            "wait-two",
+        )));
+        assert!(message.contains("existing wait for a background tool call"));
+        assert!(details.is_none());
+    }
+
+    /// The no-arg form is scoped to its caller's conversation. A completion in
+    /// a different conversation must not be stolen by this wait.
+    #[test]
+    fn no_arg_wait_ignores_background_completions_from_other_conversations() {
+        let main = conv("main");
+        let side = conv("side");
+        let mut tracker = WaitTracker::default();
+        assert!(
+            tracker
+                .record_background_result(background_result("side-bg", "side done"), side.clone())
+                .is_empty()
+        );
+
+        let (message, _) = reply_error(start_reply(start_wait_any(
+            &mut tracker,
+            &main,
+            "wait-main",
+        )));
+        assert!(message.contains("no background tool calls"));
+
+        let side_result = reply_result(start_reply(start_wait_any(
+            &mut tracker,
+            &side,
+            "wait-side",
+        )));
+        assert_eq!(
+            cbor_map_text(&side_result, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("side-bg")
+        );
+    }
+
+    /// Once a no-arg wait consumes a completion, a later exact wait for that
+    /// original id must report that the result was already handled.
+    #[test]
+    fn exact_wait_after_no_arg_consumes_reports_already_consumed() {
+        let owner = conv("main");
+        let mut tracker = WaitTracker::default();
+        assert!(
+            tracker
+                .record_background_result(background_result("bg-once", "done"), owner.clone())
+                .is_empty()
+        );
+        let _ = start_reply(start_wait_any(&mut tracker, &owner, "wait-any"));
+
+        let (message, _) = reply_error(start_reply(start_wait_exact(
+            &mut tracker,
+            &owner,
+            "wait-exact",
+            "bg-once",
+        )));
+        assert!(message.contains("already consumed"));
+    }
+
+    /// Side-conversation teardown transfers background ownership to the parent;
+    /// the wait tracker must follow that transfer so the parent can consume a
+    /// completion with `wait({})` after the side conversation disappears.
+    #[test]
+    fn transferred_background_owner_can_be_consumed_by_parent_no_arg_wait() {
+        let parent = conv("parent");
+        let side = conv("side");
+        let mut tracker = WaitTracker::default();
+        assert!(
+            tracker
+                .record_background_result(background_result("bg-side", "done"), side.clone())
+                .is_empty()
+        );
+        tracker.transfer_call_owner(&"bg-side".into(), &side, &parent);
+
+        let result = reply_result(start_reply(start_wait_any(
+            &mut tracker,
+            &parent,
+            "wait-parent",
+        )));
+        assert_eq!(
+            cbor_map_text(&result, ORIGINAL_TOOL_CALL_ID_HEADER),
+            Some("bg-side")
+        );
+        assert_eq!(cbor_map_text(&result, "output"), Some("done"));
     }
 }
