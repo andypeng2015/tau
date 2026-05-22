@@ -169,6 +169,13 @@ fn registers_exa_by_default_and_parallel_tools_disabled() {
             .map(|name| name.as_str()),
         Some(MODEL_VISIBLE_SEARCH_TOOL_NAME)
     );
+    assert_eq!(
+        tools[0]
+            .parameters
+            .as_ref()
+            .and_then(|parameters| parameters.get("additionalProperties")),
+        Some(&serde_json::Value::Bool(false))
+    );
     assert!(tools[0].enabled_by_default);
 
     assert_eq!(tools[1].name.as_str(), PARALLEL_SEARCH_TOOL_NAME);

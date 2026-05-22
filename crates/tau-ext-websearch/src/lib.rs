@@ -229,7 +229,8 @@ fn exa_tool_spec() -> ToolSpec {
                     "description": format!("Number of results to return (default: {DEFAULT_NUM_RESULTS}, max: {MAX_NUM_RESULTS}).")
                 }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         })),
         format: None,
         enabled_by_default: true,
