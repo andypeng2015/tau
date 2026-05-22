@@ -89,6 +89,16 @@ impl Harness {
         cid: &ConversationId,
         prompt: impl Into<PendingPrompt>,
     ) -> Result<(), HarnessError> {
+        let prompt = prompt.into();
+        if !prompt.is_internal()
+            && let Some(restore_notice) = self.take_pending_restore_notice_for_user_prompt(cid)
+        {
+            self.publish_pending_prompt_for_conversation(cid, restore_notice)?;
+            self.publish_pending_prompt_for_conversation(cid, prompt)?;
+            self.dispatch_prompt_after_publish_idle(cid);
+            return Ok(());
+        }
+
         self.publish_pending_prompt_for_conversation(cid, prompt)?;
         // If the publish parked in interception (or queued behind one
         // that is), defer the agent dispatch until this user-prompt

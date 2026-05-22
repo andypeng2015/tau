@@ -145,6 +145,13 @@ fn echo_harness_with_dirs_and_start_reason(
 }
 
 fn quiet_provider_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, HarnessError> {
+    quiet_provider_harness_with_start_reason(state_dir, tau_proto::SessionStartReason::Initial)
+}
+
+fn quiet_provider_harness_with_start_reason(
+    state_dir: impl Into<PathBuf>,
+    start_reason: tau_proto::SessionStartReason,
+) -> Result<Harness, HarnessError> {
     fn quiet_provider_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
         fn inner(r: UnixStream, w: UnixStream) -> Result<(), Box<dyn std::error::Error>> {
             let mut reader = FrameReader::new(BufReader::new(r));
@@ -197,7 +204,7 @@ fn quiet_provider_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, Harn
         quiet_provider_runner,
         Vec::new(),
         "s1",
-        tau_proto::SessionStartReason::Initial,
+        start_reason,
     )
 }
 

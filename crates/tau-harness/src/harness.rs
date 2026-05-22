@@ -86,6 +86,30 @@ pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
     )
 }
 
+/// Text for the one-shot model-visible notice folded into the first user turn
+/// after a cold session resume.
+pub(crate) fn restore_notice_prompt() -> String {
+    format!(
+        "{} Previous session was interrupted and restored.",
+        crate::INTERNAL_MARKER
+    )
+}
+
+fn event_is_restore_notice(event: &Event, text: &str) -> bool {
+    match event {
+        Event::UiPromptSubmitted(prompt) => {
+            prompt.message_class.is_internal() && prompt.text == text
+        }
+        Event::SessionPromptSteered(steered) => {
+            steered.message_class.is_internal() && steered.text == text
+        }
+        Event::SessionUserMessageInjected(injected) => {
+            injected.message_class.is_internal() && injected.text == text
+        }
+        _ => false,
+    }
+}
+
 fn restored_tool_call_error_message(call_id: &ToolCallId) -> String {
     format!(
         "{}: true\n\nTool call `{call_id}` was interrupted due to session restart. Side effects may have occurred.",
@@ -696,6 +720,9 @@ pub(crate) struct Harness {
     pub(crate) system_prompt_templates: HashMap<String, String>,
     /// Sessions whose AGENTS/skill discovery has completed.
     pub(crate) initialized_sessions: std::collections::HashSet<SessionId>,
+    /// Resumed sessions that still need a one-shot internal restore notice
+    /// folded immediately before the next real user prompt.
+    pub(crate) pending_restore_notice_sessions: HashSet<SessionId>,
     /// Session prompt IDs that have already been completed by the agent.
     /// Used to dedupe duplicate `ProviderResponseFinished` events that can
     /// arise under at-least-once delivery (e.g. an agent that reconnects
@@ -1122,6 +1149,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
+            pending_restore_notice_sessions: HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
@@ -1338,6 +1366,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
+            pending_restore_notice_sessions: HashSet::new(),
             completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
@@ -4752,6 +4781,7 @@ impl Harness {
         self.prompt_conversations.clear();
         self.pending_provider_prompts.clear();
         self.pending_compactions.clear();
+        self.pending_restore_notice_sessions.clear();
         self.pending_ext_agent_queries.clear();
         self.active_ext_agent_queries.clear();
         self.subagents = SubagentToolState::default();
@@ -4830,6 +4860,52 @@ impl Harness {
         self.store.sessions_dir().to_path_buf()
     }
 
+    fn restore_notice_already_persisted(&self, session_id: &SessionId) -> bool {
+        let notice = restore_notice_prompt();
+        self.store
+            .session_events(session_id.as_str())
+            .map(|events| {
+                events
+                    .iter()
+                    .any(|entry| event_is_restore_notice(&entry.event, &notice))
+            })
+            .unwrap_or(false)
+    }
+
+    fn queue_restore_notice_for_resumed_session(&mut self, session_id: &SessionId) {
+        if session_id != &self.current_session_id {
+            return;
+        }
+        if self.restore_notice_already_persisted(session_id) {
+            self.pending_restore_notice_sessions.remove(session_id);
+            return;
+        }
+        self.pending_restore_notice_sessions
+            .insert(session_id.clone());
+    }
+
+    /// Consume the pending restore notice for the default conversation, if the
+    /// next prompt is the first real user prompt after a resumed startup.
+    pub(crate) fn take_pending_restore_notice_for_user_prompt(
+        &mut self,
+        cid: &ConversationId,
+    ) -> Option<PendingPrompt> {
+        if cid != &self.default_conversation_id {
+            return None;
+        }
+        let session_id = self.conversations.get(cid)?.session_id.clone();
+        if session_id != self.current_session_id {
+            return None;
+        }
+        if self.restore_notice_already_persisted(&session_id) {
+            self.pending_restore_notice_sessions.remove(&session_id);
+            return None;
+        }
+        self.pending_restore_notice_sessions
+            .remove(&session_id)
+            .then(|| PendingPrompt::internal(restore_notice_prompt()))
+    }
+
     fn repair_restored_foreground_tool_calls(&mut self, session_id: &SessionId) -> usize {
         if session_id != &self.current_session_id {
             return 0;
@@ -4869,6 +4945,9 @@ impl Harness {
         session_id: SessionId,
         reason: tau_proto::SessionStartReason,
     ) {
+        if matches!(reason, tau_proto::SessionStartReason::Resume) {
+            self.queue_restore_notice_for_resumed_session(&session_id);
+        }
         let waiting_on = self.session_init_provider_ids();
         if waiting_on.is_empty() {
             if matches!(reason, tau_proto::SessionStartReason::Resume) {
@@ -5700,6 +5779,14 @@ impl Harness {
             self.fold_queued_background_completion_prompts(&pending.target_cid);
         match pending.resume {
             PendingCompactionResume::UserPrompt(text) => {
+                if let Some(restore_notice) =
+                    self.take_pending_restore_notice_for_user_prompt(&pending.target_cid)
+                {
+                    self.publish_pending_prompt_for_conversation(
+                        &pending.target_cid,
+                        restore_notice,
+                    )?;
+                }
                 self.publish_pending_prompt_for_conversation(
                     &pending.target_cid,
                     PendingPrompt::user(text),
@@ -6655,11 +6742,16 @@ impl Harness {
     /// give queued prompts a chance to ride the next per-round prompt
     /// rather than waiting for the whole turn to terminate.
     fn fold_pending_prompts_as_steered(&mut self, cid: &ConversationId) {
-        let pending: Vec<PendingPrompt> = self
+        let mut pending: Vec<PendingPrompt> = self
             .conversations
             .get_mut(cid)
             .map(|c| c.pending_prompts.drain(..).collect())
             .unwrap_or_default();
+        if let Some(user_prompt_pos) = pending.iter().position(|prompt| !prompt.is_internal())
+            && let Some(restore_notice) = self.take_pending_restore_notice_for_user_prompt(cid)
+        {
+            pending.insert(user_prompt_pos, restore_notice);
+        }
         self.publish_prompts_as_steered(cid, pending);
     }
 

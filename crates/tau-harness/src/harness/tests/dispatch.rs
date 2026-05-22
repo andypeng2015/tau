@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
-use crate::harness::{PendingTool, background_completion_prompt};
+use crate::harness::{PendingTool, background_completion_prompt, restore_notice_prompt};
 
 fn responses_backend() -> tau_proto::ProviderBackend {
     tau_proto::ProviderBackend {
@@ -142,6 +142,48 @@ fn provider_text_response(spid: &SessionPromptId, text: &str) -> ProviderRespons
         provider_response_id: None,
         ws_pool_delta: None,
     }
+}
+
+fn seed_prior_user_message(state_dir: &Path, text: &str) {
+    let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::UiPromptSubmitted(UiPromptSubmitted {
+                session_id: "s1".into(),
+                text: text.to_owned(),
+                message_class: tau_proto::PromptMessageClass::User,
+                originator: tau_proto::PromptOriginator::User,
+                ctx_id: None,
+            }),
+        )
+        .expect("seed prior user message");
+}
+
+fn context_text_count(prompt: &SessionPromptCreated, text: &str) -> usize {
+    prompt
+        .context_items
+        .iter()
+        .filter(|item| text_part(item) == Some(text))
+        .count()
+}
+
+fn restore_notice_event_count(h: &Harness) -> usize {
+    let notice = restore_notice_prompt();
+    h.store
+        .session_events("s1")
+        .expect("session events")
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.event,
+                Event::UiPromptSubmitted(prompt)
+                    if prompt.message_class.is_internal() && prompt.text == notice
+            )
+        })
+        .count()
 }
 
 fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) -> bool) -> bool {
@@ -2429,6 +2471,107 @@ fn queued_prompt_extends_completed_first_prompt() {
     assert_eq!(text_part(last), Some("second"));
 
     h.shutdown().expect("shutdown");
+}
+
+/// Regression: a cold-resumed session needs one hidden restore notice in the
+/// first provider prompt, but startup itself must not send that notice as a
+/// standalone turn or as prewarm-only context.
+#[test]
+fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_prior_user_message(&sp, "before restore");
+
+    let mut h =
+        quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    let notice = restore_notice_prompt();
+
+    assert!(h.prompt_conversations.is_empty());
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::SessionPromptCreated(_)
+    )));
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::SessionPromptPrewarmRequested(prewarm)
+            if prewarm
+                .context_items
+                .iter()
+                .any(|item| text_part(item) == Some(notice.as_str()))
+    )));
+    assert_eq!(restore_notice_event_count(&h), 0);
+
+    h.submit_user_prompt("s1".into(), "after restore".to_owned())
+        .expect("submit first resumed prompt");
+    let spid: SessionPromptId = "sp-0".into();
+    let prompt = read_prompt_created(&h, &spid);
+    let notice_pos = prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some(notice.as_str()))
+        .expect("restore notice in first prompt");
+    let user_pos = prompt
+        .context_items
+        .iter()
+        .position(|item| text_part(item) == Some("after restore"))
+        .expect("user prompt in first prompt");
+
+    assert!(notice_pos < user_pos);
+    assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
+    assert_eq!(restore_notice_event_count(&h), 1);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// The restore notice is a one-shot durable fact. Follow-up prompts and later
+/// cold resumes may replay the original notice in history, but must not append
+/// another copy.
+#[test]
+fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_prior_user_message(&sp, "before restore");
+    let notice = restore_notice_prompt();
+
+    {
+        let mut h =
+            quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+                .expect("first resume");
+
+        h.submit_user_prompt("s1".into(), "first after restore".to_owned())
+            .expect("submit first resumed prompt");
+        let first_spid: SessionPromptId = "sp-0".into();
+        let first_prompt = read_prompt_created(&h, &first_spid);
+        assert_eq!(context_text_count(&first_prompt, notice.as_str()), 1);
+
+        h.handle_provider_response_finished(provider_text_response(&first_spid, "first answer"))
+            .expect("finish first prompt");
+        h.submit_user_prompt("s1".into(), "second after restore".to_owned())
+            .expect("submit second prompt");
+        let second_spid: SessionPromptId = "sp-1".into();
+        let second_prompt = read_prompt_created(&h, &second_spid);
+        assert_eq!(context_text_count(&second_prompt, notice.as_str()), 1);
+        assert_eq!(restore_notice_event_count(&h), 1);
+
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&sp, "s1");
+
+    {
+        let mut h =
+            quiet_provider_harness_with_start_reason(&sp, tau_proto::SessionStartReason::Resume)
+                .expect("second resume");
+
+        h.submit_user_prompt("s1".into(), "third after restore".to_owned())
+            .expect("submit after second resume");
+        let spid: SessionPromptId = "sp-0".into();
+        let prompt = read_prompt_created(&h, &spid);
+        assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
+        assert_eq!(restore_notice_event_count(&h), 1);
+
+        h.shutdown().expect("shutdown");
+    }
 }
 
 #[test]
