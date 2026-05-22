@@ -220,6 +220,157 @@ fn late_joining_ui_client_replays_only_final_session_events() {
 }
 
 #[test]
+fn late_joining_ui_client_replays_terminal_tool_events() {
+    // Background completions and cancellation are terminal UI facts. A
+    // late UI needs them to clear running tool blocks that were created
+    // from earlier live progress before the UI joined.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = h.default_conversation_id.clone();
+
+    // Seed one open tool round so the session tree accepts the
+    // `ToolCancelled` terminal event as a durable transcript fact.
+    h.publish_for_conversation(
+        &cid,
+        Event::ProviderResponseFinished(ProviderResponseFinished {
+            session_prompt_id: "sp-terminal-tool-events".into(),
+            output_items: vec![ContextItem::ToolCall(ToolCallItem {
+                call_id: "cancelled-call".into(),
+                name: ToolName::new("cancel_me"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            })],
+            stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+            originator: Default::default(),
+            usage: None,
+            backend: None,
+            provider_response_id: None,
+            ws_pool_delta: None,
+        }),
+    );
+    h.publish_for_conversation(
+        &cid,
+        Event::ToolBackgroundResult(tau_proto::ToolBackgroundResult {
+            call_id: "background-result-call".into(),
+            tool_name: ToolName::new("background_ok"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Text("done".to_owned()),
+            display: None,
+            originator: Default::default(),
+        }),
+    );
+    h.publish_for_conversation(
+        &cid,
+        Event::ToolBackgroundError(tau_proto::ToolBackgroundError {
+            call_id: "background-error-call".into(),
+            tool_name: ToolName::new("background_err"),
+            tool_type: tau_proto::ToolType::Function,
+            message: "failed after backgrounding".to_owned(),
+            details: None,
+            display: None,
+            originator: Default::default(),
+        }),
+    );
+    h.publish_for_conversation(
+        &cid,
+        Event::ToolCancelled(tau_proto::ToolCancelled {
+            call_id: "cancelled-call".into(),
+            tool_name: ToolName::new("cancel_me"),
+            tool_type: tau_proto::ToolType::Function,
+        }),
+    );
+
+    let durable_events = h.store.session_events("s1").expect("session events");
+    assert!(
+        durable_events.iter().any(|entry| {
+            matches!(&entry.event, Event::ToolBackgroundResult(result)
+                if result.call_id.as_str() == "background-result-call")
+        }),
+        "background result should be in durable session event log"
+    );
+    assert!(
+        durable_events.iter().any(|entry| {
+            matches!(&entry.event, Event::ToolBackgroundError(error)
+                if error.call_id.as_str() == "background-error-call")
+        }),
+        "background error should be in durable session event log"
+    );
+    assert!(
+        durable_events.iter().any(|entry| {
+            matches!(&entry.event, Event::ToolCancelled(cancelled)
+                if cancelled.call_id.as_str() == "cancelled-call")
+        }),
+        "cancellation should be in durable session event log"
+    );
+
+    let (server_end, client_end) = UnixStream::pair().expect("pair");
+    client_end
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("read timeout");
+    h.accept_client(server_end).expect("accept");
+    let ui_conn = h
+        .bus
+        .connections()
+        .into_iter()
+        .find(|c| c.name == "socket-ui")
+        .expect("ui connection")
+        .id
+        .to_string();
+
+    h.handle_client_event(
+        &ui_conn,
+        Frame::Message(Message::Subscribe(Subscribe {
+            selectors: vec![EventSelector::Prefix("tool.".to_owned())],
+        })),
+    )
+    .expect("subscribe");
+
+    let mut reader = FrameReader::new(BufReader::new(client_end));
+    let mut got_background_result = false;
+    let mut got_background_error = false;
+    let mut got_cancelled = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline
+        && !(got_background_result && got_background_error && got_cancelled)
+    {
+        let Ok(Some(frame)) = reader.read_frame() else {
+            break;
+        };
+        let (_log_id, inner) = frame.peel_log();
+        let Frame::Event(event) = inner else { continue };
+        match event {
+            Event::ToolBackgroundResult(result)
+                if result.call_id.as_str() == "background-result-call" =>
+            {
+                got_background_result = true;
+            }
+            Event::ToolBackgroundError(error)
+                if error.call_id.as_str() == "background-error-call" =>
+            {
+                got_background_error = true;
+            }
+            Event::ToolCancelled(cancelled) if cancelled.call_id.as_str() == "cancelled-call" => {
+                got_cancelled = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        got_background_result,
+        "late UI should replay background tool result"
+    );
+    assert!(
+        got_background_error,
+        "late UI should replay background tool error"
+    );
+    assert!(got_cancelled, "late UI should replay tool cancellation");
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
 fn late_joining_ui_client_receives_replayed_agents_md_and_context_ready() {
     // The CLI connects after the daemon's eager init has already
     // fired, so live subscription alone would miss
