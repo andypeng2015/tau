@@ -34,9 +34,7 @@ pub(crate) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().expect(MUTEX_POISONED)
 }
 
-mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
+mod built_info;
 
 const STARTUP_PUNS: &[&str] = &[
     "Tau is like Pi, but twice as much.",

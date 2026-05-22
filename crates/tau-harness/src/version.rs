@@ -14,9 +14,7 @@
 //! has nothing to patch. A `#[used]` byte array in a named section is
 //! guaranteed to live in `.rodata` as one contiguous, unmerged blob.
 
-mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
+mod built_info;
 
 /// Magic prefix used to detect an unpatched binary (i.e. plain
 /// `cargo build` outside of the Nix packaging path).
