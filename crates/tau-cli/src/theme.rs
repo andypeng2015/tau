@@ -40,7 +40,7 @@ pub(crate) fn prompt_input_placeholder(
 ) -> tau_cli_term::StyledText {
     let role = role.unwrap_or("agent");
     let mut text = ThemedText::new();
-    let style = text.add_style(tau_themes::names::PROMPT_PLACEHOLDER);
+    let style = text.add_style(tau_themes::names::STATUS_ROLE);
     text.push(style, format!("Write message to the {role}..."));
     tau_cli_term::resolve::themed_text(theme, &text)
 }
@@ -182,15 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn prompt_input_placeholder_uses_placeholder_style() {
-        let prompt = prompt_input_placeholder(&tau_themes::Theme::builtin(), Some("engineer"));
+    fn prompt_input_placeholder_uses_status_role_style() {
+        let theme = tau_themes::Theme::builtin();
+        let prompt = prompt_input_placeholder(&theme, Some("engineer"));
 
         assert_eq!(prompt.spans()[0].text, "Write message to the engineer...");
         assert_eq!(
-            prompt.spans()[0].style.fg,
-            Some(tau_cli_term::Color::DarkGrey)
+            prompt.spans()[0].style,
+            tau_cli_term::resolve::resolve(&theme, tau_themes::names::STATUS_ROLE)
         );
-        assert!(prompt.spans()[0].style.italic);
     }
 
     #[test]
