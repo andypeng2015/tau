@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tau_proto::{
     ConnectionId, ContentPart, ContextItem, ContextRole, Event, LogEventId, MessageItem,
-    ProviderBackend, ProviderTokenUsage, SessionId, ToolCallId, ToolResultItem, ToolResultStatus,
-    UnixMicros,
+    ProviderBackend, ProviderTokenUsage, SessionId, ToolCallId, ToolCallItem, ToolResultItem,
+    ToolResultStatus, UnixMicros,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,11 +158,56 @@ impl SessionTree {
     /// purpose.
     #[must_use]
     pub fn branch_from(&self, head: Option<NodeId>) -> Vec<&SessionEntry> {
+        self.branch_node_ids_from(head)
+            .into_iter()
+            .filter_map(|id| self.node(id).map(|node| &node.entry))
+            .collect()
+    }
+
+    /// Returns foreground tool calls on `head`'s branch that still lack a
+    /// terminal provider result.
+    ///
+    /// Results are ordered by assistant response and by the model's original
+    /// tool-call order. Calls that already have a terminal result in a
+    /// partially completed parallel round are omitted. Backgrounded tool
+    /// calls are out of scope because their foreground is already closed by
+    /// a synthetic provider result.
+    #[must_use]
+    pub fn unresolved_foreground_tool_calls_from(
+        &self,
+        head: Option<NodeId>,
+    ) -> Vec<&ToolCallItem> {
+        let mut calls = Vec::new();
+        for node_id in self.branch_node_ids_from(head) {
+            let Some(round) = self.pending_tool_rounds.get(&node_id) else {
+                continue;
+            };
+            let Some(SessionEntry::AssistantResponse { output_items, .. }) =
+                self.node(node_id).map(|node| &node.entry)
+            else {
+                continue;
+            };
+            for call_id in &round.call_order {
+                if round.terminal_results.contains_key(call_id) {
+                    continue;
+                }
+                if let Some(call) = output_items.iter().find_map(|item| match item {
+                    ContextItem::ToolCall(call) if &call.call_id == call_id => Some(call),
+                    _ => None,
+                }) {
+                    calls.push(call);
+                }
+            }
+        }
+        calls
+    }
+
+    fn branch_node_ids_from(&self, head: Option<NodeId>) -> Vec<NodeId> {
         let mut path = Vec::new();
         let mut current = head;
         while let Some(id) = current {
             if let Some(node) = self.nodes.get(id.get() as usize) {
-                path.push(&node.entry);
+                path.push(id);
                 current = node.parent_id;
             } else {
                 break;

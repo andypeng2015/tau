@@ -1010,6 +1010,62 @@ fn session_tree_folds_only_provider_tool_results_under_assistant_response() {
     );
 }
 
+/// Resume repair needs a read-only view of pending provider tool rounds. The
+/// accessor must report only calls missing a terminal provider fact, including
+/// partially completed parallel rounds, so callers do not duplicate completed
+/// results.
+#[test]
+fn session_tree_reports_unresolved_foreground_tool_calls() {
+    let mut tree = crate::session::SessionTree::from_events("session-1".into(), &[]);
+    tree.apply_event(&Event::UiPromptSubmitted(UiPromptSubmitted {
+        session_id: "session-1".into(),
+        text: "use tools".to_owned(),
+        message_class: tau_proto::PromptMessageClass::User,
+        originator: tau_proto::PromptOriginator::User,
+        ctx_id: None,
+    }));
+    tree.apply_event(&Event::ProviderResponseFinished(
+        provider_response_tool_calls("sp-tools", &["call-1", "call-2"]),
+    ));
+
+    let unresolved: Vec<_> = tree
+        .unresolved_foreground_tool_calls_from(tree.head())
+        .into_iter()
+        .map(|call| call.call_id.as_str().to_owned())
+        .collect();
+    assert_eq!(unresolved, vec!["call-1", "call-2"]);
+
+    tree.apply_event(&Event::ProviderToolResult(ToolResult {
+        call_id: "call-1".into(),
+        tool_name: tau_proto::ToolName::new("read"),
+        tool_type: ToolType::Function,
+        result: CborValue::Text("first".to_owned()),
+        kind: tau_proto::ToolResultKind::Final,
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    }));
+    let unresolved: Vec<_> = tree
+        .unresolved_foreground_tool_calls_from(tree.head())
+        .into_iter()
+        .map(|call| call.call_id.as_str().to_owned())
+        .collect();
+    assert_eq!(unresolved, vec!["call-2"]);
+
+    tree.apply_event(&Event::ProviderToolResult(ToolResult {
+        call_id: "call-2".into(),
+        tool_name: tau_proto::ToolName::new("read"),
+        tool_type: ToolType::Function,
+        result: CborValue::Text("second".to_owned()),
+        kind: tau_proto::ToolResultKind::Final,
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    }));
+    assert!(
+        tree.unresolved_foreground_tool_calls_from(tree.head())
+            .is_empty()
+    );
+}
+
 #[test]
 fn session_tree_folds_provider_tool_result_into_prompt_history() {
     // Background placeholders are provider-facing terminal completions, not

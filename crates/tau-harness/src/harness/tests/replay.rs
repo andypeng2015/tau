@@ -10,6 +10,180 @@ fn assistant_output(text: &str) -> Vec<tau_proto::ContextItem> {
     })]
 }
 
+fn response_with_tool_calls(call_ids: &[&str]) -> ProviderResponseFinished {
+    ProviderResponseFinished {
+        session_prompt_id: "sp-restored-tools".into(),
+        output_items: call_ids
+            .iter()
+            .map(|call_id| {
+                ContextItem::ToolCall(ToolCallItem {
+                    call_id: (*call_id).into(),
+                    name: ToolName::new("read"),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments: CborValue::Null,
+                })
+            })
+            .collect(),
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        originator: tau_proto::PromptOriginator::User,
+        usage: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    }
+}
+
+fn successful_tool_result(call_id: &str) -> ToolResult {
+    ToolResult {
+        call_id: call_id.into(),
+        tool_name: ToolName::new("read"),
+        tool_type: tau_proto::ToolType::Function,
+        result: CborValue::Text(format!("result for {call_id}")),
+        kind: tau_proto::ToolResultKind::Final,
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    }
+}
+
+fn seed_restored_tool_round(state_dir: &Path, call_ids: &[&str], completed_call_ids: &[&str]) {
+    let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
+    let mut store = tau_core::SessionStore::open(&sessions_dir).expect("session store");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::UiPromptSubmitted(UiPromptSubmitted {
+                session_id: "s1".into(),
+                text: "before restart".to_owned(),
+                message_class: tau_proto::PromptMessageClass::User,
+                originator: tau_proto::PromptOriginator::User,
+                ctx_id: None,
+            }),
+        )
+        .expect("seed user prompt");
+    store
+        .append_session_event(
+            "s1",
+            None,
+            Event::ProviderResponseFinished(response_with_tool_calls(call_ids)),
+        )
+        .expect("seed assistant tool calls");
+    for call_id in completed_call_ids {
+        store
+            .append_session_event(
+                "s1",
+                None,
+                Event::ProviderToolResult(successful_tool_result(call_id)),
+            )
+            .expect("seed completed tool call");
+    }
+}
+
+fn provider_tool_errors(h: &Harness, call_id: &str) -> Vec<tau_proto::ToolError> {
+    h.store
+        .session_events("s1")
+        .expect("session events")
+        .into_iter()
+        .filter_map(|entry| match entry.event {
+            Event::ProviderToolError(error) if error.call_id.as_str() == call_id => Some(error),
+            _ => None,
+        })
+        .collect()
+}
+
+fn prompt_tool_result<'a>(
+    prompt: &'a SessionPromptCreated,
+    call_id: &str,
+) -> Option<&'a ToolResultItem> {
+    prompt.context_items.iter().find_map(|item| match item {
+        ContextItem::ToolResult(result) if result.call_id.as_str() == call_id => Some(result),
+        _ => None,
+    })
+}
+
+/// Regression: a cold resume used to leave the restored branch ending in an
+/// assistant tool call with no matching tool result. The next provider prompt
+/// then replayed an orphan tool call. Resume must close that foreground call
+/// before the user can extend the branch.
+#[test]
+fn resume_repairs_unresolved_tool_call_before_next_prompt_context() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_restored_tool_round(&sp, &["interrupted-call"], &[]);
+
+    let mut h = echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
+        .expect("resume");
+
+    let errors = provider_tool_errors(&h, "interrupted-call");
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message.contains("tau_internal: true"));
+    assert!(errors[0].message.contains("Side effects may have occurred"));
+
+    append_user_message_via_event(&mut h, "s1", "after restart");
+    let spid = h.send_prompt_to_agent("s1");
+    let prompt = read_prompt_created(&h, &spid);
+    let repaired = prompt_tool_result(&prompt, "interrupted-call")
+        .expect("synthetic tool result should be in provider context");
+    assert!(matches!(repaired.status, ToolResultStatus::Error { .. }));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: a parallel tool round can be partly complete when the process
+/// dies. Resume must preserve completed calls and synthesize errors only for
+/// the missing foreground calls so the provider sees one balanced round.
+#[test]
+fn resume_repairs_only_missing_call_in_partial_parallel_round() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_restored_tool_round(&sp, &["done-call", "missing-call"], &["done-call"]);
+
+    let mut h = echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
+        .expect("resume");
+
+    assert!(provider_tool_errors(&h, "done-call").is_empty());
+    assert_eq!(provider_tool_errors(&h, "missing-call").len(), 1);
+
+    append_user_message_via_event(&mut h, "s1", "after restart");
+    let spid = h.send_prompt_to_agent("s1");
+    let prompt = read_prompt_created(&h, &spid);
+    let completed = prompt_tool_result(&prompt, "done-call")
+        .expect("completed tool result should remain in provider context");
+    let repaired = prompt_tool_result(&prompt, "missing-call")
+        .expect("missing tool result should be synthesized in provider context");
+    assert!(matches!(completed.status, ToolResultStatus::Success));
+    assert!(matches!(repaired.status, ToolResultStatus::Error { .. }));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: the resume repair writes durable events. A later cold resume
+/// must see the already-closed tool round and avoid appending another synthetic
+/// error for the same call.
+#[test]
+fn repeated_resume_does_not_duplicate_synthetic_tool_errors() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    seed_restored_tool_round(&sp, &["interrupted-once"], &[]);
+
+    {
+        let mut h =
+            echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
+                .expect("first resume");
+        assert_eq!(provider_tool_errors(&h, "interrupted-once").len(), 1);
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&sp, "s1");
+
+    {
+        let mut h =
+            echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
+                .expect("second resume");
+        assert_eq!(provider_tool_errors(&h, "interrupted-once").len(), 1);
+        h.shutdown().expect("shutdown");
+    }
+}
+
 #[test]
 fn late_joining_ui_client_receives_replayed_session_events() {
     let td = TempDir::new().expect("tempdir");

@@ -86,6 +86,13 @@ pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
     )
 }
 
+fn restored_tool_call_error_message(call_id: &ToolCallId) -> String {
+    format!(
+        "{}: true\n\nTool call `{call_id}` was interrupted due to session restart. Side effects may have occurred.",
+        tau_proto::TAU_INTERNAL_HEADER_NAME
+    )
+}
+
 fn remove_pending_internal_prompt_text(prompts: &mut VecDeque<PendingPrompt>, text: &str) -> bool {
     let before = prompts.len();
     prompts.retain(|prompt| !(prompt.is_internal() && prompt.text == text));
@@ -4823,6 +4830,40 @@ impl Harness {
         self.store.sessions_dir().to_path_buf()
     }
 
+    fn repair_restored_foreground_tool_calls(&mut self, session_id: &SessionId) -> usize {
+        if session_id != &self.current_session_id {
+            return 0;
+        }
+        let cid = self.default_conversation_id.clone();
+        let Some(head) = self.conversations.get(&cid).map(|conv| conv.head) else {
+            return 0;
+        };
+        let calls: Vec<ToolCallItem> = self
+            .store
+            .session(session_id.as_str())
+            .map(|tree| {
+                tree.unresolved_foreground_tool_calls_from(head)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let count = calls.len();
+        for call in calls {
+            let error = ToolError {
+                call_id: call.call_id.clone(),
+                tool_name: call.name,
+                tool_type: call.tool_type,
+                message: restored_tool_call_error_message(&call.call_id),
+                details: None,
+                display: None,
+                originator: tau_proto::PromptOriginator::User,
+            };
+            self.publish_terminal_tool_error(Some(&cid), Some(HARNESS_CONNECTION_ID), error);
+        }
+        count
+    }
+
     pub(crate) fn start_session_init(
         &mut self,
         session_id: SessionId,
@@ -4830,6 +4871,9 @@ impl Harness {
     ) {
         let waiting_on = self.session_init_provider_ids();
         if waiting_on.is_empty() {
+            if matches!(reason, tau_proto::SessionStartReason::Resume) {
+                self.repair_restored_foreground_tool_calls(&session_id);
+            }
             if let Err(error) = self.complete_session_init(session_id) {
                 self.emit_info(&format!("failed to initialize session: {error}"));
                 self.turn_state = TurnState::Idle;
@@ -4847,8 +4891,14 @@ impl Harness {
         };
         self.publish_event(
             None,
-            Event::SessionStarted(tau_proto::SessionStarted { session_id, reason }),
+            Event::SessionStarted(tau_proto::SessionStarted {
+                session_id: session_id.clone(),
+                reason,
+            }),
         );
+        if matches!(reason, tau_proto::SessionStartReason::Resume) {
+            self.repair_restored_foreground_tool_calls(&session_id);
+        }
     }
 
     fn handle_extension_context_ready(
