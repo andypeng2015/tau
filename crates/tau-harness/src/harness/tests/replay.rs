@@ -10,6 +10,18 @@ fn assistant_output(text: &str) -> Vec<tau_proto::ContextItem> {
     })]
 }
 
+fn provider_response_contains_text(finished: &ProviderResponseFinished, needle: &str) -> bool {
+    finished.output_items.iter().any(|item| {
+        matches!(
+            item,
+            tau_proto::ContextItem::Message(tau_proto::MessageItem { content, .. })
+                if content.iter().any(|part| {
+                    matches!(part, tau_proto::ContentPart::Text { text } if text.contains(needle))
+                })
+        )
+    })
+}
+
 fn response_with_tool_calls(call_ids: &[&str]) -> ProviderResponseFinished {
     ProviderResponseFinished {
         session_prompt_id: "sp-restored-tools".into(),
@@ -269,6 +281,78 @@ fn late_joining_ui_client_receives_replayed_session_events() {
 
     assert!(got_prompt, "late UI should replay prior user prompt");
     assert!(got_response, "late UI should replay prior agent response");
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Regression: extension subscriptions are live-only even for durable events
+/// that a late UI client would replay. This protects live-only extensions such
+/// as std-notifications from replaying sounds or idle work for old turns.
+#[test]
+fn extension_subscribe_receives_no_replayed_past_events() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let past_text = "past extension replay guard";
+    h.send_user_message("s1", past_text, None)
+        .expect("send past message");
+
+    let durable_events = h.store.session_events("s1").expect("session events");
+    assert!(
+        durable_events.iter().any(|entry| {
+            matches!(&entry.event, Event::ProviderResponseFinished(finished)
+                if provider_response_contains_text(finished, past_text))
+        }),
+        "test setup: past provider response should be durable and eligible for UI replay",
+    );
+
+    let extension_events = connect_test_tool(&mut h, "live-only-extension");
+    h.handle_extension_message(
+        "live-only-extension",
+        Message::Subscribe(Subscribe {
+            selectors: vec![EventSelector::Exact(
+                tau_proto::EventName::PROVIDER_RESPONSE_FINISHED,
+            )],
+        }),
+    )
+    .expect("extension subscribe");
+
+    {
+        let events = extension_events.lock().expect("sink");
+        assert!(
+            events.is_empty(),
+            "extension subscribe must not replay the past provider response",
+        );
+    }
+
+    let live_text = "future live extension event";
+    h.send_user_message("s1", live_text, None)
+        .expect("send live message");
+
+    {
+        let events = extension_events.lock().expect("sink");
+        assert!(
+            events.iter().any(|routed| {
+                matches!(
+                    peel_inner_event(&routed.frame),
+                    Some(Event::ProviderResponseFinished(finished))
+                        if provider_response_contains_text(finished, live_text)
+                )
+            }),
+            "extension should receive future live provider responses",
+        );
+        assert!(
+            events.iter().all(|routed| {
+                !matches!(
+                    peel_inner_event(&routed.frame),
+                    Some(Event::ProviderResponseFinished(finished))
+                        if provider_response_contains_text(finished, past_text)
+                )
+            }),
+            "extension must not receive replayed past provider responses",
+        );
+    }
 
     h.shutdown().expect("shutdown");
 }
