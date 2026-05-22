@@ -206,6 +206,20 @@ fn restored_background_tool_call_error_message(call_id: &ToolCallId) -> String {
     )
 }
 
+fn extension_disconnected_tool_call_error_message(call_id: &ToolCallId) -> String {
+    format!(
+        "{}: true\n\nTool call `{call_id}` was interrupted because extension disconnected. Side effects may have occurred.",
+        tau_proto::TAU_INTERNAL_HEADER_NAME
+    )
+}
+
+fn extension_disconnected_background_tool_call_error_message(call_id: &ToolCallId) -> String {
+    format!(
+        "{}: true\n\nBackground tool call `{call_id}` was interrupted because extension disconnected. Side effects may have occurred.",
+        tau_proto::TAU_INTERNAL_HEADER_NAME
+    )
+}
+
 /// Model-visible internal tool error for calls whose provider is no longer
 /// live.
 pub(crate) fn unavailable_tool_error_message(tool_name: &ToolName) -> String {
@@ -1173,14 +1187,16 @@ impl Harness {
         let mut next_iid = instance_id_factory();
 
         let mut extensions = Vec::new();
+        let mut extension_init_acks = Vec::new();
         // Provider
-        let (conn_id, thread) = spawn_in_process(
+        let (conn_id, thread, initialized_ack) = spawn_in_process(
             "provider",
             ClientKind::Provider,
             provider_runner,
             &mut bus,
             &tx,
         )?;
+        extension_init_acks.push(initialized_ack);
         extensions.push(ExtensionEntry {
             name: "provider".to_owned(),
             instance_id: next_iid(),
@@ -1196,8 +1212,9 @@ impl Harness {
 
         // Caller-supplied in-process tools.
         for tool in tools {
-            let (conn_id, thread) =
+            let (conn_id, thread, initialized_ack) =
                 spawn_in_process(tool.name, ClientKind::Tool, tool.runner, &mut bus, &tx)?;
+            extension_init_acks.push(initialized_ack);
             extensions.push(ExtensionEntry {
                 name: tool.name.to_owned(),
                 instance_id: next_iid(),
@@ -1322,6 +1339,10 @@ impl Harness {
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
 
+        for initialized_ack in extension_init_acks {
+            let _ = initialized_ack.send(());
+        }
+
         let names: Vec<String> = harness
             .extension_order
             .iter()
@@ -1388,6 +1409,7 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session store opened");
 
         let mut extensions = Vec::new();
+        let mut extension_init_acks = Vec::new();
         let mut next_iid = instance_id_factory();
 
         for ext_config in config.extensions.values() {
@@ -1406,8 +1428,9 @@ impl Harness {
 
             let log_path =
                 extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name);
-            let (conn_id, child_pid) =
+            let (conn_id, child_pid, initialized_ack) =
                 spawn_supervised(ext_config, kind.clone(), Some(log_path), &mut bus, &tx)?;
+            extension_init_acks.push(initialized_ack);
             tracing::info!(
                 target: "tau_harness::startup",
                 extension = %ext_config.name,
@@ -1540,6 +1563,10 @@ impl Harness {
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session metadata recorded");
+
+        for initialized_ack in extension_init_acks {
+            let _ = initialized_ack.send(());
+        }
 
         let names: Vec<String> = harness
             .extension_order
@@ -2490,7 +2517,7 @@ impl Harness {
                 // Cumulative ack: advance the cursor if it moves
                 // forward, ignore otherwise (duplicates, late acks).
                 if let Some(entry) = self.extensions.get_mut(source_id)
-                    && ack.up_to.get() > entry.last_acked.get()
+                    && entry.last_acked.get() < ack.up_to.get()
                 {
                     entry.last_acked = ack.up_to;
                 }
@@ -2530,8 +2557,8 @@ impl Harness {
                 );
             }
             Message::Ready(_ready) => {
-                self.emit_extension_ready(source_id);
                 self.set_extension_state(source_id, ExtensionState::Ready);
+                self.emit_extension_ready(source_id);
                 self.try_advance_queue();
             }
             Message::Emit(emit) => {
@@ -3311,10 +3338,19 @@ impl Harness {
         self.interceptors.remove_connection(connection_id);
         self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
+        self.set_extension_state(connection_id, ExtensionState::Disconnected);
+
+        let meta = self.bus.connection(connection_id).cloned();
+        let is_extension = meta.as_ref().is_some_and(|meta| {
+            meta.origin == ConnectionOrigin::Supervised || meta.origin == ConnectionOrigin::InMemory
+        });
+        if is_extension {
+            self.unregister_connection_tools_for_disconnect(connection_id);
+        }
+
         self.fail_pending_tool_calls_for_connection(connection_id);
         self.pending_provider_prompts
             .retain(|_, provider_id| provider_id.as_str() != connection_id);
-        self.set_extension_state(connection_id, ExtensionState::Disconnected);
         self.client_writers
             .remove(&tau_proto::ConnectionId::from(connection_id));
         if self
@@ -3324,12 +3360,10 @@ impl Harness {
         {
             self.refresh_provider_models_and_publish_state();
         }
-        let Some(meta) = self.bus.disconnect(connection_id) else {
+        let Some(meta) = self.bus.disconnect(connection_id).or(meta) else {
             return;
         };
-        if meta.origin == ConnectionOrigin::Supervised || meta.origin == ConnectionOrigin::InMemory
-        {
-            let _ = self.registry.unregister_connection(connection_id);
+        if is_extension {
             self.emit_extension_exited(&meta.name);
         }
         if meta.origin == ConnectionOrigin::Supervised
@@ -3339,6 +3373,37 @@ impl Harness {
                 "failed to respawn extension {}: {error}",
                 meta.name
             ));
+        }
+    }
+
+    fn unregister_connection_tools_for_disconnect(&mut self, connection_id: &str) {
+        let removing_tools: Vec<(ToolName, ToolName)> = self
+            .registry
+            .all_tool_names()
+            .into_iter()
+            .filter_map(|tool_name| {
+                self.registry
+                    .providers_for(tool_name.as_str())
+                    .into_iter()
+                    .find(|provider| provider.connection_id.as_str() == connection_id)
+                    .map(|provider| {
+                        (
+                            tool_name.clone(),
+                            self.tool_model_visible_name(&provider.tool).clone(),
+                        )
+                    })
+            })
+            .collect();
+
+        let _ = self.registry.unregister_connection(connection_id);
+        for (internal_name, visible_name) in removing_tools {
+            if self
+                .registry
+                .providers_for(internal_name.as_str())
+                .is_empty()
+            {
+                self.mark_tool_unavailable_for_notice(internal_name, visible_name);
+            }
         }
     }
 
@@ -3426,20 +3491,21 @@ impl Harness {
             let Some(tool) = self.pending_tools.get(&call_id).cloned() else {
                 continue;
             };
-            let error = ToolError {
+            let mut error = ToolError {
                 call_id: call_id.clone(),
                 tool_name: tool.name,
                 tool_type: tool.tool_type,
-                message: "tool provider disconnected".to_owned(),
+                message: extension_disconnected_tool_call_error_message(&call_id),
                 details: None,
                 display: None,
                 originator: tau_proto::PromptOriginator::User,
             };
             if self.tool_turn.is_backgrounded(&call_id) {
+                error.message = extension_disconnected_background_tool_call_error_message(&call_id);
                 if self.tool_conversations.contains_key(call_id.as_str()) {
-                    self.handle_background_tool_error(None, error);
+                    self.handle_background_tool_error(Some(HARNESS_CONNECTION_ID), error);
                 } else {
-                    self.publish_terminal_tool_error(None, None, error);
+                    self.publish_terminal_tool_error(None, Some(HARNESS_CONNECTION_ID), error);
                     self.clear_tool_call_tracking(call_id.as_str());
                 }
                 continue;
@@ -3449,20 +3515,24 @@ impl Harness {
             // synthesized failure folds onto the right node. Without
             // the snap, sibling side conversations could leave
             // `tree.head` on the wrong branch and the fold would land
-            // there instead. `on_tool_call_complete` then folds the
-            // failed call into its conversation's `ToolsRunning` set
-            // and re-prompts the agent if the turn is now done.
-            // Tracking maps are cleared *after* that read.
+            // there instead. Complete the failed in-flight calls without
+            // draining queued calls yet; disconnect handling unregisters
+            // the dead provider first, then drains the scheduler after all
+            // interrupted calls have been terminalized.
             if let Some(cid) = self.tool_conversations.get(call_id.as_str()).cloned() {
-                self.publish_terminal_tool_error(Some(&cid), None, error);
+                self.publish_terminal_tool_error(Some(&cid), Some(HARNESS_CONNECTION_ID), error);
             } else {
                 // No conversation attribution — fall back to the
                 // unsnapped publish so the error still reaches the
                 // bus / log.
-                self.publish_terminal_tool_error(None, None, error);
+                self.publish_terminal_tool_error(None, Some(HARNESS_CONNECTION_ID), error);
             }
-            self.on_tool_call_complete(call_id.as_str());
+            self.on_tool_call_complete_without_draining(call_id.as_str());
             self.clear_tool_call_tracking(call_id.as_str());
+        }
+
+        if let Err(error) = self.drain_pending_tool_invocations() {
+            self.emit_info(&format!("queued tool dispatch failed: {error}"));
         }
     }
 
@@ -3509,7 +3579,7 @@ impl Harness {
             attempt,
             "respawning extension",
         );
-        let (new_connection_id, child_pid) =
+        let (new_connection_id, child_pid, initialized_ack) =
             spawn_supervised(&config, kind, Some(log_path), &mut self.bus, &self.tx)?;
         tracing::info!(
             target: "tau_harness::startup",
@@ -3535,6 +3605,7 @@ impl Harness {
         if let Some(slot) = self.extension_order.iter_mut().find(|id| **id == old_key) {
             *slot = new_connection_id;
         }
+        let _ = initialized_ack.send(());
         self.emit_extension_starting(&name);
         Ok(())
     }
@@ -7023,6 +7094,14 @@ impl Harness {
     /// it from the in-flight set, drains any freshly-eligible queued
     /// calls, and then checks whether the turn is done.
     pub(crate) fn on_tool_call_complete(&mut self, call_id: &str) {
+        self.on_tool_call_complete_inner(call_id, true);
+    }
+
+    fn on_tool_call_complete_without_draining(&mut self, call_id: &str) {
+        self.on_tool_call_complete_inner(call_id, false);
+    }
+
+    fn on_tool_call_complete_inner(&mut self, call_id: &str, drain_queued: bool) {
         let owned: ToolCallId = call_id.to_owned().into();
         self.tool_turn.mark_complete(&owned);
         // `tool_conversations` is still populated here: the call
@@ -7039,7 +7118,7 @@ impl Harness {
         if let Some(cid) = owner {
             self.emit_delegate_progress(&cid);
         }
-        if let Err(error) = self.drain_pending_tool_invocations() {
+        if drain_queued && let Err(error) = self.drain_pending_tool_invocations() {
             self.emit_info(&format!("queued tool dispatch failed: {error}"));
         }
         self.maybe_complete_agent_turn(call_id);

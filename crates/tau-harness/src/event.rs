@@ -4,7 +4,7 @@
 use std::io::{self, BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Child;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -47,7 +47,33 @@ pub(crate) fn spawn_reader_thread(
     stream: impl io::Read + Send + 'static,
     tx: Sender<HarnessEvent>,
 ) {
+    spawn_reader_thread_inner(connection_id, stream, tx, None);
+}
+
+/// Reader thread for extensions whose frames must not enter the harness loop
+/// until the harness has created all matching connection and lifecycle state.
+pub(crate) fn spawn_reader_thread_after_initialized(
+    connection_id: tau_proto::ConnectionId,
+    stream: impl io::Read + Send + 'static,
+    tx: Sender<HarnessEvent>,
+    initialized_rx: Receiver<()>,
+) {
+    spawn_reader_thread_inner(connection_id, stream, tx, Some(initialized_rx));
+}
+
+fn spawn_reader_thread_inner(
+    connection_id: tau_proto::ConnectionId,
+    stream: impl io::Read + Send + 'static,
+    tx: Sender<HarnessEvent>,
+    initialized_rx: Option<Receiver<()>>,
+) {
     thread::spawn(move || {
+        if let Some(initialized_rx) = initialized_rx
+            && initialized_rx.recv().is_err()
+        {
+            return;
+        }
+
         let mut reader = FrameReader::new(BufReader::new(stream));
         loop {
             match reader.read_frame() {
@@ -144,4 +170,54 @@ fn wait_with_grace(mut child: Child, grace: Duration) {
         let _ = done_rx.recv();
     }
     let _ = waiter.join();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_reader_waits_for_initialized_ack() {
+        let (reader_stream, writer_stream) = UnixStream::pair().expect("stream pair");
+        let (tx, rx) = mpsc::channel();
+        let (initialized_tx, initialized_rx) = mpsc::channel();
+        spawn_reader_thread_after_initialized(
+            "conn-test".into(),
+            reader_stream,
+            tx,
+            initialized_rx,
+        );
+
+        let mut writer = FrameWriter::new(BufWriter::new(writer_stream));
+        writer
+            .write_frame(&Frame::Message(Message::Hello(tau_proto::Hello {
+                protocol_version: tau_proto::PROTOCOL_VERSION,
+                client_name: "test-extension".into(),
+                client_kind: tau_proto::ClientKind::Tool,
+            })))
+            .expect("write hello");
+        writer.flush().expect("flush hello");
+
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        initialized_tx.send(()).expect("send initialized ack");
+        let event = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader forwards after initialized ack");
+        match event {
+            HarnessEvent::FromConnection {
+                connection_id,
+                frame,
+            } => {
+                assert_eq!(connection_id.as_str(), "conn-test");
+                assert!(matches!(frame.as_ref(), Frame::Message(Message::Hello(_))));
+            }
+            HarnessEvent::Disconnected { .. } | HarnessEvent::NewClient(_) => {
+                panic!("unexpected harness event")
+            }
+        }
+    }
 }

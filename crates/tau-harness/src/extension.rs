@@ -4,7 +4,7 @@
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use tau_core::{Connection, ConnectionMetadata, ConnectionOrigin, EventBus};
@@ -12,7 +12,8 @@ use tau_proto::ClientKind;
 
 use crate::error::HarnessError;
 use crate::event::{
-    ChannelSink, HarnessEvent, WriterShutdown, spawn_reader_thread, spawn_writer_thread,
+    ChannelSink, HarnessEvent, WriterShutdown, spawn_reader_thread_after_initialized,
+    spawn_writer_thread,
 };
 use crate::prompt::chrono_free_date;
 use crate::settings::ExtensionConfig;
@@ -59,6 +60,20 @@ pub(crate) struct ExtensionEntry {
     pub(crate) last_acked: tau_proto::LogEventId,
 }
 
+/// Private one-shot ack that lets an extension reader start forwarding frames
+/// after the harness has installed its bus and lifecycle state.
+pub(crate) type ExtensionInitializedAck = Sender<()>;
+
+/// Result of spawning an in-process extension transport.
+pub(crate) type InProcessSpawn = (
+    tau_proto::ConnectionId,
+    JoinHandle<Result<(), String>>,
+    ExtensionInitializedAck,
+);
+
+/// Result of spawning a supervised extension transport.
+pub(crate) type SupervisedSpawn = (tau_proto::ConnectionId, u32, ExtensionInitializedAck);
+
 #[cfg_attr(not(any(test, feature = "echo-agent")), allow(dead_code))]
 pub(crate) fn spawn_in_process<F>(
     name: &str,
@@ -66,7 +81,7 @@ pub(crate) fn spawn_in_process<F>(
     run: F,
     bus: &mut EventBus,
     tx: &Sender<HarnessEvent>,
-) -> Result<(tau_proto::ConnectionId, JoinHandle<Result<(), String>>), HarnessError>
+) -> Result<InProcessSpawn, HarnessError>
 where
     F: FnOnce(UnixStream, UnixStream) -> Result<(), String> + Send + 'static,
 {
@@ -86,10 +101,16 @@ where
         Box::new(ChannelSink { tx: writer_tx }),
     ));
 
-    spawn_reader_thread(conn_id.clone(), harness_read, tx.clone());
+    let (initialized_tx, initialized_rx) = mpsc::channel();
+    spawn_reader_thread_after_initialized(
+        conn_id.clone(),
+        harness_read,
+        tx.clone(),
+        initialized_rx,
+    );
 
     let thread = thread::spawn(move || run(ext_read, ext_write));
-    Ok((conn_id, thread))
+    Ok((conn_id, thread, initialized_tx))
 }
 
 /// Per-session log directory: `<sessions_dir>/<session_id>/logs/`.
@@ -125,7 +146,7 @@ pub(crate) fn spawn_supervised(
     stderr_log_path: Option<PathBuf>,
     bus: &mut EventBus,
     tx: &Sender<HarnessEvent>,
-) -> Result<(tau_proto::ConnectionId, u32), HarnessError> {
+) -> Result<SupervisedSpawn, HarnessError> {
     let mut command = Command::new(&config.command);
     command
         .args(&config.args)
@@ -163,9 +184,10 @@ pub(crate) fn spawn_supervised(
         Box::new(ChannelSink { tx: writer_tx }),
     ));
 
-    spawn_reader_thread(conn_id.clone(), stdout, tx.clone());
+    let (initialized_tx, initialized_rx) = mpsc::channel();
+    spawn_reader_thread_after_initialized(conn_id.clone(), stdout, tx.clone(), initialized_rx);
 
-    Ok((conn_id, child_pid))
+    Ok((conn_id, child_pid, initialized_tx))
 }
 
 /// Read an extension's stderr line-by-line and append each line

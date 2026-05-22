@@ -1,7 +1,9 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
 use crate::harness::{
-    PendingTool, background_completion_prompt, is_restore_notice_prompt_text,
+    PendingTool, background_completion_prompt,
+    extension_disconnected_background_tool_call_error_message,
+    extension_disconnected_tool_call_error_message, is_restore_notice_prompt_text,
     restore_notice_prompt_for_elapsed, unavailable_tool_error_message,
 };
 
@@ -334,6 +336,13 @@ fn shared_test_tool_spec(name: &str) -> ToolSpec {
     }
 }
 
+fn exclusive_test_tool_spec(name: &str) -> ToolSpec {
+    ToolSpec {
+        execution_mode: ToolExecutionMode::Exclusive,
+        ..shared_test_tool_spec(name)
+    }
+}
+
 fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (TempDir, Harness) {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
@@ -374,6 +383,108 @@ fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (TempDir, Harn
     );
 
     (td, h)
+}
+
+fn tool_invoke_call_ids(events: &Arc<Mutex<Vec<RoutedFrame>>>) -> Vec<String> {
+    events
+        .lock()
+        .expect("sink mutex")
+        .iter()
+        .filter_map(|routed| match &routed.frame {
+            Frame::Event(Event::ToolInvoke(invoke)) => Some(invoke.call_id.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn disconnect_with_inflight_and_queued_tool_does_not_invoke_queued_on_dead_connection() {
+    // Regression: disconnect cleanup must unregister the provider before a
+    // failed foreground call releases the scheduler. Otherwise the queued call
+    // can be routed as `ToolInvoke` to the already-dead connection.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let tool_events = connect_test_tool(&mut h, "conn-dead-tool");
+    h.registry
+        .register("conn-dead-tool", exclusive_test_tool_spec("dead_slow"));
+
+    let cid = h.default_conversation_id.clone();
+    let spid: SessionPromptId = "sp-dead-tool".into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_conversations.insert(spid.clone(), cid.clone());
+    h.publish_for_conversation(
+        &cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "run two slow tools".to_owned(),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: spid,
+        output_items: vec![
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "running-call".into(),
+                name: ToolName::new("dead_slow"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+            ContextItem::ToolCall(ToolCallItem {
+                call_id: "queued-call".into(),
+                name: ToolName::new("dead_slow"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            }),
+        ],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("tool response");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec!["running-call".to_owned()]
+    );
+    assert_eq!(h.tool_turn.pending_len(), 1);
+
+    h.handle_disconnect("conn-dead-tool");
+
+    assert_eq!(
+        tool_invoke_call_ids(&tool_events),
+        vec!["running-call".to_owned()]
+    );
+    assert!(h.registry.providers_for("dead_slow").is_empty());
+    assert!(h.tool_turn.is_empty());
+    assert!(!h.pending_tool_providers.contains_key("running-call"));
+    assert!(!h.pending_tool_providers.contains_key("queued-call"));
+
+    let interrupted: ToolCallId = "running-call".into();
+    let interrupted_message = extension_disconnected_tool_call_error_message(&interrupted);
+    let unavailable_message = unavailable_tool_error_message(&ToolName::new("dead_slow"));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolError(error)
+            if error.call_id.as_str() == "running-call"
+                && error.message == interrupted_message
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolError(error)
+            if error.call_id.as_str() == "queued-call"
+                && error.message == unavailable_message
+    )));
+
+    h.shutdown().expect("shutdown");
 }
 
 fn final_tool_result(call_id: &str, tool_name: &str, text: &str) -> ToolResult {
@@ -3681,6 +3792,76 @@ fn start_background_tool_and_finish_placeholder_turn(
     ));
 }
 
+#[test]
+fn wait_returns_internal_background_error_after_extension_disconnect() {
+    // A backgrounded call belongs to its call id, not to a future provider
+    // registration. When the extension disconnects, `wait` must consume the
+    // synthesized background error immediately instead of hanging.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _tool_events = connect_test_tool(&mut h, "conn-bg-disconnect");
+    h.registry.register(
+        "conn-bg-disconnect",
+        instant_background_test_tool_spec("slow_disconnect"),
+    );
+
+    let cid = h.default_conversation_id.clone();
+    let call_id: ToolCallId = "bg-disconnect".into();
+    start_background_tool_and_finish_placeholder_turn(
+        &mut h,
+        &cid,
+        call_id.as_str(),
+        "slow_disconnect",
+    );
+    assert_eq!(
+        h.pending_tool_providers
+            .get(&call_id)
+            .map(|provider| provider.as_str()),
+        Some("conn-bg-disconnect")
+    );
+
+    h.handle_disconnect("conn-bg-disconnect");
+
+    let expected = extension_disconnected_background_tool_call_error_message(&call_id);
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolBackgroundError(error)
+            if error.call_id.as_str() == call_id.as_str()
+                && error.message == expected
+    )));
+
+    let _replacement_events = connect_test_tool(&mut h, "conn-bg-replacement");
+    h.registry.register(
+        "conn-bg-replacement",
+        instant_background_test_tool_spec("slow_disconnect"),
+    );
+
+    let wait_call = AgentToolCall {
+        id: "wait-bg-disconnect".into(),
+        name: ToolName::new("wait"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("tool_call_id".to_owned()),
+            CborValue::Text(call_id.to_string()),
+        )]),
+        display: None,
+    };
+    h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
+        .expect("wait returns disconnected background error");
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolError(error)
+            if error.call_id.as_str() == "wait-bg-disconnect"
+                && error.message == expected
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
 /// Regression: a user prompt submitted during manual compaction used to remain
 /// queued forever because `Resume::None` restored the conversation to `Idle`
 /// but never re-ran the normal pending-prompt drain.
@@ -6864,11 +7045,12 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
     );
     assert!(!h.pending_tool_providers.contains_key(&call_id));
     assert!(!h.tool_conversations.contains_key(&call_id));
+    let expected = extension_disconnected_background_tool_call_error_message(&call_id);
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolBackgroundError(error)
             if error.call_id.as_str() == call_id.as_str()
-                && error.message == "tool provider disconnected"
+                && error.message == expected
     )));
     assert!(!event_log_contains_any_source(&h, |event| matches!(
         event,

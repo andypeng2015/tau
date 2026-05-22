@@ -1,7 +1,8 @@
 use super::*;
 use crate::conversation::PendingPrompt;
 use crate::harness::{
-    PendingTool, tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
+    PendingTool, extension_disconnected_tool_call_error_message,
+    tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
     unavailable_tool_error_message,
 };
 
@@ -437,6 +438,7 @@ fn disconnected_tool_completes_pending_call() {
     assert!(!h.tool_conversations.contains_key(&call_id));
     assert!(!h.pending_tool_providers.contains_key(&call_id));
 
+    let expected = extension_disconnected_tool_call_error_message(&call_id);
     let session = h.store.session("s1").expect("session");
     assert!(session.nodes().iter().any(|node| {
         matches!(
@@ -447,7 +449,7 @@ fn disconnected_tool_completes_pending_call() {
                         && matches!(
                             &item.status,
                             ToolResultStatus::Error { message }
-                                if message == "tool provider disconnected"
+                                if message == &expected
                         )
                 })
         )
