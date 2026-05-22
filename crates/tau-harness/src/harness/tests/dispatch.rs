@@ -1,8 +1,8 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
 use crate::harness::{
-    PendingStartAgentRequest, PendingTool, background_completion_prompt,
-    extension_disconnected_background_tool_call_error_message,
+    AgentMessageRecipientStatus, PendingStartAgentRequest, PendingTool,
+    background_completion_prompt, extension_disconnected_background_tool_call_error_message,
     extension_disconnected_tool_call_error_message, is_restore_notice_prompt_text,
     restore_notice_prompt_for_elapsed, unavailable_tool_error_message,
 };
@@ -7313,6 +7313,7 @@ fn cancel_tool_removes_queued_delegate_before_it_can_start() {
     let exclusive_cid = ext_query_cid(&h, "delegate-0").expect("exclusive query started");
     assert!(ext_query_cid(&h, "delegate-1").is_none());
     assert_eq!(h.pending_start_agent_requests.len(), 1);
+    let queued_agent_id = h.pending_start_agent_requests[0].agent_id.clone();
 
     let cancel_call = AgentToolCall {
         id: "cancel-queued".into(),
@@ -7328,6 +7329,11 @@ fn cancel_tool_removes_queued_delegate_before_it_can_start() {
         .expect("cancel handled");
 
     assert!(h.pending_start_agent_requests.is_empty());
+    assert_eq!(
+        h.agent_message_recipient_status(&queued_agent_id),
+        AgentMessageRecipientStatus::Stopped,
+        "canceling a queued delegate should leave its already-published agent id stopped, not unknown",
+    );
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolBackgroundError(error)
@@ -10213,6 +10219,57 @@ fn message_tool_unknown_recipient_errors_without_agent_message() {
         .collect();
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message.contains("unknown message recipient"));
+    assert!(errors[0].message.contains("unknown"));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// A completed agent used to be collapsed with a typo as an unknown recipient.
+/// Keep the error distinct so callers can decide whether to retry or fix the
+/// id.
+#[test]
+fn message_tool_stopped_recipient_errors_without_agent_message() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = h.default_conversation_id.clone();
+    let stopped_cid = ConversationId::new("stopped-recipient");
+    h.conversations.insert(
+        stopped_cid.clone(),
+        Conversation::new(
+            stopped_cid.clone(),
+            "s1".into(),
+            tau_proto::PromptOriginator::User,
+            None,
+            None,
+        ),
+    );
+    let recipient_id = h
+        .ensure_agent_id_for_conversation(&stopped_cid)
+        .expect("agent id");
+    h.remove_conversation(&stopped_cid);
+
+    h.handle_message_tool_call(
+        &cid,
+        &message_tool_call("msg-stopped", &recipient_id, "hello"),
+        ToolName::new(crate::harness::subagents_tool::MESSAGE_TOOL_NAME),
+    )
+    .expect("message tool");
+
+    assert!(session_agent_messages(&h).is_empty());
+    let errors: Vec<_> = h
+        .store
+        .session_events("s1")
+        .expect("session events")
+        .into_iter()
+        .filter_map(|entry| match entry.event {
+            Event::ToolError(error) if error.call_id.as_str() == "msg-stopped" => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].message.contains("stopped message recipient"));
+    assert!(errors[0].message.contains("stopped"));
 
     h.shutdown().expect("shutdown");
 }

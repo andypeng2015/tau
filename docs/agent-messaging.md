@@ -43,7 +43,9 @@ The UI still displays the message. The recipient agent also receives a hidden in
 
 ## Invalid recipients and arguments
 
-A non-`user` recipient must be a live or pending `agent_id`. Otherwise the tool fails and no `agent.message` event is emitted:
+A non-`user` recipient must be a live or pending `agent_id`. Otherwise the tool fails and no `agent.message` event is emitted.
+
+If the id was never known, the tool reports an unknown recipient:
 
 ```text
 message({"recipient_id":"engineer_missing","message":"hello"})
@@ -51,6 +53,16 @@ message({"recipient_id":"engineer_missing","message":"hello"})
 
 ```text
 unknown message recipient: `engineer_missing`
+```
+
+If the id belonged to an agent that has already finished or was canceled before it could start, the tool reports a stopped recipient:
+
+```text
+message({"recipient_id":"engineer_done","message":"hello"})
+```
+
+```text
+stopped message recipient: `engineer_done`
 ```
 
 Tool arguments are schema-validated before dispatch. Unknown extra fields are rejected before any logical tool invocation is logged.

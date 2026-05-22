@@ -12,7 +12,9 @@ use tau_proto::{
 
 use crate::conversation::ConversationId;
 use crate::error::HarnessError;
-use crate::harness::{AgentToolCall, HARNESS_CONNECTION_ID, Harness, PendingTool};
+use crate::harness::{
+    AgentMessageRecipientStatus, AgentToolCall, HARNESS_CONNECTION_ID, Harness, PendingTool,
+};
 
 /// Model-visible name of the harness-owned delegate tool.
 pub(crate) const DELEGATE_TOOL_NAME: &str = "delegate";
@@ -295,13 +297,22 @@ impl Harness {
             let sender_id = self
                 .ensure_agent_id_for_conversation(cid)
                 .ok_or_else(|| "sender conversation no longer exists".to_owned())?;
-            if parsed.recipient_id != "user"
-                && !self.agent_message_recipient_exists(&parsed.recipient_id)
-            {
-                return Err(format!(
-                    "unknown message recipient: `{}`",
-                    parsed.recipient_id
-                ));
+            if parsed.recipient_id != "user" {
+                match self.agent_message_recipient_status(&parsed.recipient_id) {
+                    AgentMessageRecipientStatus::Live => {}
+                    AgentMessageRecipientStatus::Stopped => {
+                        return Err(format!(
+                            "stopped message recipient: `{}`",
+                            parsed.recipient_id
+                        ));
+                    }
+                    AgentMessageRecipientStatus::Unknown => {
+                        return Err(format!(
+                            "unknown message recipient: `{}`",
+                            parsed.recipient_id
+                        ));
+                    }
+                }
             }
             let session_id = self
                 .conversations

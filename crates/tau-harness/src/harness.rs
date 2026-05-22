@@ -733,6 +733,17 @@ impl PendingToolAvailabilityNotice {
     }
 }
 
+/// Message recipient state used to report precise tool errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentMessageRecipientStatus {
+    /// The recipient is known and can receive messages now.
+    Live,
+    /// The recipient id was known earlier but its agent has stopped.
+    Stopped,
+    /// The recipient id has never been observed by this harness.
+    Unknown,
+}
+
 pub(crate) struct Harness {
     /// Sender side of the harness's central event channel. Cloned into
     /// each per-connection reader thread so they can feed
@@ -831,6 +842,8 @@ pub(crate) struct Harness {
     pub(crate) conversations: std::collections::HashMap<ConversationId, Conversation>,
     /// Agent id to conversation routing for live agents.
     pub(crate) agent_conversations: HashMap<String, ConversationId>,
+    /// Agent ids that were once known but can no longer receive messages.
+    pub(crate) stopped_agent_ids: HashSet<String>,
     /// Id of the user's main interactive conversation. Always present
     /// in `conversations` for the harness's whole lifetime.
     pub(crate) default_conversation_id: ConversationId,
@@ -1356,6 +1369,7 @@ impl Harness {
             prompt_cache_diagnostics: std::collections::HashMap::new(),
             conversations,
             agent_conversations: HashMap::new(),
+            stopped_agent_ids: HashSet::new(),
             default_conversation_id,
             turn_state: TurnState::Idle,
             debug_log: None,
@@ -1573,6 +1587,7 @@ impl Harness {
             prompt_cache_diagnostics: std::collections::HashMap::new(),
             conversations,
             agent_conversations: HashMap::new(),
+            stopped_agent_ids: HashSet::new(),
             default_conversation_id,
             turn_state: TurnState::Idle,
             debug_log: None,
@@ -2265,13 +2280,24 @@ impl Harness {
         self.send_prompt_to_agent_for(&cid);
     }
 
-    /// Return whether a non-user message recipient can receive a hidden prompt.
-    pub(crate) fn agent_message_recipient_exists(&self, recipient_id: &str) -> bool {
-        self.agent_conversations.contains_key(recipient_id)
+    /// Classify whether a non-user message recipient can receive a hidden
+    /// prompt.
+    pub(crate) fn agent_message_recipient_status(
+        &self,
+        recipient_id: &str,
+    ) -> AgentMessageRecipientStatus {
+        if self.agent_conversations.contains_key(recipient_id)
             || self
                 .pending_start_agent_requests
                 .iter()
                 .any(|pending| pending.agent_id == recipient_id)
+        {
+            AgentMessageRecipientStatus::Live
+        } else if self.stopped_agent_ids.contains(recipient_id) {
+            AgentMessageRecipientStatus::Stopped
+        } else {
+            AgentMessageRecipientStatus::Unknown
+        }
     }
 
     fn deliver_agent_message(&mut self, message: &tau_proto::AgentMessage) {
@@ -3834,10 +3860,16 @@ impl Harness {
                 self.subagents.canceled_delegates.remove(&old_call_id);
             }
         }
+        let mut stopped_pending_agent_ids = Vec::new();
         self.pending_start_agent_requests.retain(|pending| {
-            pending.query.query_id != query_id
-                && pending.query.tool_call_id.as_ref() != Some(target_call_id)
+            let is_canceled = pending.query.query_id == query_id
+                || pending.query.tool_call_id.as_ref() == Some(target_call_id);
+            if is_canceled {
+                stopped_pending_agent_ids.push(pending.agent_id.clone());
+            }
+            !is_canceled
         });
+        self.stopped_agent_ids.extend(stopped_pending_agent_ids);
         self.emit_info("tool call cancelation request");
         self.cancel_delegate_side_conversation(target_call_id);
         self.complete_harness_delegate_inner(
@@ -5709,6 +5741,7 @@ impl Harness {
         };
         self.conversations.clear();
         self.agent_conversations.clear();
+        self.stopped_agent_ids.clear();
         self.conversations.insert(
             default_id.clone(),
             Conversation::new(
@@ -6310,6 +6343,7 @@ impl Harness {
             && let Some(agent_id) = &conv.agent_id
         {
             self.agent_conversations.remove(agent_id);
+            self.stopped_agent_ids.insert(agent_id.clone());
         }
         self.conversations.remove(cid)
     }
@@ -6326,6 +6360,7 @@ impl Harness {
         if let Some(conv) = self.conversations.get_mut(cid) {
             conv.agent_id = Some(agent_id.clone());
         }
+        self.stopped_agent_ids.remove(&agent_id);
         self.agent_conversations
             .insert(agent_id.clone(), cid.clone());
         Some(agent_id)
