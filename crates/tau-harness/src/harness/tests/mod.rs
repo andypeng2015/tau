@@ -338,6 +338,7 @@ fn drive_harness_until_call_completes(h: &mut Harness, target_call_id: &str) {
                 h.handle_disconnect(&connection_id);
             }
             HarnessEvent::NewClient(_) => {}
+            HarnessEvent::Command(command) => h.handle_harness_command(command).expect("handle"),
         }
     }
 }

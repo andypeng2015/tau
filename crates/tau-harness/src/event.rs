@@ -11,7 +11,15 @@ use std::time::Duration;
 use tau_core::{ConnectionSendError, ConnectionSink};
 use tau_proto::{Disconnect, Frame, FrameReader, FrameWriter, Message};
 
+use crate::extension::ExtensionConnectCommand;
+
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// Commands that mutate harness-owned state from inside the central loop.
+pub(crate) enum HarnessCommand {
+    /// Install a spawned extension connection and release its reader.
+    ConnectExtension(Box<ExtensionConnectCommand>),
+}
 
 /// Internal event type — all reader threads feed this into one channel.
 pub(crate) enum HarnessEvent {
@@ -26,6 +34,8 @@ pub(crate) enum HarnessEvent {
     },
     /// Socket listener accepted a new client.
     NewClient(UnixStream),
+    /// Internal state transition requested by harness helpers.
+    Command(HarnessCommand),
 }
 
 /// Connection sink — sends to the per-connection writer channel.
@@ -215,9 +225,9 @@ mod tests {
                 assert_eq!(connection_id.as_str(), "conn-test");
                 assert!(matches!(frame.as_ref(), Frame::Message(Message::Hello(_))));
             }
-            HarnessEvent::Disconnected { .. } | HarnessEvent::NewClient(_) => {
-                panic!("unexpected harness event")
-            }
+            HarnessEvent::Disconnected { .. }
+            | HarnessEvent::NewClient(_)
+            | HarnessEvent::Command(_) => panic!("unexpected harness event"),
         }
     }
 }

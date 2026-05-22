@@ -4,16 +4,16 @@
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-use tau_core::{Connection, ConnectionMetadata, ConnectionOrigin, EventBus};
-use tau_proto::ClientKind;
+use tau_core::ConnectionOrigin;
+use tau_proto::{ClientKind, Frame};
 
 use crate::error::HarnessError;
 use crate::event::{
-    ChannelSink, HarnessEvent, WriterShutdown, spawn_reader_thread_after_initialized,
-    spawn_writer_thread,
+    HarnessEvent, WriterShutdown, spawn_reader_thread_after_initialized, spawn_writer_thread,
 };
 use crate::prompt::chrono_free_date;
 use crate::settings::ExtensionConfig;
@@ -64,22 +64,57 @@ pub(crate) struct ExtensionEntry {
 /// after the harness has installed its bus and lifecycle state.
 pub(crate) type ExtensionInitializedAck = Sender<()>;
 
+/// Internal request for the harness loop to install an extension connection.
+pub(crate) struct ExtensionConnectCommand {
+    /// Lifecycle entry to insert once the bus connection exists.
+    pub(crate) entry: ExtensionEntry,
+    /// Bus metadata origin to report for the connection.
+    pub(crate) origin: ConnectionOrigin,
+    /// Writer channel owned by the bus connection sink.
+    pub(crate) writer_tx: Sender<Frame>,
+    /// Ack that releases the reader after state installation completes.
+    pub(crate) initialized_ack: ExtensionInitializedAck,
+    /// Previous connection id to replace when this is a supervised respawn.
+    pub(crate) replaces: Option<tau_proto::ConnectionId>,
+}
+
 /// Result of spawning an in-process extension transport.
-pub(crate) type InProcessSpawn = (
-    tau_proto::ConnectionId,
-    JoinHandle<Result<(), String>>,
-    ExtensionInitializedAck,
-);
+#[cfg_attr(not(any(test, feature = "echo-agent")), allow(dead_code))]
+pub(crate) struct InProcessSpawn {
+    /// Connection id assigned before the reader thread starts.
+    pub(crate) connection_id: tau_proto::ConnectionId,
+    /// Writer channel to install in the bus from the harness loop.
+    pub(crate) writer_tx: Sender<Frame>,
+    /// In-process extension thread handle to join during shutdown.
+    pub(crate) thread: JoinHandle<Result<(), String>>,
+    /// Ack that releases the reader after state installation completes.
+    pub(crate) initialized_ack: ExtensionInitializedAck,
+}
 
 /// Result of spawning a supervised extension transport.
-pub(crate) type SupervisedSpawn = (tau_proto::ConnectionId, u32, ExtensionInitializedAck);
+pub(crate) struct SupervisedSpawn {
+    /// Connection id assigned before the reader thread starts.
+    pub(crate) connection_id: tau_proto::ConnectionId,
+    /// Writer channel to install in the bus from the harness loop.
+    pub(crate) writer_tx: Sender<Frame>,
+    /// OS process id of the supervised child.
+    pub(crate) child_pid: u32,
+    /// Ack that releases the reader after state installation completes.
+    pub(crate) initialized_ack: ExtensionInitializedAck,
+}
+
+static NEXT_EXTENSION_CONNECTION_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_extension_connection_id() -> tau_proto::ConnectionId {
+    let next = NEXT_EXTENSION_CONNECTION_ID.fetch_add(1, Ordering::Relaxed) + 1;
+    format!("ext-conn-{next}").into()
+}
 
 #[cfg_attr(not(any(test, feature = "echo-agent")), allow(dead_code))]
 pub(crate) fn spawn_in_process<F>(
-    name: &str,
-    kind: ClientKind,
+    _name: &str,
+    _kind: ClientKind,
     run: F,
-    bus: &mut EventBus,
     tx: &Sender<HarnessEvent>,
 ) -> Result<InProcessSpawn, HarnessError>
 where
@@ -90,27 +125,24 @@ where
     let (ext_read, harness_write) = UnixStream::pair()?; // harness → extension
     let (harness_read, ext_write) = UnixStream::pair()?; // extension → harness
 
+    let connection_id = next_extension_connection_id();
     let writer_tx = spawn_writer_thread(harness_write, WriterShutdown::CloseStream);
-    let conn_id = bus.connect(Connection::new(
-        ConnectionMetadata {
-            id: tau_proto::ConnectionId::default(),
-            name: name.to_owned(),
-            kind,
-            origin: ConnectionOrigin::Supervised,
-        },
-        Box::new(ChannelSink { tx: writer_tx }),
-    ));
 
     let (initialized_tx, initialized_rx) = mpsc::channel();
     spawn_reader_thread_after_initialized(
-        conn_id.clone(),
+        connection_id.clone(),
         harness_read,
         tx.clone(),
         initialized_rx,
     );
 
     let thread = thread::spawn(move || run(ext_read, ext_write));
-    Ok((conn_id, thread, initialized_tx))
+    Ok(InProcessSpawn {
+        connection_id,
+        writer_tx,
+        thread,
+        initialized_ack: initialized_tx,
+    })
 }
 
 /// Per-session log directory: `<sessions_dir>/<session_id>/logs/`.
@@ -142,9 +174,8 @@ pub fn harness_log_path(sessions_dir: &Path, session_id: &str) -> PathBuf {
 
 pub(crate) fn spawn_supervised(
     config: &ExtensionConfig,
-    kind: ClientKind,
+    _kind: ClientKind,
     stderr_log_path: Option<PathBuf>,
-    bus: &mut EventBus,
     tx: &Sender<HarnessEvent>,
 ) -> Result<SupervisedSpawn, HarnessError> {
     let mut command = Command::new(&config.command);
@@ -173,21 +204,23 @@ pub(crate) fn spawn_supervised(
         spawn_extension_stderr_logger(config.name.clone(), stderr, log_path);
     }
 
+    let connection_id = next_extension_connection_id();
     let writer_tx = spawn_writer_thread(stdin, WriterShutdown::KillChild(child));
-    let conn_id = bus.connect(Connection::new(
-        ConnectionMetadata {
-            id: tau_proto::ConnectionId::default(),
-            name: config.name.clone(),
-            kind,
-            origin: ConnectionOrigin::Supervised,
-        },
-        Box::new(ChannelSink { tx: writer_tx }),
-    ));
 
     let (initialized_tx, initialized_rx) = mpsc::channel();
-    spawn_reader_thread_after_initialized(conn_id.clone(), stdout, tx.clone(), initialized_rx);
+    spawn_reader_thread_after_initialized(
+        connection_id.clone(),
+        stdout,
+        tx.clone(),
+        initialized_rx,
+    );
 
-    Ok((conn_id, child_pid, initialized_tx))
+    Ok(SupervisedSpawn {
+        connection_id,
+        writer_tx,
+        child_pid,
+        initialized_ack: initialized_tx,
+    })
 }
 
 /// Read an extension's stderr line-by-line and append each line

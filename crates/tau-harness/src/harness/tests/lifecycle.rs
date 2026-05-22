@@ -1,5 +1,6 @@
 use super::*;
 use crate::conversation::PendingPrompt;
+use crate::extension::{ExtensionConnectCommand, ExtensionEntry, ExtensionState, spawn_in_process};
 use crate::harness::{
     PendingTool, extension_disconnected_tool_call_error_message,
     tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
@@ -557,6 +558,111 @@ fn disconnected_tool_is_removed_cleanly() {
                 })
         )
     }));
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn extension_connect_command_installs_state_before_reader_ack() {
+    // Regression: extension spawn helpers used to mutate bus state directly.
+    // The reader must stay gated until the harness loop has installed both
+    // the bus connection and the lifecycle entry, then emitted the starting
+    // barrier.
+    fn eager_hello_extension(r: UnixStream, w: UnixStream) -> Result<(), String> {
+        let mut writer = FrameWriter::new(BufWriter::new(w));
+        writer
+            .write_frame(&Frame::Message(Message::Hello(tau_proto::Hello {
+                protocol_version: tau_proto::PROTOCOL_VERSION,
+                client_name: "late-tool".into(),
+                client_kind: tau_proto::ClientKind::Tool,
+            })))
+            .map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+        writer
+            .write_frame(&Frame::Message(Message::Ready(tau_proto::Ready {
+                message: None,
+            })))
+            .map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+
+        let mut reader = FrameReader::new(BufReader::new(r));
+        while let Some(frame) = reader.read_frame().map_err(|e| e.to_string())? {
+            let (_, frame) = frame.peel_log();
+            if matches!(frame, Frame::Message(Message::Disconnect(_))) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+
+    let spawned = spawn_in_process(
+        "late-tool",
+        tau_proto::ClientKind::Tool,
+        eager_hello_extension,
+        &h.tx,
+    )
+    .expect("spawn late tool");
+    let conn_id = spawned.connection_id.clone();
+    h.queue_extension_connect(ExtensionConnectCommand {
+        entry: ExtensionEntry {
+            name: "late-tool".to_owned(),
+            instance_id: 999.into(),
+            connection_id: conn_id.clone(),
+            kind: tau_proto::ClientKind::Tool,
+            pid: Some(std::process::id()),
+            in_process_thread: Some(spawned.thread),
+            supervised_config: None,
+            restart_attempt: 0,
+            state: ExtensionState::Spawning,
+            last_acked: tau_proto::LogEventId::default(),
+        },
+        origin: ConnectionOrigin::Supervised,
+        writer_tx: spawned.writer_tx,
+        initialized_ack: spawned.initialized_ack,
+        replaces: None,
+    })
+    .expect("queue connect command");
+
+    assert!(h.bus.connection(&conn_id).is_none());
+    assert!(h.extensions.get(&conn_id).is_none());
+
+    let event =
+        h.rx.recv_timeout(Duration::from_secs(1))
+            .expect("connect command should be first");
+    match event {
+        HarnessEvent::Command(command) => h.handle_harness_command(command).expect("handle"),
+        HarnessEvent::FromConnection { .. }
+        | HarnessEvent::Disconnected { .. }
+        | HarnessEvent::NewClient(_) => panic!("reader forwarded before connect command"),
+    }
+
+    assert!(h.bus.connection(&conn_id).is_some());
+    assert!(h.extensions.get(&conn_id).is_some());
+    assert!(
+        h.lifecycle_messages
+            .iter()
+            .any(|m| m == "extension late-tool starting")
+    );
+
+    let event =
+        h.rx.recv_timeout(Duration::from_secs(1))
+            .expect("reader should forward after connect ack");
+    match event {
+        HarnessEvent::FromConnection {
+            connection_id,
+            frame,
+        } => {
+            assert_eq!(connection_id, conn_id);
+            assert!(matches!(frame.as_ref(), Frame::Message(Message::Hello(_))));
+        }
+        HarnessEvent::Command(_)
+        | HarnessEvent::Disconnected { .. }
+        | HarnessEvent::NewClient(_) => panic!("unexpected harness event after connect ack"),
+    }
+
     h.shutdown().expect("shutdown");
 }
 

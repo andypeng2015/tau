@@ -38,13 +38,15 @@ use crate::dirs::policy_store_path_from;
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill, DiscoveredSkillSource};
 use crate::error::HarnessError;
 use crate::event::{
-    ChannelSink, HarnessEvent, WriterShutdown, spawn_reader_thread, spawn_writer_thread,
+    ChannelSink, HarnessCommand, HarnessEvent, WriterShutdown, spawn_reader_thread,
+    spawn_writer_thread,
 };
 use crate::event_log::EventLog;
 #[cfg(any(test, feature = "echo-agent"))]
 use crate::extension::spawn_in_process;
 use crate::extension::{
-    ExtensionEntry, ExtensionState, extension_stderr_log_path, spawn_supervised,
+    ExtensionConnectCommand, ExtensionEntry, ExtensionState, extension_stderr_log_path,
+    spawn_supervised,
 };
 use crate::format::{format_tool_progress, render_entry_preview};
 use crate::harness::interception::{
@@ -744,6 +746,10 @@ pub(crate) struct Harness {
     /// that a `HashMap` alone can't supply, and is updated in place
     /// whenever a supervised extension respawns with a fresh id.
     pub(crate) extension_order: Vec<tau_proto::ConnectionId>,
+    /// Number of queued extension connect commands not yet applied by
+    /// the harness loop. Startup waits on this before treating an empty
+    /// `extensions` map as ready.
+    pending_extension_connects: usize,
     /// Monotonic counter used to mint synthetic `sp-N`
     /// `SessionPromptId`s when dispatching prompts to the agent.
     pub(crate) next_session_prompt_id: u64,
@@ -1173,7 +1179,7 @@ impl Harness {
         let state_dir = state_dir.into();
         let sessions_dir = tau_config::settings::sessions_dir_of(&state_dir);
         let (tx, rx) = mpsc::channel();
-        let mut bus =
+        let bus =
             EventBus::with_subscription_policy(Box::new(DefaultSubscriptionPolicy::with_store(
                 PolicyStore::open(policy_store_path_from(&state_dir))?,
             )));
@@ -1186,46 +1192,51 @@ impl Harness {
         let own_pid = std::process::id();
         let mut next_iid = instance_id_factory();
 
-        let mut extensions = Vec::new();
-        let mut extension_init_acks = Vec::new();
+        let mut extension_connects = Vec::new();
         // Provider
-        let (conn_id, thread, initialized_ack) = spawn_in_process(
-            "provider",
-            ClientKind::Provider,
-            provider_runner,
-            &mut bus,
-            &tx,
-        )?;
-        extension_init_acks.push(initialized_ack);
-        extensions.push(ExtensionEntry {
-            name: "provider".to_owned(),
-            instance_id: next_iid(),
-            connection_id: conn_id,
-            kind: ClientKind::Provider,
-            pid: Some(own_pid),
-            in_process_thread: Some(thread),
-            supervised_config: None,
-            restart_attempt: 0,
-            state: ExtensionState::Spawning,
-            last_acked: tau_proto::LogEventId::default(),
-        });
-
-        // Caller-supplied in-process tools.
-        for tool in tools {
-            let (conn_id, thread, initialized_ack) =
-                spawn_in_process(tool.name, ClientKind::Tool, tool.runner, &mut bus, &tx)?;
-            extension_init_acks.push(initialized_ack);
-            extensions.push(ExtensionEntry {
-                name: tool.name.to_owned(),
+        let provider_spawn =
+            spawn_in_process("provider", ClientKind::Provider, provider_runner, &tx)?;
+        let provider_conn_id = provider_spawn.connection_id.clone();
+        extension_connects.push(ExtensionConnectCommand {
+            entry: ExtensionEntry {
+                name: "provider".to_owned(),
                 instance_id: next_iid(),
-                connection_id: conn_id,
-                kind: ClientKind::Tool,
+                connection_id: provider_conn_id,
+                kind: ClientKind::Provider,
                 pid: Some(own_pid),
-                in_process_thread: Some(thread),
+                in_process_thread: Some(provider_spawn.thread),
                 supervised_config: None,
                 restart_attempt: 0,
                 state: ExtensionState::Spawning,
                 last_acked: tau_proto::LogEventId::default(),
+            },
+            origin: ConnectionOrigin::Supervised,
+            writer_tx: provider_spawn.writer_tx,
+            initialized_ack: provider_spawn.initialized_ack,
+            replaces: None,
+        });
+
+        // Caller-supplied in-process tools.
+        for tool in tools {
+            let tool_spawn = spawn_in_process(tool.name, ClientKind::Tool, tool.runner, &tx)?;
+            let conn_id = tool_spawn.connection_id.clone();
+            extension_connects.push(ExtensionConnectCommand {
+                entry: ExtensionEntry {
+                    name: tool.name.to_owned(),
+                    instance_id: next_iid(),
+                    connection_id: conn_id,
+                    kind: ClientKind::Tool,
+                    pid: Some(own_pid),
+                    in_process_thread: Some(tool_spawn.thread),
+                    supervised_config: None,
+                    restart_attempt: 0,
+                    state: ExtensionState::Spawning,
+                    last_acked: tau_proto::LogEventId::default(),
+                },
+                origin: ConnectionOrigin::Supervised,
+                writer_tx: tool_spawn.writer_tx,
+                initialized_ack: tool_spawn.initialized_ack,
+                replaces: None,
             });
         }
 
@@ -1258,13 +1269,6 @@ impl Harness {
             ),
         );
 
-        let extension_order: Vec<tau_proto::ConnectionId> =
-            extensions.iter().map(|e| e.connection_id.clone()).collect();
-        let extensions: std::collections::HashMap<tau_proto::ConnectionId, ExtensionEntry> =
-            extensions
-                .into_iter()
-                .map(|e| (e.connection_id.clone(), e))
-                .collect();
         let mut harness = Self {
             tx,
             rx,
@@ -1278,8 +1282,9 @@ impl Harness {
             event_log: EventLog::new(),
             client_writers: std::collections::HashMap::new(),
             lifecycle_messages: Vec::new(),
-            extensions,
-            extension_order,
+            extensions: std::collections::HashMap::new(),
+            extension_order: Vec::new(),
+            pending_extension_connects: 0,
             next_session_prompt_id: 0,
             prompt_conversations: std::collections::HashMap::new(),
             prompt_snapshots: std::collections::HashMap::new(),
@@ -1339,17 +1344,8 @@ impl Harness {
             .store
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
 
-        for initialized_ack in extension_init_acks {
-            let _ = initialized_ack.send(());
-        }
-
-        let names: Vec<String> = harness
-            .extension_order
-            .iter()
-            .filter_map(|id| harness.extensions.get(id).map(|e| e.name.clone()))
-            .collect();
-        for name in names {
-            harness.emit_extension_starting(&name);
+        for command in extension_connects {
+            harness.queue_extension_connect(command)?;
         }
         harness.wait_for_extensions_ready()?;
         harness.register_harness_tools();
@@ -1401,15 +1397,14 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening policy store");
         let policy_store = PolicyStore::open(policy_store_path_from(&state_dir))?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "policy store opened");
-        let mut bus = EventBus::with_subscription_policy(Box::new(
+        let bus = EventBus::with_subscription_policy(Box::new(
             DefaultSubscriptionPolicy::with_store(policy_store),
         ));
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "opening session store");
         let store = SessionStore::open_lazy(&sessions_dir)?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session store opened");
 
-        let mut extensions = Vec::new();
-        let mut extension_init_acks = Vec::new();
+        let mut extension_connects = Vec::new();
         let mut next_iid = instance_id_factory();
 
         for ext_config in config.extensions.values() {
@@ -1428,28 +1423,33 @@ impl Harness {
 
             let log_path =
                 extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name);
-            let (conn_id, child_pid, initialized_ack) =
-                spawn_supervised(ext_config, kind.clone(), Some(log_path), &mut bus, &tx)?;
-            extension_init_acks.push(initialized_ack);
+            let spawned = spawn_supervised(ext_config, kind.clone(), Some(log_path), &tx)?;
+            let conn_id = spawned.connection_id.clone();
             tracing::info!(
                 target: "tau_harness::startup",
                 extension = %ext_config.name,
-                pid = child_pid,
+                pid = spawned.child_pid,
                 elapsed_ms = startup_started_at.elapsed().as_millis(),
                 "extension spawned",
             );
 
-            extensions.push(ExtensionEntry {
-                name: ext_config.name.clone(),
-                instance_id: next_iid(),
-                connection_id: conn_id,
-                kind: kind.clone(),
-                pid: Some(child_pid),
-                in_process_thread: None,
-                supervised_config: Some(ext_config.clone()),
-                restart_attempt: 0,
-                state: ExtensionState::Spawning,
-                last_acked: tau_proto::LogEventId::default(),
+            extension_connects.push(ExtensionConnectCommand {
+                entry: ExtensionEntry {
+                    name: ext_config.name.clone(),
+                    instance_id: next_iid(),
+                    connection_id: conn_id,
+                    kind: kind.clone(),
+                    pid: Some(spawned.child_pid),
+                    in_process_thread: None,
+                    supervised_config: Some(ext_config.clone()),
+                    restart_attempt: 0,
+                    state: ExtensionState::Spawning,
+                    last_acked: tau_proto::LogEventId::default(),
+                },
+                origin: ConnectionOrigin::Supervised,
+                writer_tx: spawned.writer_tx,
+                initialized_ack: spawned.initialized_ack,
+                replaces: None,
             });
         }
 
@@ -1484,13 +1484,6 @@ impl Harness {
             ),
         );
 
-        let extension_order: Vec<tau_proto::ConnectionId> =
-            extensions.iter().map(|e| e.connection_id.clone()).collect();
-        let extensions: std::collections::HashMap<tau_proto::ConnectionId, ExtensionEntry> =
-            extensions
-                .into_iter()
-                .map(|e| (e.connection_id.clone(), e))
-                .collect();
         let mut harness = Self {
             tx,
             rx,
@@ -1504,8 +1497,9 @@ impl Harness {
             event_log: EventLog::new(),
             client_writers: std::collections::HashMap::new(),
             lifecycle_messages: Vec::new(),
-            extensions,
-            extension_order,
+            extensions: std::collections::HashMap::new(),
+            extension_order: Vec::new(),
+            pending_extension_connects: 0,
             next_session_prompt_id: 0,
             prompt_conversations: std::collections::HashMap::new(),
             prompt_snapshots: std::collections::HashMap::new(),
@@ -1564,17 +1558,8 @@ impl Harness {
             .record_session_meta(eager_session_id, std::env::current_dir().ok())?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session metadata recorded");
 
-        for initialized_ack in extension_init_acks {
-            let _ = initialized_ack.send(());
-        }
-
-        let names: Vec<String> = harness
-            .extension_order
-            .iter()
-            .filter_map(|id| harness.extensions.get(id).map(|e| e.name.clone()))
-            .collect();
-        for name in names {
-            harness.emit_extension_starting(&name);
+        for command in extension_connects {
+            harness.queue_extension_connect(command)?;
         }
         harness.wait_for_extensions_ready()?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "extensions ready");
@@ -1596,6 +1581,74 @@ impl Harness {
         if let Some(log) = &mut self.debug_log {
             log.log_harness_event(harness_event);
         }
+    }
+
+    fn queue_extension_connect(
+        &mut self,
+        command: ExtensionConnectCommand,
+    ) -> Result<(), HarnessError> {
+        self.pending_extension_connects += 1;
+        if self
+            .tx
+            .send(HarnessEvent::Command(HarnessCommand::ConnectExtension(
+                Box::new(command),
+            )))
+            .is_ok()
+        {
+            return Ok(());
+        }
+        self.pending_extension_connects -= 1;
+        Err(HarnessError::Participant(
+            "harness command channel closed".to_owned(),
+        ))
+    }
+
+    fn handle_harness_command(&mut self, command: HarnessCommand) -> Result<(), HarnessError> {
+        match command {
+            HarnessCommand::ConnectExtension(command) => self.connect_extension(*command),
+        }
+        Ok(())
+    }
+
+    fn connect_extension(&mut self, command: ExtensionConnectCommand) {
+        let ExtensionConnectCommand {
+            entry,
+            origin,
+            writer_tx,
+            initialized_ack,
+            replaces,
+        } = command;
+        let connection_id = entry.connection_id.clone();
+        let name = entry.name.clone();
+        let kind = entry.kind.clone();
+
+        let connected_id = self.bus.connect(Connection::new(
+            ConnectionMetadata {
+                id: connection_id.clone(),
+                name: name.clone(),
+                kind,
+                origin,
+            },
+            Box::new(ChannelSink { tx: writer_tx }),
+        ));
+        debug_assert_eq!(connected_id, connection_id);
+
+        if let Some(replaced) = replaces {
+            self.extensions.remove(&replaced);
+            if let Some(slot) = self.extension_order.iter_mut().find(|id| **id == replaced) {
+                *slot = connection_id.clone();
+            } else if !self.extension_order.iter().any(|id| id == &connection_id) {
+                self.extension_order.push(connection_id.clone());
+            }
+        } else if !self.extension_order.iter().any(|id| id == &connection_id) {
+            self.extension_order.push(connection_id.clone());
+        }
+        self.extensions.insert(connection_id, entry);
+        if 0 < self.pending_extension_connects {
+            self.pending_extension_connects -= 1;
+        }
+        self.emit_extension_starting(&name);
+        let _ = initialized_ack.send(());
     }
 
     /// Session id of the conversation that owns a given in-flight
@@ -2283,6 +2336,7 @@ impl Harness {
                     }
                 }
                 HarnessEvent::NewClient(_) => {}
+                HarnessEvent::Command(command) => self.handle_harness_command(command)?,
             }
         }
         Ok(())
@@ -2293,11 +2347,11 @@ impl Harness {
     /// state transitions are tracked per-extension so the same predicate
     /// can also gate runtime dispatch in `dispatch_blocked_for`.
     fn wait_for_extensions_ready(&mut self) -> Result<(), HarnessError> {
-        if self.extensions_all_ready() {
+        if self.pending_extension_connects == 0 && self.extensions_all_ready() {
             return Ok(());
         }
         let started_at = Instant::now();
-        while !self.extensions_all_ready() {
+        while self.pending_extension_connects != 0 || !self.extensions_all_ready() {
             let remaining = STARTUP_TIMEOUT
                 .checked_sub(started_at.elapsed())
                 .unwrap_or(Duration::ZERO);
@@ -2325,6 +2379,7 @@ impl Harness {
                     )));
                 }
                 HarnessEvent::NewClient(_) => {}
+                HarnessEvent::Command(command) => self.handle_harness_command(command)?,
             }
         }
         Ok(())
@@ -2416,6 +2471,7 @@ impl Harness {
                     self.accept_client(stream)?;
                     ever_attached = true;
                 }
+                HarnessEvent::Command(command) => self.handle_harness_command(command)?,
             }
         }
         Ok(())
@@ -3579,34 +3635,35 @@ impl Harness {
             attempt,
             "respawning extension",
         );
-        let (new_connection_id, child_pid, initialized_ack) =
-            spawn_supervised(&config, kind, Some(log_path), &mut self.bus, &self.tx)?;
+        let spawned = spawn_supervised(&config, kind.clone(), Some(log_path), &self.tx)?;
+        let new_connection_id = spawned.connection_id.clone();
         tracing::info!(
             target: "tau_harness::startup",
             extension = %config.name,
-            pid = child_pid,
+            pid = spawned.child_pid,
             attempt,
             "extension respawned",
         );
 
-        // Re-key the entry under the freshly-minted connection id and
-        // patch its in-place state. The `extension_order` slot stays in
-        // place so spawn-order semantics survive the respawn.
         let old_key = tau_proto::ConnectionId::from(connection_id);
-        let mut moved = self
-            .extensions
-            .remove(&old_key)
-            .expect("entry was present moments ago");
-        moved.connection_id = new_connection_id.clone();
-        moved.pid = Some(child_pid);
-        moved.state = ExtensionState::Spawning;
-        moved.last_acked = tau_proto::LogEventId::default();
-        self.extensions.insert(new_connection_id.clone(), moved);
-        if let Some(slot) = self.extension_order.iter_mut().find(|id| **id == old_key) {
-            *slot = new_connection_id;
-        }
-        let _ = initialized_ack.send(());
-        self.emit_extension_starting(&name);
+        self.queue_extension_connect(ExtensionConnectCommand {
+            entry: ExtensionEntry {
+                name,
+                instance_id,
+                connection_id: new_connection_id,
+                kind,
+                pid: Some(spawned.child_pid),
+                in_process_thread: None,
+                supervised_config: Some(config),
+                restart_attempt: attempt,
+                state: ExtensionState::Spawning,
+                last_acked: tau_proto::LogEventId::default(),
+            },
+            origin: ConnectionOrigin::Supervised,
+            writer_tx: spawned.writer_tx,
+            initialized_ack: spawned.initialized_ack,
+            replaces: Some(old_key),
+        })?;
         Ok(())
     }
 
@@ -3699,6 +3756,11 @@ impl Harness {
         self.extensions.get(connection_id)
     }
 
+    fn publish_lifecycle_event(&mut self, event: Event) {
+        let transient = event.defaults_to_transient();
+        self.commit_event(Some("harness"), event, transient, None);
+    }
+
     fn emit_extension_starting(&mut self, extension_name: &str) {
         let (iid, pid) = self
             .find_extension_by_name(extension_name)
@@ -3706,14 +3768,11 @@ impl Harness {
             .unwrap_or((0.into(), None));
         self.lifecycle_messages
             .push(format!("extension {extension_name} starting"));
-        self.publish_event(
-            Some("harness"),
-            Event::ExtensionStarting(tau_proto::ExtensionStarting {
-                instance_id: iid,
-                extension_name: extension_name.into(),
-                pid,
-            }),
-        );
+        self.publish_lifecycle_event(Event::ExtensionStarting(tau_proto::ExtensionStarting {
+            instance_id: iid,
+            extension_name: extension_name.into(),
+            pid,
+        }));
     }
 
     fn emit_extension_ready(&mut self, connection_id: &str) {
@@ -3725,14 +3784,11 @@ impl Harness {
         let pid = ext.pid;
         self.lifecycle_messages
             .push(format!("extension {name} ready"));
-        self.publish_event(
-            Some("harness"),
-            Event::ExtensionReady(tau_proto::ExtensionReady {
-                instance_id: iid,
-                extension_name: name.into(),
-                pid,
-            }),
-        );
+        self.publish_lifecycle_event(Event::ExtensionReady(tau_proto::ExtensionReady {
+            instance_id: iid,
+            extension_name: name.into(),
+            pid,
+        }));
     }
 
     fn emit_extension_exited(&mut self, extension_name: &str) {
@@ -3742,16 +3798,13 @@ impl Harness {
             .unwrap_or((0.into(), None));
         self.lifecycle_messages
             .push(format!("extension {extension_name} exited"));
-        self.publish_event(
-            Some("harness"),
-            Event::ExtensionExited(tau_proto::ExtensionExited {
-                instance_id: iid,
-                extension_name: extension_name.into(),
-                pid,
-                exit_code: None,
-                signal: None,
-            }),
-        );
+        self.publish_lifecycle_event(Event::ExtensionExited(tau_proto::ExtensionExited {
+            instance_id: iid,
+            extension_name: extension_name.into(),
+            pid,
+            exit_code: None,
+            signal: None,
+        }));
     }
 
     fn check_config_exists(&mut self) {
@@ -7465,6 +7518,7 @@ impl Harness {
                     }
                 }
                 HarnessEvent::NewClient(_) => {}
+                HarnessEvent::Command(command) => self.handle_harness_command(command)?,
             }
         }
     }
