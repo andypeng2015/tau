@@ -245,9 +245,9 @@ agent for a one-sentence idle summary before notifying.
 The harness exposes a `delegate` tool that spawns a side conversation and returns
 its result to the caller, plus a `wait` tool for collecting background tool
 results. Unless the `delegate` call supplies `role`, delegated sub-agents default
-to the `engineer` role. The delegate placeholder and final result include the
-sub-agent `agent_id`, which can be passed to the `message` tool for live
-agent-to-agent notes. `message` can also target the special recipient `user`;
+to the `engineer` role. The delegate placeholder and final result include
+`self_agent_id` and `sub_agent_id`; pass `sub_agent_id` to the `message` tool
+for live agent-to-agent notes. `message` can also target the special recipient `user`;
 all messages are rendered in the UI as `Messages from <sender> to <recipient>:`.
 When `role` is supplied, or when the default `engineer` role is used, the
 sub-agent runs with that role's resolved model, model parameters, system prompt,

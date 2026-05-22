@@ -38,7 +38,9 @@ With a single empty line separating headers from the main payload.
 the tool description should mention it.
 
 Many headers are optional, and skipped for their default most natural values
-for token efficiency.
+for token efficiency. Keep tool output compact: include only non-default,
+non-redundant values that help the agent decide what to do next. Do not emit
+aliases or duplicate fields that carry the same information.
 
 ### Common patterns
 
@@ -138,7 +140,7 @@ When verifying this behavior, check that the synthetic foreground result is visi
 
 ### Message tool verification plan
 
-Use this plan when asked to verify the `message` tool, especially in multi-agent scenarios. The goal is to prove that messages are routed correctly among the main agent, sub-agents, sibling sub-agents, the special `user` recipient, and completed or invalid recipients. Also verify timing, sender IDs, exact payload preservation, and error behavior.
+Use this plan when asked to verify the `message` tool, especially in multi-agent scenarios. The goal is to prove that messages are routed correctly among the main agent, sub-agents, sibling sub-agents, the special `user` recipient, and completed or invalid recipients. Also verify timing, sender IDs, async delivery, payload escaping in hidden prompts, exact payload preservation in durable `AgentMessage` events, and error behavior.
 
 Do not rely on memory. Give every sub-agent a self-contained prompt. A delegated agent starts with a clean context and does not know this skill, the parent conversation, or the IDs of other agents unless you include them in its prompt or later messages.
 
@@ -155,7 +157,7 @@ Record all of these observations:
 * Delivery while a sub-agent is sleeping or otherwise between model turns.
 * Delivery order, or any reorderings, especially for parallel `message` calls.
 * Sender IDs visible to recipients.
-* Message payload preservation for multiline content, blank lines, unicode, JSON-like text, backticks, and literal `<message>` tags inside the payload.
+* Message payload preservation in durable events, and XML escaping in hidden prompts, for multiline content, blank lines, unicode, JSON-like text, backticks, and literal `<message>` tags inside the payload.
 * Error for an unknown recipient ID.
 * Error for a completed sub-agent recipient ID.
 * Error for an empty message.
@@ -190,7 +192,7 @@ Procedure:
 You are expected to receive messages from the parent and possibly from Agent B. Be precise and do not invent messages.
 ```
 
-After the `delegate` placeholder results return, note both `agent_id` values and both delegate tool call IDs. Send the first batch of messages in parallel:
+After the `delegate` placeholder results return, note the caller `self_agent_id`, each `sub_agent_id`, and both delegate tool call IDs. Use `sub_agent_id` as the message recipient. Send the first batch of messages in parallel:
 
 ```text
 To Agent A:
@@ -224,13 +226,14 @@ Also send one message to a clearly invalid recipient such as `engineer_does_not_
 
 Wait for both delegates. In their final logs, verify that:
 
+* The delegate placeholder and final result expose `self_agent_id` and `sub_agent_id` without redundant aliases.
 * Each agent saw the direct main-agent messages addressed to it.
 * Each agent saw the peer message from the other agent.
 * Each `COMMAND: SEND_PEER` caused exactly one peer `message` call with result `Message sent`.
 * Delayed messages arrived even though the agents were already running.
-* The visible sender ID for messages from the main agent is present. Save that sender ID; it is the main agent recipient ID for the next phase.
+* The visible sender ID for messages from the main agent is present and matches the `self_agent_id` from the delegate result. Save that sender ID; it is the main agent recipient ID for the next phase.
 
-After both delegates complete, try to send a post-completion message to each old `agent_id`. Expect an error. Current behavior may report this the same way as an unknown recipient.
+After both delegates complete, try to send a post-completion message to each old `sub_agent_id`. Expect an error until completed-agent wakeup is implemented. Current behavior may report this the same way as an unknown recipient.
 
 #### Phase 2: verify sub-agent to main-agent routing
 
@@ -268,7 +271,7 @@ To Agent D:
 - COMMAND: REPORT_PARENT nonce=report-d-parent-001.
 ```
 
-The main agent should receive `[tau-internal]` inbound messages from each sub-agent. Record whether the sender ID in those inbound messages matches the sub-agent `agent_id`. Sleep for about three seconds, then send one delayed direct message to each agent:
+The main agent should receive `[tau-internal]` inbound messages from each sub-agent. Record whether the sender ID in those inbound messages matches the sub-agent `sub_agent_id`. Sleep for about three seconds, then send one delayed direct message to each agent:
 
 ```text
 To Agent C:
@@ -280,7 +283,7 @@ To Agent D:
 
 Wait for both delegates. Verify that their final logs match the parent-visible reports already received by the main agent.
 
-After both complete, again send post-completion messages to both old `agent_id` values and expect errors.
+After both complete, again send post-completion messages to both old `sub_agent_id` values and expect errors until completed-agent wakeup is implemented.
 
 #### Phase 3: verify self, content, and simple validation errors
 
@@ -296,7 +299,7 @@ line 4 xml-ish: <message>inner</message> & chars
 line 5 code-ish: `backticks` and {"json":true}
 ```
 
-Verify that blank lines, unicode, backticks, JSON-like text, ampersands, and literal inner `<message>` tags are preserved. Note whether the wrapper around delivered messages makes inner tags confusing.
+Verify that blank lines, unicode, backticks, and JSON-like text remain readable, and that ampersands plus literal inner `<message>` tags are XML-escaped inside the delivered wrapper. If you inspect durable `AgentMessage` events, verify that the stored payload is still exact and unescaped.
 
 Finally, call `message` with an empty string to a valid recipient. Expect a tool error such as `` `message` must not be empty ``. Also verify an unknown recipient error if it was not already checked in Phase 1.
 
@@ -307,10 +310,10 @@ Report concise but complete findings:
 * List each tested route and whether it passed: main to child, child to child, child to parent, child to `user`, main to self, invalid recipient, completed recipient, empty payload, rich content payload.
 * Include exact unexpected errors or output.
 * Mention any timing surprises, missed messages, duplicate messages, or ordering uncertainty.
-* Include whether `message` success output had enough metadata. Current expected success output is only `Message sent`.
+* Confirm the `message` success output is only `Message sent`; delivery is async, so no delivery receipt is expected.
 * Include whether errors distinguish completed recipients from unknown recipients. Current behavior may use the same unknown-recipient error for both.
-* Include whether parent recipient ID discovery was clear or had to be inferred from sub-agent logs.
-* Include whether the delivered wrapper preserved but visually confused payloads containing literal `<message>` tags.
+* Include whether parent recipient ID discovery was clear from `self_agent_id` or still had to be inferred from sub-agent logs.
+* Include whether the delivered wrapper XML-escaped payloads containing literal `<message>` tags and ampersands.
 
 
 ### Verification procedure

@@ -1,6 +1,6 @@
 # Agent messaging tool
 
-The harness-owned `message` tool lets an agent send a short text note to the user or to another agent. Every sent message is recorded as an `agent.message` event and shown in the UI as:
+The harness-owned `message` tool lets an agent send an asynchronous short text note to the user or to another agent. Every sent message is recorded as an `agent.message` event and shown in the UI as:
 
 ```text
 Messages from <sender> to <recipient>:
@@ -23,22 +23,23 @@ Message sent
 
 ## Send to another agent
 
-Start the other agent with `delegate`. The instant background placeholder includes an `agent_id` header, and the final delegate result also carries the same `agent_id` alongside the sub-agent `output`:
+Start the other agent with `delegate`. The instant background placeholder includes `self_agent_id` and `sub_agent_id` headers. The final delegate result carries the same ids alongside the sub-agent `output`:
 
 ```text
 tau_internal: true
-agent_id: engineer_ab12cd34
+self_agent_id: engineer_parent
+sub_agent_id: engineer_ab12cd34
 
 Tool call `call_123` is running in the background.
 ```
 
-Use that id as `recipient_id`:
+Use `sub_agent_id` as `recipient_id`:
 
 ```text
 message({"recipient_id":"engineer_ab12cd34","message":"Please also inspect crates/tau-cli/src/event_renderer.rs."})
 ```
 
-The UI still displays the message. The recipient agent also receives a hidden internal prompt with the message body.
+The UI still displays the message. The recipient agent also receives a hidden internal prompt with the message body XML-escaped inside a `<message>` wrapper.
 
 ## Invalid recipients and arguments
 

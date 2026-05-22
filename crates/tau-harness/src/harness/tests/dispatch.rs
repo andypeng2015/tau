@@ -7047,7 +7047,9 @@ fn instant_delegate_placeholder_is_committed_before_side_prompt() {
     .expect("main response");
 
     let mut placeholder_seq = None;
-    let mut placeholder_agent_id = None;
+    let mut placeholder_self_agent_id = None;
+    let mut placeholder_sub_agent_id = None;
+    let mut placeholder_legacy_agent_id = None;
     let mut placeholder_count = 0;
     let mut side_prompt_seq = None;
     let mut side_agent_id = None;
@@ -7062,10 +7064,21 @@ fn instant_delegate_placeholder_is_committed_before_side_prompt() {
                 placeholder_count += 1;
                 placeholder_seq.get_or_insert(entry.seq);
                 if let CborValue::Text(text) = &result.result {
-                    placeholder_agent_id.get_or_insert_with(|| {
+                    placeholder_legacy_agent_id.get_or_insert_with(|| {
                         text.lines()
                             .find_map(|line| line.strip_prefix("agent_id: "))
-                            .expect("delegate placeholder agent id header")
+                            .map(str::to_owned)
+                    });
+                    placeholder_self_agent_id.get_or_insert_with(|| {
+                        text.lines()
+                            .find_map(|line| line.strip_prefix("self_agent_id: "))
+                            .expect("delegate placeholder self agent id header")
+                            .to_owned()
+                    });
+                    placeholder_sub_agent_id.get_or_insert_with(|| {
+                        text.lines()
+                            .find_map(|line| line.strip_prefix("sub_agent_id: "))
+                            .expect("delegate placeholder sub agent id header")
                             .to_owned()
                     });
                 }
@@ -7102,10 +7115,13 @@ fn instant_delegate_placeholder_is_committed_before_side_prompt() {
         placeholder_seq.expect("delegate placeholder") < side_prompt_seq.expect("side prompt"),
         "the parent transcript must contain the delegate placeholder before any side prompt is sent",
     );
-    let placeholder_agent_id = placeholder_agent_id.expect("placeholder agent id");
+    let placeholder_self_agent_id = placeholder_self_agent_id.expect("placeholder self agent id");
+    let placeholder_sub_agent_id = placeholder_sub_agent_id.expect("placeholder sub agent id");
     let side_agent_id = side_agent_id.expect("side agent id");
-    assert_eq!(placeholder_agent_id, side_agent_id);
-    assert!(placeholder_agent_id.starts_with("engineer_"));
+    assert_eq!(placeholder_legacy_agent_id, Some(None));
+    assert_eq!(placeholder_sub_agent_id, side_agent_id);
+    assert!(placeholder_sub_agent_id.starts_with("engineer_"));
+    assert!(placeholder_self_agent_id.starts_with("engineer_"));
 
     h.shutdown().expect("shutdown");
 }
@@ -9888,6 +9904,7 @@ fn cancel_tool_cancels_delegate_side_conversation() {
             call_id: delegate_call_id.clone(),
             tool_name: ToolName::new("delegate"),
             started_at: std::time::Instant::now(),
+            self_agent_id: Some("engineer_parent".to_owned()),
             agent_id: Some("worker_seeded123".to_owned()),
         },
     );
@@ -9932,6 +9949,7 @@ fn cancel_tool_cancels_delegate_side_conversation() {
             call_id: "nested-delegate-call".into(),
             tool_name: ToolName::new("delegate"),
             started_at: std::time::Instant::now(),
+            self_agent_id: Some("worker_parent".to_owned()),
             agent_id: Some("worker_nested123".to_owned()),
         },
     );
@@ -10218,7 +10236,11 @@ fn message_tool_to_agent_queues_internal_prompt_markup() {
 
     h.handle_message_tool_call(
         &cid,
-        &message_tool_call("msg-agent", &recipient_id, "secret payload"),
+        &message_tool_call(
+            "msg-agent",
+            &recipient_id,
+            "secret <message>&</message> payload >",
+        ),
         ToolName::new(crate::harness::subagents_tool::MESSAGE_TOOL_NAME),
     )
     .expect("message tool");
@@ -10232,11 +10254,9 @@ fn message_tool_to_agent_queues_internal_prompt_markup() {
     assert!(queued.text.contains(&format!(
         "[tau-internal]: You have received a message from {recipient_id}"
     )));
-    assert!(
-        queued
-            .text
-            .contains("<message>\nsecret payload\n</message>")
-    );
+    assert!(queued.text.contains(
+        "<message>\nsecret &lt;message&gt;&amp;&lt;/message&gt; payload &gt;\n</message>"
+    ));
 
     h.shutdown().expect("shutdown");
 }

@@ -2280,7 +2280,8 @@ impl Harness {
         }
         let text = format!(
             "[tau-internal]: You have received a message from {}\n\n<message>\n{}\n</message>",
-            message.sender_id, message.message
+            message.sender_id,
+            escape_agent_message_for_prompt(&message.message)
         );
         if let Some(cid) = self.agent_conversations.get(&message.recipient_id).cloned() {
             if let Some(conv) = self.conversations.get_mut(&cid) {
@@ -7551,20 +7552,24 @@ impl Harness {
         self.publish_synthetic_background_result_inner(call_id, None);
     }
 
-    /// Publish the instant background placeholder for a delegate, including its
-    /// agent id.
-    pub(crate) fn publish_synthetic_background_result_with_agent_id(
+    /// Publish the instant background placeholder for a delegate, including the
+    /// caller and side-agent ids.
+    pub(crate) fn publish_synthetic_background_result_with_agent_ids(
         &mut self,
         call_id: &ToolCallId,
-        agent_id: &str,
+        self_agent_id: &str,
+        sub_agent_id: &str,
     ) {
-        self.publish_synthetic_background_result_inner(call_id, Some(agent_id));
+        self.publish_synthetic_background_result_inner(
+            call_id,
+            Some((self_agent_id, sub_agent_id)),
+        );
     }
 
     fn publish_synthetic_background_result_inner(
         &mut self,
         call_id: &ToolCallId,
-        agent_id: Option<&str>,
+        agent_ids: Option<(&str, &str)>,
     ) {
         let Some(cid) = self.tool_conversations.get(call_id).cloned() else {
             return;
@@ -7572,11 +7577,13 @@ impl Harness {
         let Some(tool) = self.pending_tools.get(call_id).cloned() else {
             return;
         };
-        let agent_id_header = agent_id
-            .map(|agent_id| format!("agent_id: {agent_id}\n"))
+        let agent_id_headers = agent_ids
+            .map(|(self_agent_id, sub_agent_id)| {
+                format!("self_agent_id: {self_agent_id}\nsub_agent_id: {sub_agent_id}\n")
+            })
             .unwrap_or_default();
         let content = format!(
-            "{}: true\n{agent_id_header}\nTool call `{call_id}` is running in the background.",
+            "{}: true\n{agent_id_headers}\nTool call `{call_id}` is running in the background.",
             tau_proto::TAU_INTERNAL_HEADER_NAME
         );
         let result = ToolResult {
@@ -8236,6 +8243,19 @@ impl Harness {
 
         Ok(())
     }
+}
+
+fn escape_agent_message_for_prompt(message: &str) -> String {
+    let mut escaped = String::with_capacity(message.len());
+    for ch in message.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 impl Harness {

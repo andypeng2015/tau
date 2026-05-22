@@ -34,6 +34,8 @@ pub(crate) struct PendingHarnessDelegate {
     pub(crate) tool_name: ToolName,
     /// Wall-clock start time used for slow-call duration metadata.
     pub(crate) started_at: Instant,
+    /// Agent id of the caller that invoked `delegate`.
+    pub(crate) self_agent_id: Option<String>,
     /// Agent id allocated for the side conversation, when it started.
     pub(crate) agent_id: Option<String>,
 }
@@ -211,6 +213,21 @@ impl Harness {
             }
         };
 
+        let self_agent_id = match self.ensure_agent_id_for_conversation(cid) {
+            Some(agent_id) => agent_id,
+            None => {
+                self.finish_harness_owned_tool_with_error(
+                    cid,
+                    call_id,
+                    visible_tool_name,
+                    call.tool_type,
+                    "sender conversation no longer exists".to_owned(),
+                    Some(call.arguments.clone()),
+                );
+                return Ok(());
+            }
+        };
+
         let query_id = format!("delegate-{}", self.subagents.next_delegate_query_id);
         self.subagents.next_delegate_query_id += 1;
         self.subagents.pending_delegates.insert(
@@ -219,6 +236,7 @@ impl Harness {
                 call_id: call_id.clone(),
                 tool_name: visible_tool_name.clone(),
                 started_at: Instant::now(),
+                self_agent_id: Some(self_agent_id.clone()),
                 agent_id: None,
             },
         );
@@ -252,7 +270,11 @@ impl Harness {
             pending.agent_id = Some(agent_id.clone());
         }
         if self.tool_turn.mark_backgrounded(&call_id) {
-            self.publish_synthetic_background_result_with_agent_id(&call_id, &agent_id);
+            self.publish_synthetic_background_result_with_agent_ids(
+                &call_id,
+                &self_agent_id,
+                &agent_id,
+            );
         }
         // `delegate` is harness-owned and already inside the main event loop, so
         // publishing a bus event would only echo an internal command. Use the
@@ -396,6 +418,7 @@ impl Harness {
             return;
         };
         let duration_seconds = delegate_duration_seconds(pending.started_at.elapsed());
+        let self_agent_id = pending.self_agent_id.clone();
         let agent_id = pending.agent_id.clone();
         let call_id = pending.call_id.clone();
         let owner_cid = self
@@ -409,7 +432,11 @@ impl Harness {
                 tool_name: pending.tool_name,
                 tool_type: ToolType::Function,
                 message,
-                details: delegate_error_details(duration_seconds, agent_id.as_deref()),
+                details: delegate_error_details(
+                    duration_seconds,
+                    self_agent_id.as_deref(),
+                    agent_id.as_deref(),
+                ),
                 display: None,
                 originator: tau_proto::PromptOriginator::User,
             };
@@ -432,7 +459,12 @@ impl Harness {
                 call_id: call_id.clone(),
                 tool_name: pending.tool_name,
                 tool_type: ToolType::Function,
-                result: delegate_result_value(text, duration_seconds, agent_id.as_deref()),
+                result: delegate_result_value(
+                    text,
+                    duration_seconds,
+                    self_agent_id.as_deref(),
+                    agent_id.as_deref(),
+                ),
                 kind: ToolResultKind::Final,
                 display: None,
                 originator: tau_proto::PromptOriginator::User,
@@ -579,7 +611,7 @@ fn delegate_tool_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::new(DELEGATE_TOOL_NAME),
         model_visible_name: None,
-        description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include an `agent_id` header/value you can pass to `message`. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` or compatible `execution_mode: \"update\"` can overlap globally. Use `execution_mode: \"update\"` when the sub-agent may update shared state and should not overlap with another update or exclusive sub-agent. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers.".to_owned()),
+        description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` or compatible `execution_mode: \"update\"` can overlap globally. Use `execution_mode: \"update\"` when the sub-agent may update shared state and should not overlap with another update or exclusive sub-agent. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers.".to_owned()),
         tool_type: ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -603,7 +635,7 @@ fn message_tool_spec() -> ToolSpec {
     ToolSpec {
         name: ToolName::new(MESSAGE_TOOL_NAME),
         model_visible_name: None,
-        description: Some("Send a message to another live or pending agent, or to the user. Use recipient_id `user` to display to the user, or an `agent_id` returned by `delegate`; all messages are shown in the UI. A non-user recipient also receives a hidden prompt. Requires `recipient_id` and `message`.".to_owned()),
+        description: Some("Send an async message to another live or pending agent, or to the user. Use recipient_id `user` to display to the user, or a `sub_agent_id` returned by `delegate`; all messages are shown in the UI. A non-user recipient also receives a hidden prompt. Requires `recipient_id` and `message`.".to_owned()),
         tool_type: ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -793,28 +825,32 @@ fn delegate_duration_seconds(elapsed: Duration) -> Option<u64> {
 fn delegate_result_value(
     text: String,
     duration_seconds: Option<u64>,
+    self_agent_id: Option<&str>,
     agent_id: Option<&str>,
 ) -> CborValue {
-    if duration_seconds.is_none() && agent_id.is_none() {
+    if duration_seconds.is_none() && self_agent_id.is_none() && agent_id.is_none() {
         return CborValue::Text(text);
     }
     CborValue::Map(delegate_detail_entries(
         Some(text),
         duration_seconds,
+        self_agent_id,
         agent_id,
     ))
 }
 
 fn delegate_error_details(
     duration_seconds: Option<u64>,
+    self_agent_id: Option<&str>,
     agent_id: Option<&str>,
 ) -> Option<CborValue> {
-    if duration_seconds.is_none() && agent_id.is_none() {
+    if duration_seconds.is_none() && self_agent_id.is_none() && agent_id.is_none() {
         return None;
     }
     Some(CborValue::Map(delegate_detail_entries(
         None,
         duration_seconds,
+        self_agent_id,
         agent_id,
     )))
 }
@@ -822,12 +858,19 @@ fn delegate_error_details(
 fn delegate_detail_entries(
     output: Option<String>,
     duration_seconds: Option<u64>,
+    self_agent_id: Option<&str>,
     agent_id: Option<&str>,
 ) -> Vec<(CborValue, CborValue)> {
     let mut entries = Vec::new();
+    if let Some(self_agent_id) = self_agent_id {
+        entries.push((
+            CborValue::Text("self_agent_id".to_owned()),
+            CborValue::Text(self_agent_id.to_owned()),
+        ));
+    }
     if let Some(agent_id) = agent_id {
         entries.push((
-            CborValue::Text("agent_id".to_owned()),
+            CborValue::Text("sub_agent_id".to_owned()),
             CborValue::Text(agent_id.to_owned()),
         ));
     }
@@ -1705,6 +1748,27 @@ mod tests {
             parameters["required"],
             serde_json::json!(["recipient_id", "message"])
         );
+    }
+
+    #[test]
+    fn delegate_result_includes_only_caller_and_sub_agent_ids() {
+        let value = delegate_result_value(
+            "done".to_owned(),
+            None,
+            Some("engineer_parent"),
+            Some("engineer_child"),
+        );
+
+        assert_eq!(
+            cbor_map_text(&value, "self_agent_id"),
+            Some("engineer_parent")
+        );
+        assert_eq!(
+            cbor_map_text(&value, "sub_agent_id"),
+            Some("engineer_child")
+        );
+        assert_eq!(cbor_map_text(&value, "agent_id"), None);
+        assert_eq!(cbor_map_text(&value, "output"), Some("done"));
     }
 
     #[test]
