@@ -7,7 +7,7 @@ roleGroups:
   engineer:
     senior-engineer:
       enabled: true
-      description: Individual contributor using a state-of-the-art model. Good default for most tasks.
+      description: Capable individual contributor. Good default for most tasks.
       effort: medium
       promptFragments:
         - name: manager.instructions
@@ -16,7 +16,7 @@ roleGroups:
               Trust the `<instructions>`. When sent they always contain a carefully researched detailed plan. Do not waste time second guessing them. Focus on following them immediately and implementation details.
     junior-engineer:
       enabled: true
-      description: Lower-reasoning engineer for straightforward coding tasks.
+      description: Lower-reasoning but fast individual contributor. Best for straightforward coding tasks.
       effort: low
       promptFragments:
         - name: manager.instructions
@@ -25,7 +25,7 @@ roleGroups:
               Trust the `<instructions>`. When sent they always contain a carefully researched detailed plan. Do not waste time second guessing them. Focus on following them immediately and implementation details.
     staff-engineer:
       enabled: true
-      description: Senior individual contributor using maximum reasoning for hard engineering tasks.
+      description: Slow and expensivie individual contributor using maximum reasoning. Best used only for hardest engineering problems.
       effort: xhigh
       promptFragments:
         - name: manager.instructions
