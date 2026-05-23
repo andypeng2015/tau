@@ -15,10 +15,28 @@ pub struct Cli {
     pub version: bool,
 
     #[command(flatten)]
+    pub role_overrides: RoleOverrideArgs,
+
+    #[command(flatten)]
     pub run: RunArgs,
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(Args)]
+pub struct RoleOverrideArgs {
+    /// Enable a configured role after all config files are loaded.
+    #[arg(long = "enable-role", global = true)]
+    pub enable_role: Vec<String>,
+
+    /// Disable a configured role after all config files are loaded.
+    #[arg(long = "disable-role", global = true)]
+    pub disable_role: Vec<String>,
+
+    /// Disable every configured role before later CLI role overrides.
+    #[arg(long = "disable-roles-all", global = true, action = clap::ArgAction::Count)]
+    pub disable_roles_all: u8,
 }
 
 #[derive(Args)]

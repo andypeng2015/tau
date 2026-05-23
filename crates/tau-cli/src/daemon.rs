@@ -225,6 +225,7 @@ pub(crate) fn resolve_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     daemon_output: Option<DaemonOutput>,
+    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
 ) -> Result<DaemonHandle, CliError> {
     tracing::debug!(target: "tau_cli::startup", attach, session_id, "resolving harness daemon");
     let project_root = std::env::current_dir()?;
@@ -239,6 +240,7 @@ pub(crate) fn resolve_daemon(
         session_id,
         session_status,
         daemon_output.expect("daemon output for spawned harness"),
+        role_cli_overrides,
     )
 }
 
@@ -264,6 +266,7 @@ fn start_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     output: DaemonOutput,
+    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
 ) -> Result<DaemonHandle, CliError> {
     use std::os::fd::FromRawFd;
 
@@ -279,6 +282,7 @@ fn start_daemon(
         output.stdout,
         output.stderr,
         write_fd,
+        role_cli_overrides,
     )
     .spawn();
 
@@ -339,6 +343,7 @@ fn build_daemon_command(
     stdout: Stdio,
     stderr: Stdio,
     write_fd: libc::c_int,
+    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
 ) -> Command {
     use std::os::unix::process::CommandExt;
 
@@ -364,6 +369,13 @@ fn build_daemon_command(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
+
+    if !role_cli_overrides.is_empty() {
+        cmd.env(
+            tau_harness::ROLE_CLI_OVERRIDES_ENV,
+            serde_json::to_string(role_cli_overrides).expect("role overrides serialize"),
+        );
+    }
 
     // Safety: `pre_exec` runs in the forked child between `fork` and
     // `execve`. We only call `fcntl` (signal-safe) and only on the fd

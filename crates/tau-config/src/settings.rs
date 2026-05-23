@@ -474,6 +474,17 @@ pub struct RoleGroup {
 
 type RawRoleGroups = IndexMap<String, IndexMap<String, AgentRole>>;
 
+/// One command-line role availability override, applied after all config files.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum RoleCliOverride {
+    /// Enable a named role in the effective role set.
+    Enable(String),
+    /// Disable a named role in the effective role set.
+    Disable(String),
+    /// Disable all roles before later command-line role overrides are applied.
+    DisableAll,
+}
+
 impl HarnessSettings {
     /// The fully-populated baseline that ships with tau, parsed from
     /// the embedded `built-in.harness.yaml`.
@@ -495,6 +506,28 @@ impl HarnessSettings {
             }
         }
         Ok(())
+    }
+
+    fn apply_role_cli_overrides(&mut self, overrides: &[RoleCliOverride]) {
+        for override_ in overrides {
+            match override_ {
+                RoleCliOverride::Enable(role_name) => {
+                    if let Some(role) = self.roles.get_mut(role_name) {
+                        role.enabled = Some(true);
+                    }
+                }
+                RoleCliOverride::Disable(role_name) => {
+                    if let Some(role) = self.roles.get_mut(role_name) {
+                        role.enabled = Some(false);
+                    }
+                }
+                RoleCliOverride::DisableAll => {
+                    for role in self.roles.values_mut() {
+                        role.enabled = Some(false);
+                    }
+                }
+            }
+        }
     }
 
     fn remove_disabled_roles(&mut self) {
@@ -852,6 +885,14 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
+    load_harness_settings_with_role_overrides_in(dirs, &[])
+}
+
+/// Like [`load_harness_settings_in`], then applies role CLI overrides in order.
+pub fn load_harness_settings_with_role_overrides_in(
+    dirs: &TauDirs,
+    role_overrides: &[RoleCliOverride],
+) -> Result<HarnessSettings, SettingsError> {
     let mut settings: HarnessSettings = load_yaml_layered_with_builtin(
         BUILT_IN_HARNESS_YAML,
         dirs.config_dir.as_deref(),
@@ -869,6 +910,7 @@ pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, Setti
         role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
         role_settings.apply_role_group_overrides(overrides.role_groups)?;
     }
+    role_settings.apply_role_cli_overrides(role_overrides);
     role_settings.remove_disabled_roles();
     role_settings.apply_global_prompt_fragments_to_roles();
     settings.prompt_fragments = role_settings.prompt_fragments;

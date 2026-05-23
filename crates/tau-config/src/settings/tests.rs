@@ -248,6 +248,54 @@ fn harness_settings_load_role_tool_lists() {
 }
 
 #[test]
+fn harness_settings_role_cli_overrides_apply_in_order_after_config() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            roleGroups: {
+                manager: {
+                    manager: { enabled: false },
+                },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let s = load_harness_settings_with_role_overrides_in(
+        &dirs_with_config(dir),
+        &[
+            RoleCliOverride::DisableAll,
+            RoleCliOverride::Enable("manager".to_owned()),
+        ],
+    )
+    .expect("load");
+
+    assert_eq!(s.roles.keys().collect::<Vec<_>>(), vec!["manager"]);
+    assert_eq!(s.role_groups.len(), 1);
+    assert_eq!(s.role_groups[0].name, "manager");
+    assert_eq!(s.role_groups[0].roles, vec!["manager"]);
+}
+
+#[test]
+fn harness_settings_role_cli_overrides_later_disable_wins() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+
+    let s = load_harness_settings_with_role_overrides_in(
+        &dirs_with_config(dir),
+        &[
+            RoleCliOverride::Enable("manager".to_owned()),
+            RoleCliOverride::Disable("manager".to_owned()),
+        ],
+    )
+    .expect("load");
+
+    assert!(!s.roles.contains_key("manager"));
+}
+
+#[test]
 fn cli_settings_drop_in_layers_on_top_of_base() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();

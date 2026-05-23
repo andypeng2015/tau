@@ -38,7 +38,7 @@ mod built_info;
 
 const STARTUP_PUNS: &[&str] = &[
     "Tau is like Pi, but twice as much.",
-    "A new angle on coding agents.",
+    "A whole new angle on coding agents.",
     "Tau day is every day if you care about circles enough.",
     "Come for the agent, stay for the circumference discourse.",
     "Tau is the irrational choice for rational Unix hackers.",
@@ -58,8 +58,7 @@ const STARTUP_PUNS: &[&str] = &[
     "Tau the line between human and agent.",
     "Tau’s what I’m talking about.",
     "One shell to Tau them all.",
-    "Tau small step for code, one giant leap for CLI-kind.",
-    "Tau-powered, terminal-native.",
+    "Tau-powered, Unix-native.",
     "Complete revolution.",
     "Wrapping around nicely.",
     "Continuous on S¹, probably.",
@@ -265,6 +264,46 @@ fn run_init(force: bool) -> Result<(), CliError> {
 
 pub type ComponentRunner = fn() -> Result<(), Box<dyn std::error::Error>>;
 
+fn parse_role_cli_overrides<I, S>(args: I) -> Vec<tau_config::settings::RoleCliOverride>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut overrides = Vec::new();
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+    while let Some(arg) = args.next() {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            break;
+        }
+        if arg == "--disable-roles-all" {
+            overrides.push(tau_config::settings::RoleCliOverride::DisableAll);
+        } else if let Some(role) = arg.strip_prefix("--enable-role=") {
+            overrides.push(tau_config::settings::RoleCliOverride::Enable(
+                role.to_owned(),
+            ));
+        } else if arg == "--enable-role" {
+            if let Some(role) = args.next() {
+                overrides.push(tau_config::settings::RoleCliOverride::Enable(
+                    role.to_string_lossy().into_owned(),
+                ));
+            }
+        } else if let Some(role) = arg.strip_prefix("--disable-role=") {
+            overrides.push(tau_config::settings::RoleCliOverride::Disable(
+                role.to_owned(),
+            ));
+        } else if arg == "--disable-role"
+            && let Some(role) = args.next()
+        {
+            overrides.push(tau_config::settings::RoleCliOverride::Disable(
+                role.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    overrides
+}
+
 /// Describes how an `ext` component gets its global tracing subscriber.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComponentLogging {
@@ -299,8 +338,10 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
     use clap::Parser;
 
     let run = || -> Result<(), CliError> {
+        let role_cli_overrides = parse_role_cli_overrides(std::env::args_os());
         let cli::Cli {
             version,
+            role_overrides: _,
             run,
             command,
         } = cli::Cli::parse();
@@ -339,7 +380,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 } else {
                     resolve_run_session_id(resume.as_deref())?
                 };
-                run_chat(&session_id, attach, session_status)
+                run_chat(&session_id, attach, session_status, &role_cli_overrides)
             }
 
             cli::Command::SessionList { sessions_dir } => {
@@ -380,7 +421,9 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                     println!("wrote {}", out.display());
                     Ok(())
                 }
-                cli::DevCommand::PrintPrompt { role } => print_prompt::run_print_prompt(&role),
+                cli::DevCommand::PrintPrompt { role } => {
+                    print_prompt::run_print_prompt(&role, &role_cli_overrides)
+                }
             },
 
             cli::Command::Ext { name } => {

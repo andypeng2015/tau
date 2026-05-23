@@ -23,6 +23,7 @@ fs2.workspace = true
 libc.workspace = true
 rand.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tau-cli-picker.workspace = true
 tau-cli-term.workspace = true
 tau-config.workspace = true

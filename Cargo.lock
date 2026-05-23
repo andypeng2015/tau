@@ -1744,6 +1744,7 @@ dependencies = [
  "libc",
  "rand 0.8.6",
  "serde",
+ "serde_json",
  "tau-cli-picker",
  "tau-cli-term",
  "tau-cli-term-raw",

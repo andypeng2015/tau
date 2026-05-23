@@ -38,6 +38,46 @@ fn dev_print_prompt_parses_role_flag() {
 }
 
 #[test]
+fn role_cli_flags_accept_repeated_and_mixed_options() {
+    let cli = super::cli::Cli::parse_from([
+        "tau",
+        "--disable-roles-all",
+        "--enable-role",
+        "manager",
+        "--disable-role",
+        "senior-engineer",
+        "--disable-roles-all",
+    ]);
+
+    assert_eq!(cli.role_overrides.disable_roles_all, 2);
+    assert_eq!(cli.role_overrides.enable_role, vec!["manager"]);
+    assert_eq!(cli.role_overrides.disable_role, vec!["senior-engineer"]);
+}
+
+#[test]
+fn role_cli_overrides_preserve_argument_order() {
+    let overrides = super::parse_role_cli_overrides([
+        "tau",
+        "--disable-role",
+        "manager",
+        "--disable-roles-all",
+        "--enable-role=manager",
+        "--enable-role",
+        "senior-engineer",
+    ]);
+
+    assert_eq!(
+        overrides,
+        vec![
+            tau_config::settings::RoleCliOverride::Disable("manager".to_owned()),
+            tau_config::settings::RoleCliOverride::DisableAll,
+            tau_config::settings::RoleCliOverride::Enable("manager".to_owned()),
+            tau_config::settings::RoleCliOverride::Enable("senior-engineer".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn local_slash_commands_are_identified_for_history_rendering() {
     assert!(is_local_slash_command("/model engineer"));
     assert!(is_local_slash_command("/set show-tools compact"));

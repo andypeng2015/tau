@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use tau_config::settings::{ExtensionEntry, HarnessSettings};
+use tau_config::settings::{ExtensionEntry, HarnessSettings, RoleCliOverride};
 
 /// The resolved harness configuration handed to the daemon.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -251,16 +251,27 @@ fn merge_json(base: serde_json::Value, over: serde_json::Value) -> serde_json::V
 /// Without the warning a malformed file silently disables every
 /// user-configured extension and the only symptom is "my extension
 /// isn't running" with no clue why.
+pub const ROLE_CLI_OVERRIDES_ENV: &str = "TAU_ROLE_CLI_OVERRIDES";
+
 pub(crate) fn load_harness_settings_or_warn(
     dirs: &tau_config::settings::TauDirs,
 ) -> (HarnessSettings, Option<tau_config::settings::SettingsError>) {
-    match tau_config::settings::load_harness_settings_in(dirs) {
+    let role_overrides = role_cli_overrides_from_env();
+    match tau_config::settings::load_harness_settings_with_role_overrides_in(dirs, &role_overrides)
+    {
         Ok(settings) => (settings, None),
         Err(error) => {
             eprintln!("tau: harness.yaml failed to parse — ignored.\n{error}");
             (HarnessSettings::built_in(), Some(error))
         }
     }
+}
+
+fn role_cli_overrides_from_env() -> Vec<RoleCliOverride> {
+    std::env::var(ROLE_CLI_OVERRIDES_ENV)
+        .ok()
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
 }
 
 /// The set of extensions the harness ships with by default.
