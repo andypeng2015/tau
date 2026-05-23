@@ -107,6 +107,7 @@ impl Harness {
                 &self.available_roles,
                 &self.available_models,
             ),
+            groups: self.current_role_groups(),
         });
         if selector_matches_event(selectors, &roles_event) {
             let _ = self.bus.send_to(client_id, None, Frame::Event(roles_event));

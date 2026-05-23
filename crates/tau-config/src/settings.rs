@@ -11,6 +11,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use indexmap::IndexMap;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use tau_proto::{ModelId, PromptContent, PromptPriority, ToolName};
 
@@ -402,6 +404,11 @@ pub struct HarnessSettings {
     /// provider-published model.
     pub roles: HashMap<String, AgentRole>,
 
+    /// Ordered role groups used by the CLI for structured role navigation.
+    /// Role names remain globally unique; groups only affect presentation and
+    /// keyboard cycling.
+    pub role_groups: Vec<RoleGroup>,
+
     /// Top-level prompt fragments from harness config. Loaded settings also
     /// fold these into every role's prompt fragments; this field preserves the
     /// global source list for inspection and future config tooling.
@@ -412,10 +419,8 @@ pub struct HarnessSettings {
 struct HarnessSettingsWire {
     session_retention_days: u64,
     extensions: HashMap<String, ExtensionEntry>,
-    #[serde(default)]
-    roles: HashMap<String, AgentRole>,
-    #[serde(default, rename = "defaultRoles")]
-    default_roles: HashMap<String, AgentRole>,
+    #[serde(default, rename = "roleGroups")]
+    role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
 }
@@ -429,23 +434,35 @@ impl<'de> Deserialize<'de> for HarnessSettings {
         let mut settings = Self {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
-            roles: wire.roles,
+            roles: HashMap::new(),
+            role_groups: Vec::new(),
             prompt_fragments: wire.prompt_fragments,
         };
-        settings.apply_role_overrides(wire.default_roles);
+        settings
+            .apply_role_group_overrides(wire.role_groups)
+            .map_err(D::Error::custom)?;
         Ok(settings)
     }
 }
 
 #[derive(Deserialize)]
 struct HarnessRoleOverrides {
-    #[serde(default)]
-    roles: HashMap<String, AgentRole>,
-    #[serde(default, rename = "defaultRoles")]
-    default_roles: HashMap<String, AgentRole>,
+    #[serde(default, rename = "roleGroups")]
+    role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
 }
+
+/// One ordered group in the role navigation palette.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleGroup {
+    /// Stable group name from `roleGroups.<name>`.
+    pub name: String,
+    /// Globally unique role names in this group, in configured order.
+    pub roles: Vec<String>,
+}
+
+type RawRoleGroups = IndexMap<String, IndexMap<String, AgentRole>>;
 
 impl HarnessSettings {
     /// The fully-populated baseline that ships with tau, parsed from
@@ -456,13 +473,50 @@ impl HarnessSettings {
         s
     }
 
-    fn apply_role_overrides(&mut self, roles: HashMap<String, AgentRole>) {
-        for (name, override_role) in roles {
-            self.roles
-                .entry(name)
-                .and_modify(|role| role.apply_overrides_from(&override_role))
-                .or_insert(override_role);
+    fn apply_role_group_overrides(&mut self, groups: RawRoleGroups) -> Result<(), SettingsError> {
+        for (group_name, roles) in groups {
+            for (role_name, override_role) in roles {
+                self.ensure_role_group_member(&group_name, &role_name)?;
+                self.roles
+                    .entry(role_name)
+                    .and_modify(|role| role.apply_overrides_from(&override_role))
+                    .or_insert(override_role);
+            }
         }
+        Ok(())
+    }
+
+    fn ensure_role_group_member(
+        &mut self,
+        group_name: &str,
+        role_name: &str,
+    ) -> Result<(), SettingsError> {
+        for group in &mut self.role_groups {
+            if group.roles.iter().any(|existing| existing == role_name) {
+                if group.name == group_name {
+                    return Ok(());
+                }
+                return Err(SettingsError::DuplicateGroupedRole {
+                    role: role_name.to_owned(),
+                    first_group: group.name.clone(),
+                    second_group: group_name.to_owned(),
+                });
+            }
+        }
+
+        if let Some(group) = self
+            .role_groups
+            .iter_mut()
+            .find(|group| group.name == group_name)
+        {
+            group.roles.push(role_name.to_owned());
+        } else {
+            self.role_groups.push(RoleGroup {
+                name: group_name.to_owned(),
+                roles: vec![role_name.to_owned()],
+            });
+        }
+        Ok(())
     }
 
     fn apply_prompt_fragment_overrides(&mut self, fragments: Vec<RolePromptFragment>) {
@@ -650,12 +704,25 @@ pub struct RolePromptFragment {
 #[derive(Debug)]
 pub enum SettingsError {
     Config(config::ConfigError),
+    DuplicateGroupedRole {
+        role: String,
+        first_group: String,
+        second_group: String,
+    },
 }
 
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(source) => write!(f, "settings error: {source}"),
+            Self::DuplicateGroupedRole {
+                role,
+                first_group,
+                second_group,
+            } => write!(
+                f,
+                "role `{role}` appears in multiple roleGroups (`{first_group}` and `{second_group}`)"
+            ),
         }
     }
 }
@@ -664,6 +731,7 @@ impl std::error::Error for SettingsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(source) => Some(source),
+            Self::DuplicateGroupedRole { .. } => None,
         }
     }
 }
@@ -769,12 +837,12 @@ pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, Setti
         load_yaml_layer_files::<HarnessRoleOverrides>(dirs.config_dir.as_deref(), "harness")?
     {
         role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
-        role_settings.apply_role_overrides(overrides.roles);
-        role_settings.apply_role_overrides(overrides.default_roles);
+        role_settings.apply_role_group_overrides(overrides.role_groups)?;
     }
     role_settings.apply_global_prompt_fragments_to_roles();
     settings.prompt_fragments = role_settings.prompt_fragments;
     settings.roles = role_settings.roles;
+    settings.role_groups = role_settings.role_groups;
     Ok(settings)
 }
 

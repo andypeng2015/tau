@@ -1499,8 +1499,10 @@ fn role_disabled_tool_is_reported_without_dispatch() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { disableTools: ["shell"] },
+            roleGroups: {
+                coding: {
+                    engineer: { disableTools: ["shell"] },
+                },
             },
         }"#,
     )

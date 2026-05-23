@@ -2,7 +2,7 @@
 //! effort/verbosity/thinking-summary levels from provider metadata, persisting
 //! the user's selection, and gauging context-window usage.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tau_config::settings::{AgentRole, HarnessSettings};
 use tau_proto::{ModelId, ModelParams, ProviderModelInfo};
@@ -19,6 +19,7 @@ pub(crate) fn load_roles(
     HashMap<String, AgentRole>,
     HashMap<String, AgentRole>,
     String,
+    Vec<tau_proto::HarnessRoleGroup>,
 ) {
     let mut role_overrides = load_role_overrides(dirs);
     let mut roles = harness_settings.roles.clone();
@@ -34,7 +35,52 @@ pub(crate) fn load_roles(
     let selected_role = load_last_selected_role(dirs)
         .filter(|role| roles.contains_key(role))
         .unwrap_or_else(|| fallback_role(&roles));
-    (roles, role_overrides, selected_role)
+    let role_groups = role_groups_for_roles(&roles, &harness_settings.role_groups);
+    (roles, role_overrides, selected_role, role_groups)
+}
+
+/// Build the effective navigation groups for the available role set. Configured
+/// groups keep their configured order; roles not named by any group remain
+/// reachable as single-role groups after configured groups.
+pub(crate) fn role_groups_for_roles(
+    roles: &HashMap<String, AgentRole>,
+    configured_groups: &[tau_config::settings::RoleGroup],
+) -> Vec<tau_proto::HarnessRoleGroup> {
+    let mut grouped = HashSet::new();
+    let mut out = Vec::new();
+    for group in configured_groups {
+        let group_roles: Vec<_> = group
+            .roles
+            .iter()
+            .filter(|role| roles.contains_key(*role))
+            .inspect(|role| {
+                grouped.insert((*role).clone());
+            })
+            .cloned()
+            .collect();
+        if !group_roles.is_empty() {
+            out.push(tau_proto::HarnessRoleGroup {
+                name: group.name.clone(),
+                roles: group_roles,
+            });
+        }
+    }
+
+    let mut ungrouped: Vec<_> = roles
+        .keys()
+        .filter(|role| !grouped.contains(*role))
+        .cloned()
+        .collect();
+    ungrouped.sort();
+    out.extend(
+        ungrouped
+            .into_iter()
+            .map(|role| tau_proto::HarnessRoleGroup {
+                name: role.clone(),
+                roles: vec![role],
+            }),
+    );
+    out
 }
 
 /// Return the role Tau should select when persisted state does not name a

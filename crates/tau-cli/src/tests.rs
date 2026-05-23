@@ -993,6 +993,7 @@ fn role_default_knobs_are_hidden_and_overrides_follow_role() {
                 .to_owned(),
             role_description: None,
         }],
+        groups: Vec::new(),
     }));
     renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
         model: Some("test/model".into()),
@@ -1048,6 +1049,7 @@ fn role_state_overrides_are_compared_to_role_baseline() {
                 .to_owned(),
             role_description: None,
         }],
+        groups: Vec::new(),
     }));
     renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
         model: Some("test/model".into()),

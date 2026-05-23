@@ -83,6 +83,41 @@ fn send_current_role_update(
     );
 }
 
+fn cycle_role_in_groups(
+    writer: &WriterHandle,
+    current_role_state: &Arc<Mutex<Option<String>>>,
+    groups: &[tau_proto::HarnessRoleGroup],
+    alternate: bool,
+    print_local: &impl Fn(&str),
+) {
+    if groups.is_empty() {
+        print_local("role-cycle: no agent roles are available yet");
+        return;
+    }
+    let current = current_role_state.lock().ok().and_then(|role| role.clone());
+    let current_pos = current.as_deref().and_then(|current| {
+        groups.iter().enumerate().find_map(|(group_index, group)| {
+            group
+                .roles
+                .iter()
+                .position(|role| role == current)
+                .map(|role_index| (group_index, role_index))
+        })
+    });
+    let next = if alternate {
+        let (group_index, role_index) = current_pos.unwrap_or((0, 0));
+        let roles = &groups[group_index].roles;
+        roles[(role_index + 1) % roles.len()].clone()
+    } else {
+        let next_group = current_pos.map_or(0, |(group_index, _)| (group_index + 1) % groups.len());
+        groups[next_group].roles[0].clone()
+    };
+    let _ = send_event(
+        writer,
+        &Event::UiRoleSelect(tau_proto::UiRoleSelect { role: next }),
+    );
+}
+
 fn cycle_role(
     writer: &WriterHandle,
     current_role_state: &Arc<Mutex<Option<String>>>,
@@ -521,6 +556,7 @@ pub(crate) fn run_chat(
     let fast_service_tier_state = renderer.fast_service_tier_state();
     let current_role_state = renderer.current_role_state();
     let roles_available = renderer.roles_available();
+    let role_groups_available = renderer.role_groups_available();
     let editor_context = renderer.editor_context();
     term.set_editor_context_handle(editor_context.clone());
     let _renderer = std::thread::spawn(move || {
@@ -563,6 +599,7 @@ pub(crate) fn run_chat(
             fast_service_tier_state,
             current_role_state,
             roles_available,
+            role_groups_available,
             theme,
             agent_in_progress,
             renderer_tx: event_tx,
@@ -681,6 +718,7 @@ struct TerminalInputLoopCtx {
     fast_service_tier_state: Arc<std::sync::atomic::AtomicBool>,
     current_role_state: Arc<Mutex<Option<String>>>,
     roles_available: Arc<Mutex<Vec<String>>>,
+    role_groups_available: Arc<Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     theme: tau_themes::Theme,
     agent_in_progress: Arc<std::sync::atomic::AtomicBool>,
     renderer_tx: mpsc::Sender<RendererCmd>,
@@ -792,8 +830,9 @@ impl<'a> TerminalInputSession<'a> {
             TermEvent::BufferChanged => self.update_draft(),
             TermEvent::FastToggle => self.toggle_fast_service_tier(),
             TermEvent::RoleCycle => self.cycle_role(),
+            TermEvent::BackTab => self.cycle_role_alternate(),
             TermEvent::Escape => self.recall_queued_prompt(),
-            TermEvent::BackTab | TermEvent::Line(_) | TermEvent::Eof | TermEvent::CancelPrompt => {}
+            TermEvent::Line(_) | TermEvent::Eof | TermEvent::CancelPrompt => {}
         }
     }
 
@@ -1167,10 +1206,46 @@ impl<'a> TerminalInputSession<'a> {
 
     fn cycle_role(&self) {
         let output = &self.output;
-        cycle_role(
+        let groups = self
+            .ctx
+            .role_groups_available
+            .lock()
+            .map(|groups| groups.clone())
+            .unwrap_or_default();
+        if groups.is_empty() {
+            cycle_role(
+                self.writer,
+                &self.ctx.current_role_state,
+                &self.ctx.roles_available,
+                &|message| output.system_info(message),
+            );
+        } else {
+            cycle_role_in_groups(
+                self.writer,
+                &self.ctx.current_role_state,
+                &groups,
+                false,
+                &|message| output.system_info(message),
+            );
+        }
+    }
+
+    fn cycle_role_alternate(&self) {
+        let output = &self.output;
+        let groups = self
+            .ctx
+            .role_groups_available
+            .lock()
+            .map(|groups| groups.clone())
+            .unwrap_or_default();
+        if groups.is_empty() {
+            return;
+        }
+        cycle_role_in_groups(
             self.writer,
             &self.ctx.current_role_state,
-            &self.ctx.roles_available,
+            &groups,
+            true,
             &|message| output.system_info(message),
         );
     }

@@ -118,6 +118,7 @@ futures-util = { version = "0.3", default-features = false, features = [
 globset = { version = "0.4", default-features = false }
 handlebars = { version = "6", default-features = false }
 ignore = { version = "0.4", default-features = false }
+indexmap = { version = "2", default-features = false, features = ["serde"] }
 json5 = { version = "0.4", default-features = false }
 libc = { version = "0.2", default-features = false }
 rand = { version = "0.8", default-features = false, features = [

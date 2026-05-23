@@ -180,6 +180,8 @@ pub(crate) struct EventRenderer {
     current_role_state: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Shared ordered role names for input-thread role cycling.
     roles_available: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Shared ordered role groups for input-thread role cycling.
+    role_groups_available: std::sync::Arc<std::sync::Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     /// Shared verbosity mirror kept symmetric with `effort_state`.
     verbosity_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Shared thinking-summary mirror. Kept symmetric with the
@@ -891,6 +893,7 @@ impl EventRenderer {
             fast_service_tier_state: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_role_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             roles_available: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            role_groups_available: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             verbosity_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 tau_proto::Verbosity::default().as_u8(),
             )),
@@ -964,6 +967,13 @@ impl EventRenderer {
     /// Returns a clone of the shared ordered role list used by role cycling.
     pub(crate) fn roles_available(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         self.roles_available.clone()
+    }
+
+    /// Returns a clone of the shared ordered role groups used by role cycling.
+    pub(crate) fn role_groups_available(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<tau_proto::HarnessRoleGroup>>> {
+        self.role_groups_available.clone()
     }
 
     /// Apply a `/set <name> <value>` change. The caller (input loop)
@@ -3406,6 +3416,9 @@ impl EventRenderer {
         let role_items = Self::role_completion_items(roles, &role_defaults);
         if let Ok(mut available) = self.roles_available.lock() {
             *available = roles.roles.iter().map(|r| r.name.clone()).collect();
+        }
+        if let Ok(mut available) = self.role_groups_available.lock() {
+            *available = roles.groups.clone();
         }
         self.role_defaults = role_defaults;
         if self.current_role.is_some() && self.model_status_block.is_some() {

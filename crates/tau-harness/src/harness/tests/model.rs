@@ -420,8 +420,10 @@ fn role_baseline_ignores_persisted_role_overrides() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { model: "openai/gpt-4.1", effort: "high", verbosity: "medium" },
+            roleGroups: {
+                coding: {
+                    engineer: { model: "openai/gpt-4.1", effort: "high", verbosity: "medium" },
+                },
             },
         }"#,
     )
@@ -438,7 +440,8 @@ fn role_baseline_ignores_persisted_role_overrides() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let (roles, _role_overrides, selected_role, _role_groups) =
+        load_roles(&dirs, &harness_settings);
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     let provider_models = provider_models([ProviderModelInfo {
         id: model_id,
@@ -484,14 +487,16 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
             promptFragments: [
                 { name: "global.prompt", priority: 50, text: "CURRENT GLOBAL PROMPT" },
             ],
-            roles: {
-                engineer: {
-                    description: "CURRENT CONFIG DESCRIPTION",
-                    model: "openai/gpt-4.1",
-                    promptFragments: [
-                        { name: "engineer.prompt", priority: 100, text: "CURRENT CONFIG PROMPT" },
-                        { name: "engineer.extra", priority: 200, text: "CURRENT CONFIG EXTRA" },
-                    ],
+            roleGroups: {
+                coding: {
+                    engineer: {
+                        description: "CURRENT CONFIG DESCRIPTION",
+                        model: "openai/gpt-4.1",
+                        promptFragments: [
+                            { name: "engineer.prompt", priority: 100, text: "CURRENT CONFIG PROMPT" },
+                            { name: "engineer.extra", priority: 200, text: "CURRENT CONFIG EXTRA" },
+                        ],
+                    },
                 },
             },
         }"#,
@@ -512,7 +517,7 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let (roles, role_overrides, selected_role, _role_groups) = load_roles(&dirs, &harness_settings);
     let role = roles.get("engineer").expect("engineer role");
     assert_eq!(selected_role, "engineer");
     assert_eq!(
@@ -621,9 +626,13 @@ fn load_roles_falls_back_to_engineer_role_while_models_are_provider_owned() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { model: "local/engineer" },
-                manager: { model: "local/deep" },
+            roleGroups: {
+                coding: {
+                    engineer: { model: "local/engineer" },
+                },
+                planning: {
+                    manager: { model: "local/deep" },
+                },
             },
         }"#,
     )
@@ -641,7 +650,7 @@ fn load_roles_falls_back_to_engineer_role_while_models_are_provider_owned() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let (roles, role_overrides, selected_role, _role_groups) = load_roles(&dirs, &harness_settings);
     assert!(!role_overrides.contains_key("default"));
     assert!(!roles.contains_key("default"));
     assert_eq!(selected_role, "engineer");
@@ -680,9 +689,11 @@ fn role_missing_fields_use_model_defaults() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { model: "local/engineer", effort: "high" },
-                plain: {},
+            roleGroups: {
+                coding: {
+                    engineer: { model: "local/engineer", effort: "high" },
+                    plain: {},
+                },
             },
         }"#,
     )
@@ -697,7 +708,8 @@ fn role_missing_fields_use_model_defaults() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let (roles, _role_overrides, selected_role, _role_groups) =
+        load_roles(&dirs, &harness_settings);
     let available = ["local/aaa".into(), "local/engineer".into()];
     let available_provider_models = provider_models(
         available
@@ -971,8 +983,10 @@ fn selected_params_restore_each_field_from_role_override() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { model: "openai/gpt-5" },
+            roleGroups: {
+                coding: {
+                    engineer: { model: "openai/gpt-5" },
+                },
             },
         }"#,
     )
@@ -994,7 +1008,8 @@ fn selected_params_restore_each_field_from_role_override() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+    let (roles, _role_overrides, selected_role, _role_groups) =
+        load_roles(&dirs, &harness_settings);
     assert_eq!(selected_role, "engineer");
 
     let model: ModelId = "openai/gpt-5".parse().expect("model id");

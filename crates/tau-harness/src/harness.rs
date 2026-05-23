@@ -912,6 +912,8 @@ pub struct Harness {
     pub(crate) pending_provider_prompts: HashMap<SessionPromptId, tau_proto::ConnectionId>,
     /// Available agent roles.
     pub(crate) available_roles: std::collections::HashMap<String, tau_config::settings::AgentRole>,
+    /// Ordered role navigation groups for the currently available roles.
+    pub(crate) available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
     /// Persisted role overrides loaded from state and changed at runtime.
     pub(crate) role_overrides: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Currently selected role. The resolved model is derived from this role
@@ -1331,7 +1333,8 @@ impl Harness {
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
-        let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+        let (available_roles, role_overrides, selected_role, available_role_groups) =
+            load_roles(&dirs, &harness_settings);
         let selected_model =
             select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         crate::session_cleanup::spawn_session_cleanup(
@@ -1397,6 +1400,7 @@ impl Harness {
             provider_model_routes: HashMap::new(),
             pending_provider_prompts: HashMap::new(),
             available_roles,
+            available_role_groups,
             role_overrides,
             selected_role,
             selected_model,
@@ -1551,7 +1555,8 @@ impl Harness {
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
-        let (available_roles, role_overrides, selected_role) = load_roles(&dirs, &harness_settings);
+        let (available_roles, role_overrides, selected_role, available_role_groups) =
+            load_roles(&dirs, &harness_settings);
         let selected_model =
             select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         tracing::debug!(target: "tau_harness::startup", selected_model = ?selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "harness settings loaded");
@@ -1618,6 +1623,7 @@ impl Harness {
             provider_model_routes: HashMap::new(),
             pending_provider_prompts: HashMap::new(),
             available_roles,
+            available_role_groups,
             role_overrides,
             selected_role,
             selected_model,
@@ -3613,6 +3619,7 @@ impl Harness {
                     &self.available_roles,
                     &self.available_models,
                 ),
+                groups: self.current_role_groups(),
             }),
         );
         self.publish_delegate_roles_context();
@@ -5356,10 +5363,49 @@ impl Harness {
                     &self.available_roles,
                     &self.available_models,
                 ),
+                groups: self.current_role_groups(),
             }),
         );
         self.publish_delegate_roles_context();
         self.publish_current_model_state();
+    }
+
+    fn current_role_groups(&self) -> Vec<tau_proto::HarnessRoleGroup> {
+        let mut grouped = HashSet::new();
+        let mut groups = Vec::new();
+        for group in &self.available_role_groups {
+            let roles: Vec<_> = group
+                .roles
+                .iter()
+                .filter(|role| self.available_roles.contains_key(*role))
+                .inspect(|role| {
+                    grouped.insert((*role).clone());
+                })
+                .cloned()
+                .collect();
+            if !roles.is_empty() {
+                groups.push(tau_proto::HarnessRoleGroup {
+                    name: group.name.clone(),
+                    roles,
+                });
+            }
+        }
+        let mut ungrouped: Vec<_> = self
+            .available_roles
+            .keys()
+            .filter(|role| !grouped.contains(*role))
+            .cloned()
+            .collect();
+        ungrouped.sort();
+        groups.extend(
+            ungrouped
+                .into_iter()
+                .map(|role| tau_proto::HarnessRoleGroup {
+                    name: role.clone(),
+                    roles: vec![role],
+                }),
+        );
+        groups
     }
 
     fn publish_current_model_state(&mut self) {
@@ -6889,6 +6935,11 @@ impl Harness {
     }
 
     fn is_tool_enabled_for_role(&self, spec: &tau_proto::ToolSpec, role_name: &str) -> bool {
+        #[cfg(any(test, feature = "echo-agent"))]
+        if spec.name.as_str() == "echo" {
+            return true;
+        }
+
         let Some(role) = self.available_roles.get(role_name) else {
             return spec.enabled_by_default;
         };

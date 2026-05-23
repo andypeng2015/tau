@@ -1153,8 +1153,10 @@ fn gather_tool_definitions_respects_role_tool_lists() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { disableTools: ["shell", "skill"] },
+            roleGroups: {
+                coding: {
+                    engineer: { disableTools: ["shell", "skill"] },
+                },
             },
         }"#,
     )
@@ -1320,8 +1322,10 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { tools: ["test_gpt_shell"], disableTools: ["shell"] },
+            roleGroups: {
+                coding: {
+                    engineer: { tools: ["test_gpt_shell"], disableTools: ["shell"] },
+                },
             },
         }"#,
     )

@@ -220,8 +220,10 @@ fn harness_settings_load_role_tool_lists() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { tools: ["read", "grep"], disableTools: ["grep"] },
+            roleGroups: {
+                coding: {
+                    engineer: { tools: ["read", "grep"], disableTools: ["grep"] },
+                },
             },
         }"#,
     )
@@ -275,8 +277,10 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
             promptFragments: [
                 { name: "global.local", priority: 60, text: "Local global instruction." },
             ],
-            roles: {
-                manager: { promptFragments: [{ name: "manager.local", priority: 170, text: "Local manager instruction." }] },
+            roleGroups: {
+                planning: {
+                    manager: { promptFragments: [{ name: "manager.local", priority: 170, text: "Local manager instruction." }] },
+                },
             },
         }"#,
     )
@@ -292,8 +296,10 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
             promptFragments: [
                 { name: "global.drop-in", priority: 70, text: "Drop-in global instruction." },
             ],
-            roles: {
-                manager: { promptFragments: [{ name: "manager.drop-in", priority: 180, text: "Drop-in manager instruction." }] },
+            roleGroups: {
+                planning: {
+                    manager: { promptFragments: [{ name: "manager.drop-in", priority: 180, text: "Drop-in manager instruction." }] },
+                },
             },
         }"#,
     )
@@ -365,8 +371,10 @@ fn harness_global_prompt_fragments_apply_to_all_roles() {
             promptFragments: [
                 { name: "global.simple", priority: 65, text: "Use simple words." },
             ],
-            roles: {
-                custom: { model: "openai/custom" },
+            roleGroups: {
+                custom: {
+                    custom: { model: "openai/custom" },
+                },
             },
         }"#,
     )
@@ -412,10 +420,14 @@ fn harness_roles_merge_with_built_ins() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            roles: {
-                engineer: { model: "openai/gpt-5.5", tools: ["read"] },
-                custom: { description: "Custom local role", effort: "medium", disableTools: ["shell"] },
-                manager: { model: "openai/gpt-5.5" },
+            roleGroups: {
+                coding: {
+                    engineer: { model: "openai/gpt-5.5", tools: ["read"] },
+                    custom: { description: "Custom local role", effort: "medium", disableTools: ["shell"] },
+                },
+                planning: {
+                    manager: { model: "openai/gpt-5.5" },
+                },
             },
         }"#,
     )
@@ -487,8 +499,10 @@ fn harness_manager_partial_override_keeps_built_in_prompt_fragments() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            roles: {
-                manager: { model: "openai/gpt-5.5" },
+            roleGroups: {
+                planning: {
+                    manager: { model: "openai/gpt-5.5" },
+                },
             },
         }"#,
     )
@@ -518,8 +532,10 @@ fn harness_manager_prompt_fragments_extend_built_in_prompt_fragments() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            roles: {
-                manager: { promptFragments: [{ name: "manager.custom", priority: 100, text: "Custom manager prompt." }] },
+            roleGroups: {
+                planning: {
+                    manager: { promptFragments: [{ name: "manager.custom", priority: 100, text: "Custom manager prompt." }] },
+                },
             },
         }"#,
     )
@@ -550,12 +566,14 @@ fn harness_role_prompt_fragments_parse_as_plain_strings() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            roles: {
-                custom: {
-                    promptFragments: [
-                        { name: "custom.reviewer", priority: 100, text: "You are a focused reviewer." },
-                        { name: "custom.patch-style", priority: 200, text: "Prefer small patches." },
-                    ],
+            roleGroups: {
+                review: {
+                    custom: {
+                        promptFragments: [
+                            { name: "custom.reviewer", priority: 100, text: "You are a focused reviewer." },
+                            { name: "custom.patch-style", priority: 200, text: "Prefer small patches." },
+                        ],
+                    },
                 },
             },
         }"#,
@@ -610,17 +628,20 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
 }
 
 #[test]
-fn harness_default_roles_alias_still_loads() {
-    // Keep the previous `defaultRoles` spelling as a compatibility alias now
-    // that roles are loaded from harness config.
+fn harness_role_groups_load_custom_roles() {
+    // Role groups are the user-facing role configuration shape.
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            defaultRoles: {
-                custom: { effort: "medium", tools: ["read"] },
-                manager: { model: "openai/gpt-5.5" },
+            roleGroups: {
+                coding: {
+                    custom: { effort: "medium", tools: ["read"] },
+                },
+                planning: {
+                    manager: { model: "openai/gpt-5.5" },
+                },
             },
         }"#,
     )
@@ -643,6 +664,27 @@ fn harness_default_roles_alias_still_loads() {
         manager.model.as_ref().map(ToString::to_string).as_deref(),
         Some("openai/gpt-5.5")
     );
+}
+
+#[test]
+fn harness_role_groups_reject_duplicate_role_names() {
+    // Role names are runtime identities, so grouping is only navigation; the
+    // same role name in two groups would make keyboard traversal ambiguous.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            roleGroups: {
+                coding: { engineer: {} },
+                review: { engineer: {} },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let err = load_harness_settings_in(&dirs_with_config(dir)).expect_err("duplicate role");
+    assert!(err.to_string().contains("appears in multiple roleGroups"));
 }
 
 #[test]

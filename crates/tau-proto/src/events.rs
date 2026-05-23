@@ -134,11 +134,23 @@ pub struct HarnessRoleInfo {
     pub role_description: Option<String>,
 }
 
+/// One ordered role group used for keyboard navigation and grouped menus.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessRoleGroup {
+    /// Stable group name from harness `roleGroups` configuration.
+    pub name: String,
+    /// Role names in navigation order. Names are accepted by `ui.role_select`.
+    pub roles: Vec<String>,
+}
+
 /// The harness announces all roles available for selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HarnessRolesAvailable {
     /// Role entries sorted by name for deterministic UI menus.
     pub roles: Vec<HarnessRoleInfo>,
+    /// Ordered role groups for structured keyboard navigation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<HarnessRoleGroup>,
 }
 
 /// The harness announces the selected role and its currently resolved model.
