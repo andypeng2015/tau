@@ -183,10 +183,11 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
 }
 
 #[test]
-fn startup_registers_gpt_shell_with_shell_command_visible_name() {
+fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
     let (mut reader, mut writer) = spawn_extension();
 
-    let mut found = false;
+    let mut found_echo_disabled = false;
+    let mut found_gpt_shell_visible_name = false;
     for _ in 0..10 {
         let event = reader
             .read_event()
@@ -195,16 +196,23 @@ fn startup_registers_gpt_shell_with_shell_command_visible_name() {
         let Event::ToolRegister(register) = event else {
             continue;
         };
+        if register.tool.name == ECHO_TOOL_NAME {
+            assert!(!register.tool.enabled_by_default);
+            found_echo_disabled = true;
+        }
         if register.tool.name == GPT_SHELL_TOOL_NAME {
             assert_eq!(
                 register.tool.model_visible_name,
                 Some(tau_proto::ToolName::new("shell_command"))
             );
-            found = true;
-            break;
+            found_gpt_shell_visible_name = true;
         }
     }
-    assert!(found, "expected gpt_shell tool registration");
+    assert!(found_echo_disabled, "expected echo tool registration");
+    assert!(
+        found_gpt_shell_visible_name,
+        "expected gpt_shell tool registration"
+    );
 
     writer
         .write_frame(&disconnect_frame(None))

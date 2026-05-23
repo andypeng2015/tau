@@ -75,7 +75,7 @@ where
         tool_type: tau_proto::ToolType::Function,
         parameters: None,
         format: None,
-        enabled_by_default: true,
+        enabled_by_default: false,
         execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     });
