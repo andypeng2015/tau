@@ -16,6 +16,7 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 
 /// One Chat Completions-compatible provider entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatCompletionsProvider {
     /// Base URL without `/chat/completions`, e.g. `https://api.openai.com/v1`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -42,6 +43,7 @@ pub struct ChatCompletionsProvider {
 
 /// One model published by a Chat Completions-compatible provider.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatCompletionsModel {
     /// Upstream model id sent in the `model` request field.
     pub id: ModelName,
@@ -55,6 +57,7 @@ pub struct ChatCompletionsModel {
 
 /// Compatibility switches for OpenAI-compatible Chat Completions APIs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatCompletionsCompat {
     /// Whether to send `stream_options: { include_usage: true }`.
     #[serde(default, skip_serializing_if = "is_false")]

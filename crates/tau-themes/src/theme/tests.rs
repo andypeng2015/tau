@@ -205,6 +205,22 @@ fn builtin_theme_parses() {
 }
 
 #[test]
+fn theme_rejects_unknown_fields() {
+    // Theme files are user-authored config. Unknown top-level or style fields
+    // should fail fast instead of silently ignoring misspelled keys.
+    let error = Theme::parse(
+        r#"{
+                styles: {
+                    prompt: { foreground: "green" },
+                }
+            }"#,
+    )
+    .expect_err("unknown style field should fail");
+
+    assert!(error.to_string().contains("unknown field"), "got: {error}");
+}
+
+#[test]
 fn builtin_light_theme_parses() {
     let theme = Theme::builtin_light();
 

@@ -64,3 +64,18 @@ fn append_does_not_read_existing_file() {
         .append("new")
         .expect("append skips reading corrupt file");
 }
+
+#[test]
+fn prompt_history_record_rejects_unknown_fields() {
+    // Prompt history is an internal append-only format with an explicit version.
+    // Extra fields indicate a schema mismatch, so the record should be skipped.
+    let error = serde_json::from_value::<PromptHistoryRecord>(serde_json::json!({
+        "version": 1,
+        "recorded_at_micros": 42,
+        "text": "prompt",
+        "extra": true,
+    }))
+    .expect_err("prompt history record should reject unknown fields");
+
+    assert!(error.to_string().contains("unknown field"), "got: {error}");
+}

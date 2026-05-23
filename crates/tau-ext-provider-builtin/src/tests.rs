@@ -40,3 +40,19 @@ fn profile_storage_kinds_do_not_carry_openai_prefix() {
     assert_eq!(chatgpt["kind"], "chatgpt");
     assert_eq!(chat_completions["kind"], "chat_completions");
 }
+
+#[test]
+fn provider_profiles_reject_unknown_fields() {
+    // Provider profiles are user-authored persistent config. Unknown fields are
+    // usually misspellings or stale schema, so accepting them hides mistakes.
+    let error = serde_json::from_value::<BuiltinProviderProfile>(serde_json::json!({
+        "kind": "chatgpt",
+        "auth": {
+            "access_token": "token",
+            "extra": true,
+        },
+    }))
+    .expect_err("profile auth should reject unknown fields");
+
+    assert!(error.to_string().contains("unknown field"), "got: {error}");
+}

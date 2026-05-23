@@ -21,6 +21,7 @@ pub(crate) struct PromptHistoryStore {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PromptHistoryRecord {
     version: u8,
     recorded_at_micros: u64,

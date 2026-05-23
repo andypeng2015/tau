@@ -35,7 +35,7 @@ const EXTENSION_NAME: &str = "tau-ext-provider-builtin";
 const CHATGPT_PROVIDER_NAME: &str = "chatgpt";
 /// One built-in provider profile loaded from `auth.d/<provider>.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuiltinProviderProfile {
     /// ChatGPT/Codex OAuth provider using the Responses backend.
     Chatgpt(ChatGptProfile),
@@ -45,6 +45,7 @@ pub enum BuiltinProviderProfile {
 
 /// ChatGPT/Codex provider profile.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatGptProfile {
     /// OAuth credentials used for ChatGPT/Codex Responses calls.
     #[serde(default)]
@@ -59,6 +60,7 @@ pub struct BuiltinProviderProfiles {
 
 /// OAuth credentials for the ChatGPT/Codex Responses provider.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenAiAuth {
     /// ChatGPT access token used as bearer auth for Codex Responses calls.
     #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -13,7 +13,7 @@ use crate::text::{SpanTree, StyleIdx, StyleName, ThemedText};
 
 /// Visual attributes for a style.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ThemeStyle {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
@@ -39,6 +39,7 @@ impl ThemeStyle {
 /// Styles not present in the map resolve to [`ThemeStyle::default()`]
 /// (no formatting).
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Theme {
     #[serde(default)]
     styles: HashMap<StyleName, ThemeStyle>,

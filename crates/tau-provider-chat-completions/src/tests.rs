@@ -63,3 +63,16 @@ fn tool_result_text_uses_structured_status_headers() {
         "cancelled: stopped\n\n",
     );
 }
+
+#[test]
+fn provider_config_rejects_unknown_fields() {
+    // Chat Completions profiles are user-authored provider config. Unknown
+    // fields should fail fast instead of silently disabling an intended setting.
+    let error = serde_json::from_value::<ChatCompletionsProvider>(serde_json::json!({
+        "base_url": "https://api.openai.com/v1",
+        "models": [{ "id": "gpt-4o", "extra": true }],
+    }))
+    .expect_err("model entry should reject unknown fields");
+
+    assert!(error.to_string().contains("unknown field"), "got: {error}");
+}
