@@ -248,6 +248,72 @@ fn harness_settings_load_role_tool_lists() {
 }
 
 #[test]
+fn harness_settings_rejects_unknown_top_level_fields() {
+    // Unknown harness.yaml keys used to be silently ignored. That hides stale
+    // configs after refactors, so loading must fail and let the harness print a
+    // loud startup warning instead.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(dir.join("harness.yaml"), r#"{ staleThing: true }"#).expect("write");
+
+    let error = load_harness_settings_in(&dirs_with_config(dir)).expect_err("reject unknown field");
+    assert!(
+        error.to_string().contains("staleThing"),
+        "error should mention unknown field: {error}"
+    );
+}
+
+#[test]
+fn harness_settings_rejects_unknown_role_fields() {
+    // Role entries are nested under arbitrary group and role names, so strict
+    // parsing has to happen at the AgentRole level too.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            roleGroups: {
+                engineer: {
+                    senior-engineer: { staleRoleField: true },
+                },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let error =
+        load_harness_settings_in(&dirs_with_config(dir)).expect_err("reject unknown role field");
+    assert!(
+        error.to_string().contains("staleRoleField"),
+        "error should mention unknown role field: {error}"
+    );
+}
+
+#[test]
+fn harness_settings_rejects_unknown_prompt_fragment_fields() {
+    // Prompt fragments are user-authored config too; typos there must not be
+    // accepted as no-ops.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            promptFragments: [
+                { name: "global.typo", priority: 50, text: "x", staleFragmentField: true },
+            ],
+        }"#,
+    )
+    .expect("write");
+
+    let error = load_harness_settings_in(&dirs_with_config(dir))
+        .expect_err("reject unknown fragment field");
+    assert!(
+        error.to_string().contains("staleFragmentField"),
+        "error should mention unknown fragment field: {error}"
+    );
+}
+
+#[test]
 fn harness_settings_role_cli_overrides_apply_in_order_after_config() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();

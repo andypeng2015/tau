@@ -422,6 +422,7 @@ pub struct HarnessSettings {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HarnessSettingsWire {
     session_retention_days: u64,
     extensions: HashMap<String, ExtensionEntry>,
@@ -456,7 +457,14 @@ impl<'de> Deserialize<'de> for HarnessSettings {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HarnessRoleOverrides {
+    #[serde(default, rename = "session_retention_days")]
+    _session_retention_days: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "extensions")]
+    _extensions: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "defaultRole")]
+    _default_role: Option<serde::de::IgnoredAny>,
     #[serde(default, rename = "roleGroups")]
     role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
@@ -656,7 +664,7 @@ pub struct ExtensionEntry {
 /// Partial harness role settings loaded from `harness.yaml` and persisted
 /// to state. `None` means "use the selected model's fallback" for every field.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct AgentRole {
     /// Whether this role is part of the effective runtime role set. Defaults to
     /// enabled; set to `false` in a higher-precedence config layer to hide a
@@ -746,7 +754,7 @@ impl AgentRole {
 
 /// One prompt fragment configured on a harness role.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RolePromptFragment {
     /// Stable fragment name, preferably namespaced by role or purpose.
     pub name: String,
