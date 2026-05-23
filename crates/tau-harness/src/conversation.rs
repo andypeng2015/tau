@@ -110,7 +110,7 @@ pub(crate) struct ChainFingerprintParts {
 /// Opaque per-process conversation identifier. Not on the wire — the
 /// harness mints these locally and uses them as routing keys.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct ConversationId(String);
+pub struct ConversationId(String);
 
 impl ConversationId {
     pub(crate) fn new(s: impl Into<String>) -> Self {

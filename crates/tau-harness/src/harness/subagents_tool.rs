@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use tau_proto::{
-    AgentMessage, BackgroundSupport, CborValue, Event, SessionContextKey, SessionContextValue,
-    ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolDisplay, ToolDisplayStats,
-    ToolError, ToolExecutionMode, ToolName, ToolResult, ToolResultKind, ToolSpec, ToolType,
+    AgentMessage, CborValue, Event, SessionContextKey, SessionContextValue, ToolBackgroundError,
+    ToolBackgroundResult, ToolCallId, ToolDisplay, ToolDisplayStats, ToolError, ToolExecutionMode,
+    ToolName, ToolResult, ToolResultKind, ToolType,
 };
 
 use crate::conversation::ConversationId;
@@ -17,10 +17,10 @@ use crate::harness::{AgentMessageRecipientStatus, AgentToolCall, HARNESS_CONNECT
 pub(crate) const DELEGATE_TOOL_NAME: &str = "delegate";
 /// Model-visible name of the harness-owned wait tool.
 pub(crate) const WAIT_TOOL_NAME: &str = "wait";
-/// Model-visible name of the harness-owned cancel tool.
-pub(crate) const CANCEL_TOOL_NAME: &str = "cancel";
-/// Model-visible name of the harness-owned message tool.
+#[cfg(test)]
 pub(crate) const MESSAGE_TOOL_NAME: &str = "message";
+#[cfg(test)]
+pub(crate) const CANCEL_TOOL_NAME: &str = "cancel";
 
 const DELEGATE_PREFIX: &str = include_str!("prompts/delegate_prefix.md");
 const SLOW_DELEGATE_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
@@ -54,21 +54,9 @@ pub(crate) struct SubagentToolState {
 }
 
 impl Harness {
-    /// Register harness-owned tools.
+    #[cfg(test)]
     pub(crate) fn register_harness_tools(&mut self) {
-        self.register_skill_tool();
-        let _ = self
-            .registry
-            .register_internal(HARNESS_CONNECTION_ID, delegate_tool_spec());
-        let _ = self
-            .registry
-            .register_internal(HARNESS_CONNECTION_ID, wait_tool_spec());
-        let _ = self
-            .registry
-            .register_internal(HARNESS_CONNECTION_ID, cancel_tool_spec());
-        let _ = self
-            .registry
-            .register_internal(HARNESS_CONNECTION_ID, message_tool_spec());
+        self.install_internal_tool_handlers(vec![std::sync::Arc::new(TestBuiltinTools)]);
     }
 
     pub(crate) fn publish_delegate_roles_context(&mut self) {
@@ -607,86 +595,95 @@ impl Harness {
     }
 }
 
-fn delegate_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: ToolName::new(DELEGATE_TOOL_NAME),
-        model_visible_name: None,
-        description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`. Use it for: open-ended exploration where step count is unpredictable; large search/read sweeps whose intermediate output would otherwise clutter this conversation; parallel work — multiple delegations with `execution_mode: \"shared\"` or compatible `execution_mode: \"update\"` can overlap globally. Use `execution_mode: \"update\"` when the sub-agent may update shared state and should not overlap with another update or exclusive sub-agent. Use `execution_mode: \"exclusive\"` when the sub-agent needs to run alone: it waits for all other sub-agent delegations and blocks later independent ones until it finishes. Skip it when the target is already known (use direct tools like `read`/`grep`/`shell` instead) or when the task requires synthesis you should do yourself — don't push 'based on findings, fix the bug' onto a sub-agent; investigate first, then delegate the concrete change. The sub-agent starts with a *clean* conversation: it sees ONLY your `prompt`, plus its tools and system prompt. It cannot see this conversation's prior turns, your reasoning, files you've read, or earlier tool results — and that isolation applies at every nesting depth, so a sub-agent's own delegations are equally fresh. You must therefore brief the sub-agent fully: state the goal, hand it every fact it needs (absolute file paths, exact symbols, code snippets, prior findings, constraints, format of the answer you want), and frame the sub-task as if writing to a teammate who just walked into the room. Terse command-style prompts produce shallow, generic work; missing context produces wrong answers.".to_owned()),
-        tool_type: ToolType::Function,
-        parameters: Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "task_name": { "type": "string", "description": "Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs." },
-                "prompt": { "type": "string", "description": "Self-contained task for the sub-agent. The sub-agent's conversation starts fresh — it has NO access to this conversation's history, your earlier tool results, or files you've read. State everything it needs: the goal, the relevant facts (absolute file paths, exact symbols, snippets you've already extracted), any constraints, what counts as 'done', and the format of the answer you want back. Treat it like briefing a teammate who just walked into the room. Terse command-style prompts produce shallow work; missing context produces wrong answers." },
-                "execution_mode": { "type": "string", "enum": ["shared", "update", "exclusive"], "description": "Use `shared` when the sub-task can safely overlap globally with other shared/update sub-agent delegations. Use `update` when it may change shared state: it can overlap with shared sub-agents, but not update or exclusive ones. Use `exclusive` when it must run alone: it waits for all other sub-agent delegations and blocks later independent ones. Default: `shared`." },
-                "role": { "type": "string", "description": "Optional sub-agent role to use. When omitted, Tau defaults delegate calls to `engineer` if that role is available and enabled." }
-            },
-            "required": ["task_name", "prompt"],
-            "additionalProperties": false
-        })),
-        format: None,
-        enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
-        background_support: Some(BackgroundSupport::Instant),
+#[cfg(test)]
+struct TestBuiltinTools;
+
+#[cfg(test)]
+impl crate::InternalToolHandler for TestBuiltinTools {
+    fn tool_specs(&self) -> Vec<tau_proto::ToolSpec> {
+        vec![
+            test_tool_spec("skill", None),
+            delegate_tool_spec(),
+            wait_tool_spec(),
+            test_tool_spec(CANCEL_TOOL_NAME, Some(tau_proto::BackgroundSupport::Never)),
+            message_tool_spec(),
+        ]
+    }
+
+    fn handles(&self, internal_tool_name: &ToolName) -> bool {
+        matches!(
+            internal_tool_name.as_str(),
+            "skill" | DELEGATE_TOOL_NAME | WAIT_TOOL_NAME | CANCEL_TOOL_NAME | MESSAGE_TOOL_NAME
+        )
+    }
+
+    fn handle_started(
+        &self,
+        host: &mut crate::InternalToolHost<'_>,
+        conversation_id: &crate::ConversationId,
+        call: &crate::AgentToolCall,
+        visible_tool_name: ToolName,
+    ) -> Result<(), HarnessError> {
+        match call.name.as_str() {
+            "skill" => host.handle_skill_tool_call(conversation_id, call),
+            DELEGATE_TOOL_NAME => {
+                host.handle_delegate_tool_call(conversation_id, call, visible_tool_name)
+            }
+            WAIT_TOOL_NAME => host.handle_wait_tool_call(conversation_id, call, visible_tool_name),
+            MESSAGE_TOOL_NAME => {
+                host.handle_message_tool_call(conversation_id, call, visible_tool_name)
+            }
+            CANCEL_TOOL_NAME => {
+                host.handle_cancel_tool_call(conversation_id, call, visible_tool_name)
+            }
+            _ => Ok(()),
+        }
     }
 }
 
-fn message_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: ToolName::new(MESSAGE_TOOL_NAME),
-        model_visible_name: None,
-        description: Some("Send an async message to another live or pending agent, or to the user. Use recipient_id `user`, or a `sub_agent_id` returned by `delegate`; UI display depends on `/set show-messages`. A non-user recipient also receives a hidden prompt. Requires `recipient_id` and `message`.".to_owned()),
-        tool_type: ToolType::Function,
-        parameters: Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "recipient_id": { "type": "string", "description": "Recipient agent_id, or the special value `user`." },
-                "message": { "type": "string", "description": "Message body." }
-            },
-            "required": ["recipient_id", "message"],
-            "additionalProperties": false
-        })),
-        format: None,
-        enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
-        background_support: Some(BackgroundSupport::Never),
-    }
+#[cfg(test)]
+fn delegate_tool_spec() -> tau_proto::ToolSpec {
+    let mut spec = test_tool_spec(
+        DELEGATE_TOOL_NAME,
+        Some(tau_proto::BackgroundSupport::Instant),
+    );
+    spec.parameters = Some(serde_json::json!({
+        "type":"object",
+        "properties":{"execution_mode":{"enum":["shared","update","exclusive"]}}
+    }));
+    spec
 }
 
-fn cancel_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: ToolName::new(CANCEL_TOOL_NAME),
-        model_visible_name: None,
-        description: Some("Cancel a running supported background tool call. Requires `tool_call_id`; currently delegate and shell tool calls can be canceled. Duplicate cancellation requests for the same tool call fail when tracked.".to_owned()),
-        tool_type: ToolType::Function,
-        parameters: Some(serde_json::json!({
-            "type": "object",
-            "properties": { "tool_call_id": { "type": "string", "description": "Required id of the running supported tool call to cancel." } },
-            "required": ["tool_call_id"],
-            "additionalProperties": false
-        })),
-        format: None,
-        enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
-        background_support: Some(BackgroundSupport::Never),
-    }
+#[cfg(test)]
+fn message_tool_spec() -> tau_proto::ToolSpec {
+    let mut spec = test_tool_spec(MESSAGE_TOOL_NAME, Some(tau_proto::BackgroundSupport::Never));
+    spec.parameters = Some(serde_json::json!({
+        "type":"object",
+        "required":["recipient_id","message"]
+    }));
+    spec
 }
 
-fn wait_tool_spec() -> ToolSpec {
-    ToolSpec {
-        name: ToolName::new(WAIT_TOOL_NAME),
+#[cfg(test)]
+fn wait_tool_spec() -> tau_proto::ToolSpec {
+    test_tool_spec(WAIT_TOOL_NAME, Some(tau_proto::BackgroundSupport::Never))
+}
+
+#[cfg(test)]
+fn test_tool_spec(
+    name: &str,
+    background_support: Option<tau_proto::BackgroundSupport>,
+) -> tau_proto::ToolSpec {
+    tau_proto::ToolSpec {
+        name: ToolName::new(name),
         model_visible_name: None,
-        description: Some("Wait for background tool calls. With `tool_call_id`, wait for that specific background call. Without `tool_call_id`, wait for the first background call in this conversation to finish and return its `original_tool_call_id`. Already-finished matching results return immediately. Tau will notify you via marked internal messages about background calls completing; `wait({})` consumes one completion and suppresses that completion notice.".to_owned()),
+        description: Some(name.to_owned()),
         tool_type: ToolType::Function,
-        parameters: Some(serde_json::json!({
-            "type": "object",
-            "properties": { "tool_call_id": { "type": "string", "description": "Optional. When set, wait for this specific background tool call. When omitted, wait for the first background tool call in this conversation to finish." } },
-            "additionalProperties": false
-        })),
+        parameters: Some(serde_json::json!({"type":"object"})),
         format: None,
         enabled_by_default: true,
         execution_mode: ToolExecutionMode::Shared,
-        background_support: Some(BackgroundSupport::Never),
+        background_support,
     }
 }
 

@@ -132,6 +132,10 @@ impl From<tau_session_inspect::InspectError> for CliError {
 // banner, and `tau --version`).
 // ---------------------------------------------------------------------------
 
+fn run_harness_component() -> Result<(), Box<dyn std::error::Error>> {
+    tau_harness::run_component_with_internal_tools(tau_harness_tools::builtin_handlers())
+}
+
 fn build_revision() -> String {
     tau_harness::version::build_revision()
 }
@@ -383,7 +387,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
             cli::Command::Ext { name } => {
                 let built_in_components = [Component {
                     name: "harness",
-                    runner: tau_harness::run_component,
+                    runner: run_harness_component,
                     logging: ComponentLogging::CliStderr,
                 }];
                 let component = built_in_components

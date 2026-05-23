@@ -27,6 +27,7 @@ tau-cli-picker.workspace = true
 tau-cli-term.workspace = true
 tau-config.workspace = true
 tau-harness.workspace = true
+tau-harness-tools.workspace = true
 tau-proto.workspace = true
 tau-provider-cli.workspace = true
 tau-session-inspect.workspace = true

@@ -25,6 +25,7 @@ mod event_log;
 mod extension;
 mod format;
 mod harness;
+pub mod internal_tools;
 mod model;
 mod prompt;
 mod session_cleanup;
@@ -42,15 +43,19 @@ pub fn dump_initial_prompt(
 
 pub use tau_core::{SessionEntry, SessionMeta, SessionTree, list_session_metas, session_is_locked};
 
+pub use crate::conversation::ConversationId;
 pub use crate::daemon::{
     EmbeddedOptions, InteractionOutcome, ServeOptions, SessionLaunchStatus,
-    get_daemon_rendered_system_prompt, run_component, run_daemon, run_daemon_with_config,
-    run_embedded_message, run_embedded_message_with_options, run_embedded_message_with_trace,
-    run_harness_daemon, send_daemon_message, send_daemon_message_with_trace,
+    get_daemon_rendered_system_prompt, run_component, run_component_with_internal_tools,
+    run_daemon, run_daemon_with_config, run_embedded_message, run_embedded_message_with_options,
+    run_embedded_message_with_trace, run_harness_daemon, run_harness_daemon_with_internal_tools,
+    send_daemon_message, send_daemon_message_with_trace,
 };
 #[cfg(any(test, feature = "echo-agent"))]
 pub use crate::daemon::{run_daemon_with_echo, run_embedded_message_with_echo};
 pub use crate::error::HarnessError;
 pub use crate::extension::{harness_log_path, session_logs_dir};
 pub use crate::format::{format_extension_event, format_tool_progress};
+pub use crate::harness::{AgentToolCall, Harness};
+pub use crate::internal_tools::{InternalToolHandler, InternalToolHandlers, InternalToolHost};
 pub use crate::settings::{builtin_extensions, default_config};

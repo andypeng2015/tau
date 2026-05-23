@@ -19,60 +19,9 @@ const MAX_SKILL_SEARCH_MATCHES: usize = 50;
 use crate::conversation::ConversationId;
 use crate::discovery::DiscoveredSkillSource;
 use crate::error::HarnessError;
-use crate::harness::{AgentToolCall, HARNESS_CONNECTION_ID, Harness};
+use crate::harness::{AgentToolCall, Harness};
 
 impl Harness {
-    /// Register the harness-owned `skill` tool.
-    pub(crate) fn register_skill_tool(&mut self) {
-        let _ = self.registry.register_internal(
-            HARNESS_CONNECTION_ID,
-            tau_proto::ToolSpec {
-                name: ToolName::new("skill"),
-                model_visible_name: None,
-                description: Some(
-                    "Discover and load skills — short, focused playbooks for \
-                     specific tasks. The user has likely curated skills for \
-                     workflows they care about, so reach for this tool early: \
-                     before tackling any request that touches a tool, command, \
-                     framework, or domain you are not deeply familiar with — or \
-                     anything the user might have an opinionated way of doing. \
-                     Most skills are NOT pre-advertised in <available_skills>, so \
-                     a missing entry there is no reason to skip this tool. Pass \
-                     a query string; punctuation separates terms except hyphens \
-                     inside skill names. If the search \
-                     resolves to one skill, or a single-term query exactly \
-                     matches a skill name, the full skill is loaded; otherwise \
-                     matching skill names and descriptions are returned with \
-                     guidance. Query terms are split on punctuation, \
-                     lowercased, and deduplicated; hyphenated skill names are \
-                     preserved. To load a specific ambiguous result, call this \
-                     tool again with only the exact skill name."
-                        .to_owned(),
-                ),
-                tool_type: tau_proto::ToolType::Function,
-                parameters: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Keywords matched case-insensitively against skill names and descriptions. Punctuation separates terms except hyphens inside skill names; terms are lowercased and deduplicated. Use only an exact skill name to load a specific ambiguous result."
-                        },
-                        "search_content": {
-                            "type": "boolean",
-                            "description": "When true, also search the first 64 KiB of the skill file after stripping frontmatter from that prefix. Default false."
-                        }
-                    },
-                    "required": ["query"],
-                    "additionalProperties": false
-                })),
-                format: None,
-                enabled_by_default: true,
-                execution_mode: tau_proto::ToolExecutionMode::Shared,
-                background_support: None,
-            },
-        );
-    }
-
     /// Handle the harness-owned `skill` tool call inline.
     ///
     /// Searches by `query`, then auto-loads when the result is unambiguous:

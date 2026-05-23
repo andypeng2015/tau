@@ -53,9 +53,8 @@ use crate::format::{format_tool_progress, render_entry_preview};
 use crate::harness::interception::{
     ConversationHeadSync, DeferredPublish, InterceptorRegistry, PendingIntercept,
 };
-use crate::harness::subagents_tool::{
-    CANCEL_TOOL_NAME, DELEGATE_TOOL_NAME, MESSAGE_TOOL_NAME, SubagentToolState, WAIT_TOOL_NAME,
-};
+use crate::harness::subagents_tool::SubagentToolState;
+use crate::internal_tools::InternalToolHandlers;
 use crate::model::{
     baseline_params_for_selection, clamp_effort, clamp_thinking_summary, clamp_verbosity,
     context_percent_used, context_window_for_model, efforts_for_model, fallback_role, load_roles,
@@ -390,12 +389,17 @@ impl SessionContextStore {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct AgentToolCall {
-    pub(crate) id: ToolCallId,
-    pub(crate) name: ToolName,
-    pub(crate) tool_type: tau_proto::ToolType,
-    pub(crate) arguments: CborValue,
-    pub(crate) display: Option<tau_proto::ToolDisplay>,
+pub struct AgentToolCall {
+    /// Provider-supplied tool call id.
+    pub id: ToolCallId,
+    /// Internal tool name selected by routing.
+    pub name: ToolName,
+    /// Protocol tool type.
+    pub tool_type: tau_proto::ToolType,
+    /// CBOR arguments supplied by the model/provider.
+    pub arguments: CborValue,
+    /// Optional provider display hint.
+    pub display: Option<tau_proto::ToolDisplay>,
 }
 
 #[derive(Clone, Debug)]
@@ -745,7 +749,7 @@ pub(crate) enum AgentMessageRecipientStatus {
     Unknown,
 }
 
-pub(crate) struct Harness {
+pub struct Harness {
     /// Sender side of the harness's central event channel. Cloned into
     /// each per-connection reader thread so they can feed
     /// `HarnessEvent`s back into the main loop.
@@ -761,6 +765,8 @@ pub(crate) struct Harness {
     /// `ToolRequest` into either a broadcast `ToolStarted`
     /// or a broadcast `ToolRejected`.
     pub(crate) registry: ToolRegistry,
+    /// Injected handlers for tools implemented inside the harness process.
+    pub(crate) internal_tool_handlers: InternalToolHandlers,
     /// Append-only on-disk session store. Owns one `SessionTree` per
     /// session id, derived by folding the durable per-session event log
     /// at `<state_dir>/<session_id>/events.cbor`. The tree is never
@@ -1352,6 +1358,7 @@ impl Harness {
             rx,
             bus,
             registry: ToolRegistry::new(),
+            internal_tool_handlers: Vec::new(),
             store,
             current_session_id: eager_session_id.into(),
             tool_conversations: std::collections::HashMap::new(),
@@ -1429,6 +1436,7 @@ impl Harness {
             harness.queue_extension_connect(command)?;
         }
         harness.wait_for_extensions_ready()?;
+        #[cfg(test)]
         harness.register_harness_tools();
         harness.publish_delegate_roles_context();
         harness.check_config_exists();
@@ -1570,6 +1578,7 @@ impl Harness {
             rx,
             bus,
             registry: ToolRegistry::new(),
+            internal_tool_handlers: Vec::new(),
             store,
             current_session_id: eager_session_id.into(),
             tool_conversations: std::collections::HashMap::new(),
@@ -1647,6 +1656,7 @@ impl Harness {
         }
         harness.wait_for_extensions_ready()?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "extensions ready");
+        #[cfg(test)]
         harness.register_harness_tools();
         harness.publish_delegate_roles_context();
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness tools registered");
@@ -4425,10 +4435,9 @@ impl Harness {
     fn is_harness_owned_tool_call(&self, call_id: &ToolCallId) -> bool {
         self.tool_conversations.contains_key(call_id)
             && self.pending_tools.get(call_id).is_some_and(|tool| {
-                matches!(
-                    tool.name.as_str(),
-                    "skill" | DELEGATE_TOOL_NAME | WAIT_TOOL_NAME | CANCEL_TOOL_NAME
-                )
+                self.internal_tool_handlers
+                    .iter()
+                    .any(|handler| handler.handles(&tool.internal_name))
             })
     }
 
@@ -8260,40 +8269,7 @@ impl Harness {
     }
 
     fn handle_internal_tool_started(&mut self, started: ToolStarted) -> Result<(), HarnessError> {
-        let Some(cid) = self.tool_conversations.get(&started.call_id).cloned() else {
-            self.emit_info(&format!(
-                "discarding internal tool.started for unknown call_id={}",
-                started.call_id
-            ));
-            return Ok(());
-        };
-        let Some(pending) = self.pending_tools.get(&started.call_id).cloned() else {
-            self.emit_info(&format!(
-                "discarding internal tool.started without pending tool for call_id={}",
-                started.call_id
-            ));
-            return Ok(());
-        };
-        let call = AgentToolCall {
-            id: started.call_id,
-            name: pending.internal_name.clone(),
-            tool_type: pending.tool_type,
-            arguments: started.arguments,
-            display: None,
-        };
-        match pending.internal_name.as_str() {
-            "skill" => self.handle_skill_tool_call(&cid, &call),
-            DELEGATE_TOOL_NAME => self.handle_delegate_tool_call(&cid, &call, pending.name),
-            WAIT_TOOL_NAME => self.handle_wait_tool_call(&cid, &call, pending.name),
-            MESSAGE_TOOL_NAME => self.handle_message_tool_call(&cid, &call, pending.name),
-            CANCEL_TOOL_NAME => self.handle_cancel_tool_call(&cid, &call, pending.name),
-            other => {
-                self.emit_info(&format!(
-                    "discarding internal tool.started for non-internal tool `{other}`"
-                ));
-                Ok(())
-            }
-        }
+        self.dispatch_internal_tool_started(started)
     }
 
     fn execute_agent_tool_call(
@@ -8375,12 +8351,7 @@ impl Harness {
             },
         );
         self.bump_tools_started_for(cid);
-        if !matches!(
-            internal_tool_name.as_str(),
-            WAIT_TOOL_NAME | CANCEL_TOOL_NAME | MESSAGE_TOOL_NAME
-        ) {
-            self.record_wait_tool_request(&call_id);
-        }
+        self.record_wait_tool_request(&call_id);
         let published_request = ToolRequest {
             call_id: call_id.clone(),
             tool_name: visible_tool_name.clone(),

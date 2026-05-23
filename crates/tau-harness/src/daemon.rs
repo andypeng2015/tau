@@ -562,6 +562,23 @@ pub fn run_harness_daemon(
     eager_session_id: &str,
     options: ServeOptions,
 ) -> Result<(), HarnessError> {
+    run_harness_daemon_with_internal_tools(
+        project_root,
+        config,
+        eager_session_id,
+        options,
+        Vec::new(),
+    )
+}
+
+/// Runs the harness daemon with injected internal tool handlers.
+pub fn run_harness_daemon_with_internal_tools(
+    project_root: &Path,
+    config: &Config,
+    eager_session_id: &str,
+    options: ServeOptions,
+    internal_tool_handlers: crate::InternalToolHandlers,
+) -> Result<(), HarnessError> {
     let startup_started_at = Instant::now();
     tracing::debug!(target: "tau_harness::startup", project_root = %project_root.display(), eager_session_id, "starting harness daemon");
     let daemon_dir = runtime_dir::prepare_daemon_dir(project_root)?;
@@ -580,6 +597,7 @@ pub fn run_harness_daemon(
         eager_session_id,
         session_start_reason(options.session_status),
     )?;
+    harness.install_internal_tool_handlers(internal_tool_handlers);
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness constructed");
     harness.publish_event(
         None,
@@ -621,6 +639,13 @@ pub fn run_harness_daemon(
 
 /// Entrypoint for `tau ext harness`.
 pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
+    run_component_with_internal_tools(Vec::new())
+}
+
+/// Entrypoint for `tau ext harness` with injected internal tool handlers.
+pub fn run_component_with_internal_tools(
+    internal_tool_handlers: crate::InternalToolHandlers,
+) -> Result<(), Box<dyn std::error::Error>> {
     let startup_started_at = Instant::now();
     let current_exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -652,7 +677,7 @@ pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
         Ok("resumed") => crate::daemon::SessionLaunchStatus::Resumed,
         _ => crate::daemon::SessionLaunchStatus::New,
     };
-    run_harness_daemon(
+    run_harness_daemon_with_internal_tools(
         &project_root,
         &config,
         &eager_session_id,
@@ -664,6 +689,7 @@ pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
             session_status,
             ..Default::default()
         },
+        internal_tool_handlers,
     )
     .map_err(Into::into)
 }
