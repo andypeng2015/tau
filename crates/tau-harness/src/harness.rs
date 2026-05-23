@@ -622,6 +622,7 @@ mod tests;
 mod dispatch;
 mod interception;
 mod replay;
+#[allow(dead_code)]
 mod skill_tool;
 mod subagents_tool;
 
@@ -4564,7 +4565,7 @@ impl Harness {
         self.emit_info_with_level(message, tau_proto::HarnessInfoLevel::Normal);
     }
 
-    fn emit_info_important(&mut self, message: &str) {
+    pub(crate) fn emit_info_important(&mut self, message: &str) {
         self.emit_info_with_level(message, tau_proto::HarnessInfoLevel::Important);
     }
 
@@ -6769,6 +6770,7 @@ impl Harness {
     }
 
     #[cfg(test)]
+    #[expect(dead_code)]
     fn gather_prompt_fragments(&self) -> Vec<PromptFragment> {
         self.gather_prompt_fragments_for_role(&self.selected_role)
     }

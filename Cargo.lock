@@ -1957,6 +1957,7 @@ dependencies = [
  "serde_json",
  "tau-harness",
  "tau-proto",
+ "tau-skills",
 ]
 
 [[package]]

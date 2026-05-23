@@ -1,11 +1,16 @@
 //! Built-in internal tools for `tau-harness`.
 
+use std::io::Read;
 use std::sync::Arc;
 
+use tau_harness::internal_tools::{InternalSkill, InternalSkillSource};
 use tau_harness::{
     AgentToolCall, ConversationId, HarnessError, InternalToolHandler, InternalToolHost,
 };
-use tau_proto::{BackgroundSupport, ToolExecutionMode, ToolName, ToolSpec, ToolType};
+use tau_proto::{
+    BackgroundSupport, CborValue, ToolCallId, ToolDisplay, ToolDisplayStats, ToolDisplayStatus,
+    ToolExecutionMode, ToolName, ToolSpec, ToolType,
+};
 
 const SKILL_TOOL_NAME: &str = "skill";
 const DELEGATE_TOOL_NAME: &str = "delegate";
@@ -50,20 +55,601 @@ impl InternalToolHandler for BuiltinTools {
         visible_tool_name: ToolName,
     ) -> Result<(), HarnessError> {
         match call.name.as_str() {
-            SKILL_TOOL_NAME => host.handle_skill_tool_call(conversation_id, call),
+            SKILL_TOOL_NAME => {
+                handle_skill_tool_call(host, conversation_id, call, visible_tool_name)
+            }
             DELEGATE_TOOL_NAME => {
                 host.handle_delegate_tool_call(conversation_id, call, visible_tool_name)
             }
             WAIT_TOOL_NAME => host.handle_wait_tool_call(conversation_id, call, visible_tool_name),
             MESSAGE_TOOL_NAME => {
-                host.handle_message_tool_call(conversation_id, call, visible_tool_name)
+                handle_message_tool_call(host, conversation_id, call, visible_tool_name)
             }
             CANCEL_TOOL_NAME => {
-                host.handle_cancel_tool_call(conversation_id, call, visible_tool_name)
+                handle_cancel_tool_call(host, conversation_id, call, visible_tool_name)
             }
             _ => Ok(()),
         }
     }
+}
+
+const MAX_SKILL_CONTENT_BYTES: usize = 64 * 1024;
+const MAX_SKILL_SEARCH_MATCHES: usize = 50;
+
+fn handle_skill_tool_call(
+    host: &mut InternalToolHost<'_>,
+    conversation_id: &ConversationId,
+    call: &AgentToolCall,
+    visible_tool_name: ToolName,
+) -> Result<(), HarnessError> {
+    let call_id = call.id.clone();
+    host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
+    match handle_skill_query(host, &call.arguments) {
+        Ok((result, display)) => host.finish_tool_with_cbor_result(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            result,
+            display,
+        ),
+        Err((message, display)) => host.finish_tool_with_display_error(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            message,
+            Some(call.arguments.clone()),
+            display,
+        ),
+    }
+    Ok(())
+}
+
+fn handle_skill_query(
+    host: &mut InternalToolHost<'_>,
+    arguments: &CborValue,
+) -> Result<(CborValue, Option<ToolDisplay>), (String, Option<ToolDisplay>)> {
+    let needles = extract_skill_search_queries(arguments).map_err(|message| {
+        (
+            message.clone(),
+            Some(skill_error_display("search:", &message)),
+        )
+    })?;
+    let search_content = extract_optional_bool(arguments, "search_content")
+        .map_err(|message| {
+            (
+                message.clone(),
+                Some(skill_error_display("search:", &message)),
+            )
+        })?
+        .unwrap_or(false);
+    let skills = host.discovered_skills();
+    let outcome = search_discovered_skills(&skills, &needles, search_content);
+    for warning in &outcome.warnings {
+        host.emit_info_important(warning);
+    }
+    if let Some(name) = outcome.auto_load_name.clone() {
+        return read_skill_by_name(host, &skills, &name);
+    }
+    Ok(skill_search_result(&needles, search_content, outcome))
+}
+
+fn read_skill_by_name(
+    host: &mut InternalToolHost<'_>,
+    skills: &[InternalSkill],
+    name: &str,
+) -> Result<(CborValue, Option<ToolDisplay>), (String, Option<ToolDisplay>)> {
+    let Some(skill) = skills.iter().find(|skill| skill.name == name) else {
+        let message = format!("unknown skill: {name}");
+        return Err((message.clone(), Some(skill_error_display(name, &message))));
+    };
+    let source_label = skill.source.label();
+    let read = read_skill_source_prefix(&skill.source, MAX_SKILL_CONTENT_BYTES).map_err(|e| {
+        let message = format!("failed to read skill file: {e}");
+        (message.clone(), Some(skill_error_display(name, &message)))
+    })?;
+    let mut body = skill_body_from_prefix(&read)
+        .map_err(|message| (message.clone(), Some(skill_error_display(name, &message))))?;
+    if read.truncated {
+        host.emit_info_important(&format!(
+            "skill too long: {source_label} truncated to {MAX_SKILL_CONTENT_BYTES} bytes while loading {name}",
+        ));
+        body.push_str(&format!(
+            "\n\n[skill content truncated at {MAX_SKILL_CONTENT_BYTES} bytes; file has {} bytes]",
+            read.total_bytes
+        ));
+    }
+    let mut display = skill_ok_display(name);
+    display.stats = text_stats_for_skill(&body);
+    Ok((
+        CborValue::Map(vec![
+            (
+                CborValue::Text("name".to_owned()),
+                CborValue::Text(name.to_owned()),
+            ),
+            (
+                CborValue::Text("description".to_owned()),
+                CborValue::Text(skill.description.clone()),
+            ),
+            (CborValue::Text("content".to_owned()), CborValue::Text(body)),
+            (
+                CborValue::Text("truncated".to_owned()),
+                CborValue::Bool(read.truncated),
+            ),
+            (
+                CborValue::Text("total_bytes".to_owned()),
+                CborValue::Integer(read.total_bytes.into()),
+            ),
+        ]),
+        Some(display),
+    ))
+}
+
+struct SkillSearchHit {
+    matched_terms: usize,
+    matched_fields: Vec<String>,
+    name: String,
+    description: String,
+}
+struct SkillSearchOutcome {
+    hits: Vec<SkillSearchHit>,
+    total_matches: usize,
+    truncated: bool,
+    auto_load_name: Option<String>,
+    warnings: Vec<String>,
+}
+
+fn search_discovered_skills(
+    skills: &[InternalSkill],
+    needles: &[String],
+    search_content: bool,
+) -> SkillSearchOutcome {
+    let mut warnings = Vec::new();
+    let mut hits = Vec::new();
+    let mut total_matches = 0;
+    let mut only_hit_name = None;
+    let mut exact_hit_name = None;
+    for skill in skills {
+        let lower_name = skill.name.to_lowercase();
+        let lower_desc = skill.description.to_lowercase();
+        let mut body: Option<String> = None;
+        let mut matched_fields = Vec::new();
+        let mut matched_terms = 0;
+        for needle in needles {
+            let mut matched = false;
+            if lower_name.contains(needle) {
+                matched = true;
+                push_matched_field(&mut matched_fields, "name");
+            }
+            if lower_desc.contains(needle) {
+                matched = true;
+                push_matched_field(&mut matched_fields, "description");
+            }
+            if search_content {
+                let body = body.get_or_insert_with(|| match read_skill_source_prefix(&skill.source, MAX_SKILL_CONTENT_BYTES) {
+                    Ok(read) => match skill_body_from_prefix(&read) {
+                        Ok(body) => { if read.truncated { warnings.push(format!("skill too long: {} truncated to {MAX_SKILL_CONTENT_BYTES} bytes while content-searching {}", skill.source.label(), skill.name)); } body.to_lowercase() }
+                        Err(message) => { warnings.push(format!("skill frontmatter too long: {} while content-searching {}: {message}", skill.source.label(), skill.name)); String::new() }
+                    },
+                    Err(_) => String::new(),
+                });
+                if body.contains(needle) {
+                    matched = true;
+                    push_matched_field(&mut matched_fields, "content");
+                }
+            }
+            if matched {
+                matched_terms += 1;
+            }
+        }
+        if matched_terms == 0 {
+            continue;
+        }
+        total_matches += 1;
+        only_hit_name = if total_matches == 1 {
+            Some(skill.name.clone())
+        } else {
+            None
+        };
+        if needles.len() == 1 && skill.name == needles[0] {
+            exact_hit_name = Some(skill.name.clone());
+        }
+        hits.push(SkillSearchHit {
+            matched_terms,
+            matched_fields,
+            name: skill.name.clone(),
+            description: tau_skills::truncate_description(&skill.description).into_owned(),
+        });
+        sort_skill_hits(&mut hits);
+        if MAX_SKILL_SEARCH_MATCHES < hits.len() {
+            hits.truncate(MAX_SKILL_SEARCH_MATCHES);
+        }
+    }
+    SkillSearchOutcome {
+        hits,
+        total_matches,
+        truncated: MAX_SKILL_SEARCH_MATCHES < total_matches,
+        auto_load_name: if total_matches == 1 {
+            only_hit_name
+        } else {
+            exact_hit_name
+        },
+        warnings,
+    }
+}
+
+fn skill_search_result(
+    needles: &[String],
+    search_content: bool,
+    outcome: SkillSearchOutcome,
+) -> (CborValue, Option<ToolDisplay>) {
+    let scope_label = if search_content { " [content]" } else { "" };
+    let display_args = format!("{}{scope_label}", needles.join(" "));
+    let mut display = skill_ok_display(&display_args);
+    display.stats = skill_search_stats(&outcome.hits);
+    if outcome.truncated {
+        display.status_text = format!(
+            "ok: showing {} of {} matches",
+            outcome.hits.len(),
+            outcome.total_matches
+        );
+    }
+    let total_matches = outcome.total_matches;
+    let truncated = outcome.truncated;
+    let matches = CborValue::Array(
+        outcome
+            .hits
+            .into_iter()
+            .map(|hit| {
+                CborValue::Map(vec![
+                    (
+                        CborValue::Text("name".to_owned()),
+                        CborValue::Text(hit.name),
+                    ),
+                    (
+                        CborValue::Text("description".to_owned()),
+                        CborValue::Text(hit.description),
+                    ),
+                    (
+                        CborValue::Text("matched_terms".to_owned()),
+                        CborValue::Integer((hit.matched_terms as u64).into()),
+                    ),
+                    (
+                        CborValue::Text("matched_fields".to_owned()),
+                        CborValue::Array(
+                            hit.matched_fields
+                                .into_iter()
+                                .map(CborValue::Text)
+                                .collect(),
+                        ),
+                    ),
+                ])
+            })
+            .collect(),
+    );
+    (
+        CborValue::Map(vec![
+            (
+                CborValue::Text("queries".to_owned()),
+                CborValue::Array(needles.iter().cloned().map(CborValue::Text).collect()),
+            ),
+            (
+                CborValue::Text("search_content".to_owned()),
+                CborValue::Bool(search_content),
+            ),
+            (CborValue::Text("matches".to_owned()), matches),
+            (
+                CborValue::Text("total_matches".to_owned()),
+                CborValue::Integer((total_matches as u64).into()),
+            ),
+            (
+                CborValue::Text("truncated".to_owned()),
+                CborValue::Bool(truncated),
+            ),
+            (
+                CborValue::Text("guidance".to_owned()),
+                CborValue::Text(skill_search_guidance(total_matches)),
+            ),
+        ]),
+        Some(display),
+    )
+}
+
+struct LimitedTextRead {
+    text: String,
+    truncated: bool,
+    total_bytes: u64,
+}
+fn skill_body_from_prefix(read: &LimitedTextRead) -> Result<String, String> {
+    if read.truncated && tau_skills::has_unclosed_frontmatter(&read.text) {
+        return Err(format!(
+            "frontmatter closing fence was not found before the {MAX_SKILL_CONTENT_BYTES} byte read limit; file has {} bytes",
+            read.total_bytes
+        ));
+    }
+    Ok(tau_skills::strip_frontmatter(&read.text).to_owned())
+}
+fn read_skill_source_prefix(
+    source: &InternalSkillSource,
+    max_bytes: usize,
+) -> std::io::Result<LimitedTextRead> {
+    match source {
+        InternalSkillSource::File(path) => read_text_file_prefix(path, max_bytes),
+        InternalSkillSource::BuiltIn { content } => {
+            Ok(read_text_prefix(content.as_ref(), max_bytes))
+        }
+    }
+}
+fn read_text_file_prefix(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> std::io::Result<LimitedTextRead> {
+    let mut file = std::fs::File::open(path)?;
+    let total_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    let truncated = max_bytes < bytes.len();
+    if truncated {
+        bytes.truncate(max_bytes);
+    }
+    Ok(LimitedTextRead {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        truncated,
+        total_bytes,
+    })
+}
+fn read_text_prefix(text: &str, max_bytes: usize) -> LimitedTextRead {
+    let total_bytes = text.len() as u64;
+    if text.len() <= max_bytes {
+        return LimitedTextRead {
+            text: text.to_owned(),
+            truncated: false,
+            total_bytes,
+        };
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    LimitedTextRead {
+        text: text[..end].to_owned(),
+        truncated: true,
+        total_bytes,
+    }
+}
+fn sort_skill_hits(hits: &mut [SkillSearchHit]) {
+    hits.sort_by(|a, b| {
+        b.matched_terms
+            .cmp(&a.matched_terms)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+fn skill_ok_display(args: &str) -> ToolDisplay {
+    ToolDisplay {
+        args: args.to_owned(),
+        status: ToolDisplayStatus::Success,
+        status_text: "ok".to_owned(),
+        ..Default::default()
+    }
+}
+fn skill_error_display(args: &str, message: &str) -> ToolDisplay {
+    ToolDisplay {
+        args: args.to_owned(),
+        status: ToolDisplayStatus::Error,
+        status_text: error_chip_text(message),
+        ..Default::default()
+    }
+}
+fn text_stats_for_skill(text: &str) -> ToolDisplayStats {
+    if text.is_empty() {
+        return ToolDisplayStats::default();
+    }
+    ToolDisplayStats {
+        matches: None,
+        lines: Some(text.lines().count() as u64),
+        bytes: Some(text.len() as u64),
+    }
+}
+fn skill_search_stats(matches: &[SkillSearchHit]) -> ToolDisplayStats {
+    let output = matches
+        .iter()
+        .map(|hit| format!("{}: {}", hit.name, hit.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut stats = text_stats_for_skill(&output);
+    stats.matches = Some(matches.len() as u64);
+    stats
+}
+fn skill_search_guidance(total_matches: usize) -> String {
+    if total_matches == 0 {
+        return "No skills matched. Try different terms, fewer terms, or set search_content: true if the body may mention the topic.".to_owned();
+    }
+    "Call `skill` again with only an exact `name` to load a specific match, or narrow `query` with a more distinctive term. Multi-term queries use OR semantics and rank by matched term count, so adding generic terms may not reduce matches. The top match was not auto-loaded because other matches also existed.".to_owned()
+}
+fn push_matched_field(fields: &mut Vec<String>, field: &str) {
+    if !fields.iter().any(|existing| existing == field) {
+        fields.push(field.to_owned());
+    }
+}
+fn error_chip_text(message: &str) -> String {
+    message
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_owned()
+}
+fn extract_skill_search_queries(arguments: &CborValue) -> Result<Vec<String>, String> {
+    let raw = cbor_map_field(arguments, "query")
+        .ok_or_else(|| "missing required argument: query".to_owned())?;
+    let CborValue::Text(raw_query) = raw else {
+        return Err("query must be a string".to_owned());
+    };
+    let needles = normalized_skill_query_terms(raw_query);
+    if needles.is_empty() {
+        return Err("query must include at least one non-empty term".to_owned());
+    }
+    Ok(needles)
+}
+fn extract_optional_bool(arguments: &CborValue, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = cbor_map_field(arguments, key) else {
+        return Ok(None);
+    };
+    let CborValue::Bool(value) = value else {
+        return Err(format!("{key} must be a boolean"));
+    };
+    Ok(Some(*value))
+}
+fn cbor_map_field<'a>(arguments: &'a CborValue, key: &str) -> Option<&'a CborValue> {
+    let CborValue::Map(entries) = arguments else {
+        return None;
+    };
+    entries.iter().find_map(|(k, v)| match k {
+        CborValue::Text(k) if k == key => Some(v),
+        _ => None,
+    })
+}
+fn normalized_skill_query_terms(raw_query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+    for ch in raw_query.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() || ch == '-' {
+            current.push(ch);
+        } else {
+            push_normalized_skill_term(&mut terms, &mut current);
+        }
+    }
+    push_normalized_skill_term(&mut terms, &mut current);
+    terms
+}
+fn push_normalized_skill_term(terms: &mut Vec<String>, current: &mut String) {
+    let term = current.trim_matches('-');
+    if !term.is_empty() && !terms.iter().any(|existing| existing == term) {
+        terms.push(term.to_owned());
+    }
+    current.clear();
+}
+
+fn handle_message_tool_call(
+    host: &mut InternalToolHost<'_>,
+    conversation_id: &ConversationId,
+    call: &AgentToolCall,
+    visible_tool_name: ToolName,
+) -> Result<(), HarnessError> {
+    let call_id = call.id.clone();
+    host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
+    let result = parse_message_args(&call.arguments).and_then(|parsed| {
+        host.publish_agent_message(conversation_id, parsed.recipient_id, parsed.message)
+    });
+    match result {
+        Ok(()) => host.finish_tool_with_result(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            "Message sent".to_owned(),
+            None,
+        ),
+        Err(message) => host.finish_tool_with_error(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            message,
+            Some(call.arguments.clone()),
+        ),
+    }
+    Ok(())
+}
+
+fn handle_cancel_tool_call(
+    host: &mut InternalToolHost<'_>,
+    conversation_id: &ConversationId,
+    call: &AgentToolCall,
+    visible_tool_name: ToolName,
+) -> Result<(), HarnessError> {
+    let call_id = call.id.clone();
+    host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
+    let result =
+        parse_cancel_args(&call.arguments).and_then(|target| host.cancel_tool_call(&target));
+    match result {
+        Ok(()) => host.finish_tool_with_result(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            "Tool cancellation sent".to_owned(),
+            None,
+        ),
+        Err(message) => host.finish_tool_with_error(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            message,
+            Some(call.arguments.clone()),
+        ),
+    }
+    Ok(())
+}
+
+struct MessageArgs {
+    recipient_id: String,
+    message: String,
+}
+
+fn parse_message_args(arguments: &CborValue) -> Result<MessageArgs, String> {
+    let CborValue::Map(entries) = arguments else {
+        return Err("arguments must be an object".to_owned());
+    };
+    let mut recipient_id = None;
+    let mut message = None;
+    for (k, v) in entries {
+        let CborValue::Text(name) = k else { continue };
+        match name.as_str() {
+            "recipient_id" => match v {
+                CborValue::Text(text) => recipient_id = Some(text.clone()),
+                _ => return Err("`recipient_id` must be a string".to_owned()),
+            },
+            "message" => match v {
+                CborValue::Text(text) => message = Some(text.clone()),
+                _ => return Err("`message` must be a string".to_owned()),
+            },
+            _ => {}
+        }
+    }
+    let recipient_id = recipient_id.ok_or_else(|| "`recipient_id` is required".to_owned())?;
+    if recipient_id.trim().is_empty() {
+        return Err("`recipient_id` must not be empty".to_owned());
+    }
+    let message = message.ok_or_else(|| "`message` is required".to_owned())?;
+    if message.trim().is_empty() {
+        return Err("`message` must not be empty".to_owned());
+    }
+    Ok(MessageArgs {
+        recipient_id,
+        message,
+    })
+}
+
+fn parse_cancel_args(arguments: &CborValue) -> Result<ToolCallId, String> {
+    let CborValue::Map(entries) = arguments else {
+        return Err("arguments must be an object".to_owned());
+    };
+    for (k, v) in entries {
+        let CborValue::Text(name) = k else { continue };
+        if name == "tool_call_id" {
+            return match v {
+                CborValue::Text(text) if !text.is_empty() => Ok(text.clone().into()),
+                CborValue::Text(_) => Err("`tool_call_id` must not be empty".to_owned()),
+                _ => Err("`tool_call_id` must be a string".to_owned()),
+            };
+        }
+    }
+    Err("`tool_call_id` is required".to_owned())
 }
 
 fn skill_tool_spec() -> ToolSpec {

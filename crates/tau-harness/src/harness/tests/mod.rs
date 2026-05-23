@@ -35,7 +35,7 @@ use crate::daemon::{
     ServeOptions, bind_listener, get_daemon_rendered_system_prompt, run_daemon_with_echo,
     run_embedded_message_with_echo, send_daemon_message, send_daemon_message_with_trace,
 };
-use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill, DiscoveredSkillSource};
+use crate::discovery::DiscoveredAgentsFile;
 use crate::error::HarnessError;
 use crate::event::HarnessEvent;
 use crate::model::{
@@ -43,7 +43,6 @@ use crate::model::{
     save_role_overrides, select_model_for_role, selected_params_for_role,
     thinking_summaries_for_model, verbosities_for_model,
 };
-use crate::prompt::build_system_prompt;
 use crate::turn::{PromptSubmission, TurnState};
 
 fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
@@ -537,4 +536,3 @@ mod lifecycle;
 mod mode;
 mod model;
 mod replay;
-mod skill_tool;

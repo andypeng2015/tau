@@ -269,6 +269,45 @@ impl Harness {
     }
 
     /// Handle the harness-owned `message` tool call inline.
+    /// Publish an agent message after validating sender and recipient state.
+    pub(crate) fn publish_agent_message_from_conversation(
+        &mut self,
+        cid: &ConversationId,
+        recipient_id: String,
+        message: String,
+    ) -> Result<(), String> {
+        let sender_id = self
+            .ensure_agent_id_for_conversation(cid)
+            .ok_or_else(|| "sender conversation no longer exists".to_owned())?;
+        if recipient_id != "user" {
+            match self.agent_message_recipient_status(&recipient_id) {
+                AgentMessageRecipientStatus::Live => {}
+                AgentMessageRecipientStatus::Stopped => {
+                    return Err(format!("stopped message recipient: `{recipient_id}`"));
+                }
+                AgentMessageRecipientStatus::Unknown => {
+                    return Err(format!("unknown message recipient: `{recipient_id}`"));
+                }
+            }
+        }
+        let session_id = self
+            .conversations
+            .get(cid)
+            .map(|conv| conv.session_id.clone())
+            .unwrap_or_else(|| self.current_session_id.clone());
+        self.publish_event(
+            Some(HARNESS_CONNECTION_ID),
+            Event::AgentMessage(AgentMessage {
+                session_id,
+                sender_id,
+                recipient_id,
+                message,
+            }),
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn handle_message_tool_call(
         &mut self,
         cid: &ConversationId,
@@ -278,41 +317,7 @@ impl Harness {
         let call_id: ToolCallId = call.id.clone();
         self.ensure_harness_owned_tool_tracking(cid, call, &visible_tool_name);
         let result = parse_message_args(&call.arguments).and_then(|parsed| {
-            let sender_id = self
-                .ensure_agent_id_for_conversation(cid)
-                .ok_or_else(|| "sender conversation no longer exists".to_owned())?;
-            if parsed.recipient_id != "user" {
-                match self.agent_message_recipient_status(&parsed.recipient_id) {
-                    AgentMessageRecipientStatus::Live => {}
-                    AgentMessageRecipientStatus::Stopped => {
-                        return Err(format!(
-                            "stopped message recipient: `{}`",
-                            parsed.recipient_id
-                        ));
-                    }
-                    AgentMessageRecipientStatus::Unknown => {
-                        return Err(format!(
-                            "unknown message recipient: `{}`",
-                            parsed.recipient_id
-                        ));
-                    }
-                }
-            }
-            let session_id = self
-                .conversations
-                .get(cid)
-                .map(|conv| conv.session_id.clone())
-                .unwrap_or_else(|| self.current_session_id.clone());
-            self.publish_event(
-                Some(HARNESS_CONNECTION_ID),
-                Event::AgentMessage(AgentMessage {
-                    session_id,
-                    sender_id,
-                    recipient_id: parsed.recipient_id,
-                    message: parsed.message,
-                }),
-            );
-            Ok(())
+            self.publish_agent_message_from_conversation(cid, parsed.recipient_id, parsed.message)
         });
         match result {
             Ok(()) => self.finish_harness_owned_tool_with_result(
@@ -335,7 +340,7 @@ impl Harness {
         Ok(())
     }
 
-    /// Handle the harness-owned `cancel` tool call inline.
+    #[cfg(test)]
     pub(crate) fn handle_cancel_tool_call(
         &mut self,
         cid: &ConversationId,
@@ -344,10 +349,8 @@ impl Harness {
     ) -> Result<(), HarnessError> {
         let call_id: ToolCallId = call.id.clone();
         self.ensure_harness_owned_tool_tracking(cid, call, &visible_tool_name);
-        let result = match parse_cancel_args(&call.arguments) {
-            Ok(target_call_id) => self.cancel_tool_call(&target_call_id),
-            Err(message) => Err(message),
-        };
+        let result =
+            parse_cancel_args(&call.arguments).and_then(|target| self.cancel_tool_call(&target));
         match result {
             Ok(()) => self.finish_harness_owned_tool_with_result(
                 cid,
@@ -474,7 +477,7 @@ impl Harness {
         }
     }
 
-    fn ensure_harness_owned_tool_tracking(
+    pub(crate) fn ensure_harness_owned_tool_tracking(
         &mut self,
         cid: &ConversationId,
         call: &AgentToolCall,
@@ -495,7 +498,7 @@ impl Harness {
         self.bump_tools_started_for(cid);
     }
 
-    fn finish_harness_owned_tool_with_result(
+    pub(crate) fn finish_harness_owned_tool_with_result(
         &mut self,
         cid: &ConversationId,
         call_id: ToolCallId,
@@ -504,13 +507,32 @@ impl Harness {
         result: String,
         details: Option<CborValue>,
     ) {
+        self.finish_harness_owned_tool_with_cbor_result(
+            cid,
+            call_id,
+            tool_name,
+            tool_type,
+            details.unwrap_or(CborValue::Text(result)),
+            None,
+        );
+    }
+
+    pub(crate) fn finish_harness_owned_tool_with_cbor_result(
+        &mut self,
+        cid: &ConversationId,
+        call_id: ToolCallId,
+        tool_name: ToolName,
+        tool_type: ToolType,
+        result: CborValue,
+        display: Option<tau_proto::ToolDisplay>,
+    ) {
         let result = ToolResult {
             call_id: call_id.clone(),
             tool_name,
             tool_type,
-            result: details.unwrap_or(CborValue::Text(result)),
+            result,
             kind: ToolResultKind::Final,
-            display: None,
+            display,
             originator: tau_proto::PromptOriginator::User,
         };
         self.publish_terminal_tool_result(Some(cid), None, result);
@@ -518,7 +540,7 @@ impl Harness {
         self.clear_tool_call_tracking(call_id.as_str());
     }
 
-    fn finish_harness_owned_tool_with_error(
+    pub(crate) fn finish_harness_owned_tool_with_error(
         &mut self,
         cid: &ConversationId,
         call_id: ToolCallId,
@@ -527,13 +549,28 @@ impl Harness {
         message: String,
         details: Option<CborValue>,
     ) {
+        self.finish_harness_owned_tool_with_display_error(
+            cid, call_id, tool_name, tool_type, message, details, None,
+        );
+    }
+
+    pub(crate) fn finish_harness_owned_tool_with_display_error(
+        &mut self,
+        cid: &ConversationId,
+        call_id: ToolCallId,
+        tool_name: ToolName,
+        tool_type: ToolType,
+        message: String,
+        details: Option<CborValue>,
+        display: Option<tau_proto::ToolDisplay>,
+    ) {
         let error = ToolError {
             call_id: call_id.clone(),
             tool_name,
             tool_type,
             message,
             details,
-            display: None,
+            display,
             originator: tau_proto::PromptOriginator::User,
         };
         self.publish_terminal_tool_error(Some(cid), None, error);
@@ -625,7 +662,7 @@ impl crate::InternalToolHandler for TestBuiltinTools {
         visible_tool_name: ToolName,
     ) -> Result<(), HarnessError> {
         match call.name.as_str() {
-            "skill" => host.handle_skill_tool_call(conversation_id, call),
+            "skill" => Ok(()),
             DELEGATE_TOOL_NAME => {
                 host.handle_delegate_tool_call(conversation_id, call, visible_tool_name)
             }
@@ -695,12 +732,14 @@ struct DelegateArgs {
     role: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq)]
 struct MessageArgs {
     recipient_id: String,
     message: String,
 }
 
+#[cfg(test)]
 fn parse_message_args(arguments: &CborValue) -> Result<MessageArgs, String> {
     let CborValue::Map(entries) = arguments else {
         return Err("arguments must be an object".to_owned());
@@ -735,6 +774,7 @@ fn parse_message_args(arguments: &CborValue) -> Result<MessageArgs, String> {
     })
 }
 
+#[cfg(test)]
 fn parse_cancel_args(arguments: &CborValue) -> Result<ToolCallId, String> {
     let CborValue::Map(entries) = arguments else {
         return Err("arguments must be an object".to_owned());

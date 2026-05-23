@@ -15,6 +15,7 @@ pub(crate) enum DiscoveredSkillSource {
 
 impl DiscoveredSkillSource {
     #[cfg(test)]
+    #[expect(dead_code)]
     pub(crate) fn file_path(&self) -> Option<&std::path::Path> {
         match self {
             Self::File(path) => Some(path.as_path()),
