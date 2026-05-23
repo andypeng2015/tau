@@ -3,6 +3,7 @@
 use std::sync::mpsc;
 
 use tau_proto::{CborValue, Event, Frame, ToolDisplay, ToolDisplayPayload, ToolDisplayStatus};
+use tracing::{debug, trace};
 
 use crate::argument::{argument_text, optional_argument_int_strict, optional_argument_text};
 use crate::config::ShellConfig;
@@ -51,6 +52,7 @@ pub(crate) fn run_command_cancellable(
     })?;
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
+    debug!(command = %command, cwd = ?cwd, timeout_secs, "starting shell command");
     let child = shell_config
         .spawn_isolated(&command, cwd.as_deref())
         .map_err(|error| {
@@ -71,6 +73,8 @@ pub(crate) fn run_command_cancellable(
                 }))
         })?;
 
+    let child_id = child.id();
+    debug!(child_id, "shell command spawned");
     let started = std::time::Instant::now();
     let wait = wait_with_timeout(child, timeout, cancel_rx);
     let elapsed = started.elapsed();
@@ -86,6 +90,7 @@ pub(crate) fn run_command_cancellable(
     let success = wait.success;
 
     if wait.cancelled {
+        debug!(child_id, duration_seconds = ?duration_seconds, "shell command cancelled");
         return Ok(CommandOutcome::Cancelled);
     }
 
@@ -131,6 +136,14 @@ pub(crate) fn run_command_cancellable(
     };
     display.payload = display_payload;
     display.stats = text_stats(&combined);
+    debug!(
+        child_id,
+        status_code = ?wait.status_code,
+        signal = ?wait.signal,
+        timed_out = wait.timed_out,
+        duration_seconds = ?duration_seconds,
+        "shell command finished"
+    );
     Ok(CommandOutcome::Finished(Box::new(ToolOutput {
         result,
         display,
@@ -236,6 +249,11 @@ pub(crate) fn dispatch_user_shell_command(
     // builds aren't cut short.
     let timeout = std::time::Duration::from_secs(shell_config.user_command_timeout_secs);
     let pid = child.id();
+    debug!(
+        pid,
+        timeout_ms = timeout.as_millis(),
+        "waiting for user shell child"
+    );
     let (done_tx, done_rx) = mpsc::channel::<Option<std::process::ExitStatus>>();
     let waiter = std::thread::spawn(move || {
         let status = child.wait().ok();
@@ -420,6 +438,12 @@ fn wait_with_timeout(
     }
 
     let pid = child.id();
+    debug!(
+        pid,
+        timeout_ms = timeout.as_millis(),
+        cancel_enabled = cancel_rx.is_some(),
+        "waiting for shell child"
+    );
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     if let Some(pipe) = stdout_pipe.as_ref() {
@@ -476,8 +500,10 @@ fn wait_with_timeout(
         let cancelled_by_request = Arc::clone(&cancelled_by_request);
         std::thread::spawn(move || {
             if cancel_rx.recv().is_ok() {
+                debug!(pid, "shell cancellation signal received");
                 cancelled_by_request.store(true, Ordering::SeqCst);
                 if let Some(cancel_wake_write) = cancel_wake_write {
+                    trace!(pid, "waking shell wait loop after cancellation");
                     let byte = [1u8];
                     #[allow(unsafe_code)]
                     unsafe {
@@ -496,6 +522,7 @@ fn wait_with_timeout(
     let _waiter = std::thread::spawn(move || {
         let _wake_read_guard = waiter_wake_read;
         let status = child.wait().ok();
+        debug!(pid, status = ?status, "shell child waiter finished");
         let _ = status_tx.send(status);
         if let Some(wake_write) = wake_write {
             let byte = [1u8];
@@ -520,10 +547,15 @@ fn wait_with_timeout(
         read_available(&mut stdout_pipe, OutputStream::Stdout, &mut output);
         read_available(&mut stderr_pipe, OutputStream::Stderr, &mut output);
         if collect_status(&status_rx, &mut status) {
+            debug!(pid, status = ?status, "shell wait loop observed child status");
             break;
         }
         if cancelled_by_request.load(Ordering::SeqCst) {
             cancelled = true;
+            debug!(
+                pid,
+                "shell wait loop observed cancellation; killing process group"
+            );
             kill_process_group_by_pid(pid);
             break;
         }
@@ -531,6 +563,7 @@ fn wait_with_timeout(
         let now = std::time::Instant::now();
         if deadline <= now {
             timed_out = true;
+            debug!(pid, "shell wait loop timed out; killing process group");
             kill_process_group_by_pid(pid);
             break;
         }
@@ -583,9 +616,11 @@ fn wait_with_timeout(
         read_available(&mut stderr_pipe, OutputStream::Stderr, &mut output);
         let _ = collect_status(&status_rx, &mut status);
         if stdout_pipe.is_none() && stderr_pipe.is_none() {
+            trace!(pid, "shell output drain completed");
             break;
         }
         if drain_deadline <= std::time::Instant::now() {
+            trace!(pid, "shell output drain deadline reached");
             break;
         }
 
@@ -618,6 +653,7 @@ fn wait_with_timeout(
     }
 
     output.finish();
+    debug!(pid, status = ?status, timed_out, cancelled, "shell wait completed");
     wait_result_from_parts(status, timed_out, cancelled, output)
 }
 

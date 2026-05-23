@@ -17,6 +17,7 @@ use tau_proto::{
     SessionContextKey, SessionContextValue, SessionStarted, ToolCancelled, ToolExecutionMode,
     ToolResult, ToolResultKind, ToolSpec,
 };
+use tracing::{debug, trace};
 
 mod agents;
 mod argument;
@@ -514,13 +515,18 @@ where
                 dispatch_session_started(started, &tx);
             }
             Frame::Event(Event::ToolCancelRequest(request)) => {
-                if let Some(cancel_tx) = running_shells
+                let cancel_tx = running_shells
                     .lock()
                     .expect("running shell registry lock poisoned")
                     .get(&request.target_call_id)
-                    .cloned()
-                {
-                    let _ = cancel_tx.send(());
+                    .cloned();
+                if let Some(cancel_tx) = cancel_tx {
+                    debug!(call_id = %request.target_call_id, "shell cancellation requested for running call");
+                    if cancel_tx.send(()).is_err() {
+                        debug!(call_id = %request.target_call_id, "shell cancellation receiver already gone");
+                    }
+                } else {
+                    debug!(call_id = %request.target_call_id, "shell cancellation requested for unknown call");
                 }
             }
             Frame::Event(Event::UiShellCommand(cmd)) => {
@@ -576,6 +582,11 @@ fn dispatch_cancellable_shell_tool(
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
 ) {
     let (cancel_tx, cancel_rx) = mpsc::channel();
+    debug!(
+        call_id = %invoke.call_id,
+        tool_name = %invoke.tool_name,
+        "registering cancellable shell call"
+    );
     running_shells
         .lock()
         .expect("running shell registry lock poisoned")
@@ -594,6 +605,7 @@ fn dispatch_cancellable_shell_tool(
         Some(cancel_rx),
     ) {
         Ok(crate::tools::shell::CommandOutcome::Finished(output)) => {
+            debug!(call_id = %invoke.call_id, tool_name = %invoke.tool_name, "cancellable shell call finished");
             Event::ToolResult(ToolResult {
                 call_id: invoke.call_id.clone(),
                 tool_name: invoke.tool_name.clone(),
@@ -604,31 +616,45 @@ fn dispatch_cancellable_shell_tool(
                 originator: tau_proto::PromptOriginator::User,
             })
         }
-        Ok(crate::tools::shell::CommandOutcome::Cancelled) => Event::ToolCancelled(ToolCancelled {
-            call_id: invoke.call_id.clone(),
-            tool_name: invoke.tool_name.clone(),
-            tool_type: tau_proto::ToolType::Function,
-        }),
+        Ok(crate::tools::shell::CommandOutcome::Cancelled) => {
+            debug!(call_id = %invoke.call_id, tool_name = %invoke.tool_name, "cancellable shell call cancelled");
+            Event::ToolCancelled(ToolCancelled {
+                call_id: invoke.call_id.clone(),
+                tool_name: invoke.tool_name.clone(),
+                tool_type: tau_proto::ToolType::Function,
+            })
+        }
         Err(crate::display::ToolFailure {
             message,
             details,
             display,
-        }) => Event::ToolError(tau_proto::ToolError {
-            call_id: invoke.call_id.clone(),
-            tool_name: invoke.tool_name.clone(),
-            tool_type: tau_proto::ToolType::Function,
-            message,
-            details: details.map(|details| *details),
-            display: Some(*display),
-            originator: tau_proto::PromptOriginator::User,
-        }),
+        }) => {
+            debug!(
+                call_id = %invoke.call_id,
+                tool_name = %invoke.tool_name,
+                message,
+                "cancellable shell call failed"
+            );
+            Event::ToolError(tau_proto::ToolError {
+                call_id: invoke.call_id.clone(),
+                tool_name: invoke.tool_name.clone(),
+                tool_type: tau_proto::ToolType::Function,
+                message,
+                details: details.map(|details| *details),
+                display: Some(*display),
+                originator: tau_proto::PromptOriginator::User,
+            })
+        }
     };
 
     running_shells
         .lock()
         .expect("running shell registry lock poisoned")
         .remove(&invoke.call_id);
-    let _ = tx.send(Frame::Event(event));
+    trace!(call_id = %invoke.call_id, "removed shell call from cancellation registry");
+    if tx.send(Frame::Event(event)).is_err() {
+        debug!(call_id = %invoke.call_id, "failed to send terminal shell event to harness");
+    }
 }
 
 fn dispatch_session_started(started: SessionStarted, tx: &mpsc::Sender<Frame>) {

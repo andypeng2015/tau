@@ -453,6 +453,7 @@
             "rustc-codegen-cranelift-preview"
           ];
           NEXTEST_SHOW_PROGRESS = "none";
+          TAU_LOG = "tau_ext_shell=debug,tau_harness=debug,info";
           packages = [
             cargoCrap
             mq
