@@ -439,7 +439,7 @@ where
     // would duplicate context publication.
     let mut handshake = tau_extension::Handshake::tool("tau-ext-shell").subscribe([
         tau_proto::EventName::TOOL_STARTED,
-        tau_proto::EventName::TOOL_CANCEL,
+        tau_proto::EventName::TOOL_CANCEL_REQUEST,
         tau_proto::EventName::SESSION_STARTED,
         tau_proto::EventName::UI_SHELL_COMMAND,
     ]);
@@ -513,11 +513,11 @@ where
             Frame::Event(Event::SessionStarted(started)) => {
                 dispatch_session_started(started, &tx);
             }
-            Frame::Event(Event::ToolCancel(cancel)) => {
+            Frame::Event(Event::ToolCancelRequest(request)) => {
                 if let Some(cancel_tx) = running_shells
                     .lock()
                     .expect("running shell registry lock poisoned")
-                    .get(&cancel.call_id)
+                    .get(&request.target_call_id)
                     .cloned()
                 {
                     let _ = cancel_tx.send(());

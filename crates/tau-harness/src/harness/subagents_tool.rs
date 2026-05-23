@@ -122,6 +122,18 @@ impl Harness {
             .transfer_call_owner(call_id, source, target);
     }
 
+    /// Drop wait ownership for a background call that belongs to a canceled
+    /// side conversation so it cannot become waitable from its parent.
+    pub(crate) fn discard_wait_background_owner_before_teardown(
+        &mut self,
+        call_id: &ToolCallId,
+        source: &ConversationId,
+    ) {
+        self.subagents
+            .wait_tracker
+            .discard_call_owner(call_id, source);
+    }
+
     fn wait_owner_for_call(&self, call_id: &ToolCallId) -> ConversationId {
         self.tool_conversations
             .get(call_id)
@@ -1014,6 +1026,17 @@ impl WaitTracker {
                 self.call_owners.insert(call_id.clone(), target.clone());
             }
         }
+    }
+
+    fn discard_call_owner(&mut self, call_id: &ToolCallId, source: &ConversationId) {
+        if self.call_owners.get(call_id) == Some(source) {
+            self.call_owners.remove(call_id);
+        }
+        if self.calls.get(call_id) == Some(&WaitCallState::Backgrounded) {
+            self.calls.remove(call_id);
+        }
+        self.completion_order
+            .retain(|completed| completed != call_id);
     }
 
     fn finish_any_waiter_if_no_candidates(&mut self, owner: &ConversationId) -> Vec<WaitReply> {

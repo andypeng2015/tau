@@ -193,7 +193,6 @@ impl EventName {
     pub const TOOL_BACKGROUND_ERROR: Self =
         Self::from_static(EventCategory::Tool, "background_error");
     pub const TOOL_PROGRESS: Self = Self::from_static(EventCategory::Tool, "progress");
-    pub const TOOL_CANCEL: Self = Self::from_static(EventCategory::Tool, "cancel");
     pub const TOOL_CANCEL_REQUEST: Self = Self::from_static(EventCategory::Tool, "cancel_request");
     pub const TOOL_CANCELLED: Self = Self::from_static(EventCategory::Tool, "cancelled");
     pub const TOOL_DELEGATE_PROGRESS: Self =

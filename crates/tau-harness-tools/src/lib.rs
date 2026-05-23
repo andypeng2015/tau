@@ -798,12 +798,12 @@ impl BuiltinTools {
         let call_id = call.id.clone();
         host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
         let result = parse_cancel_args(&call.arguments).and_then(|target| {
-            if !host.is_running_tool_call(&target) {
-                return Err("Tool call is not running".to_owned());
+            if !host.is_running_cancellable_tool_call(&target) {
+                return Err("Tool call is not a running cancellable tool call".to_owned());
             }
             let mut state = self.state.lock().expect("builtin tool state poisoned");
             if !state.cancel_requested.insert(target.clone()) {
-                return Err("Tool call cancellation already requested".to_owned());
+                return Err("Tool call already canceled".to_owned());
             }
             drop(state);
             host.publish_tool_cancel_request(target);
@@ -815,7 +815,7 @@ impl BuiltinTools {
                 call_id,
                 visible_tool_name,
                 call.tool_type,
-                "Tool cancellation requested".to_owned(),
+                "Tool cancellation sent".to_owned(),
                 None,
             ),
             Err(message) => host.finish_tool_with_error(

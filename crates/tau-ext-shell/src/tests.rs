@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use tau_proto::{
-    CborValue, EventName, Frame, FrameReader, FrameWriter, Message, ToolCancel, ToolDisplayPayload,
-    ToolDisplayStatus, ToolStarted,
+    CborValue, EventName, Frame, FrameReader, FrameWriter, Message, ToolCancelRequest,
+    ToolDisplayPayload, ToolDisplayStatus, ToolStarted,
 };
 use tempfile::TempDir;
 
@@ -213,7 +213,7 @@ fn startup_registers_gpt_shell_with_shell_command_visible_name() {
 }
 
 #[test]
-fn shell_tool_cancel_stops_running_command_quickly() {
+fn shell_tool_cancel_request_stops_running_command_quickly() {
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
@@ -242,9 +242,8 @@ fn shell_tool_cancel_stops_running_command_quickly() {
     }
 
     writer
-        .write_event(&Event::ToolCancel(ToolCancel {
-            call_id: call_id.clone(),
-            tool_name: tau_proto::ToolName::new(SHELL_TOOL_NAME),
+        .write_event(&Event::ToolCancelRequest(ToolCancelRequest {
+            target_call_id: call_id.clone(),
         }))
         .expect("cancel shell");
     writer.flush().expect("flush cancel");

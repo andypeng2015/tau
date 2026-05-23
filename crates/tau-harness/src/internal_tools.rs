@@ -312,6 +312,13 @@ impl<'a> InternalToolHost<'a> {
         self.harness.is_running_tool_call(target_call_id)
     }
 
+    /// Return true when a running tool call is known to accept the generic
+    /// event-log cancellation request used by the `cancel` tool.
+    pub fn is_running_cancellable_tool_call(&self, target_call_id: &ToolCallId) -> bool {
+        self.harness
+            .is_running_cancellable_tool_call(target_call_id)
+    }
+
     /// Publish a durable broadcast tool cancellation request.
     pub fn publish_tool_cancel_request(&mut self, target_call_id: ToolCallId) {
         self.harness.publish_tool_cancel_request(target_call_id);

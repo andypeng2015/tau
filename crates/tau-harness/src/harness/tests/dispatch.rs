@@ -1760,17 +1760,17 @@ fn provider_owner_validation_rejects_late_tool_progress_after_completion() {
     h.shutdown().expect("shutdown");
 }
 
-/// Cancelling a routed tool must notify the provider owner as well as publish
-/// the local terminal `ToolCancelled` event. Otherwise extensions keep doing
-/// work after the user has cancelled the turn.
+/// Cancelling a routed tool publishes the durable broadcast cancellation
+/// request and the local terminal `ToolCancelled` event. Extensions observe the
+/// event log instead of receiving point-to-point cancellation frames.
 #[test]
-fn cancel_routes_tool_cancel_to_provider_owner() {
+fn cancel_publishes_tool_cancel_request() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
 
-    let owner_events = connect_test_tool(&mut h, "conn-cancel-owner");
+    let _owner_events = connect_test_tool(&mut h, "conn-cancel-owner");
     h.registry
         .register("conn-cancel-owner", shared_test_tool_spec("cancel_tool"));
 
@@ -1798,20 +1798,10 @@ fn cancel_routes_tool_cancel_to_provider_owner() {
     let session_id: tau_proto::SessionId = "s1".into();
     h.handle_cancel_prompt(&session_id);
 
-    assert!(
-        owner_events
-            .lock()
-            .expect("owner events")
-            .iter()
-            .any(|routed| {
-                matches!(
-                    &routed.frame,
-                    Frame::Event(Event::ToolCancel(cancel))
-                        if cancel.call_id.as_str() == "cancel-call"
-                            && cancel.tool_name.as_str() == "cancel_tool"
-                )
-            })
-    );
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolCancelRequest(request) if request.target_call_id.as_str() == "cancel-call"
+    )));
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolCancelled(cancelled) if cancelled.call_id.as_str() == "cancel-call"
@@ -6461,6 +6451,144 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
         .expect("parent conversation remains live");
     assert!(parent.pending_prompts.iter().any(|prompt| prompt.text
         == background_completion_prompt(&"slow-call".into())
+        && prompt.is_internal()));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Canceled side conversations must not transfer their inner background tools
+/// to the parent. Otherwise a canceled delegate can leak an inner shell
+/// completion prompt and make that inner call waitable in the parent
+/// conversation.
+#[test]
+fn canceled_side_conversation_drops_inner_background_completion() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _ = connect_test_tool(&mut h, "conn-delegate");
+    h.registry.register(
+        "conn-delegate",
+        ToolSpec {
+            name: ToolName::new("delegate"),
+            model_visible_name: None,
+            description: None,
+            parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
+            enabled_by_default: true,
+            execution_mode: ToolExecutionMode::Shared,
+            background_support: None,
+        },
+    );
+    let _ = connect_test_tool(&mut h, "conn-slow");
+    h.registry.register(
+        "conn-slow",
+        ToolSpec {
+            name: ToolName::new("slow"),
+            model_visible_name: None,
+            description: None,
+            parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
+            enabled_by_default: true,
+            execution_mode: ToolExecutionMode::Shared,
+            background_support: Some(tau_proto::BackgroundSupport::Instant),
+        },
+    );
+
+    let parent_cid = h.default_conversation_id.clone();
+    let main_spid: SessionPromptId = "sp-main-cancel".into();
+    seed_agent_thinking(&mut h, &parent_cid, "sp-main-cancel");
+    h.prompt_conversations
+        .insert(main_spid.clone(), parent_cid.clone());
+    h.publish_for_conversation(
+        &parent_cid,
+        Event::UiPromptSubmitted(UiPromptSubmitted {
+            session_id: "s1".into(),
+            text: "delegate slow work".to_owned(),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            ctx_id: None,
+        }),
+    );
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: main_spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "delegate-call-cancel".into(),
+            name: ToolName::new("delegate"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("main delegate call");
+
+    let mut query = ext_query("q-bg-cancel", ToolExecutionMode::Shared);
+    query.tool_call_id = Some("delegate-call-cancel".into());
+    h.handle_start_agent_request("conn-delegate", query)
+        .expect("side query");
+    let side_cid = ext_query_cid(&h, "q-bg-cancel").expect("side conversation");
+    let side_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| (prompt_cid == &side_cid).then_some(spid.clone()))
+        .expect("side prompt id");
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: side_spid,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "slow-call-cancel".into(),
+            name: ToolName::new("slow"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-bg-cancel".to_owned(),
+        },
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("side tool call");
+
+    h.cancel_start_agent_request("q-bg-cancel", &"delegate-call-cancel".into(), false)
+        .expect("cancel delegate");
+    assert!(!h.conversations.contains_key(&side_cid));
+    assert!(!h.tool_conversations.contains_key("slow-call-cancel"));
+
+    h.handle_extension_event_inner(
+        "conn-slow",
+        Event::ToolResult(ToolResult {
+            call_id: "slow-call-cancel".into(),
+            tool_name: ToolName::new("slow"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Text("real output".to_owned()),
+            kind: tau_proto::ToolResultKind::Final,
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        }),
+    )
+    .expect("late tool result is ignored");
+
+    assert!(!event_log_contains(&h, "conn-slow", |event| matches!(
+        event,
+        Event::ToolBackgroundResult(result) if result.call_id.as_str() == "slow-call-cancel"
+    )));
+    let parent = h
+        .conversations
+        .get(&parent_cid)
+        .expect("parent conversation remains live");
+    assert!(!parent.pending_prompts.iter().any(|prompt| prompt.text
+        == background_completion_prompt(&"slow-call-cancel".into())
         && prompt.is_internal()));
 
     h.shutdown().expect("shutdown");

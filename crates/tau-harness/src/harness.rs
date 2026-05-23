@@ -21,9 +21,9 @@ use tau_proto::{
     ProviderTokenUsage, SessionCompactionRequested, SessionId, SessionPromptCreated,
     SessionPromptId, SessionPromptPrewarmRequested, SessionPromptQueued, SessionPromptRecalled,
     SessionPromptTerminated, SessionPromptTerminationReason, TokenUsageStats, ToolBackgroundError,
-    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancel, ToolCancelled, ToolChoice,
-    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult,
-    ToolResultKind, ToolType, UiCancelPrompt,
+    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition,
+    ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind,
+    ToolType, UiCancelPrompt,
 };
 
 use crate::conversation::{
@@ -3852,16 +3852,12 @@ impl Harness {
         self.record_wait_tool_cancelled(&cancelled_call_ids);
 
         for (call_id, tool_name, tool_type) in to_cancel {
-            if let Some(provider_id) = self.pending_tool_providers.get(&call_id).cloned() {
-                let _ = self.bus.send_to(
-                    provider_id.as_str(),
-                    Some(HARNESS_CONNECTION_ID),
-                    Frame::Event(Event::ToolCancel(ToolCancel {
-                        call_id: call_id.clone(),
-                        tool_name: tool_name.clone(),
-                    })),
-                );
-            }
+            self.publish_event(
+                Some(HARNESS_CONNECTION_ID),
+                Event::ToolCancelRequest(tau_proto::ToolCancelRequest {
+                    target_call_id: call_id.clone(),
+                }),
+            );
             self.publish_for_conversation(
                 cid,
                 Event::ToolCancelled(ToolCancelled {
@@ -3879,6 +3875,10 @@ impl Harness {
     }
 
     pub(crate) fn is_running_tool_call(&self, target_call_id: &ToolCallId) -> bool {
+        self.pending_tools.contains_key(target_call_id)
+    }
+
+    pub(crate) fn is_running_cancellable_tool_call(&self, target_call_id: &ToolCallId) -> bool {
         self.pending_tools.contains_key(target_call_id)
     }
 
@@ -3979,7 +3979,7 @@ impl Harness {
             );
         }
         self.release_start_agent_request(&cid);
-        self.transfer_background_completion_target_before_teardown(&cid);
+        self.discard_background_completion_target_before_teardown(&cid);
         self.remove_conversation(&cid);
         self.try_advance_queue();
     }
@@ -7928,6 +7928,16 @@ impl Harness {
             }
             self.transfer_wait_background_owner_before_teardown(&call_id, cid, &target_cid);
             self.transfer_queued_background_completion_prompt(cid, &target_cid, &call_id);
+        }
+    }
+
+    fn discard_background_completion_target_before_teardown(&mut self, cid: &ConversationId) {
+        for call_id in self.background_completion_call_ids_for_teardown(cid) {
+            self.suppressed_background_completion_prompts
+                .remove(&call_id);
+            self.background_completion_targets.remove(&call_id);
+            self.discard_wait_background_owner_before_teardown(&call_id, cid);
+            self.clear_tool_call_tracking(call_id.as_str());
         }
     }
 

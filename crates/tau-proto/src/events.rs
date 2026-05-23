@@ -1256,12 +1256,6 @@ pub struct DelegateProgress {
     pub display: Option<ToolDisplay>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ToolCancel {
-    pub call_id: ToolCallId,
-    pub tool_name: ToolName,
-}
-
 /// Broadcast intent to request cancellation of a running tool call.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolCancelRequest {
@@ -2449,8 +2443,6 @@ pub enum Event {
     ToolBackgroundError(ToolBackgroundError),
     #[serde(rename = "tool.progress")]
     ToolProgress(ToolProgress),
-    #[serde(rename = "tool.cancel")]
-    ToolCancel(ToolCancel),
     #[serde(rename = "tool.cancel_request")]
     ToolCancelRequest(ToolCancelRequest),
     #[serde(rename = "tool.cancelled")]
@@ -2614,7 +2606,6 @@ impl Event {
             Self::ToolBackgroundResult(_) => EventName::TOOL_BACKGROUND_RESULT,
             Self::ToolBackgroundError(_) => EventName::TOOL_BACKGROUND_ERROR,
             Self::ToolProgress(_) => EventName::TOOL_PROGRESS,
-            Self::ToolCancel(_) => EventName::TOOL_CANCEL,
             Self::ToolCancelRequest(_) => EventName::TOOL_CANCEL_REQUEST,
             Self::ToolCancelled(_) => EventName::TOOL_CANCELLED,
             Self::ToolDelegateProgress(_) => EventName::TOOL_DELEGATE_PROGRESS,
