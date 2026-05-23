@@ -537,6 +537,9 @@ fn parse_key_binding(input: &str) -> Option<KeyBinding> {
     if input.eq_ignore_ascii_case("tab") {
         return Some(KeyBinding::Key(KeyCode::Tab));
     }
+    if input.eq_ignore_ascii_case("backtab") || input.eq_ignore_ascii_case("shift-tab") {
+        return Some(KeyBinding::Key(KeyCode::BackTab));
+    }
     if input.eq_ignore_ascii_case("enter") {
         return Some(KeyBinding::Key(KeyCode::Enter));
     }
@@ -570,6 +573,7 @@ fn key_binding_for_event(key: KeyEvent, ctrl: bool) -> Option<KeyBinding> {
         KeyCode::Enter if plain => Some(KeyBinding::Key(KeyCode::Enter)),
         KeyCode::Up | KeyCode::Down if ctrl => Some(KeyBinding::CtrlKey(key.code)),
         KeyCode::Tab => Some(KeyBinding::Key(KeyCode::Tab)),
+        KeyCode::BackTab => Some(KeyBinding::Key(KeyCode::BackTab)),
         _ => None,
     }
 }
@@ -1212,8 +1216,8 @@ impl Term {
 
     /// Configures key bindings surfaced as [`Event::Binding`].
     ///
-    /// Supported key spellings include `Tab`, `Enter`, `C-Enter`,
-    /// `C-Up`, `C-Down`, and `C-<letter>`.
+    /// Supported key spellings include `Tab`, `BackTab`, `Shift-Tab`, `Enter`,
+    /// `C-Enter`, `C-Up`, `C-Down`, and `C-<letter>`.
     ///
     /// The following Ctrl chords are reserved built-in editing keys
     /// and cannot be overridden — bindings to them are silently
@@ -1754,6 +1758,9 @@ impl Term {
                     if st.cycle_completion(-1) {
                         return Ok(Some(Event::BufferChanged));
                     }
+                }
+                if let Some(action) = binding.as_ref().and_then(|key| self.bindings.get(key)) {
+                    return Ok(Some(Event::Binding(action.clone())));
                 }
                 return Ok(Some(Event::BackTab));
             }

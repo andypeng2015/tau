@@ -12,6 +12,7 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 | `C-r` | `prompt-history-search` | Search past prompts with `fzf`, preview the highlighted prompt, and replace the current prompt with the selected prompt. |
 | `C-t` | `shell-prompt-insert` | Search files with ripgrep through `fzf` and insert the selected path. |
 | `Tab` | `role-cycle` | Cycle to the first role in the next role group. |
+| `BackTab` / `Shift-Tab` | `role-cycle-alternate` | Cycle roles within the current role group. |
 | `C-k`, `C-Up` | `prompt-previous` | Move to the previous prompt/history entry. |
 | `C-j`, `C-Down` | `prompt-next` | Move to the next prompt/history entry. |
 | `C-z` | `prompt-undo` | Undo the last edit in the current prompt/history entry. |
@@ -37,7 +38,7 @@ These keys are handled by the raw terminal prompt when no configurable binding m
 | `C-w` | Kill the word before the cursor. |
 | `Backspace`, `Delete` | Delete text around the cursor. |
 | Arrow keys | Move within multiline input, completion candidates, or prompt history. |
-| `Shift-Tab` | Cycle roles within the current role group when no completion menu is open; cycle completion candidates backward when a menu is open. |
+| `Shift-Tab` | Cycle completion candidates backward when a completion menu is open. Otherwise this is configurable as `BackTab`. |
 | `Esc` | Dismiss the completion menu. |
 
 
@@ -53,6 +54,7 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
 - `prompt-redo` — redo an undone edit in the current prompt/history entry.
 - `fast-toggle` — toggle fast mode without editing the prompt draft.
 - `role-cycle` — cycle to the first role in the next role group.
+- `role-cycle-alternate` — cycle roles within the current role group.
 - `prompt-history-search` — feed indexed prompt-history rows (`<index>\t<single-line summary>`) to `command`; original prompts are also written under `$TAU_PROMPT_HISTORY_DIR/<index>` for picker previews. Replace the prompt with the selected row's original prompt. The current draft is recorded for `prompt-undo` before the picker opens.
 - `shell-prompt-insert` — run `command` and insert stdout at the cursor.
 - `shell-prompt-edit` — run `command` with the current prompt in `$TAU_PROMPT_PATH` and replace the prompt with the edited file content.

@@ -362,6 +362,8 @@ Supported actions:
   `{ action: "fast-toggle" }`.
 - `role-cycle`: cycle to the first role in the next configured role group. For example:
   `{ action: "role-cycle" }`.
+- `role-cycle-alternate`: cycle roles within the current role group. For example:
+  `{ action: "role-cycle-alternate" }`.
 - `prompt-history-search`: feed indexed prompt-history rows to a picker command,
   expose original prompts under `$TAU_PROMPT_HISTORY_DIR/<index>` for previews,
   then replace the prompt with the selected original prompt. The draft active
@@ -387,7 +389,7 @@ bind: {
     trim: true,
   },
   Tab: { action: "role-cycle" },
-  // Shift-Tab cycles roles within the current role group when completion is closed.
+  BackTab: { action: "role-cycle-alternate" },
   "C-r": {
     action: "prompt-history-search",
     command: "fzf --height=100% --delimiter='\\t' --with-nth=2 --no-hscroll --preview 'cat \"$TAU_PROMPT_HISTORY_DIR\"/{1}' --preview-window 'right,60%,wrap' | cut -f1",

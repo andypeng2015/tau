@@ -51,6 +51,8 @@ pub enum Event {
     FastToggle,
     /// A binding requested cycling to the next agent role.
     RoleCycle,
+    /// A binding requested cycling within the current agent role group.
+    RoleCycleAlternate,
 }
 
 /// Higher-level terminal prompt with completion support.
@@ -348,6 +350,9 @@ impl HighTerm {
             Ok(Some(PromptShellResult::RoleCycle)) => {
                 return PromptActionOutcome::Return(Event::RoleCycle);
             }
+            Ok(Some(PromptShellResult::RoleCycleAlternate)) => {
+                return PromptActionOutcome::Return(Event::RoleCycleAlternate);
+            }
             Ok(Some(PromptShellResult::History(delta))) => {
                 self.term.trigger_history_step(delta);
                 self.sync_menu_block();
@@ -428,6 +433,7 @@ enum PromptShellAction {
     HistorySearch(PromptShellCommand),
     FastToggle,
     RoleCycle,
+    RoleCycleAlternate,
     PromptNext,
     PromptPrevious,
     PromptUndo,
@@ -449,6 +455,7 @@ enum PromptShellResult {
     ReplacePreservingUndo(String),
     FastToggle,
     RoleCycle,
+    RoleCycleAlternate,
     History(isize),
     Undo,
     Redo,
@@ -468,6 +475,7 @@ impl PromptShellAction {
         match action {
             "fast-toggle" => return Some(Self::FastToggle),
             "role-cycle" => return Some(Self::RoleCycle),
+            "role-cycle-alternate" => return Some(Self::RoleCycleAlternate),
             "prompt-next" => return Some(Self::PromptNext),
             "prompt-previous" => return Some(Self::PromptPrevious),
             "prompt-undo" => return Some(Self::PromptUndo),
@@ -508,6 +516,9 @@ fn run_prompt_shell_action(
         PromptShellAction::PromptRedo => return Ok(Some(PromptShellResult::Redo)),
         PromptShellAction::FastToggle => return Ok(Some(PromptShellResult::FastToggle)),
         PromptShellAction::RoleCycle => return Ok(Some(PromptShellResult::RoleCycle)),
+        PromptShellAction::RoleCycleAlternate => {
+            return Ok(Some(PromptShellResult::RoleCycleAlternate));
+        }
         PromptShellAction::SubmitPrompt => {
             return Ok(Some(PromptShellResult::RawEvent(
                 term.trigger_submit_or_accept_completion(),
@@ -534,6 +545,7 @@ fn run_prompt_shell_action(
         PromptShellAction::Insert(_) | PromptShellAction::HistorySearch(_) => current.clone(),
         PromptShellAction::FastToggle
         | PromptShellAction::RoleCycle
+        | PromptShellAction::RoleCycleAlternate
         | PromptShellAction::PromptNext
         | PromptShellAction::PromptPrevious
         | PromptShellAction::PromptUndo
@@ -658,6 +670,7 @@ fn run_prompt_shell_action(
         }
         PromptShellAction::FastToggle
         | PromptShellAction::RoleCycle
+        | PromptShellAction::RoleCycleAlternate
         | PromptShellAction::PromptNext
         | PromptShellAction::PromptPrevious
         | PromptShellAction::PromptUndo

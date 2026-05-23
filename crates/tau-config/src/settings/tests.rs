@@ -87,6 +87,10 @@ fn cli_settings_user_binding_keeps_built_in_chords() {
         s.bind.get("C-Enter").expect("C-Enter").action,
         "submit-prompt"
     );
+    assert_eq!(
+        s.bind.get("BackTab").expect("BackTab").action,
+        "role-cycle-alternate"
+    );
 }
 
 #[test]

@@ -14,6 +14,8 @@ C-f:
   trim: true
 Tab:
   action: role-cycle
+BackTab:
+  action: role-cycle-alternate
 C-r:
   action: prompt-history-search
   command: >-

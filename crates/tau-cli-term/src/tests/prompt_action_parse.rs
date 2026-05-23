@@ -82,6 +82,10 @@ fn parses_role_cycle() {
         PromptShellAction::parse("role-cycle"),
         Some(PromptShellAction::RoleCycle)
     ));
+    assert!(matches!(
+        PromptShellAction::parse("role-cycle-alternate"),
+        Some(PromptShellAction::RoleCycleAlternate)
+    ));
 }
 
 #[test]

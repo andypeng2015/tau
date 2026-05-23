@@ -830,7 +830,7 @@ impl<'a> TerminalInputSession<'a> {
             TermEvent::BufferChanged => self.update_draft(),
             TermEvent::FastToggle => self.toggle_fast_service_tier(),
             TermEvent::RoleCycle => self.cycle_role(),
-            TermEvent::BackTab => self.cycle_role_alternate(),
+            TermEvent::RoleCycleAlternate | TermEvent::BackTab => self.cycle_role_alternate(),
             TermEvent::Escape => self.recall_queued_prompt(),
             TermEvent::Line(_) | TermEvent::Eof | TermEvent::CancelPrompt => {}
         }

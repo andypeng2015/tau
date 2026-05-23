@@ -3667,6 +3667,7 @@ fn enter_bindings_override_default_newline_and_submit() {
     term.set_bindings(vec![
         ("Enter".to_owned(), "plain-enter".to_owned()),
         ("C-Enter".to_owned(), "ctrl-enter".to_owned()),
+        ("BackTab".to_owned(), "backtab".to_owned()),
     ]);
 
     handle.set_buffer("draft".to_owned(), "draft".len());
@@ -3691,6 +3692,18 @@ fn enter_bindings_override_default_newline_and_submit() {
     assert!(matches!(
         term.get_next_event().expect("event"),
         Event::Binding(action) if action == "ctrl-enter"
+    ));
+    assert_eq!(handle.get_buffer(), "draft");
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        )))
+        .expect("send backtab");
+    assert!(matches!(
+        term.get_next_event().expect("event"),
+        Event::Binding(action) if action == "backtab"
     ));
     assert_eq!(handle.get_buffer(), "draft");
 }
