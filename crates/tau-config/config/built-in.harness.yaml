@@ -4,7 +4,7 @@ session_retention_days: 60
 defaultRole: engineer
 extensions: {}
 roleGroups:
-  coding:
+  engineer:
     engineer:
       description: Individual contributor using a state-of-the-art model. Good default for most tasks.
       effort: medium
@@ -13,10 +13,19 @@ roleGroups:
           priority: 5
           text: |-
               Trust the `<instructions>`. When sent they always contain a carefully researched detailed plan. Do not waste time second guessing them. Focus on following them immediately and implementation details.
+    staff-engineer:
+      description: Senior individual contributor using maximum reasoning for hard engineering tasks.
+      effort: xhigh
+      promptFragments:
+        - name: manager.instructions
+          priority: 5
+          text: |-
+              Trust the `<instructions>`. When sent they always contain a carefully researched detailed plan. Do not waste time second guessing them. Focus on following them immediately and implementation details.
+  assistant:
     assistant:
       description: Fast and lightweight assistant.
       effort: off
-  planning:
+  manager:
     manager:
       description: Role focused on splitting and delegation of tasks to other sub-agents.
       effort: low

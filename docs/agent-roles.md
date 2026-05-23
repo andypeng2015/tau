@@ -32,19 +32,25 @@ selects the startup role; if omitted, Tau starts on the first role in
 {
   defaultRole: "engineer",
   roleGroups: {
-    coding: {
+    engineer: {
       engineer: {
         description: "Balanced coding assistant",
         model: "chatgpt/gpt-5.3-codex",
         effort: "medium",
         tools: ["read", "grep"],
       },
+      "staff-engineer": {
+        description: "Maximum-reasoning engineering assistant",
+        effort: "xhigh",
+      },
+    },
+    assistant: {
       assistant: {
         effort: "off",
         serviceTier: "fast",
       },
     },
-    planning: {
+    manager: {
       manager: {
         promptFragments: [
           { name: "manager.workflow", priority: 66, text: "Delegate non-trivial work." },
@@ -57,7 +63,7 @@ selects the startup role; if omitted, Tau starts on the first role in
 
 Missing fields use provider-published fallback knobs for the role's resolved model.
 
-Tau ships built-in `assistant`, `engineer`, and `manager` roles, with `defaultRole: engineer`. `engineer` uses the same state-of-the-art individual-contributor defaults as the previous `smart` role. `assistant` is fast and lightweight with effort off. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
+Tau ships built-in `assistant`, `engineer`, `staff-engineer`, and `manager` roles, with `defaultRole: engineer`. `engineer` uses state-of-the-art individual-contributor defaults, while `staff-engineer` is the maximum-reasoning engineering variant. `assistant` is fast and lightweight with effort off. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
 
 
 ## Selecting a role

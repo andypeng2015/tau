@@ -24,7 +24,7 @@
 # selects a system prompt template. `tools` and `disableTools` customize
 # internal tool availability for the role.
 # roleGroups:
-#   coding:
+#   engineer:
 #     engineer:
 #       description: Balanced coding assistant.
 #       model: chatgpt/gpt-5.5
@@ -34,6 +34,9 @@
 #           text: You are a careful coding assistant.
 #       tools: [read, grep]
 #       disableTools: [shell]
+#     staff-engineer:
+#       effort: xhigh
+#   assistant:
 #     assistant:
 #       effort: off
 

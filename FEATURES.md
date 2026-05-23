@@ -96,14 +96,18 @@ promptFragments:
 
 defaultRole: engineer
 roleGroups:
-  coding:
+  engineer:
     engineer:
       description: Balanced coding assistant
       model: chatgpt/gpt-5.5
       effort: medium
       tools: [read, grep]
+    staff-engineer:
+      description: Maximum-reasoning engineering assistant
+      effort: xhigh
+  assistant:
     assistant: { effort: off, serviceTier: fast }
-  planning:
+  manager:
     manager:
       promptFragments:
         - name: manager.workflow

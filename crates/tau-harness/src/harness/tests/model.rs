@@ -422,7 +422,7 @@ fn load_roles_ignores_stale_harness_state() {
         config_dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { model: "openai/gpt-4.1", effort: "high", verbosity: "medium" },
                 },
             },
@@ -527,10 +527,10 @@ fn load_roles_falls_back_to_engineer_role_while_models_are_provider_owned() {
         config_dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { model: "local/engineer" },
                 },
-                planning: {
+                manager: {
                     manager: { model: "local/deep" },
                 },
             },
@@ -596,7 +596,7 @@ fn role_missing_fields_use_model_defaults() {
         r#"{
             defaultRole: "plain",
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { model: "local/engineer", effort: "high" },
                     plain: {},
                 },

@@ -1500,7 +1500,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
         config_dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { disableTools: ["shell"] },
                 },
             },

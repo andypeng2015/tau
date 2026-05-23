@@ -225,7 +225,7 @@ fn harness_settings_load_role_tool_lists() {
         dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { tools: ["read", "grep"], disableTools: ["grep"] },
                 },
             },
@@ -282,7 +282,7 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
                 { name: "global.local", priority: 60, text: "Local global instruction." },
             ],
             roleGroups: {
-                planning: {
+                manager: {
                     manager: { promptFragments: [{ name: "manager.local", priority: 170, text: "Local manager instruction." }] },
                 },
             },
@@ -301,7 +301,7 @@ fn harness_drop_in_layers_merge_through_domain_overrides() {
                 { name: "global.drop-in", priority: 70, text: "Drop-in global instruction." },
             ],
             roleGroups: {
-                planning: {
+                manager: {
                     manager: { promptFragments: [{ name: "manager.drop-in", priority: 180, text: "Drop-in manager instruction." }] },
                 },
             },
@@ -425,11 +425,11 @@ fn harness_roles_merge_with_built_ins() {
         dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                coding: {
+                engineer: {
                     engineer: { model: "openai/gpt-5.5", tools: ["read"] },
                     custom: { description: "Custom local role", effort: "medium", disableTools: ["shell"] },
                 },
-                planning: {
+                manager: {
                     manager: { model: "openai/gpt-5.5" },
                 },
             },
@@ -504,7 +504,7 @@ fn harness_manager_partial_override_keeps_built_in_prompt_fragments() {
         dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                planning: {
+                manager: {
                     manager: { model: "openai/gpt-5.5" },
                 },
             },
@@ -537,7 +537,7 @@ fn harness_manager_prompt_fragments_extend_built_in_prompt_fragments() {
         dir.join("harness.yaml"),
         r#"{
             roleGroups: {
-                planning: {
+                manager: {
                     manager: { promptFragments: [{ name: "manager.custom", priority: 100, text: "Custom manager prompt." }] },
                 },
             },
@@ -607,6 +607,20 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
     // prompt for delegated tasks, while assistant keeps no built-in prompt.
     let s = HarnessSettings::built_in();
     assert_eq!(s.default_role.as_deref(), Some("engineer"));
+    assert_eq!(
+        s.role_groups
+            .iter()
+            .map(|group| (group.name.clone(), group.roles.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "engineer".to_owned(),
+                vec!["engineer".to_owned(), "staff-engineer".to_owned()],
+            ),
+            ("assistant".to_owned(), vec!["assistant".to_owned()]),
+            ("manager".to_owned(), vec!["manager".to_owned()]),
+        ]
+    );
     let engineer = &s.roles["engineer"];
     assert_eq!(
         engineer.prompt_fragments[0].priority,
@@ -618,6 +632,14 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
             .contains("Trust the `<instructions>`")
     );
     assert!(s.roles["assistant"].prompt_fragments.is_empty());
+    let staff_engineer = &s.roles["staff-engineer"];
+    assert_eq!(staff_engineer.effort, Some(tau_proto::Effort::XHigh));
+    assert!(
+        staff_engineer
+            .prompt_fragments
+            .iter()
+            .any(|fragment| fragment.text.contains("Trust the `<instructions>`"))
+    );
     let manager = &s.roles["manager"];
     let prompt = manager
         .prompt_fragments
@@ -644,7 +666,7 @@ fn harness_role_groups_load_custom_roles() {
                 coding: {
                     custom: { effort: "medium", tools: ["read"] },
                 },
-                planning: {
+                manager: {
                     manager: { model: "openai/gpt-5.5" },
                 },
             },
@@ -704,6 +726,11 @@ fn missing_user_files_load_the_built_in_baseline() {
     assert!(harness.roles.contains_key("manager"));
     assert_eq!(harness.default_role.as_deref(), Some("engineer"));
     assert!(harness.roles.contains_key("assistant"));
+    assert!(harness.roles.contains_key("staff-engineer"));
+    assert_eq!(
+        harness.roles["staff-engineer"].effort,
+        Some(tau_proto::Effort::XHigh)
+    );
     assert!(!harness.roles.contains_key("smart"));
     assert!(!harness.roles.contains_key("deep"));
     assert!(!harness.roles.contains_key("rush"));
