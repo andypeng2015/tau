@@ -12,19 +12,27 @@
 //! [`std::io::Write`], so the same protocol layer can be reused for
 //! stdio, Unix sockets, tests, or in-memory transports.
 
+mod context;
 mod diff;
+mod event_name;
 mod events;
 mod frame;
+mod interception;
 mod messages;
+mod prompt_fragment;
 mod token_usage;
 
 use std::io::{BufReader, Cursor, Read, Write};
 
 pub use ciborium::value::Value as CborValue;
+pub use context::*;
 pub use diff::{DiffHunk, DiffLine, DiffSegment, DiffSummary};
+pub use event_name::*;
 pub use events::*;
 pub use frame::Frame;
+pub use interception::*;
 pub use messages::*;
+pub use prompt_fragment::*;
 pub use token_usage::*;
 
 /// First protocol version implemented by this crate.

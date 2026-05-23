@@ -1,4 +1,14 @@
 //! Built-in internal tools for `tau-harness`.
+//!
+//! This crate is the architectural boundary for tools that are bundled with
+//! Tau but still should behave like normal tools. Keep as much tool-specific
+//! logic here as is practical, especially parsing, per-tool state, and
+//! reactions to committed events. When a tool is genuinely tangled with harness
+//! state, use [`InternalToolHost`] as a narrow synchronized facade instead of
+//! adding harness special cases. Host calls run inside the harness event-log
+//! handling loop, so handlers can access the exposed state without races while
+//! still driving their work from normal `ToolRequest` / `ToolStarted` / result
+//! events.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;

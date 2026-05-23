@@ -3928,11 +3928,15 @@ impl Harness {
             text: String::new(),
             error: Some("Tool call canceled".to_owned()),
         };
-        let _ = self.bus.send_to(
-            source_id.as_str(),
-            None,
-            Frame::Event(Event::StartAgentResult(result)),
-        );
+        if source_id == HARNESS_CONNECTION_ID {
+            self.publish_event(Some(HARNESS_CONNECTION_ID), Event::StartAgentResult(result));
+        } else {
+            let _ = self.bus.send_to(
+                source_id.as_str(),
+                None,
+                Frame::Event(Event::StartAgentResult(result)),
+            );
+        }
         Ok(())
     }
 
@@ -4650,11 +4654,15 @@ impl Harness {
             text: String::new(),
             error: Some(error),
         };
-        let _ = self.bus.send_to(
-            source_id,
-            None,
-            Frame::Event(Event::StartAgentResult(result)),
-        );
+        if source_id == HARNESS_CONNECTION_ID {
+            self.publish_event(Some(HARNESS_CONNECTION_ID), Event::StartAgentResult(result));
+        } else {
+            let _ = self.bus.send_to(
+                source_id,
+                None,
+                Frame::Event(Event::StartAgentResult(result)),
+            );
+        }
     }
 
     /// Queue an extension-started sub-agent request onto the harness-owned
@@ -7387,11 +7395,18 @@ impl Harness {
                 error,
             };
             if let Some(source) = source {
-                let _ = self.bus.send_to(
-                    source.as_str(),
-                    None,
-                    Frame::Event(Event::StartAgentResult(result)),
-                );
+                if source.as_str() == HARNESS_CONNECTION_ID {
+                    self.publish_event(
+                        Some(HARNESS_CONNECTION_ID),
+                        Event::StartAgentResult(result),
+                    );
+                } else {
+                    let _ = self.bus.send_to(
+                        source.as_str(),
+                        None,
+                        Frame::Event(Event::StartAgentResult(result)),
+                    );
+                }
             } else {
                 // Should never happen — `source_connection` is set in
                 // `handle_start_agent_request` when the conversation is

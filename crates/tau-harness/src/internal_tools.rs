@@ -73,6 +73,15 @@ impl InternalSkillSource {
 }
 
 /// Narrow facade exposed to internal tool handler crates.
+///
+/// Internal tools should behave like ordinary event-log-driven tools: they
+/// register specs, observe committed lifecycle events, and publish normal
+/// tool results/errors instead of being special-cased by the harness. This
+/// facade exists only for the parts that cannot sensibly live outside the
+/// harness, such as synchronized access to conversation, background-tool,
+/// or side-agent state. Every method runs on the harness event-loop thread,
+/// so handlers can consult or update that state without racing the event log
+/// handler.
 pub struct InternalToolHost<'a> {
     harness: &'a mut Harness,
 }
