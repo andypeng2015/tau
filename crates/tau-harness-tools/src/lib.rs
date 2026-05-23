@@ -232,7 +232,7 @@ impl BuiltinTools {
                 (&pending.call_id == target_call_id).then(|| query_id.clone())
             });
         if let Some(query_id) = query_id {
-            let _ = host.cancel_start_agent_request(&query_id, target_call_id, false);
+            let _ = host.cancel_start_agent_request(&query_id, target_call_id, true);
         }
         Ok(())
     }

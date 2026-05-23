@@ -3921,8 +3921,10 @@ impl Harness {
         };
 
         self.emit_info("tool call cancellation request");
+        if suppress_background_completion_prompt {
+            self.suppress_background_completion_prompt(target_call_id.clone());
+        }
         self.cancel_delegate_side_conversation(target_call_id);
-        let _ = suppress_background_completion_prompt;
         let result = tau_proto::StartAgentResult {
             query_id: query_id.to_owned(),
             text: String::new(),
@@ -3958,9 +3960,15 @@ impl Harness {
             return;
         };
 
-        if let ConversationTurnState::ToolsRunning { remaining_calls } = turn_state {
-            self.cancel_remaining_tool_calls(&cid, remaining_calls, "delegate cancel tool");
-        }
+        let mut cancelled_calls = match turn_state {
+            ConversationTurnState::ToolsRunning { remaining_calls } => remaining_calls,
+            _ => Vec::new(),
+        };
+        cancelled_calls.extend(self.tool_turn.backgrounded_calls_for(&cid));
+        cancelled_calls.extend(self.background_completion_call_ids_for_teardown(&cid));
+        cancelled_calls.sort();
+        cancelled_calls.dedup();
+        self.cancel_remaining_tool_calls(&cid, cancelled_calls, "delegate cancel tool");
         if let Some(spid) = spid {
             self.canceled_prompts.insert(spid.clone());
             self.prompt_conversations.remove(&spid);
