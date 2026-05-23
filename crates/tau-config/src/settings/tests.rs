@@ -602,6 +602,7 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
     // visible orchestration prompt there. Engineer has a lightweight follow-up
     // prompt for delegated tasks, while assistant keeps no built-in prompt.
     let s = HarnessSettings::built_in();
+    assert_eq!(s.default_role.as_deref(), Some("engineer"));
     let engineer = &s.roles["engineer"];
     assert_eq!(
         engineer.prompt_fragments[0].priority,
@@ -697,6 +698,7 @@ fn missing_user_files_load_the_built_in_baseline() {
     let harness = load_harness_settings_in(&dirs_with_config(td.path())).expect("harness");
     assert!(harness.roles.contains_key("engineer"));
     assert!(harness.roles.contains_key("manager"));
+    assert_eq!(harness.default_role.as_deref(), Some("engineer"));
     assert!(harness.roles.contains_key("assistant"));
     assert!(!harness.roles.contains_key("smart"));
     assert!(!harness.roles.contains_key("deep"));

@@ -399,6 +399,11 @@ pub struct HarnessSettings {
     /// ```
     pub extensions: HashMap<String, ExtensionEntry>,
 
+    /// Role selected on startup when no explicit runtime selection has been
+    /// made. If the configured role is missing, Tau warns and falls back to
+    /// the first role in `roleGroups` order.
+    pub default_role: Option<String>,
+
     /// Harness-owned role defaults. Each role is a partial set of model
     /// settings; missing fields use provider/model fallbacks for the selected
     /// provider-published model.
@@ -419,6 +424,8 @@ pub struct HarnessSettings {
 struct HarnessSettingsWire {
     session_retention_days: u64,
     extensions: HashMap<String, ExtensionEntry>,
+    #[serde(default, rename = "defaultRole")]
+    default_role: Option<String>,
     #[serde(default, rename = "roleGroups")]
     role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
@@ -434,6 +441,7 @@ impl<'de> Deserialize<'de> for HarnessSettings {
         let mut settings = Self {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
+            default_role: wire.default_role,
             roles: HashMap::new(),
             role_groups: Vec::new(),
             prompt_fragments: wire.prompt_fragments,

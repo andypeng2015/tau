@@ -94,18 +94,21 @@ promptFragments:
     priority: 65
     text: Keep answers short and plain, using only simple words.
 
-roles:
-  engineer:
-    description: Balanced coding assistant
-    model: chatgpt/gpt-5.5
-    effort: medium
-    tools: [read, grep]
-  assistant: { effort: off, serviceTier: fast }
-  manager:
-    promptFragments:
-      - name: manager.workflow
-        priority: 66
-        text: Delegate non-trivial work.
+defaultRole: engineer
+roleGroups:
+  coding:
+    engineer:
+      description: Balanced coding assistant
+      model: chatgpt/gpt-5.5
+      effort: medium
+      tools: [read, grep]
+    assistant: { effort: off, serviceTier: fast }
+  planning:
+    manager:
+      promptFragments:
+        - name: manager.workflow
+          priority: 66
+          text: Delegate non-trivial work.
 ```
 
 Roles can include a `description` shown after the model/knob summary in
@@ -113,12 +116,15 @@ Roles can include a `description` shown after the model/knob summary in
 per-role `promptFragments` apply only to that role. Roles can also use `tools`
 and `disableTools` to customize internal tool availability.
 
-`/model <role>` switches roles; `/role <role> <setting> <value>` edits role
-settings, with built-in/configured role overrides persisted. See
+`defaultRole` selects the startup role; if it is omitted Tau starts on the
+first role in `roleGroups` order. `/model <role>` switches roles for the current
+run; `/role <role> <setting> <value>` edits role settings, with
+built-in/configured role overrides persisted. See
 [`docs/agent-roles.md`](docs/agent-roles.md).
 
 In the UI: `/role engineer effort medium`, `/role engineer verbosity low`,
-`/role engineer thinking-summary concise`. Tab cycles to the next agent role.
+`/role engineer thinking-summary concise`. Tab cycles between configured role
+groups; Shift-Tab cycles within the selected role's group.
 Model knobs are slash-command-only today. Asking for an unsupported
 level (e.g. `effort xhigh` on a mini model, `verbosity high` on a provider
 that doesn't support it) degrades and surfaces a `HarnessInfo` notice rather

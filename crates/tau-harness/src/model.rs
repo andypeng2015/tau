@@ -7,20 +7,36 @@ use std::collections::{HashMap, HashSet};
 use tau_config::settings::{AgentRole, HarnessSettings};
 use tau_proto::{ModelId, ModelParams, ProviderModelInfo};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MissingDefaultRole {
+    /// Configured startup role name that does not exist in the effective roles.
+    pub requested: String,
+    /// Role selected instead so startup can continue.
+    pub fallback: String,
+}
+
 const BASE_AGENT_ROLE: &str = "engineer";
 
-/// Load configured roles, persisted role overrides, and the selected role.
+pub(crate) struct LoadedRoles {
+    /// Effective roles after layering persisted runtime overrides onto config.
+    pub roles: HashMap<String, AgentRole>,
+    /// Persisted runtime role overrides that still match configured roles.
+    pub role_overrides: HashMap<String, AgentRole>,
+    /// Role selected for startup.
+    pub selected_role: String,
+    /// Effective role groups used for UI navigation.
+    pub role_groups: Vec<tau_proto::HarnessRoleGroup>,
+    /// Missing configured default role warning to surface after startup.
+    pub missing_default_role: Option<MissingDefaultRole>,
+}
+
+/// Load configured roles, persisted role overrides, and the startup role.
 /// Runtime model availability is provider-owned and is therefore not loaded
 /// from config here.
 pub(crate) fn load_roles(
     dirs: &tau_config::settings::TauDirs,
     harness_settings: &HarnessSettings,
-) -> (
-    HashMap<String, AgentRole>,
-    HashMap<String, AgentRole>,
-    String,
-    Vec<tau_proto::HarnessRoleGroup>,
-) {
+) -> LoadedRoles {
     let mut role_overrides = load_role_overrides(dirs);
     let mut roles = harness_settings.roles.clone();
     role_overrides.retain(|name, _| roles.contains_key(name));
@@ -32,11 +48,43 @@ pub(crate) fn load_roles(
         }
         roles.insert(name.clone(), effective_role);
     }
-    let selected_role = load_last_selected_role(dirs)
-        .filter(|role| roles.contains_key(role))
-        .unwrap_or_else(|| fallback_role(&roles));
     let role_groups = role_groups_for_roles(&roles, &harness_settings.role_groups);
-    (roles, role_overrides, selected_role, role_groups)
+    let (selected_role, missing_default_role) =
+        select_startup_role(harness_settings, &roles, &role_groups);
+    LoadedRoles {
+        roles,
+        role_overrides,
+        selected_role,
+        role_groups,
+        missing_default_role,
+    }
+}
+
+fn select_startup_role(
+    harness_settings: &HarnessSettings,
+    roles: &HashMap<String, AgentRole>,
+    role_groups: &[tau_proto::HarnessRoleGroup],
+) -> (String, Option<MissingDefaultRole>) {
+    let fallback = first_grouped_role(role_groups).unwrap_or_else(|| fallback_role(roles));
+    let Some(default_role) = harness_settings.default_role.as_ref() else {
+        return (fallback, None);
+    };
+    if roles.contains_key(default_role) {
+        return (default_role.clone(), None);
+    }
+    (
+        fallback.clone(),
+        Some(MissingDefaultRole {
+            requested: default_role.clone(),
+            fallback,
+        }),
+    )
+}
+
+fn first_grouped_role(role_groups: &[tau_proto::HarnessRoleGroup]) -> Option<String> {
+    role_groups
+        .iter()
+        .find_map(|group| group.roles.first().cloned())
 }
 
 /// Build the effective navigation groups for the available role set. Configured
@@ -83,9 +131,9 @@ pub(crate) fn role_groups_for_roles(
     out
 }
 
-/// Return the role Tau should select when persisted state does not name a
-/// usable role. Built-ins make `engineer` available in normal operation; the
-/// final fallback keeps tests and malformed intermediate states deterministic.
+/// Return the role Tau should select if no configured default role is usable.
+/// Built-ins make `engineer` available in normal operation; the final fallback
+/// keeps tests and malformed intermediate states deterministic.
 pub(crate) fn fallback_role(roles: &HashMap<String, AgentRole>) -> String {
     roles
         .contains_key(BASE_AGENT_ROLE)
@@ -432,12 +480,6 @@ pub(crate) fn default_thinking_summary(
     allowed.first().copied().unwrap_or(T::Off)
 }
 
-fn load_last_selected_role(dirs: &tau_config::settings::TauDirs) -> Option<String> {
-    let json = load_state_json(dirs);
-    let role = json.get("last_selected_role")?.as_str()?.to_owned();
-    (!role.is_empty()).then_some(role)
-}
-
 fn role_without_config_metadata(mut role: AgentRole) -> AgentRole {
     role.description = None;
     role.prompt_fragments.clear();
@@ -460,10 +502,9 @@ fn load_role_overrides(dirs: &tau_config::settings::TauDirs) -> HashMap<String, 
     out
 }
 
-/// Persist role overrides and the currently selected role.
+/// Persist per-role runtime overrides.
 pub(crate) fn save_role_overrides(
     dirs: &tau_config::settings::TauDirs,
-    selected_role: &str,
     roles: &HashMap<String, AgentRole>,
 ) {
     let Some(dir) = dirs.state_dir.as_ref() else {
@@ -472,10 +513,6 @@ pub(crate) fn save_role_overrides(
     let path = dir.join("harness.json");
     let _ = std::fs::create_dir_all(dir);
     let mut json = serde_json::Map::new();
-    json.insert(
-        "last_selected_role".to_owned(),
-        serde_json::Value::String(selected_role.to_owned()),
-    );
     let overrides = roles
         .iter()
         .map(|(name, role)| {

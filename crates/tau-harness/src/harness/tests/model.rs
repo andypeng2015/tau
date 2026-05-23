@@ -4,6 +4,7 @@ use tau_proto::{
 };
 
 use super::*;
+use crate::model::LoadedRoles;
 
 /// Scan the harness event log for an `Important` `HarnessInfo`
 /// containing `needle` and return its message. The startup paths emit
@@ -440,8 +441,13 @@ fn role_baseline_ignores_persisted_role_overrides() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role, _role_groups) =
-        load_roles(&dirs, &harness_settings);
+    let LoadedRoles {
+        roles,
+        role_overrides: _role_overrides,
+        selected_role,
+        role_groups: _role_groups,
+        missing_default_role: _missing_default_role,
+    } = load_roles(&dirs, &harness_settings);
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     let provider_models = provider_models([ProviderModelInfo {
         id: model_id,
@@ -505,7 +511,6 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     std::fs::write(
         state_dir.join("harness.json"),
         r#"{
-            "last_selected_role": "engineer",
             "role_overrides": {
                 "engineer": {
                     "description": "STALE STATE DESCRIPTION",
@@ -517,7 +522,13 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, role_overrides, selected_role, _role_groups) = load_roles(&dirs, &harness_settings);
+    let LoadedRoles {
+        roles,
+        role_overrides,
+        selected_role,
+        role_groups: _role_groups,
+        missing_default_role: _missing_default_role,
+    } = load_roles(&dirs, &harness_settings);
     let role = roles.get("engineer").expect("engineer role");
     assert_eq!(selected_role, "engineer");
     assert_eq!(
@@ -547,7 +558,7 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     assert!(runtime_override.description.is_none());
     assert!(runtime_override.prompt_fragments.is_empty());
 
-    save_role_overrides(&dirs, &selected_role, &roles);
+    save_role_overrides(&dirs, &roles);
     let saved = std::fs::read_to_string(state_dir.join("harness.json")).expect("read state");
     assert!(
         !saved.contains("description"),
@@ -556,6 +567,10 @@ fn persisted_role_overrides_do_not_shadow_configured_role_metadata() {
     assert!(
         !saved.contains("prompt"),
         "saved state must strip prompt fields: {saved}"
+    );
+    assert!(
+        !saved.contains("last_selected_role"),
+        "saved state must not persist the selected role: {saved}"
     );
 }
 
@@ -640,7 +655,6 @@ fn load_roles_falls_back_to_engineer_role_while_models_are_provider_owned() {
     std::fs::write(
         state_dir.join("harness.json"),
         r#"{
-            "last_selected_role": "default",
             "role_overrides": {
                 "default": { "model": "local/deep" }
             }
@@ -650,7 +664,13 @@ fn load_roles_falls_back_to_engineer_role_while_models_are_provider_owned() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, role_overrides, selected_role, _role_groups) = load_roles(&dirs, &harness_settings);
+    let LoadedRoles {
+        roles,
+        role_overrides,
+        selected_role,
+        role_groups: _role_groups,
+        missing_default_role: _missing_default_role,
+    } = load_roles(&dirs, &harness_settings);
     assert!(!role_overrides.contains_key("default"));
     assert!(!roles.contains_key("default"));
     assert_eq!(selected_role, "engineer");
@@ -689,6 +709,7 @@ fn role_missing_fields_use_model_defaults() {
     std::fs::write(
         config_dir.join("harness.yaml"),
         r#"{
+            defaultRole: "plain",
             roleGroups: {
                 coding: {
                     engineer: { model: "local/engineer", effort: "high" },
@@ -698,18 +719,15 @@ fn role_missing_fields_use_model_defaults() {
         }"#,
     )
     .expect("write harness config");
-    std::fs::write(
-        state_dir.join("harness.json"),
-        r#"{
-            "last_selected_role": "plain"
-        }"#,
-    )
-    .expect("write state");
-
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role, _role_groups) =
-        load_roles(&dirs, &harness_settings);
+    let LoadedRoles {
+        roles,
+        role_overrides: _role_overrides,
+        selected_role,
+        role_groups: _role_groups,
+        missing_default_role: _missing_default_role,
+    } = load_roles(&dirs, &harness_settings);
     let available = ["local/aaa".into(), "local/engineer".into()];
     let available_provider_models = provider_models(
         available
@@ -807,6 +825,39 @@ fn borked_harness_yaml_emits_important_info() {
     assert!(
         message.contains("failed to parse"),
         "message should explain what happened, got: {message}"
+    );
+}
+
+/// A misspelled startup default must be visible instead of silently selecting a
+/// different role. The harness falls back to the first configured role so users
+/// still get a usable session.
+#[test]
+fn missing_default_role_emits_important_info_and_falls_back() {
+    let td = TempDir::new().expect("tempdir");
+    let config_dir = td.path().join("config");
+    let state_dir = td.path().join("state");
+    std::fs::create_dir_all(&config_dir).expect("mkdir config");
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir.clone()),
+        state_dir: Some(state_dir.clone()),
+    };
+
+    std::fs::write(
+        config_dir.join("harness.yaml"),
+        r#"{
+            defaultRole: "ghost",
+        }"#,
+    )
+    .expect("write harness config");
+
+    let h = echo_harness_with_dirs("s1", state_dir, dirs).expect("harness");
+    assert_eq!(h.selected_role, "engineer");
+    let message = find_important_info(&h, "defaultRole `ghost`")
+        .expect("expected Important HarnessInfo about missing defaultRole");
+    assert!(
+        message.contains("selected `engineer` instead"),
+        "message should name the fallback role, got: {message}"
     );
 }
 
@@ -1008,8 +1059,13 @@ fn selected_params_restore_each_field_from_role_override() {
 
     let harness_settings =
         tau_config::settings::load_harness_settings_in(&dirs).expect("load harness settings");
-    let (roles, _role_overrides, selected_role, _role_groups) =
-        load_roles(&dirs, &harness_settings);
+    let LoadedRoles {
+        roles,
+        role_overrides: _role_overrides,
+        selected_role,
+        role_groups: _role_groups,
+        missing_default_role: _missing_default_role,
+    } = load_roles(&dirs, &harness_settings);
     assert_eq!(selected_role, "engineer");
 
     let model: ModelId = "openai/gpt-5".parse().expect("model id");

@@ -24,33 +24,40 @@ promptFragments:
     text: Keep answers short and plain, using only simple words.
 ```
 
-Roles live in `harness.yaml` under `roles`:
+Roles live in `harness.yaml` under globally unique `roleGroups`. `defaultRole`
+selects the startup role; if omitted, Tau starts on the first role in
+`roleGroups` order.
 
 ```json5
 {
-  roles: {
-    engineer: {
-      description: "Balanced coding assistant",
-      model: "chatgpt/gpt-5.3-codex",
-      effort: "medium",
-      tools: ["read", "grep"],
+  defaultRole: "engineer",
+  roleGroups: {
+    coding: {
+      engineer: {
+        description: "Balanced coding assistant",
+        model: "chatgpt/gpt-5.3-codex",
+        effort: "medium",
+        tools: ["read", "grep"],
+      },
+      assistant: {
+        effort: "off",
+        serviceTier: "fast",
+      },
     },
-    assistant: {
-      effort: "off",
-      serviceTier: "fast",
+    planning: {
+      manager: {
+        promptFragments: [
+          { name: "manager.workflow", priority: 66, text: "Delegate non-trivial work." },
+        ],
+      },
     },
-    manager: {
-      promptFragments: [
-        { name: "manager.workflow", priority: 66, text: "Delegate non-trivial work." },
-      ],
-    },
-  }
+  },
 }
 ```
 
 Missing fields use provider-published fallback knobs for the role's resolved model.
 
-Tau ships built-in `assistant`, `engineer`, and `manager` roles. `engineer` is the startup fallback role and uses the same state-of-the-art individual-contributor defaults as the previous `smart` role. `assistant` is fast and lightweight with effort off. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
+Tau ships built-in `assistant`, `engineer`, and `manager` roles, with `defaultRole: engineer`. `engineer` uses the same state-of-the-art individual-contributor defaults as the previous `smart` role. `assistant` is fast and lightweight with effort off. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
 
 
 ## Selecting a role
@@ -83,10 +90,10 @@ Use `reset` as the value to clear a field and return to model/provider fallback 
 
 The convenience command `/fast` mutates the currently selected role using the same role-update path.
 
-The `<role>` argument completes existing roles, but any new name can be used to create a role for the current run. Add it to `roles` if it should be available after restart.
+The `<role>` argument completes existing roles, but any new name can be used to create a role for the current run. Add it to `roleGroups` if it should be available after restart.
 
-`/role <role> delete` removes the runtime/persisted role override. It does not edit `roles` from configuration; built-in or configured roles come back on the next harness start.
+`/role <role> delete` removes the runtime/persisted role override. It does not edit `roleGroups` from configuration; built-in or configured roles come back on the next harness start.
 
-Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json` together with the last selected role. Role `description` and both global and role prompt fragments remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
+Runtime changes for built-in or configured roles are persisted in the machine-readable `~/.local/state/tau/harness.json`. The last selected role is not persisted; startup is controlled by `defaultRole` and `roleGroups` order. Role `description` and both global and role prompt fragments remain config-only metadata, so changing them in `harness.yaml` takes effect after restart without stale runtime state shadowing them.
 
 Prompt fragment priorities sort ascending. Use priorities below `100` for role/persona instructions that should appear before generated context sections such as skills and AGENTS.md. Use high priorities for epilogue context; Tau's built-in current-working-directory fragment uses `900` so it stays at the end of the prompt.

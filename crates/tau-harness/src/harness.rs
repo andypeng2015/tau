@@ -56,10 +56,11 @@ use crate::harness::interception::{
 use crate::harness::subagents_tool::SubagentToolState;
 use crate::internal_tools::InternalToolHandlers;
 use crate::model::{
-    baseline_params_for_selection, clamp_effort, clamp_thinking_summary, clamp_verbosity,
-    context_percent_used, context_window_for_model, efforts_for_model, fallback_role, load_roles,
-    model_for_role, role_infos, save_role_overrides, select_model_for_role,
-    selected_params_for_role, thinking_summaries_for_model, verbosities_for_model,
+    LoadedRoles, MissingDefaultRole, baseline_params_for_selection, clamp_effort,
+    clamp_thinking_summary, clamp_verbosity, context_percent_used, context_window_for_model,
+    efforts_for_model, fallback_role, load_roles, model_for_role, role_infos, save_role_overrides,
+    select_model_for_role, selected_params_for_role, thinking_summaries_for_model,
+    verbosities_for_model,
 };
 use crate::prompt::{
     BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, assemble_conversation_from,
@@ -1333,8 +1334,13 @@ impl Harness {
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
-        let (available_roles, role_overrides, selected_role, available_role_groups) =
-            load_roles(&dirs, &harness_settings);
+        let LoadedRoles {
+            roles: available_roles,
+            role_overrides,
+            selected_role,
+            role_groups: available_role_groups,
+            missing_default_role,
+        } = load_roles(&dirs, &harness_settings);
         let selected_model =
             select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         crate::session_cleanup::spawn_session_cleanup(
@@ -1450,6 +1456,7 @@ impl Harness {
         harness.publish_delegate_roles_context();
         harness.check_config_exists();
         harness.emit_startup_settings_errors(harness_settings_error);
+        harness.emit_missing_default_role(missing_default_role);
 
         // Eager session init for the default session. INTENTIONAL —
         // do NOT "simplify" this to lazy-on-first-prompt.
@@ -1555,8 +1562,13 @@ impl Harness {
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
         let available_models = Vec::new();
-        let (available_roles, role_overrides, selected_role, available_role_groups) =
-            load_roles(&dirs, &harness_settings);
+        let LoadedRoles {
+            roles: available_roles,
+            role_overrides,
+            selected_role,
+            role_groups: available_role_groups,
+            missing_default_role,
+        } = load_roles(&dirs, &harness_settings);
         let selected_model =
             select_model_for_role(&HashMap::new(), &available_roles, &selected_role);
         tracing::debug!(target: "tau_harness::startup", selected_model = ?selected_model, elapsed_ms = startup_started_at.elapsed().as_millis(), "harness settings loaded");
@@ -1674,6 +1686,7 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness tools registered");
         harness.check_config_exists();
         harness.emit_startup_settings_errors(harness_settings_error);
+        harness.emit_missing_default_role(missing_default_role);
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "config checks complete");
 
         harness.start_session_init(eager_session_id.into(), eager_session_start_reason);
@@ -3567,7 +3580,6 @@ impl Harness {
         let was_empty = self.selected_model.is_none();
         self.selected_role = select.role.clone();
         self.reconcile_selected_model_with_available();
-        save_role_overrides(&self.dirs, &self.selected_role, &self.role_overrides);
         if self.selected_model.is_none() {
             self.publish_event(
                 None,
@@ -3610,7 +3622,7 @@ impl Harness {
                 self.try_advance_queue();
             }
         }
-        save_role_overrides(&self.dirs, &self.selected_role, &self.role_overrides);
+        save_role_overrides(&self.dirs, &self.role_overrides);
         self.publish_event(
             None,
             Event::HarnessRolesAvailable(tau_proto::HarnessRolesAvailable {
@@ -4475,6 +4487,18 @@ impl Harness {
     ) {
         if let Some(error) = harness_settings_error {
             self.emit_info_important(&format!("harness.yaml failed to parse — ignored.\n{error}"));
+        }
+    }
+
+    fn emit_missing_default_role(&mut self, missing: Option<MissingDefaultRole>) {
+        if let Some(MissingDefaultRole {
+            requested,
+            fallback,
+        }) = missing
+        {
+            self.emit_info_important(&format!(
+                "defaultRole `{requested}` is not configured; selected `{fallback}` instead"
+            ));
         }
     }
 
