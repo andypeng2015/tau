@@ -1303,13 +1303,13 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
     assert!(listed.contains("external@example.net"));
     assert!(!listed.contains("hidden@example.net"));
     let opened = engine
-        .dispatch_action("email.out.open", &[id.clone()])
+        .dispatch_action("email.out.open", std::slice::from_ref(&id))
         .expect("open action");
     assert!(opened.contains("hidden@example.net"));
     assert!(opened.contains("full draft body"));
 
     let approved = engine
-        .dispatch_action("email.out.approve", &[id.clone()])
+        .dispatch_action("email.out.approve", std::slice::from_ref(&id))
         .expect("approve action");
     assert!(approved.contains("Sent approved outgoing email"));
     assert_eq!(engine.backend.sent.borrow().len(), 1);
@@ -1320,7 +1320,7 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
     assert_eq!(approved_record.status, "approved");
     assert!(engine.state.pending_outgoing_by_id(&id).is_err());
     let approve_again = engine
-        .dispatch_action("email.out.approve", &[id.clone()])
+        .dispatch_action("email.out.approve", std::slice::from_ref(&id))
         .expect("approve action is idempotent");
     assert!(approve_again.contains("already approved/sent"));
     let repeated_send = engine.dispatch(EmailCommand::Send {
@@ -1564,14 +1564,14 @@ fn incoming_actions_list_redacts_for_agent_but_open_shows_user_content() {
     assert!(!listed.contains("secret subject"));
     assert!(!listed.contains("secret body"));
     let opened = engine
-        .dispatch_action("email.in.open", &[id.clone()])
+        .dispatch_action("email.in.open", std::slice::from_ref(&id))
         .expect("open action");
     assert!(opened.contains("subject: secret subject"));
     assert!(opened.contains("secret body"));
     assert!(!opened.contains("Content is hidden"));
 
     engine
-        .dispatch_action("email.in.approve", &[id.clone()])
+        .dispatch_action("email.in.approve", std::slice::from_ref(&id))
         .expect("approve action");
     let approved_record = engine
         .state
@@ -1580,7 +1580,7 @@ fn incoming_actions_list_redacts_for_agent_but_open_shows_user_content() {
     assert_eq!(approved_record.status, "approved");
     assert!(engine.state.pending_incoming_by_id(&id).is_err());
     let approve_again = engine
-        .dispatch_action("email.in.approve", &[id.clone()])
+        .dispatch_action("email.in.approve", std::slice::from_ref(&id))
         .expect("approve action is idempotent");
     assert!(approve_again.contains("already approved"));
     let approved = engine.dispatch(EmailCommand::Read {

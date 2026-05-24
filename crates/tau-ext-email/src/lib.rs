@@ -1693,7 +1693,7 @@ fn safe_model_vec(values: Vec<String>, max_items: usize, max_chars: usize) -> Ve
         .collect()
 }
 
-fn visible_recipients<'a>(message: &'a OutgoingMessage) -> impl Iterator<Item = &'a String> {
+fn visible_recipients(message: &OutgoingMessage) -> impl Iterator<Item = &String> {
     message.to.iter().chain(message.cc.iter())
 }
 
@@ -2723,7 +2723,7 @@ struct RuntimeState {
 enum ConfigState {
     #[default]
     Unconfigured,
-    Configured(Engine<RealEmailBackend>),
+    Configured(Box<Engine<RealEmailBackend>>),
     Rejected {
         reason: String,
     },
@@ -2733,7 +2733,7 @@ impl RuntimeState {
     fn configure(&mut self, configure: tau_proto::Configure) -> Result<(), String> {
         match self.try_configure(configure) {
             Ok(engine) => {
-                self.config_state = ConfigState::Configured(engine);
+                self.config_state = ConfigState::Configured(Box::new(engine));
                 Ok(())
             }
             Err(message) => {
