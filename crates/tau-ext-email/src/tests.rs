@@ -461,6 +461,7 @@ fn publishes_email_action_schema_at_startup() {
             "email.out.open".to_owned(),
             "email.out.approve".to_owned(),
             "email.out.whitelist".to_owned(),
+            "email.log.last".to_owned(),
             "email.in.list".to_owned(),
             "email.in.open".to_owned(),
             "email.in.approve".to_owned(),
@@ -475,6 +476,14 @@ fn publishes_email_action_schema_at_startup() {
             .action_id,
         "email.out.approve"
     );
+    let parsed_log = schema.parse_line("/email log last 5").expect("parse log");
+    assert_eq!(parsed_log.action_id, "email.log.last");
+    assert_eq!(parsed_log.argv, vec!["5".to_owned()]);
+    let default_log = schema
+        .parse_line("/email log last")
+        .expect("parse default log");
+    assert_eq!(default_log.action_id, "email.log.last");
+    assert!(default_log.argv.is_empty());
 }
 
 #[test]
@@ -2066,6 +2075,68 @@ fn message_management_commands_update_flags_and_trash_without_approval() {
 }
 
 #[test]
+fn email_log_records_agent_access_and_mutations() {
+    // The audit log is append-only JSONL for after-the-fact user review. It
+    // should capture agent reads, sends, and mailbox mutations without storing
+    // message bodies.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+
+    let _ = engine.dispatch(EmailCommand::ListAccounts);
+    let _ = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    let _ = engine.dispatch(EmailCommand::ManageMessage {
+        command: MessageManagementCommand::MarkUnread,
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    let _ = engine.dispatch(EmailCommand::Send {
+        account: Some("work".to_owned()),
+        from: None,
+        to: vec!["mallory@evil.test".to_owned()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Need approval".to_owned(),
+        body_text: "outgoing body".to_owned(),
+        reply_to: None,
+        in_reply_to: None,
+    });
+
+    let entries = engine.state.recent_email_log(10).expect("log");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].kind, "access");
+    assert_eq!(entries[0].command, "read");
+    assert_eq!(entries[0].status, "approval_required");
+    assert_eq!(entries[0].access.as_deref(), Some("on-demand"));
+    assert!(entries[0].title_redacted);
+    assert_eq!(entries[0].from.as_deref(), Some("mallory@evil.test"));
+    let raw_entries = format!("{entries:?}");
+    assert!(!raw_entries.contains("secret body"));
+    assert!(!raw_entries.contains("outgoing body"));
+    assert_eq!(entries[1].kind, "mutable");
+    assert_eq!(entries[1].command, "mark_unread");
+    assert_eq!(entries[1].status, "marked_unread");
+    assert_eq!(entries[2].kind, "mutable");
+    assert_eq!(entries[2].command, "send");
+    assert_eq!(entries[2].status, "approval_required");
+    assert_eq!(entries[2].title.as_deref(), Some("Need approval"));
+
+    let output = engine
+        .dispatch_action("email.log.last", &["2".to_owned()])
+        .expect("log action");
+    assert!(output.contains("mutable/send"));
+    assert!(output.contains("title=Need approval"));
+    assert!(output.contains("mutable/mark_unread"));
+    assert!(!output.contains("access/read"));
+    assert!(!output.contains("secret body"));
+    assert!(!output.contains("outgoing body"));
+}
+
+#[test]
 fn incoming_deny_persists_and_suppresses_future_approvals() {
     // A user denial is an exact persisted decision for the same message. Future
     // reads should report denied access instead of creating another approval.
@@ -2252,6 +2323,11 @@ fn invalid_email_actions_return_errors() {
     assert!(
         engine
             .dispatch_action("email.in.open", &["in_0123456789abcdef01234567".to_owned()])
+            .is_err()
+    );
+    assert!(
+        engine
+            .dispatch_action("email.log.last", &["0".to_owned()])
             .is_err()
     );
 }

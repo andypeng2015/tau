@@ -99,6 +99,8 @@ Queued outgoing approvals persist the full draft for user review. Bcc recipients
 
 Approval files are validated on load and written atomically without overwriting existing records on id collision. Incoming and outgoing approval ids should still be treated as sensitive user-interface tokens: do not ask the model to invent or reuse them.
 
+Agent email access and mutation commands append sanitized JSONL entries to `logs/email.jsonl` under the extension state directory. Use `/email log last [number]` to review recent `list`, `read`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity without exposing message bodies.
+
 The `/email in whitelist <pattern>` and `/email out whitelist <pattern>` actions persist additional allowlist patterns when `policy.allow_state_policy_extensions` is true. This is convenient, but it means UI actions can extend policy outside the static config file. Set it to false if you want config-only policy:
 
 ```yaml
@@ -224,6 +226,7 @@ Use `list_accounts` first when the account id is not known.
 
 The extension publishes `/email` actions for review:
 
+- `/email log last [number]` — show recent agent email access and mutation log entries; defaults to 20.
 - `/email in list` — list pending incoming read approvals.
 - `/email in open <id>` — inspect an incoming message; may display email content to the user.
 - `/email in approve <id>` — approve that exact incoming read.

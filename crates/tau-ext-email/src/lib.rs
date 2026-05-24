@@ -4,10 +4,10 @@
 //! tests and the real network backend exercise the same redaction and
 //! no-partial-send behavior.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fs;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,9 @@ const MAX_FLAGS: usize = 32;
 const MAX_RECIPIENTS: usize = 256;
 const MAX_BACKEND_ERROR_CHARS: usize = 512;
 const UNAPPROVED_SUBJECT_PREVIEW_MAX_CHARS: usize = 96;
+const EMAIL_LOG_DEFAULT_LIMIT: usize = 20;
+const EMAIL_LOG_MAX_LIMIT: usize = 200;
+const EMAIL_LOG_TITLE_MAX_CHARS: usize = 80;
 
 use tau_proto::{
     ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionCommand, ActionError, ActionInvoke,
@@ -965,6 +968,41 @@ pub struct StatePattern {
     pub note: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EmailLogEntry {
+    schema: u32,
+    ts_unix_ms: u64,
+    kind: String,
+    command: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    access: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    to: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    title_redacted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Persistent policy/approval state under the injected extension state
 /// directory.
 pub struct StateStore {
@@ -986,6 +1024,7 @@ impl StateStore {
             "approvals/outgoing/sending",
             "approvals/outgoing/approved",
             "approvals/outgoing/denied",
+            "logs",
         ] {
             fs::create_dir_all(state_dir.join(dir)).map_err(|error| error.to_string())?;
         }
@@ -1063,6 +1102,53 @@ impl StateStore {
     /// Load one approved outgoing send approval by id.
     pub fn approved_outgoing_by_id(&self, id: &str) -> Result<OutgoingApproval, String> {
         self.load_outgoing_approval("approved", id)
+    }
+
+    fn append_email_log(&self, entry: &EmailLogEntry) -> Result<(), String> {
+        let path = self.email_log_path();
+        let mut bytes = serde_json::to_vec(entry).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("failed to append {}: {error}", path.display()))?;
+        file.sync_data()
+            .map_err(|error| format!("failed to sync {}: {error}", path.display()))
+    }
+
+    fn recent_email_log(&self, limit: usize) -> Result<Vec<EmailLogEntry>, String> {
+        let path = self.email_log_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = fs::File::open(&path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        let mut entries = VecDeque::new();
+        for line in BufReader::new(file).lines() {
+            let line =
+                line.map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_str::<EmailLogEntry>(&line) else {
+                continue;
+            };
+            if entry.schema != 1 {
+                continue;
+            }
+            entries.push_back(entry);
+            while limit < entries.len() {
+                entries.pop_front();
+            }
+        }
+        Ok(entries.into_iter().collect())
+    }
+
+    fn email_log_path(&self) -> PathBuf {
+        self.state_dir.join("logs").join("email.jsonl")
     }
 
     fn load_allow_file(&self, name: &str) -> Result<Vec<AddressPattern>, String> {
@@ -1644,6 +1730,13 @@ enum CreateNewJsonError {
     Other(String),
 }
 
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 fn temp_json_path(parent: &Path, path: &Path) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2175,7 +2268,8 @@ struct Engine<B> {
 
 impl<B: EmailBackend> Engine<B> {
     fn dispatch(&mut self, command: EmailCommand) -> CborValue {
-        match command {
+        let log_command = command.clone();
+        let result = match command {
             EmailCommand::ListAccounts => self.list_accounts(),
             EmailCommand::ListFolders { account } => self.list_folders(&account),
             EmailCommand::List {
@@ -2221,7 +2315,124 @@ impl<B: EmailBackend> Engine<B> {
                 reply_to,
                 in_reply_to,
             ),
+        };
+        self.append_email_log_for_command(&log_command, &result);
+        result
+    }
+
+    fn append_email_log_for_command(&self, command: &EmailCommand, result: &CborValue) {
+        let Some(entry) = self.email_log_entry(command, result) else {
+            return;
+        };
+        if let Err(message) = self.state.append_email_log(&entry) {
+            tracing::warn!(target: LOG_TARGET, error = %message, "failed to append email log");
         }
+    }
+
+    fn email_log_entry(&self, command: &EmailCommand, result: &CborValue) -> Option<EmailLogEntry> {
+        let kind = email_log_kind(command)?;
+        let data = cbor_field(result, "data");
+        let mut entry = EmailLogEntry {
+            schema: 1,
+            ts_unix_ms: current_unix_millis(),
+            kind: kind.to_owned(),
+            command: email_command_name(command).to_owned(),
+            status: email_log_status(result),
+            account: None,
+            folder: None,
+            uid: None,
+            access: data
+                .and_then(|data| cbor_text_field(data, "access"))
+                .map(str::to_owned),
+            from: None,
+            to: Vec::new(),
+            title: None,
+            title_redacted: false,
+            approval_id: data
+                .and_then(|data| cbor_text_field(data, "approval_id"))
+                .map(str::to_owned),
+            message_count: data.and_then(|data| cbor_array_len(data, "messages")),
+            reason: email_log_reason(result),
+        };
+
+        match command {
+            EmailCommand::List {
+                account, folder, ..
+            } => {
+                entry.account = log_account(data, Some(account.as_str()));
+                entry.folder = log_field(data, "folder", Some(folder.as_str()));
+            }
+            EmailCommand::Read {
+                account,
+                folder,
+                uid,
+            } => {
+                entry.account = log_account(data, Some(account.as_str()));
+                entry.folder = log_field(data, "folder", Some(folder.as_str()));
+                entry.uid = log_field(data, "uid", Some(uid.as_str()));
+                entry.from = data
+                    .and_then(|data| cbor_text_field(data, "from"))
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        data.and_then(|data| cbor_nested_text_field(data, "headers", "from"))
+                            .map(str::to_owned)
+                    });
+                if let Some(data) = data {
+                    if let Some(subject) = cbor_nested_text_field(data, "headers", "subject") {
+                        entry.title = Some(email_log_title(subject));
+                    } else if let Some(subject) = cbor_text_field(data, "subject_preview") {
+                        entry.title = Some(email_log_title(subject));
+                        entry.title_redacted = true;
+                    }
+                }
+            }
+            EmailCommand::ManageMessage {
+                account,
+                folder,
+                uid,
+                ..
+            }
+            | EmailCommand::Trash {
+                account,
+                folder,
+                uid,
+            } => {
+                entry.account = log_account(data, Some(account.as_str()));
+                entry.folder = log_field(data, "folder", Some(folder.as_str()));
+                entry.uid = log_field(data, "uid", Some(uid.as_str()));
+            }
+            EmailCommand::Send {
+                account,
+                from,
+                to,
+                cc,
+                subject,
+                ..
+            } => {
+                entry.account = log_send_account(data, account.as_deref(), &self.config);
+                entry.from = from
+                    .as_deref()
+                    .map(|value| safe_model_line(value, MAX_ADDRESS_CHARS))
+                    .or_else(|| {
+                        entry
+                            .account
+                            .as_deref()
+                            .and_then(|account| self.config.accounts.get(account))
+                            .map(|account| {
+                                safe_model_line(&account.from_identity, MAX_ADDRESS_CHARS)
+                            })
+                    });
+                entry.to = to
+                    .iter()
+                    .chain(cc.iter())
+                    .take(MAX_RECIPIENTS)
+                    .map(|recipient| safe_model_line(recipient, MAX_ADDRESS_CHARS))
+                    .collect();
+                entry.title = Some(email_log_title(subject));
+            }
+            EmailCommand::ListAccounts | EmailCommand::ListFolders { .. } => return None,
+        }
+        Some(entry)
     }
 
     fn resolve_account_id<'a>(&'a self, command: &str, id: &'a str) -> Result<&'a str, CborValue> {
@@ -3057,8 +3268,21 @@ impl<B: EmailBackend> Engine<B> {
             "email.in.whitelist" => {
                 require_one_arg(argv).and_then(|pattern| self.action_in_whitelist(pattern))
             }
+            "email.log.last" => parse_log_limit(argv).and_then(|limit| self.action_log_last(limit)),
             _ => Err(format!("unsupported email action `{action_id}`")),
         }
+    }
+
+    fn action_log_last(&self, limit: usize) -> Result<String, String> {
+        let entries = self.state.recent_email_log(limit)?;
+        if entries.is_empty() {
+            return Ok("No email log entries.".to_owned());
+        }
+        let mut lines = vec![format!("Last {} email log entry(s):", entries.len())];
+        for entry in entries.iter().rev() {
+            lines.push(format_email_log_entry(entry));
+        }
+        Ok(lines.join("\n"))
     }
 
     fn action_out_list(&self) -> Result<String, String> {
@@ -3454,6 +3678,25 @@ fn require_one_arg(argv: &[String]) -> Result<&str, String> {
     }
 }
 
+fn parse_log_limit(argv: &[String]) -> Result<usize, String> {
+    let limit = match argv {
+        [] => EMAIL_LOG_DEFAULT_LIMIT,
+        [value] if !value.trim().is_empty() => value
+            .parse::<usize>()
+            .map_err(|_| "log limit must be a positive integer".to_owned())?,
+        [_] => return Err("log limit must not be empty".to_owned()),
+        _ => return Err("too many action arguments".to_owned()),
+    };
+    if limit == 0 {
+        return Err("log limit must be a positive integer".to_owned());
+    }
+    Ok(if EMAIL_LOG_MAX_LIMIT < limit {
+        EMAIL_LOG_MAX_LIMIT
+    } else {
+        limit
+    })
+}
+
 fn allow_record(pattern: &str, note: &str) -> Result<StatePattern, String> {
     let compiled = AddressPattern::compile(pattern)?;
     let kind = match compiled {
@@ -3653,6 +3896,14 @@ fn email_action_schema() -> ActionSchema {
             kind: ActionArgKind::String,
         }
     }
+    fn optional_integer_arg(name: &str, description: &str) -> ActionArg {
+        ActionArg {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            required: false,
+            kind: ActionArgKind::Integer,
+        }
+    }
     fn leaf(name: &str, action_id: &str, description: &str, args: Vec<ActionArg>) -> ActionCommand {
         ActionCommand {
             name: name.to_owned(),
@@ -3674,11 +3925,13 @@ fn email_action_schema() -> ActionSchema {
 
     let id_arg = || string_arg("id", "approval id");
     let pattern_arg = || string_arg("pattern", "glob or email address");
+    let limit_arg =
+        || optional_integer_arg("number", "number of recent log entries; defaults to 20");
     ActionSchema {
         version: ACTION_SCHEMA_VERSION,
         roots: vec![ActionCommand {
             name: "/email".to_owned(),
-            description: "Review, approve, and deny email access".to_owned(),
+            description: "Review, approve, deny, and audit email access".to_owned(),
             action_id: None,
             args: Vec::new(),
             children: vec![
@@ -3711,6 +3964,16 @@ fn email_action_schema() -> ActionSchema {
                             vec![pattern_arg()],
                         ),
                     ],
+                ),
+                group(
+                    "log",
+                    "Email audit log actions",
+                    vec![leaf(
+                        "last",
+                        "email.log.last",
+                        "Show recent email access and mutation log entries",
+                        vec![limit_arg()],
+                    )],
                 ),
                 group(
                     "in",
@@ -3829,6 +4092,109 @@ enum EmailCommand {
         reply_to: Option<String>,
         in_reply_to: Option<String>,
     },
+}
+
+fn email_command_name(command: &EmailCommand) -> &'static str {
+    match command {
+        EmailCommand::ListAccounts => "list_accounts",
+        EmailCommand::ListFolders { .. } => "list_folders",
+        EmailCommand::List { .. } => "list",
+        EmailCommand::Read { .. } => "read",
+        EmailCommand::ManageMessage { command, .. } => command.command_name(),
+        EmailCommand::Trash { .. } => "trash",
+        EmailCommand::Send { .. } => "send",
+    }
+}
+
+fn email_log_kind(command: &EmailCommand) -> Option<&'static str> {
+    match command {
+        EmailCommand::List { .. } | EmailCommand::Read { .. } => Some("access"),
+        EmailCommand::ManageMessage { .. }
+        | EmailCommand::Trash { .. }
+        | EmailCommand::Send { .. } => Some("mutable"),
+        EmailCommand::ListAccounts | EmailCommand::ListFolders { .. } => None,
+    }
+}
+
+fn email_log_status(result: &CborValue) -> String {
+    cbor_text_field(result, "status")
+        .or_else(|| cbor_field(result, "error").and_then(|error| cbor_text_field(error, "code")))
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+fn email_log_reason(result: &CborValue) -> Option<String> {
+    cbor_field(result, "data")
+        .and_then(|data| cbor_text_field(data, "reason"))
+        .or_else(|| cbor_field(result, "error").and_then(|error| cbor_text_field(error, "message")))
+        .map(|reason| safe_model_line(reason, MAX_HEADER_VALUE_CHARS))
+}
+
+fn email_log_title(title: &str) -> String {
+    safe_model_line(title, EMAIL_LOG_TITLE_MAX_CHARS)
+}
+
+fn log_field(data: Option<&CborValue>, field: &str, fallback: Option<&str>) -> Option<String> {
+    data.and_then(|data| cbor_text_field(data, field))
+        .or(fallback.filter(|value| !value.is_empty()))
+        .map(|value| safe_model_line(value, MAX_HEADER_VALUE_CHARS))
+}
+
+fn log_account(data: Option<&CborValue>, fallback: Option<&str>) -> Option<String> {
+    log_field(data, "account", fallback)
+}
+
+fn log_send_account(
+    data: Option<&CborValue>,
+    fallback: Option<&str>,
+    config: &ValidatedConfig,
+) -> Option<String> {
+    log_account(
+        data,
+        fallback.or_else(|| config.account_order.first().map(String::as_str)),
+    )
+}
+
+fn format_email_log_entry(entry: &EmailLogEntry) -> String {
+    let mut line = format!(
+        "{} {}/{} status={}",
+        entry.ts_unix_ms,
+        safe_display_line(&entry.kind),
+        safe_display_line(&entry.command),
+        safe_display_line(&entry.status)
+    );
+    push_email_log_part(&mut line, "account", entry.account.as_deref());
+    push_email_log_part(&mut line, "folder", entry.folder.as_deref());
+    push_email_log_part(&mut line, "uid", entry.uid.as_deref());
+    push_email_log_part(&mut line, "access", entry.access.as_deref());
+    push_email_log_part(&mut line, "from", entry.from.as_deref());
+    if !entry.to.is_empty() {
+        line.push_str(" to=");
+        line.push_str(&safe_display_join(&entry.to, ","));
+    }
+    if let Some(title) = &entry.title {
+        if entry.title_redacted {
+            line.push_str(" title_preview=");
+        } else {
+            line.push_str(" title=");
+        }
+        line.push_str(&safe_display_line(title));
+    }
+    push_email_log_part(&mut line, "approval", entry.approval_id.as_deref());
+    if let Some(count) = entry.message_count {
+        line.push_str(&format!(" messages={count}"));
+    }
+    push_email_log_part(&mut line, "reason", entry.reason.as_deref());
+    line
+}
+
+fn push_email_log_part(line: &mut String, name: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        line.push(' ');
+        line.push_str(name);
+        line.push('=');
+        line.push_str(&safe_display_line(value));
+    }
 }
 
 fn command_from_arguments(arguments: &CborValue) -> Option<&str> {

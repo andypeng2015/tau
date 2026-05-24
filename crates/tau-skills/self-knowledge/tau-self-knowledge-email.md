@@ -176,6 +176,12 @@ Outgoing sends:
 - Use `/email out list`, `/email out open <id>`, and `/email out approve <id>` to review and send.
 - If `email.send` returns `approval_required`, the agent should not call `send` again for the same draft.
 
+Audit log:
+
+- Agent `list`, `read`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity is appended as sanitized JSONL under the email state directory.
+- Use `/email log last [number]` to review recent activity; the number defaults to 20.
+- The pretty log is intentionally minimal and does not include message bodies.
+
 Whitelist actions:
 
 - `/email in whitelist <pattern>` persists an incoming pattern.
@@ -193,7 +199,7 @@ If all incoming reads require approval, inspect raw message headers and configur
 
 If a legitimate sender fails with `dkim missing` or `auth unaligned`, do not immediately disable auth. First check whether the provider rewrites mail, a list forwarder changed authentication alignment, or the allowlist is too broad. Manual approval is safer than global weakening.
 
-For logs, use:
+For tracing logs, use:
 
 ```sh
 TAU_EXT_LOG=email=debug tau
