@@ -1911,6 +1911,9 @@ pub struct SessionPromptQueued {
     pub session_id: SessionId,
     /// Queued prompt text.
     pub text: String,
+    /// Target agent for this queued prompt. `None` means main.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<String>,
     /// Whether this prompt text is user-authored or hidden internal control
     /// text.
     #[serde(default)]
@@ -1924,6 +1927,9 @@ pub struct SessionPromptRecalled {
     pub session_id: SessionId,
     /// Recalled prompt text.
     pub text: String,
+    /// Target agent for this recalled prompt. `None` means main.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<String>,
 }
 
 /// A previously queued user prompt that the harness folded into the
@@ -1940,6 +1946,9 @@ pub struct SessionPromptRecalled {
 pub struct SessionPromptSteered {
     pub session_id: SessionId,
     pub text: String,
+    /// Target agent for this steered prompt. `None` means main.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<String>,
     /// Whether this prompt text is user-authored or hidden internal control
     /// text.
     #[serde(default)]

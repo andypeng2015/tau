@@ -866,6 +866,7 @@ fn prompt_message_class_defaults_to_user_for_legacy_events() {
     let internal = serde_json::to_value(SessionPromptSteered {
         session_id: "s1".into(),
         text: "[tau-internal] Tool call `bg` is complete.".into(),
+        target_agent_id: None,
         message_class: PromptMessageClass::Internal,
     })
     .expect("serialize steered prompt");

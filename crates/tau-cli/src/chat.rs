@@ -651,6 +651,7 @@ pub(crate) fn run_chat(
     let current_role_state = renderer.current_role_state();
     let current_agent_state = renderer.current_agent_state();
     let known_agents = renderer.known_agents();
+    let live_agents = renderer.live_agents();
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/agent"),
         build_agent_arg_completer(known_agents.clone()),
@@ -702,6 +703,7 @@ pub(crate) fn run_chat(
             current_role_state,
             current_agent_state,
             known_agents,
+            live_agents,
             roles_available,
             role_groups_available,
             role_group_memory,
@@ -829,6 +831,7 @@ struct TerminalInputLoopCtx {
     current_role_state: Arc<Mutex<Option<String>>>,
     current_agent_state: Arc<Mutex<Option<String>>>,
     known_agents: Arc<Mutex<Vec<String>>>,
+    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
     roles_available: Arc<Mutex<Vec<String>>>,
     role_groups_available: Arc<Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     role_group_memory: Arc<Mutex<HashMap<String, String>>>,
@@ -1199,6 +1202,16 @@ impl<'a> TerminalInputSession<'a> {
             ));
             return;
         }
+        let known = self
+            .ctx
+            .known_agents
+            .lock()
+            .map(|agents| agents.iter().any(|known| known == arg))
+            .unwrap_or(false);
+        if !known {
+            self.output.system_info(&format!("unknown agent: {arg}"));
+            return;
+        }
         if let Ok(mut current) = self.ctx.current_agent_state.lock() {
             *current = Some(arg.to_owned());
         }
@@ -1294,16 +1307,28 @@ impl<'a> TerminalInputSession<'a> {
     fn submit_prompt(&self, text: &str) -> Option<InputLoopExit> {
         self.invalidate_pending_draft();
 
-        self.ctx
-            .agent_in_progress
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        let target_agent_id = self
+        let selected_agent = self
             .ctx
             .current_agent_state
             .lock()
             .ok()
             .and_then(|agent| agent.clone())
-            .filter(|agent| agent != "main");
+            .unwrap_or_else(|| "main".to_owned());
+        let live = self
+            .ctx
+            .live_agents
+            .lock()
+            .map(|agents| agents.contains(&selected_agent))
+            .unwrap_or(false);
+        if !live {
+            self.output
+                .system_info(&format!("agent is not live: {selected_agent}"));
+            return None;
+        }
+        self.ctx
+            .agent_in_progress
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let target_agent_id = (selected_agent != "main").then_some(selected_agent);
         if send_event(
             self.writer,
             &Event::UiPromptSubmitted(UiPromptSubmitted {

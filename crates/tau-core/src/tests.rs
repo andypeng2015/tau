@@ -956,6 +956,7 @@ fn session_meta_preview_tracks_only_user_authored_prompts() {
             Event::SessionPromptSteered(SessionPromptSteered {
                 session_id: session_id.into(),
                 text: "queued user followup".to_owned(),
+                target_agent_id: None,
                 message_class: tau_proto::PromptMessageClass::User,
             }),
         )

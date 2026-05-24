@@ -3869,6 +3869,7 @@ impl Harness {
                 Event::SessionPromptQueued(SessionPromptQueued {
                     session_id: prompt.session_id.clone(),
                     text: prompt.text.clone(),
+                    target_agent_id: None,
                     message_class: prompt.message_class,
                 }),
             );
@@ -3951,6 +3952,7 @@ impl Harness {
             Event::SessionPromptRecalled(SessionPromptRecalled {
                 session_id: session_id.clone(),
                 text: prompt.text,
+                target_agent_id: None,
             }),
         );
     }
@@ -6078,8 +6080,18 @@ impl Harness {
         };
         if self.dispatch_blocked_for(&cid) || !self.session_initialized(&session_id) {
             if let Some(conv) = self.conversations.get_mut(&cid) {
-                conv.pending_prompts.push_back(PendingPrompt::user(text));
+                conv.pending_prompts
+                    .push_back(PendingPrompt::user(text.clone()));
             }
+            self.publish_event(
+                None,
+                Event::SessionPromptQueued(SessionPromptQueued {
+                    session_id: session_id.clone(),
+                    text,
+                    target_agent_id: Some(agent_id.to_owned()),
+                    message_class: tau_proto::PromptMessageClass::User,
+                }),
+            );
             self.try_advance_queue();
             return Ok(PromptSubmission::Queued);
         }
@@ -8695,6 +8707,10 @@ impl Harness {
                 Event::SessionPromptSteered(tau_proto::SessionPromptSteered {
                     session_id: session_id.clone(),
                     text: prompt.text,
+                    target_agent_id: self
+                        .conversations
+                        .get(cid)
+                        .and_then(|conv| conv.agent_id.clone()),
                     message_class: prompt.message_class,
                 }),
             );

@@ -388,6 +388,70 @@ fn hidden_agent_events_do_not_force_visible_full_redraw() {
 }
 
 #[test]
+fn new_session_resets_agent_transcripts() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: "worker-1".to_owned(),
+    }));
+    renderer.switch_agent("worker-1".to_owned());
+    renderer.handle(&Event::SessionStarted(tau_proto::SessionStarted {
+        session_id: "s2".into(),
+        reason: tau_proto::SessionStartReason::New,
+    }));
+    sync(&handle);
+
+    assert!(!vt.screen_contains(80, "&worker-1"));
+    assert!(
+        !renderer
+            .known_agents()
+            .lock()
+            .expect("known agents")
+            .iter()
+            .any(|agent| agent == "worker-1")
+    );
+}
+
+#[test]
+fn hidden_agent_activity_keeps_global_in_progress() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let in_progress = renderer.agent_in_progress_state();
+    renderer.handle(&Event::SessionPromptCreated(session_prompt_created(
+        "main-sp", "s1",
+    )));
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: "worker-1".to_owned(),
+    }));
+    renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-worker".to_owned(),
+        },
+        ..session_prompt_created("worker-sp", "s1")
+    }));
+    renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-worker".to_owned(),
+        },
+        ..finished_response("worker-sp", vec![assistant_message_item("done")])
+    }));
+
+    assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
 fn switched_agent_shows_its_tool_usage() {
     let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
@@ -643,7 +707,7 @@ fn agent_messages_render_all_recipients_as_history() {
         renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: format!("scroll filler {idx}"),
-            target_agent_id: None,
+            target_agent_id: Some("engineer_22222222".to_owned()),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -1769,6 +1833,7 @@ fn queued_prompt_renders_after_first_completes() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "second".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -1859,6 +1924,7 @@ fn queued_prompt_then_late_ui_submit_advances_without_duplicate() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "late echo".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
@@ -1915,6 +1981,7 @@ fn queued_prompt_steered_promotes_without_duplicate() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "folded queued prompt".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -1927,6 +1994,7 @@ fn queued_prompt_steered_promotes_without_duplicate() {
     renderer.handle(&Event::SessionPromptSteered(SessionPromptSteered {
         session_id: "s1".into(),
         text: "folded queued prompt".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -1974,11 +2042,13 @@ fn internal_prompt_events_are_hidden() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "[tau-internal] Tool call `queued` is complete.".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     renderer.handle(&Event::SessionPromptSteered(SessionPromptSteered {
         session_id: "s1".into(),
         text: "[tau-internal] Tool call `steered` is complete.".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     sync(&handle);
@@ -2018,6 +2088,7 @@ fn queued_prompt_does_not_replace_dispatched_same_text() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "repeat".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -2061,6 +2132,7 @@ fn three_queued_prompts_render_sequentially() {
             renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
                 session_id: "s1".into(),
                 text: format!("msg-{i}"),
+                target_agent_id: None,
                 message_class: tau_proto::PromptMessageClass::User,
             }));
         }
@@ -4046,6 +4118,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "hi".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
@@ -4059,6 +4132,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::SessionPromptQueued(SessionPromptQueued {
         session_id: "s1".into(),
         text: "hi".into(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::User,
     }));
 

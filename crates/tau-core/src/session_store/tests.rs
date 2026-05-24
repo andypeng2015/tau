@@ -17,6 +17,7 @@ fn latest_user_prompt_text_ignores_internal_steered_prompts() {
     let internal_event = Event::SessionPromptSteered(tau_proto::SessionPromptSteered {
         session_id: "s1".into(),
         text: "[tau-internal] Tool call `bg` is complete.".to_owned(),
+        target_agent_id: None,
         message_class: tau_proto::PromptMessageClass::Internal,
     });
     assert_eq!(user_prompt_text(&internal_event), None);

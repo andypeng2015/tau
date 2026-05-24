@@ -37,6 +37,8 @@ pub(crate) struct EventRenderer {
     agents_ui_state: HashMap<String, AgentUiState>,
     /// Agent ids known to the UI for `/agent` completion.
     known_agents: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Agent ids that can still receive prompts.
+    live_agents: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     /// Map side-query ids to the accepted agent id for routing prompt/provider
     /// events whose originator only carries `query_id`.
     query_agents: HashMap<String, String>,
@@ -736,26 +738,6 @@ impl AgentActivity {
     }
 }
 
-/// Returns the originator of any prompt-lifecycle event, or
-/// [`tau_proto::PromptOriginator::User`] for events that don't carry
-/// one (so unrelated events render as before).
-fn originator_of(event: &Event) -> tau_proto::PromptOriginator {
-    match event {
-        Event::UiPromptSubmitted(p) => p.originator.clone(),
-        Event::SessionPromptCreated(p) => p.originator.clone(),
-        Event::SessionPromptTerminated(t) => t.originator.clone(),
-        Event::ProviderPromptSubmitted(s) => s.originator.clone(),
-        Event::ProviderResponseUpdated(u) => u.originator.clone(),
-        Event::ProviderResponseFinished(f) => f.originator.clone(),
-        Event::ProviderToolResult(result) => result.originator.clone(),
-        Event::ProviderToolError(error) => error.originator.clone(),
-        Event::SessionCompactionStarted(started) => started.originator.clone(),
-        Event::SessionCompactionFinished(finished) => finished.originator.clone(),
-        Event::SessionCompacted(compacted) => compacted.originator.clone(),
-        _ => tau_proto::PromptOriginator::User,
-    }
-}
-
 fn push_status_chip(
     themed: &mut tau_themes::ThemedText,
     style: tau_themes::StyleIdx,
@@ -912,6 +894,9 @@ impl EventRenderer {
             known_agents: std::sync::Arc::new(std::sync::Mutex::new(vec![
                 MAIN_AGENT_ID.to_owned(),
             ])),
+            live_agents: std::sync::Arc::new(std::sync::Mutex::new(HashSet::from([
+                MAIN_AGENT_ID.to_owned()
+            ]))),
             query_agents: HashMap::new(),
             prompt_agents: HashMap::new(),
             tool_agents: HashMap::new(),
@@ -991,6 +976,10 @@ impl EventRenderer {
         self.known_agents.clone()
     }
 
+    pub(crate) fn live_agents(&self) -> std::sync::Arc<std::sync::Mutex<HashSet<String>>> {
+        self.live_agents.clone()
+    }
+
     pub(crate) fn current_agent_state(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
         self.current_agent_state.clone()
     }
@@ -1014,6 +1003,7 @@ impl EventRenderer {
         }
         let state = self.agents_ui_state.remove(&agent_id).unwrap_or_default();
         self.restore_visible_agent_state(state);
+        self.rerender_visible_for_current_settings();
         self.current_agent_id = Some(agent_id.clone());
         if let Ok(mut current) = self.current_agent_state.lock() {
             *current = Some(agent_id);
@@ -1104,6 +1094,22 @@ impl EventRenderer {
         {
             agents.push(agent_id);
             agents.sort();
+        }
+    }
+
+    fn mark_agent_live(&mut self, agent_id: String) {
+        self.remember_agent(agent_id.clone());
+        if let Ok(mut agents) = self.live_agents.lock() {
+            agents.insert(agent_id);
+        }
+    }
+
+    fn mark_agent_stopped(&mut self, agent_id: &str) {
+        if agent_id == MAIN_AGENT_ID {
+            return;
+        }
+        if let Ok(mut agents) = self.live_agents.lock() {
+            agents.remove(agent_id);
         }
     }
 
@@ -1544,6 +1550,58 @@ impl EventRenderer {
         }
     }
 
+    fn rerender_visible_for_current_settings(&mut self) {
+        use tau_cli_term::resolve::themed_block;
+        use tau_themes::names;
+        for entry in &self.message_history {
+            self.handle.set_block(
+                entry.block_id,
+                self.render_agent_message_block(&entry.message),
+            );
+        }
+        for entry in &self.tool_history {
+            self.handle.set_block(
+                entry.block_id,
+                self.render_tool_history_block(&entry.display),
+            );
+        }
+        for entry in &self.diff_blocks {
+            self.handle.set_block(
+                entry.block_id,
+                self.render_diff_history_block(&entry.display, &entry.diff),
+            );
+        }
+        for (block_id, summary) in &self.tool_summaries {
+            self.handle
+                .set_block(*block_id, self.render_summary_block(summary));
+        }
+        for entry in &self.thinking_history {
+            let display = if self.show_thinking {
+                entry.text.as_str()
+            } else {
+                ""
+            };
+            self.handle.set_block(
+                entry.block_id,
+                themed_block(&self.theme, names::AGENT_THINKING, display),
+            );
+        }
+        for entry in &self.turn_stats_history {
+            let block = if self.show_turn_stats {
+                render_turn_stats_block(
+                    &self.theme,
+                    &entry.usage,
+                    None,
+                    entry.turn_latency,
+                    entry.total_latency,
+                )
+            } else {
+                Self::empty_block()
+            };
+            self.handle.set_block(entry.block_id, block);
+        }
+    }
+
     fn set_show_messages(&mut self, show_messages: tau_config::settings::ShowMessages) {
         if self.show_messages == show_messages {
             return;
@@ -1604,6 +1662,20 @@ impl EventRenderer {
     /// transcript. Persistent user preferences such as `show-diff`
     /// and `show-thinking` are intentionally preserved.
     fn clear_for_new_session(&mut self) {
+        self.agents_ui_state.clear();
+        self.query_agents.clear();
+        self.prompt_agents.clear();
+        self.tool_agents.clear();
+        if let Ok(mut agents) = self.known_agents.lock() {
+            *agents = vec![MAIN_AGENT_ID.to_owned()];
+        }
+        if let Ok(mut agents) = self.live_agents.lock() {
+            *agents = HashSet::from([MAIN_AGENT_ID.to_owned()]);
+        }
+        self.current_agent_id = Some(MAIN_AGENT_ID.to_owned());
+        if let Ok(mut current) = self.current_agent_state.lock() {
+            *current = Some(MAIN_AGENT_ID.to_owned());
+        }
         self.prompts.clear();
         self.compaction_blocks.clear();
         self.last_user_block = None;
@@ -1636,6 +1708,8 @@ impl EventRenderer {
         self.main_agent_turn_active = false;
         self.main_tools_visible = false;
         self.cumulative_agent_latency = Duration::ZERO;
+        self.agent_activity.clear();
+        self.update_agent_in_progress();
         self.handle.clear_output();
         self.render_session_preamble();
         if self.current_model.is_some() || self.current_role.is_some() {
@@ -1981,8 +2055,6 @@ impl EventRenderer {
             Event::SessionShutdown(_) => self.agent_activity.clear(),
             _ => {}
         }
-        self.agent_in_progress
-            .store(self.agent_activity.is_in_progress(), Ordering::Relaxed);
     }
 
     fn sync_main_tools_visibility_for_prompt_lifecycle(&mut self, event: &Event) {
@@ -2142,10 +2214,12 @@ impl EventRenderer {
                 *current = Some(target_agent_id.clone());
             }
             self.handle_recorded_at_for_visible_agent(event, recorded_at);
+            self.update_agent_in_progress();
             return;
         }
         if self.current_agent_id.as_deref() == Some(target_agent_id.as_str()) {
             self.handle_recorded_at_for_visible_agent(event, recorded_at);
+            self.update_agent_in_progress();
             return;
         }
 
@@ -2174,6 +2248,18 @@ impl EventRenderer {
             self.restore_hidden_agent_state(visible_state);
         });
         self.current_agent_id = Some(visible_agent_id);
+        self.update_agent_in_progress();
+    }
+
+    fn update_agent_in_progress(&self) {
+        let hidden_in_progress = self
+            .agents_ui_state
+            .values()
+            .any(|state| state.agent_activity.is_in_progress());
+        self.agent_in_progress.store(
+            self.agent_activity.is_in_progress() || hidden_in_progress,
+            Ordering::Relaxed,
+        );
     }
 
     fn learn_agent_metadata(&mut self, event: &Event) {
@@ -2181,12 +2267,17 @@ impl EventRenderer {
             Event::StartAgentRequest(request) => {
                 self.query_agents
                     .insert(request.query_id.clone(), request.agent_id.clone());
-                self.remember_agent(request.agent_id.clone());
+                self.mark_agent_live(request.agent_id.clone());
             }
             Event::StartAgentAccepted(accepted) => {
                 self.query_agents
                     .insert(accepted.query_id.clone(), accepted.agent_id.clone());
-                self.remember_agent(accepted.agent_id.clone());
+                self.mark_agent_live(accepted.agent_id.clone());
+            }
+            Event::StartAgentResult(result) => {
+                if let Some(agent_id) = self.query_agents.get(&result.query_id).cloned() {
+                    self.mark_agent_stopped(&agent_id);
+                }
             }
             Event::SessionPromptCreated(prompt) => {
                 let agent_id = self.agent_id_for_originator(&prompt.originator);
@@ -2262,7 +2353,49 @@ impl EventRenderer {
             Event::AgentMessage(message) if message.sender_id == "user" => {
                 message.recipient_id.clone()
             }
-            _ => self.agent_id_for_originator(&originator_of(event)),
+            Event::AgentMessage(message) => message.recipient_id.clone(),
+            Event::UiPromptSubmitted(prompt) => prompt
+                .target_agent_id
+                .clone()
+                .unwrap_or_else(|| self.agent_id_for_originator(&prompt.originator)),
+            Event::SessionPromptQueued(queued) => queued
+                .target_agent_id
+                .clone()
+                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+            Event::SessionPromptRecalled(recalled) => recalled
+                .target_agent_id
+                .clone()
+                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+            Event::SessionPromptSteered(steered) => steered
+                .target_agent_id
+                .clone()
+                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+            Event::SessionPromptCreated(prompt) => self.agent_id_for_originator(&prompt.originator),
+            Event::SessionPromptTerminated(terminated) => {
+                self.agent_id_for_originator(&terminated.originator)
+            }
+            Event::ProviderPromptSubmitted(submitted) => {
+                self.agent_id_for_originator(&submitted.originator)
+            }
+            Event::ProviderResponseUpdated(update) => {
+                self.agent_id_for_originator(&update.originator)
+            }
+            Event::ProviderResponseFinished(finished) => {
+                self.agent_id_for_originator(&finished.originator)
+            }
+            Event::SessionCompactionStarted(started) => {
+                self.agent_id_for_originator(&started.originator)
+            }
+            Event::SessionCompactionFinished(finished) => {
+                self.agent_id_for_originator(&finished.originator)
+            }
+            Event::SessionCompacted(compacted) => {
+                self.agent_id_for_originator(&compacted.originator)
+            }
+            _ => self
+                .current_agent_id
+                .clone()
+                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
         }
     }
 

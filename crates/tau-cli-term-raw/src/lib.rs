@@ -2294,6 +2294,11 @@ fn redraw_loop(
         }
 
         let mut st = state.lock().expect("term state mutex poisoned");
+        if st.redraw_suppression != 0 {
+            st.sync_completed = st.sync_requested;
+            sync_condvar.notify_all();
+            continue;
+        }
         if st.external_paused {
             st.sync_completed = st.sync_requested;
             sync_condvar.notify_all();
