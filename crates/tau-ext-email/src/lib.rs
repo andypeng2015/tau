@@ -3291,7 +3291,7 @@ fn email_tool_spec() -> ToolSpec {
             "additionalProperties": false
         })),
         format: None,
-        enabled_by_default: true,
+        enabled_by_default: false,
         execution_mode: ToolExecutionMode::Exclusive,
         background_support: None,
     }

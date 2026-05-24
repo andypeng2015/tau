@@ -357,6 +357,7 @@ fn registers_single_email_tool() {
     let tool = drain_startup(&mut pair.reader);
     assert_eq!(tool.name.as_str(), TOOL_NAME);
     assert_eq!(tool.execution_mode, ToolExecutionMode::Exclusive);
+    assert!(!tool.enabled_by_default);
     assert!(tool.parameters.is_some());
 }
 
