@@ -1720,6 +1720,7 @@ name = "tau"
 version = "0.1.0"
 dependencies = [
  "tau-cli",
+ "tau-ext-email",
  "tau-ext-provider-builtin",
  "tau-ext-shell",
  "tau-ext-std-notifications",
@@ -1821,6 +1822,18 @@ dependencies = [
  "serde_json",
  "tau-proto",
  "tempfile",
+]
+
+[[package]]
+name = "tau-ext-email"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tau-extension",
+ "tau-proto",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

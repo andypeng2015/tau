@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
+use tau_config::settings::InvalidExtensionName;
 use tau_core::ConnectionOrigin;
 use tau_proto::{ClientKind, Frame};
 
@@ -155,12 +156,16 @@ pub fn session_logs_dir(sessions_dir: &Path, session_id: &str) -> PathBuf {
 
 /// Path of the per-session, per-extension stderr log:
 /// `<sessions_dir>/<session_id>/logs/<name>.log`.
+///
+/// Extension names come from user-authored config, so validate the name before
+/// treating it as a harness-owned path component.
 pub(crate) fn extension_stderr_log_path(
     sessions_dir: &Path,
     session_id: &str,
     name: &str,
-) -> PathBuf {
-    session_logs_dir(sessions_dir, session_id).join(format!("{name}.log"))
+) -> Result<PathBuf, InvalidExtensionName> {
+    tau_config::settings::validate_extension_name(name)?;
+    Ok(session_logs_dir(sessions_dir, session_id).join(format!("{name}.log")))
 }
 
 /// Path of the per-session harness daemon log:
@@ -290,4 +295,32 @@ fn spawn_extension_stderr_logger(
         );
         let _ = file.flush();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_stderr_log_path_rejects_unsafe_extension_names() {
+        // Extension names originate in user-authored harness config. The
+        // stderr log path is constructed before the Configure handshake, so it
+        // must reject traversal and absolute-path names on its own.
+        let sessions_dir = Path::new("/tmp/tau-sessions");
+        assert_eq!(
+            extension_stderr_log_path(sessions_dir, "session-1", "std-email")
+                .expect("safe extension name"),
+            sessions_dir
+                .join("session-1")
+                .join("logs")
+                .join("std-email.log")
+        );
+
+        for name in ["", "../x", "a/b", "/tmp/x", ".", ".."] {
+            assert!(
+                extension_stderr_log_path(sessions_dir, "session-1", name).is_err(),
+                "{name:?} must be rejected before building the log path"
+            );
+        }
+    }
 }

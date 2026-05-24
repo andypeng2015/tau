@@ -201,6 +201,40 @@ fn test_tool_result(call_id: &str, tool_name: &str) -> Event {
 }
 
 #[test]
+fn configure_includes_extension_state_dir_and_creates_it() {
+    // The configure handshake is the only place an extension learns its
+    // persistent state location. Keep the path stable at state/ext/<name> and
+    // ensure it exists by the time the extension receives it.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    let sink = connect_handshaking_tool(&mut h, "std-email");
+
+    h.handle_extension_event(
+        "std-email",
+        Frame::Message(Message::Hello(tau_proto::Hello {
+            protocol_version: tau_proto::PROTOCOL_VERSION,
+            client_name: "tau-ext-email".into(),
+            client_kind: tau_proto::ClientKind::Tool,
+        })),
+    )
+    .expect("hello");
+
+    let frames = sink.lock().expect("sink");
+    let configure = frames
+        .iter()
+        .find_map(|routed| match &routed.frame {
+            Frame::Message(Message::Configure(configure)) => Some(configure),
+            _ => None,
+        })
+        .expect("configure sent");
+    let expected =
+        tau_config::settings::extension_state_dir_of(&sp, "std-email").expect("safe name");
+    assert_eq!(configure.state_dir.as_deref(), Some(expected.as_path()));
+    assert!(expected.is_dir(), "{} should exist", expected.display());
+}
+
+#[test]
 fn handshaking_tool_register_is_not_active_before_ready() {
     // Capability staging: a tool announced during handshake must not enter the
     // live registry, prompt tool list, or prompt fragments until the extension

@@ -123,7 +123,10 @@ fn disconnect_frame(reason: Option<String>) -> Frame {
 /// Build a `Frame::Message(Configure)` for tests that previously sent
 /// `Event::LifecycleConfigure`.
 fn configure_frame(config: tau_proto::CborValue) -> Frame {
-    Frame::Message(Message::Configure(tau_proto::Configure { config }))
+    Frame::Message(Message::Configure(tau_proto::Configure {
+        config,
+        state_dir: None,
+    }))
 }
 
 fn immediate_idle_agent_summary_config_frame() -> Frame {

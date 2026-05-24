@@ -879,6 +879,68 @@ pub fn sessions_dir_of(state_dir: &Path) -> PathBuf {
     state_dir.join("sessions")
 }
 
+/// Returns the persistent state directory reserved for one extension.
+///
+/// The harness passes this path to the extension in
+/// [`tau_proto::Configure::state_dir`]. Extension names come from the resolved
+/// harness configuration, including user-authored `harness.yaml` keys, so only
+/// conservative single-component names are accepted before joining under
+/// `state/ext/`.
+pub fn extension_state_dir_of(
+    state_dir: &Path,
+    extension_name: &str,
+) -> Result<PathBuf, InvalidExtensionName> {
+    validate_extension_name(extension_name)?;
+    Ok(state_dir.join("ext").join(extension_name))
+}
+
+/// Validates that an extension name is safe to use as a single path component
+/// in harness-owned per-extension paths.
+pub fn validate_extension_name(extension_name: &str) -> Result<(), InvalidExtensionName> {
+    if extension_name.is_empty() {
+        return Err(InvalidExtensionName {
+            name: extension_name.to_owned(),
+            reason: "extension name must not be empty",
+        });
+    }
+    if extension_name == "." || extension_name == ".." {
+        return Err(InvalidExtensionName {
+            name: extension_name.to_owned(),
+            reason: "extension name must be a normal path component",
+        });
+    }
+    if !extension_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(InvalidExtensionName {
+            name: extension_name.to_owned(),
+            reason: "extension name may contain only ASCII letters, digits, '.', '_' and '-'",
+        });
+    }
+    Ok(())
+}
+
+/// Error returned when a configured extension name is unsafe to use as a state
+/// directory path component.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvalidExtensionName {
+    name: String,
+    reason: &'static str,
+}
+
+impl fmt::Display for InvalidExtensionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid extension name `{}` for harness path component: {}",
+            self.name, self.reason
+        )
+    }
+}
+
+impl std::error::Error for InvalidExtensionName {}
+
 /// Returns the default tau per-session storage root
 /// (`~/.local/state/tau/sessions`).
 #[must_use]

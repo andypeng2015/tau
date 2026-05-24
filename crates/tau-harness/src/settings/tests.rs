@@ -51,6 +51,20 @@ fn builtins() -> Vec<BuiltinExtension> {
             true,
             serde_json::json!({ "idle_seconds": 60, "idle_agent_summary": false }),
         ),
+        builtin(
+            "std-websearch",
+            "ext-websearch",
+            "tool",
+            true,
+            serde_json::json!({}),
+        ),
+        builtin(
+            "std-email",
+            "ext-email",
+            "tool",
+            false,
+            serde_json::json!({}),
+        ),
     ]
 }
 
@@ -58,13 +72,14 @@ fn builtins() -> Vec<BuiltinExtension> {
 fn resolve_extensions_returns_builtins_when_user_config_empty() {
     let s = HarnessSettings::built_in();
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");
-    assert_eq!(resolved.len(), 3);
+    assert_eq!(resolved.len(), 4);
     assert_eq!(resolved[0].name, "provider-builtin");
     assert_eq!(resolved[0].command, "tau");
     assert_eq!(resolved[0].args, vec!["ext", "ext-provider-builtin"]);
     assert_eq!(resolved[0].role.as_deref(), Some("provider"));
     assert_eq!(resolved[1].name, "core-shell");
     assert_eq!(resolved[2].name, "std-notifications");
+    assert_eq!(resolved[3].name, "std-websearch");
 }
 
 #[test]
@@ -72,6 +87,30 @@ fn resolve_extensions_builtin_can_start_disabled() {
     let s = HarnessSettings::built_in();
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");
     assert!(resolved.iter().all(|e| e.name != "test-dummy"));
+    assert!(resolved.iter().all(|e| e.name != "std-email"));
+}
+
+#[test]
+fn resolve_extensions_enables_disabled_std_email_builtin() {
+    // The standard email extension ships disabled. A user opt-in should keep
+    // the built-in tau subcommand suffix and place the entry at its built-in
+    // order position.
+    let mut s = HarnessSettings::built_in();
+    s.extensions.insert(
+        "std-email".into(),
+        ExtensionEntry {
+            enable: Some(true),
+            ..Default::default()
+        },
+    );
+    let resolved = resolve_extensions(&s, builtins()).expect("resolve");
+    let email = resolved
+        .iter()
+        .find(|e| e.name == "std-email")
+        .expect("std-email enabled");
+    assert_eq!(email.command, "tau");
+    assert_eq!(email.args, vec!["ext", "ext-email"]);
+    assert_eq!(email.role.as_deref(), Some("tool"));
 }
 
 #[test]
@@ -85,9 +124,10 @@ fn resolve_extensions_disable_drops_entry() {
         },
     );
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");
-    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].name, "provider-builtin");
     assert_eq!(resolved[1].name, "std-notifications");
+    assert_eq!(resolved[2].name, "std-websearch");
 }
 
 #[test]
@@ -145,7 +185,7 @@ fn resolve_extensions_adds_user_extension_keys() {
         },
     );
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");
-    assert_eq!(resolved.len(), 4);
+    assert_eq!(resolved.len(), 5);
     let mything = resolved
         .iter()
         .find(|e| e.name == "mything")
@@ -164,6 +204,7 @@ fn resolve_extensions_empty_entry_does_not_re_enable_disabled_builtin() {
         .insert("test-dummy".into(), ExtensionEntry::default());
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");
     assert!(resolved.iter().all(|e| e.name != "test-dummy"));
+    assert!(resolved.iter().all(|e| e.name != "std-email"));
 }
 
 #[test]
@@ -215,6 +256,7 @@ fn resolve_extensions_loads_from_yaml() {
             "provider-builtin",
             "test-dummy",
             "std-notifications",
+            "std-websearch",
             "mything"
         ]
     );
@@ -231,4 +273,21 @@ fn resolve_extensions_loads_from_yaml() {
 #[test]
 fn built_in_extensions_yaml_parses() {
     let _ = built_in_extension_defs();
+}
+
+#[test]
+fn built_in_extensions_json5_contains_disabled_std_email() {
+    // Guard the real embedded JSON5, not the local test fixture, so the
+    // disabled-by-default email extension keeps the documented tau ext suffix
+    // and tool role when future built-ins are edited.
+    let email = built_in_extension_defs()
+        .iter()
+        .find(|def| def.name == "std-email")
+        .expect("std-email built-in");
+    assert!(!email.enable);
+    assert_eq!(
+        email.suffix.as_deref(),
+        Some(["ext".to_owned(), "ext-email".to_owned()].as_slice())
+    );
+    assert_eq!(email.role.as_deref(), Some("tool"));
 }

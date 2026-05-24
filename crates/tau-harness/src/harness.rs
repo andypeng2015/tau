@@ -769,6 +769,9 @@ pub struct Harness {
     pub(crate) registry: ToolRegistry,
     /// Injected handlers for tools implemented inside the harness process.
     pub(crate) internal_tool_handlers: InternalToolHandlers,
+    /// Runtime state root for this harness. Extension-specific persistent
+    /// directories are allocated below this path and sent in Configure.
+    pub(crate) state_dir: PathBuf,
     /// Append-only on-disk session store. Owns one `SessionTree` per
     /// session id, derived by folding the durable per-session event log
     /// at `<state_dir>/<session_id>/events.cbor`. The tree is never
@@ -1377,6 +1380,7 @@ impl Harness {
             bus,
             registry: ToolRegistry::new(),
             internal_tool_handlers: Vec::new(),
+            state_dir: state_dir.clone(),
             store,
             current_session_id: eager_session_id.into(),
             tool_conversations: std::collections::HashMap::new(),
@@ -1532,7 +1536,8 @@ impl Harness {
             };
 
             let log_path =
-                extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name);
+                extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name)
+                    .map_err(|error| HarnessError::Participant(error.to_string()))?;
             let spawned = spawn_supervised(ext_config, kind.clone(), Some(log_path), &tx)?;
             let conn_id = spawned.connection_id.clone();
             tracing::info!(
@@ -1611,6 +1616,7 @@ impl Harness {
             bus,
             registry: ToolRegistry::new(),
             internal_tool_handlers: Vec::new(),
+            state_dir: state_dir.clone(),
             store,
             current_session_id: eager_session_id.into(),
             tool_conversations: std::collections::HashMap::new(),
@@ -4283,7 +4289,8 @@ impl Harness {
             &self.sessions_dir(),
             self.current_session_id.as_str(),
             &config.name,
-        );
+        )
+        .map_err(|error| HarnessError::Participant(error.to_string()))?;
         tracing::info!(
             target: "tau_harness::startup",
             extension = %config.name,
@@ -4518,17 +4525,47 @@ impl Harness {
     /// a `supervised_config` so they get the empty default — they
     /// already accept configuration via constructor parameters.
     fn send_lifecycle_configure(&mut self, source_id: &str) {
-        let config_json = self
-            .extensions
-            .get(source_id)
-            .and_then(|e| e.supervised_config.as_ref())
+        let Some(entry) = self.extensions.get(source_id) else {
+            return;
+        };
+        let config_json = entry
+            .supervised_config
+            .as_ref()
             .map(|cfg| cfg.config.clone())
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        let state_dir =
+            match tau_config::settings::extension_state_dir_of(&self.state_dir, &entry.name) {
+                Ok(state_dir) => state_dir,
+                Err(error) => {
+                    tracing::warn!(
+                        extension = %entry.name,
+                        error = %error,
+                        "refusing to configure extension with unsafe state directory name"
+                    );
+                    let _ = self.bus.send_to(
+                        source_id,
+                        None,
+                        Frame::Message(Message::ConfigError(tau_proto::ConfigError {
+                            message: error.to_string(),
+                        })),
+                    );
+                    return;
+                }
+            };
+        if let Err(error) = std::fs::create_dir_all(&state_dir) {
+            tracing::warn!(
+                extension = %entry.name,
+                state_dir = %state_dir.display(),
+                error = %error,
+                "failed to create extension state directory before configure"
+            );
+        }
         let _ = self.bus.send_to(
             source_id,
             None,
             Frame::Message(Message::Configure(tau_proto::Configure {
                 config: tau_proto::json_to_cbor(&config_json),
+                state_dir: Some(state_dir),
             })),
         );
     }

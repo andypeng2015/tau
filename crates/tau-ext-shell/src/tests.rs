@@ -2272,6 +2272,7 @@ fn shell_tool_applies_configured_prefix_and_command() {
                     ),
                 ]),
             )]),
+            state_dir: None,
         })))
         .expect("configure");
     writer
@@ -2384,6 +2385,7 @@ fn shell_extension_rejects_invalid_config() {
                     CborValue::Text("nope".to_owned()),
                 )]),
             )]),
+            state_dir: None,
         })))
         .expect("configure");
     writer.flush().expect("flush");

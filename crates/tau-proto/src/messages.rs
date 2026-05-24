@@ -13,6 +13,8 @@
 //! ...}` shape so the [`crate::Frame`] envelope can disambiguate by
 //! discriminator.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{CborValue, ClientKind, Event, EventSelector, ExtensionName, InterceptionPriority};
@@ -68,13 +70,19 @@ pub struct Disconnect {
 /// [`Hello`](crate::Hello). Carries whatever the
 /// `config: { … }` value was for that extension in `harness.yaml`,
 /// or [`CborValue::Null`] / an empty map when no config was
-/// provided.
+/// provided. `state_dir` is the harness-assigned persistent state
+/// directory for this extension instance, when the harness can provide
+/// one.
 ///
 /// `Eq` is not derivable because the underlying CBOR value can
 /// contain floats; `PartialEq` is enough for tests.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Configure {
+    /// Free-form extension configuration from harness settings.
     pub config: CborValue,
+    /// Persistent directory reserved for this extension's runtime state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Reported by an extension when its

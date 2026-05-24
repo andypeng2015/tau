@@ -290,6 +290,7 @@ fn representative_messages() -> Vec<Message> {
         }),
         Message::Configure(Configure {
             config: CborValue::Null,
+            state_dir: Some(std::path::PathBuf::from("/tmp/tau/state/ext/demo")),
         }),
         Message::ConfigError(ConfigError {
             message: "bad config".to_owned(),
@@ -397,6 +398,39 @@ fn multiple_frames_can_share_one_stream() {
     }
 
     assert_eq!(decoded, frames);
+}
+
+#[test]
+fn configure_state_dir_is_optional_for_older_payloads() {
+    // Older harnesses sent only `config`. New extensions must still accept that
+    // payload and treat the state directory as unavailable rather than failing
+    // deserialization during the lifecycle handshake.
+    let parsed: Configure = serde_json::from_value(serde_json::json!({
+        "config": null
+    }))
+    .expect("legacy configure decodes");
+
+    assert_eq!(parsed.config, CborValue::Null);
+    assert_eq!(parsed.state_dir, None);
+
+    let with_state = Configure {
+        config: CborValue::Null,
+        state_dir: Some(std::path::PathBuf::from("/tmp/tau/state/ext/demo")),
+    };
+    let json = serde_json::to_value(&with_state).expect("serialize configure");
+    assert_eq!(
+        json["state_dir"],
+        serde_json::json!("/tmp/tau/state/ext/demo")
+    );
+    let decoded: Configure = serde_json::from_value(json).expect("decode configure");
+    assert_eq!(decoded, with_state);
+
+    let without_state = serde_json::to_value(Configure {
+        config: CborValue::Null,
+        state_dir: None,
+    })
+    .expect("serialize configure without state dir");
+    assert!(without_state.get("state_dir").is_none());
 }
 
 #[test]

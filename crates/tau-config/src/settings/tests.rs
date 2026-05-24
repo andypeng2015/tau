@@ -1034,3 +1034,22 @@ fn sample_configs_deserialize() {
     let _harness =
         load_harness_settings_in(&dirs_with_config(dir)).expect("harness sample should parse");
 }
+
+#[test]
+fn extension_state_dir_rejects_unsafe_extension_names() {
+    // Extension names can come from user-authored harness.yaml keys. Rejecting
+    // anything other than a conservative single path component keeps the
+    // injected state directory confined under state/ext/<extension>.
+    let state_dir = std::path::Path::new("/tmp/tau-state");
+    assert_eq!(
+        extension_state_dir_of(state_dir, "std-email").expect("safe extension name"),
+        state_dir.join("ext").join("std-email")
+    );
+
+    for name in ["", "../x", "a/b", "/tmp/x", ".", ".."] {
+        assert!(
+            extension_state_dir_of(state_dir, name).is_err(),
+            "{name:?} must be rejected"
+        );
+    }
+}

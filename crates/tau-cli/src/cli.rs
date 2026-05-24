@@ -123,7 +123,7 @@ pub enum Command {
     #[command(hide = true, alias = "component")]
     Ext {
         /// Extension name (harness, ext-provider-builtin, ext-shell,
-        /// ext-test-dummy, ext-std-notifications)
+        /// ext-test-dummy, ext-std-notifications, ext-websearch, ext-email)
         name: String,
     },
 }

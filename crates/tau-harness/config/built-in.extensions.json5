@@ -38,4 +38,11 @@
         enable: true,
         config: {},
     },
+    {
+        name: "std-email",
+        suffix: ["ext", "ext-email"],
+        role: "tool",
+        enable: false,
+        config: {},
+    },
 ]
