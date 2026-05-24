@@ -1434,8 +1434,8 @@ pub struct BackendMessage {
     pub subject: String,
     /// Message body text. Metadata-only fetches leave this empty.
     pub body_text: String,
-    /// Whether the backend deliberately fetched only a bounded prefix of the
-    /// source message.
+    /// Whether the backend could not inspect the complete source message, such
+    /// as after a bounded fetch or RFC822 parse failure.
     pub source_truncated: bool,
     /// Minimal flags.
     pub flags: Vec<String>,

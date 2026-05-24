@@ -351,7 +351,7 @@ async fn read_message_async(
                 .map(|size| u64::from(size) > body.len() as u64)
                 .unwrap_or(body.len() >= READ_MESSAGE_FETCH_MAX_BYTES);
             let mut message = parse_backend_message_from_rfc822(&metadata, body);
-            message.source_truncated = source_truncated;
+            message.source_truncated = message.source_truncated || source_truncated;
             message
         }
         None => return Err("message_not_found: message not found".to_owned()),
@@ -543,6 +543,7 @@ pub(crate) fn parse_backend_message_from_rfc822(
     let Some(parsed) = MessageParser::default().parse(raw) else {
         let mut message = fallback.clone();
         message.body_text = "[message body omitted: RFC822 parse failed]".to_owned();
+        message.source_truncated = true;
         message.attachments.clear();
         return message;
     };

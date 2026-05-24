@@ -1081,6 +1081,7 @@ fn rfc822_parser_failure_omits_raw_message_body() {
         "[message body omitted: RFC822 parse failed]"
     );
     assert!(!parsed.body_text.contains("secret.bin"));
+    assert!(parsed.source_truncated);
     assert!(parsed.attachments.is_empty());
 }
 
