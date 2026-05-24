@@ -17,6 +17,7 @@ pub(crate) fn run_print_prompt(
         &session_id,
         SessionLaunchStatus::New,
         Some(output),
+        Some(role),
         role_cli_overrides,
         extension_cli_overrides,
     )?;

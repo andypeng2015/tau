@@ -72,6 +72,10 @@ pub struct RunArgs {
     #[arg(short = 'r', long = "resume", num_args = 0..=1, default_missing_value = "")]
     pub resume: Option<String>,
 
+    /// Select the startup role for a newly spawned session.
+    #[arg(long = "role")]
+    pub role: Option<String>,
+
     /// Path to extension configuration file
     #[arg(long)]
     pub config: Option<PathBuf>,

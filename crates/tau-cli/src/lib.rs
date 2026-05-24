@@ -400,6 +400,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
         match command {
             cli::Command::Run(cli::RunArgs {
                 resume,
+                role,
                 config: _config,
                 attach,
             }) => {
@@ -429,6 +430,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                     &session_id,
                     attach,
                     session_status,
+                    role.as_deref(),
                     &role_cli_overrides,
                     &extension_cli_overrides,
                 )

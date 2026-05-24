@@ -41,6 +41,13 @@ fn dev_print_prompt_parses_role_flag() {
 }
 
 #[test]
+fn startup_role_flag_is_parsed_for_default_run() {
+    let cli = super::cli::Cli::parse_from(["tau", "--role", "manager"]);
+
+    assert_eq!(cli.run.role.as_deref(), Some("manager"));
+}
+
+#[test]
 fn role_cli_flags_accept_repeated_and_mixed_options() {
     let cli = super::cli::Cli::parse_from([
         "tau",

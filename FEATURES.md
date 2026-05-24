@@ -145,7 +145,8 @@ group-level fields apply as defaults to that group's roles; per-role
 use `tools` and `disableTools` to customize internal tool availability.
 
 `defaultRole` selects the startup role; if it is omitted Tau starts on the
-first role in `roleGroups` order. `/model <role>` switches roles for the current
+first role in `roleGroups` order. `tau --role <role>` overrides the startup role
+for one newly spawned session. `/model <role>` switches roles for the current
 run; `/role <role> <setting> <value>` edits role settings for the current
 process only. See
 [`docs/agent-roles.md`](docs/agent-roles.md).

@@ -436,6 +436,7 @@ pub(crate) fn run_chat(
     session_id: &str,
     attach: bool,
     session_status: SessionLaunchStatus,
+    startup_role: Option<&str>,
     role_cli_overrides: &[tau_config::settings::RoleCliOverride],
     extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
 ) -> Result<(), CliError> {
@@ -464,6 +465,7 @@ pub(crate) fn run_chat(
         session_id,
         session_status,
         daemon_output,
+        startup_role,
         role_cli_overrides,
         extension_cli_overrides,
     )?;

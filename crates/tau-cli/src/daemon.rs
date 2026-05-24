@@ -225,6 +225,7 @@ pub(crate) fn resolve_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     daemon_output: Option<DaemonOutput>,
+    startup_role: Option<&str>,
     role_cli_overrides: &[tau_config::settings::RoleCliOverride],
     extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
 ) -> Result<DaemonHandle, CliError> {
@@ -241,6 +242,7 @@ pub(crate) fn resolve_daemon(
         session_id,
         session_status,
         daemon_output.expect("daemon output for spawned harness"),
+        startup_role,
         role_cli_overrides,
         extension_cli_overrides,
     )
@@ -268,6 +270,7 @@ fn start_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     output: DaemonOutput,
+    startup_role: Option<&str>,
     role_cli_overrides: &[tau_config::settings::RoleCliOverride],
     extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
 ) -> Result<DaemonHandle, CliError> {
@@ -278,16 +281,17 @@ fn start_daemon(
 
     let ReadyPipe { read_fd, write_fd } = ReadyPipe::create()?;
 
-    let spawn_result = build_daemon_command(
-        &tau_binary,
+    let spawn_result = build_daemon_command(DaemonCommandSpec {
+        tau_binary: &tau_binary,
         session_id,
         session_status,
-        output.stdout,
-        output.stderr,
+        stdout: output.stdout,
+        stderr: output.stderr,
         write_fd,
+        startup_role,
         role_cli_overrides,
         extension_cli_overrides,
-    )
+    })
     .spawn();
 
     // Parent never writes to the pipe; close our copy of the write end
@@ -337,31 +341,37 @@ fn start_daemon(
     }
 }
 
-/// Build the `tau ext harness` command with the readiness-pipe write fd
-/// arranged to survive `execve`. Splitting this out keeps the unsafe
-/// `pre_exec` block isolated from [`start_daemon`]'s control flow.
-fn build_daemon_command(
-    tau_binary: &Path,
-    session_id: &str,
+struct DaemonCommandSpec<'a> {
+    tau_binary: &'a Path,
+    session_id: &'a str,
     session_status: SessionLaunchStatus,
     stdout: Stdio,
     stderr: Stdio,
     write_fd: libc::c_int,
-    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
-    extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
-) -> Command {
+    startup_role: Option<&'a str>,
+    role_cli_overrides: &'a [tau_config::settings::RoleCliOverride],
+    extension_cli_overrides: &'a [tau_config::settings::ExtensionCliOverride],
+}
+
+/// Build the `tau ext harness` command with the readiness-pipe write fd
+/// arranged to survive `execve`. Splitting this out keeps the unsafe
+/// `pre_exec` block isolated from [`start_daemon`]'s control flow.
+fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
     use std::os::unix::process::CommandExt;
 
-    let mut cmd = Command::new(tau_binary);
+    let mut cmd = Command::new(spec.tau_binary);
     cmd.arg("ext")
         .arg("harness")
-        .env("TAU_SESSION_ID", session_id)
-        .env("TAU_SESSION_STATUS", session_status.as_str())
+        .env("TAU_SESSION_ID", spec.session_id)
+        .env("TAU_SESSION_STATUS", spec.session_status.as_str())
         // TAU_VERSION/TAU_BUILD/TAU_LAST_MODIFIED used to be forwarded
         // here; the harness child now reads its own `built` snapshot
         // (see `tau_harness::version::export_to_env`) and publishes
         // them to its own environment instead.
-        .env(tau_harness::runtime_dir::READY_FD_ENV, write_fd.to_string())
+        .env(
+            tau_harness::runtime_dir::READY_FD_ENV,
+            spec.write_fd.to_string(),
+        )
         // Default-enable info logging in the child process so `tau`
         // captures harness logs without requiring an env var. Users
         // can still override/filter with `TAU_LOG`.
@@ -372,13 +382,16 @@ fn build_daemon_command(
             }),
         )
         .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr);
+        .stdout(spec.stdout)
+        .stderr(spec.stderr);
 
-    if !role_cli_overrides.is_empty() {
+    if let Some(role) = spec.startup_role.filter(|role| !role.is_empty()) {
+        cmd.env(tau_harness::STARTUP_ROLE_ENV, role);
+    }
+    if !spec.role_cli_overrides.is_empty() {
         cmd.env(
             tau_harness::ROLE_CLI_OVERRIDES_ENV,
-            serde_json::to_string(role_cli_overrides).expect("role overrides serialize"),
+            serde_json::to_string(spec.role_cli_overrides).expect("role overrides serialize"),
         );
     }
     if !spec.extension_cli_overrides.is_empty() {
@@ -396,11 +409,11 @@ fn build_daemon_command(
     #[allow(unsafe_code)]
     unsafe {
         cmd.pre_exec(move || {
-            let flags = libc::fcntl(write_fd, libc::F_GETFD);
+            let flags = libc::fcntl(spec.write_fd, libc::F_GETFD);
             if flags == -1 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::fcntl(write_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+            if libc::fcntl(spec.write_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())

@@ -299,6 +299,7 @@ fn merge_json(base: serde_json::Value, over: serde_json::Value) -> serde_json::V
 /// isn't running" with no clue why.
 pub const ROLE_CLI_OVERRIDES_ENV: &str = "TAU_ROLE_CLI_OVERRIDES";
 pub const EXTENSION_CLI_OVERRIDES_ENV: &str = "TAU_EXTENSION_CLI_OVERRIDES";
+pub const STARTUP_ROLE_ENV: &str = "TAU_STARTUP_ROLE";
 
 pub(crate) fn load_harness_settings_or_warn(
     dirs: &tau_config::settings::TauDirs,
@@ -306,12 +307,24 @@ pub(crate) fn load_harness_settings_or_warn(
     let role_overrides = role_cli_overrides_from_env();
     match tau_config::settings::load_harness_settings_with_role_overrides_in(dirs, &role_overrides)
     {
-        Ok(settings) => (settings, None),
+        Ok(settings) => (apply_startup_role_override(settings), None),
         Err(error) => {
             eprintln!("tau: harness.yaml failed to parse — ignored.\n{error}");
-            (HarnessSettings::built_in(), Some(error))
+            (
+                apply_startup_role_override(HarnessSettings::built_in()),
+                Some(error),
+            )
         }
     }
+}
+
+fn apply_startup_role_override(mut settings: HarnessSettings) -> HarnessSettings {
+    if let Ok(role) = std::env::var(STARTUP_ROLE_ENV)
+        && !role.is_empty()
+    {
+        settings.default_role = Some(role);
+    }
+    settings
 }
 
 fn role_cli_overrides_from_env() -> Vec<RoleCliOverride> {
