@@ -1055,6 +1055,11 @@ impl StateStore {
         self.load_incoming_approval("approved", id)
     }
 
+    /// Load one denied incoming read approval by id.
+    pub fn denied_incoming_by_id(&self, id: &str) -> Result<IncomingApproval, String> {
+        self.load_incoming_approval("denied", id)
+    }
+
     /// Load one approved outgoing send approval by id.
     pub fn approved_outgoing_by_id(&self, id: &str) -> Result<OutgoingApproval, String> {
         self.load_outgoing_approval("approved", id)
@@ -1215,6 +1220,11 @@ impl StateStore {
         self.approve("incoming", id)
     }
 
+    /// Mark an incoming approval ID as denied by moving/writing it to denied.
+    pub fn deny_incoming(&self, id: &str) -> Result<(), String> {
+        self.deny("incoming", id)
+    }
+
     /// Mark an outgoing approval ID as approved by moving/writing it to
     /// approved.
     pub fn approve_outgoing(&self, id: &str) -> Result<(), String> {
@@ -1263,15 +1273,23 @@ impl StateStore {
     }
 
     fn approve(&self, kind: &str, id: &str) -> Result<(), String> {
+        self.move_pending_approval(kind, id, "approved")
+    }
+
+    fn deny(&self, kind: &str, id: &str) -> Result<(), String> {
+        self.move_pending_approval(kind, id, "denied")
+    }
+
+    fn move_pending_approval(&self, kind: &str, id: &str, new_status: &str) -> Result<(), String> {
         validate_approval_id(id)?;
         let from = self.approval_path(kind, "pending", id)?;
-        let to = self.approval_path(kind, "approved", id)?;
+        let to = self.approval_path(kind, new_status, id)?;
         if from.exists() {
             let mut record: serde_json::Value =
                 serde_json::from_slice(&fs::read(&from).map_err(|error| error.to_string())?)
                     .map_err(|error| format!("failed to parse {}: {error}", from.display()))?;
             validate_approval_record(&record, kind, "pending", id)?;
-            record["status"] = serde_json::Value::String("approved".to_owned());
+            record["status"] = serde_json::Value::String(new_status.to_owned());
             match atomic_json_create_new(&to, &record) {
                 Ok(()) | Err(CreateNewJsonError::AlreadyExists) => {}
                 Err(CreateNewJsonError::Other(message)) => return Err(message),
@@ -1290,6 +1308,16 @@ impl StateStore {
 
     fn incoming_approved_exact(&self, target: &IncomingTarget, metadata: &BackendMessage) -> bool {
         self.list_incoming_approvals("approved")
+            .is_ok_and(|approvals| {
+                approvals.iter().any(|approval| {
+                    incoming_approval_matches_target_tuple(approval, target)
+                        && incoming_approval_matches_message_metadata(approval, metadata)
+                })
+            })
+    }
+
+    fn incoming_denied_exact(&self, target: &IncomingTarget, metadata: &BackendMessage) -> bool {
+        self.list_incoming_approvals("denied")
             .is_ok_and(|approvals| {
                 approvals.iter().any(|approval| {
                     incoming_approval_matches_target_tuple(approval, target)
@@ -1667,6 +1695,30 @@ fn atomic_json_create_new<T: Serialize>(path: &Path, value: &T) -> Result<(), Cr
     }
 }
 
+/// IMAP flag mutation requested by safe message-management commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageFlagMutation {
+    /// Add the IMAP `\\Seen` flag.
+    AddSeen,
+    /// Remove the IMAP `\\Seen` flag.
+    RemoveSeen,
+    /// Add the IMAP `\\Flagged` flag.
+    AddFlagged,
+    /// Remove the IMAP `\\Flagged` flag.
+    RemoveFlagged,
+}
+
+impl MessageFlagMutation {
+    fn imap_store_query(self) -> &'static str {
+        match self {
+            Self::AddSeen => "+FLAGS.SILENT (\\Seen)",
+            Self::RemoveSeen => "-FLAGS.SILENT (\\Seen)",
+            Self::AddFlagged => "+FLAGS.SILENT (\\Flagged)",
+            Self::RemoveFlagged => "-FLAGS.SILENT (\\Flagged)",
+        }
+    }
+}
+
 /// Minimal backend abstraction used by command handlers.
 pub trait EmailBackend {
     /// List folders known to the backend for an account.
@@ -1707,6 +1759,22 @@ pub trait EmailBackend {
         folder: &str,
         uid: &str,
     ) -> Result<BackendMessage, String>;
+    /// Add or remove a standard IMAP flag for one message by UID.
+    fn update_message_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+        mutation: MessageFlagMutation,
+    ) -> Result<(), String>;
+    /// Move one message by UID from the selected folder to the account's Trash
+    /// mailbox.
+    fn move_message_to_trash(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+    ) -> Result<String, String>;
     /// Send one already-approved outgoing message.
     fn send_message(&mut self, message: &OutgoingMessage) -> Result<String, String>;
 }
@@ -2121,6 +2189,17 @@ impl<B: EmailBackend> Engine<B> {
                 folder,
                 uid,
             } => self.read(&account, &folder, &uid),
+            EmailCommand::ManageMessage {
+                command,
+                account,
+                folder,
+                uid,
+            } => self.manage_message(command, &account, &folder, &uid),
+            EmailCommand::Trash {
+                account,
+                folder,
+                uid,
+            } => self.trash(&account, &folder, &uid),
             EmailCommand::Send {
                 account,
                 from,
@@ -2294,7 +2373,14 @@ impl<B: EmailBackend> Engine<B> {
             .messages
             .into_iter()
             .map(|m| {
-                let decision = self.incoming_decision(&m);
+                let target = IncomingTarget {
+                    account: account_id.to_owned(),
+                    folder: folder.to_owned(),
+                    uid: m.uid.clone(),
+                    uidvalidity: m.uidvalidity.clone(),
+                };
+                let (access, decision) = self.incoming_effective_access(&target, &m);
+                let readable = access == "granted";
                 let has_attachments = m.has_attachments || !m.attachments.is_empty();
                 let mut entries = vec![
                     (
@@ -2321,12 +2407,13 @@ impl<B: EmailBackend> Engine<B> {
                                 .collect(),
                         ),
                     ),
-                    ("subject_redacted", CborValue::Bool(!decision.allowed)),
+                    ("access", CborValue::Text(access.to_owned())),
+                    ("subject_redacted", CborValue::Bool(!readable)),
                     ("policy", policy_cbor(&decision)),
                 ];
                 entries.push((
                     "subject",
-                    if decision.allowed {
+                    if readable {
                         CborValue::Text(safe_model_line(&m.subject, MAX_HEADER_VALUE_CHARS))
                     } else {
                         CborValue::Null
@@ -2334,7 +2421,7 @@ impl<B: EmailBackend> Engine<B> {
                 ));
                 entries.push((
                     "subject_preview",
-                    if decision.allowed {
+                    if readable {
                         CborValue::Null
                     } else {
                         CborValue::Text(unapproved_subject_preview(&m.subject))
@@ -2342,7 +2429,7 @@ impl<B: EmailBackend> Engine<B> {
                 ));
                 entries.push((
                     "has_attachments",
-                    if decision.allowed {
+                    if readable {
                         CborValue::Bool(has_attachments)
                     } else {
                         CborValue::Null
@@ -2416,11 +2503,43 @@ impl<B: EmailBackend> Engine<B> {
             uid: uid.to_owned(),
             uidvalidity: metadata.uidvalidity.clone(),
         };
-        let mut decision = self.incoming_decision(&metadata);
-        if !decision.allowed && self.state.incoming_approved_exact(&target, &metadata) {
-            decision = PolicyDecision::allowed(Some("approval".to_owned()));
+        let (access, decision) = self.incoming_effective_access(&target, &metadata);
+        if access == "denied" {
+            return ok_envelope(
+                "read",
+                "access_denied",
+                cbor_map(vec![
+                    ("access", CborValue::Text("denied".to_owned())),
+                    ("kind", CborValue::Text("incoming_read".to_owned())),
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "folder",
+                        CborValue::Text(safe_model_line(folder, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "uid",
+                        CborValue::Text(safe_model_line(uid, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    ("from", CborValue::Text(incoming_approval_from(&metadata))),
+                    (
+                        "date",
+                        CborValue::Text(safe_model_line(&metadata.date, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    ("subject", CborValue::Null),
+                    (
+                        "subject_preview",
+                        CborValue::Text(unapproved_subject_preview(&metadata.subject)),
+                    ),
+                    ("subject_redacted", CborValue::Bool(true)),
+                    ("reason", CborValue::Text(decision.reason.clone())),
+                    ("policy", policy_cbor(&decision)),
+                ]),
+            );
         }
-        if decision.allowed {
+        if access == "granted" {
             let msg = match self.backend.read_message(account_id, folder, uid) {
                 Ok(message) => message,
                 Err(message)
@@ -2456,6 +2575,7 @@ impl<B: EmailBackend> Engine<B> {
                         CborValue::Text(safe_model_line(folder, MAX_HEADER_VALUE_CHARS)),
                     ),
                     ("uid", CborValue::Text(uid.to_owned())),
+                    ("access", CborValue::Text("granted".to_owned())),
                     (
                         "headers",
                         cbor_map(vec![
@@ -2556,6 +2676,7 @@ impl<B: EmailBackend> Engine<B> {
                 "approval_required",
                 cbor_map(vec![
                     ("approval_id", CborValue::Text(id)),
+                    ("access", CborValue::Text("on-demand".to_owned())),
                     ("kind", CborValue::Text("incoming_read".to_owned())),
                     ("account", CborValue::Text(account_id.to_owned())),
                     (
@@ -2575,6 +2696,112 @@ impl<B: EmailBackend> Engine<B> {
                 ]),
             ),
             Err(message) => error_envelope(Some("read"), "internal_error", &message),
+        }
+    }
+
+    fn validate_message_target(
+        &self,
+        command: &str,
+        account_id: &str,
+        folder: &str,
+        uid: &str,
+    ) -> Result<String, CborValue> {
+        let account_id = self.resolve_account_id(command, account_id)?;
+        let account = self.account(command, account_id)?;
+        if let Err(message) = validate_mailbox_name(folder) {
+            return Err(error_envelope(Some(command), "invalid_input", &message));
+        }
+        if !account.folders.allows(folder) {
+            return Err(error_envelope(
+                Some(command),
+                "folder_not_allowed",
+                "folder is not whitelisted for this account",
+            ));
+        }
+        if !is_single_uid(uid) {
+            return Err(error_envelope(
+                Some(command),
+                "invalid_input",
+                "uid must be a positive integer",
+            ));
+        }
+        Ok(account_id.to_owned())
+    }
+
+    fn manage_message(
+        &mut self,
+        command: MessageManagementCommand,
+        account_id: &str,
+        folder: &str,
+        uid: &str,
+    ) -> CborValue {
+        let command_name = command.command_name();
+        let account_id = match self.validate_message_target(command_name, account_id, folder, uid) {
+            Ok(account_id) => account_id,
+            Err(error) => return error,
+        };
+        match self
+            .backend
+            .update_message_flags(&account_id, folder, uid, command.mutation())
+        {
+            Ok(()) => ok_envelope(
+                command_name,
+                command.status_name(),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "folder",
+                        CborValue::Text(safe_model_line(folder, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "uid",
+                        CborValue::Text(safe_model_line(uid, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                ]),
+            ),
+            Err(message) if backend_error_code(&message, "imap_error") == "message_not_found" => {
+                error_envelope(Some(command_name), "message_not_found", "message not found")
+            }
+            Err(message) => backend_error_envelope(Some(command_name), "imap_error", &message),
+        }
+    }
+
+    fn trash(&mut self, account_id: &str, folder: &str, uid: &str) -> CborValue {
+        let command = "trash";
+        let account_id = match self.validate_message_target(command, account_id, folder, uid) {
+            Ok(account_id) => account_id,
+            Err(error) => return error,
+        };
+        match self.backend.move_message_to_trash(&account_id, folder, uid) {
+            Ok(trash_folder) => ok_envelope(
+                command,
+                "moved_to_trash",
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "folder",
+                        CborValue::Text(safe_model_line(folder, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "uid",
+                        CborValue::Text(safe_model_line(uid, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "trash_folder",
+                        CborValue::Text(safe_model_line(&trash_folder, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                ]),
+            ),
+            Err(message) if backend_error_code(&message, "imap_error") == "message_not_found" => {
+                error_envelope(Some(command), "message_not_found", "message not found")
+            }
+            Err(message) => backend_error_envelope(Some(command), "imap_error", &message),
         }
     }
 
@@ -2826,6 +3053,7 @@ impl<B: EmailBackend> Engine<B> {
             "email.in.list" => require_no_args(argv).and_then(|()| self.action_in_list()),
             "email.in.open" => require_one_arg(argv).and_then(|id| self.action_in_open(id)),
             "email.in.approve" => require_one_arg(argv).and_then(|id| self.action_in_approve(id)),
+            "email.in.deny" => require_one_arg(argv).and_then(|id| self.action_in_deny(id)),
             "email.in.whitelist" => {
                 require_one_arg(argv).and_then(|pattern| self.action_in_whitelist(pattern))
             }
@@ -3022,6 +3250,37 @@ impl<B: EmailBackend> Engine<B> {
         }
     }
 
+    fn action_in_deny(&mut self, id: &str) -> Result<String, String> {
+        validate_approval_id(id)?;
+        match self.state.pending_incoming_by_id(id) {
+            Ok(approval) => {
+                self.state.deny_incoming(id)?;
+                Ok(format!(
+                    "Denied incoming email read {id}; future matching email.read requests for account={} folder={} uid={} will return access_denied.",
+                    safe_display_line(&approval.account),
+                    safe_display_line(&approval.folder),
+                    safe_display_line(&approval.uid)
+                ))
+            }
+            Err(pending_error) => {
+                if let Ok(approval) = self.state.denied_incoming_by_id(id) {
+                    return Ok(format!(
+                        "Incoming email read {id} is already denied; matching email.read requests for account={} folder={} uid={} return access_denied.",
+                        safe_display_line(&approval.account),
+                        safe_display_line(&approval.folder),
+                        safe_display_line(&approval.uid)
+                    ));
+                }
+                if self.state.approved_incoming_by_id(id).is_ok() {
+                    return Err(format!(
+                        "Incoming email read {id} is already approved; refusing to deny it."
+                    ));
+                }
+                Err(pending_error)
+            }
+        }
+    }
+
     fn action_in_whitelist(&self, pattern: &str) -> Result<String, String> {
         self.ensure_state_policy_extensions_enabled()?;
         let record = allow_record(pattern, "approved from /email in whitelist")?;
@@ -3041,6 +3300,27 @@ impl<B: EmailBackend> Engine<B> {
                     .to_owned(),
             )
         }
+    }
+
+    fn incoming_effective_access(
+        &self,
+        target: &IncomingTarget,
+        message: &BackendMessage,
+    ) -> (&'static str, PolicyDecision) {
+        let decision = self.incoming_decision(message);
+        if self.state.incoming_denied_exact(target, message) {
+            return ("denied", PolicyDecision::denied("user denied"));
+        }
+        if decision.allowed {
+            return ("granted", decision);
+        }
+        if self.state.incoming_approved_exact(target, message) {
+            return (
+                "granted",
+                PolicyDecision::allowed(Some("approval".to_owned())),
+            );
+        }
+        ("on-demand", decision)
     }
 
     fn incoming_decision(&self, message: &BackendMessage) -> PolicyDecision {
@@ -3315,25 +3595,25 @@ fn email_tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
-        description: Some("Controlled email access through configured accounts. Use command=list_accounts first if unsure. Commands: list_accounts (no args), list_folders (optional account), list (optional account/folder/limit, defaults to first account/INBOX/100), read (uid required; account/folder optional, default to first account/INBOX), send. Reads and sends can require approval.".to_owned()),
+        description: Some("Controlled email access through configured accounts. Use command=list_accounts first if unsure. Commands: list_accounts (no args), list_folders (optional account), list (optional account/folder/limit, defaults to first account/INBOX/100), read (uid required; account/folder optional, default to first account/INBOX), mark_read, mark_unread, star, unstar, trash, send. Reads and sends can require approval; message-management commands do not.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": ["list_accounts", "list_folders", "list", "read", "send"],
+                    "enum": ["list_accounts", "list_folders", "list", "read", "mark_read", "mark_unread", "star", "unstar", "trash", "send"],
                     "description": "Email operation to perform."
                 },
                 "args": {
                     "type": "object",
-                    "description": "Command arguments. Use {} for list_accounts. For list_folders account is optional. For list, account/folder/limit are optional and default to first configured account, INBOX, and 100. For read, uid is required while account/folder default to first configured account and INBOX.",
+                    "description": "Command arguments. Use {} for list_accounts. For list_folders account is optional. For list, account/folder/limit are optional and default to first configured account, INBOX, and 100. For read, mark_read, mark_unread, star, unstar, and trash, uid is required while account/folder default to first configured account and INBOX.",
                     "properties": {
-                        "account": {"type": "string", "description": "Configured account id. Optional for list_folders, list, read, and send; defaults to the first configured account."},
-                        "folder": {"type": "string", "description": "Mailbox folder. Optional for list and read; defaults to INBOX."},
+                        "account": {"type": "string", "description": "Configured account id. Optional for list_folders, list, read, mark_read, mark_unread, star, unstar, trash, and send; defaults to the first configured account."},
+                        "folder": {"type": "string", "description": "Mailbox folder. Optional for list, read, mark_read, mark_unread, star, unstar, and trash; defaults to INBOX."},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to list. Optional; defaults to 100 and is capped at 100."},
                         "cursor": {"type": "string", "description": "Pagination cursor returned by list."},
-                        "uid": {"type": "string", "description": "Message UID. Required for read."},
+                        "uid": {"type": "string", "description": "Message UID. Required for read, mark_read, mark_unread, star, unstar, and trash."},
                         "to": {"type": "array", "items": {"type": "string"}, "description": "Recipients. Required for send."},
                         "cc": {"type": "array", "items": {"type": "string"}},
                         "bcc": {"type": "array", "items": {"type": "string"}},
@@ -3360,7 +3640,7 @@ fn email_prompt_fragment() -> PromptFragment {
     PromptFragment::new(
         "email.instructions",
         PromptPriority::new(120),
-        "Use the `email` tool for controlled access to configured mail accounts. If `send` returns `approval_required`, treat it as a successful queued send: tell the user the email will be delivered after their approval and do not call `send` again for that message. Use `/email out approve <id>` only when acting as the user reviewing pending outgoing approvals.",
+        "Use the `email` tool for controlled access to configured mail accounts. `list` shows access=granted|denied|on-demand for each message; do not request reads for denied messages. If `send` returns `approval_required`, treat it as a successful queued send: tell the user the email will be delivered after their approval and do not call `send` again for that message. Message-management commands such as `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` do not require approval. Use `/email out approve <id>` only when acting as the user reviewing pending outgoing approvals.",
     )
 }
 
@@ -3398,7 +3678,7 @@ fn email_action_schema() -> ActionSchema {
         version: ACTION_SCHEMA_VERSION,
         roots: vec![ActionCommand {
             name: "/email".to_owned(),
-            description: "Review and approve email access".to_owned(),
+            description: "Review, approve, and deny email access".to_owned(),
             action_id: None,
             args: Vec::new(),
             children: vec![
@@ -3455,6 +3735,12 @@ fn email_action_schema() -> ActionSchema {
                             vec![id_arg()],
                         ),
                         leaf(
+                            "deny",
+                            "email.in.deny",
+                            "Deny an incoming read and persist that exact denial",
+                            vec![id_arg()],
+                        ),
+                        leaf(
                             "whitelist",
                             "email.in.whitelist",
                             "Allow incoming senders matching a pattern",
@@ -3464,6 +3750,43 @@ fn email_action_schema() -> ActionSchema {
                 ),
             ],
         }],
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MessageManagementCommand {
+    MarkRead,
+    MarkUnread,
+    Star,
+    Unstar,
+}
+
+impl MessageManagementCommand {
+    fn command_name(self) -> &'static str {
+        match self {
+            Self::MarkRead => "mark_read",
+            Self::MarkUnread => "mark_unread",
+            Self::Star => "star",
+            Self::Unstar => "unstar",
+        }
+    }
+
+    fn status_name(self) -> &'static str {
+        match self {
+            Self::MarkRead => "marked_read",
+            Self::MarkUnread => "marked_unread",
+            Self::Star => "starred",
+            Self::Unstar => "unstarred",
+        }
+    }
+
+    fn mutation(self) -> MessageFlagMutation {
+        match self {
+            Self::MarkRead => MessageFlagMutation::AddSeen,
+            Self::MarkUnread => MessageFlagMutation::RemoveSeen,
+            Self::Star => MessageFlagMutation::AddFlagged,
+            Self::Unstar => MessageFlagMutation::RemoveFlagged,
+        }
     }
 }
 
@@ -3480,6 +3803,17 @@ enum EmailCommand {
         cursor: Option<String>,
     },
     Read {
+        account: String,
+        folder: String,
+        uid: String,
+    },
+    ManageMessage {
+        command: MessageManagementCommand,
+        account: String,
+        folder: String,
+        uid: String,
+    },
+    Trash {
         account: String,
         folder: String,
         uid: String,
@@ -3517,6 +3851,11 @@ fn parse_command(arguments: &CborValue) -> Result<EmailCommand, CborValue> {
         "list_folders" => parse_list_folders(&command, args),
         "list" => parse_list(&command, args),
         "read" => parse_read(&command, args),
+        "mark_read" => parse_manage_message(&command, args, MessageManagementCommand::MarkRead),
+        "mark_unread" => parse_manage_message(&command, args, MessageManagementCommand::MarkUnread),
+        "star" => parse_manage_message(&command, args, MessageManagementCommand::Star),
+        "unstar" => parse_manage_message(&command, args, MessageManagementCommand::Unstar),
+        "trash" => parse_trash(&command, args),
         "send" => parse_send(&command, args),
         _ => Err(error_envelope(
             Some(&command),
@@ -3574,17 +3913,45 @@ fn parse_list(command: &str, args: &[(CborValue, CborValue)]) -> Result<EmailCom
     })
 }
 fn parse_read(command: &str, args: &[(CborValue, CborValue)]) -> Result<EmailCommand, CborValue> {
+    let (account, folder, uid) = parse_message_target(command, args)?;
+    Ok(EmailCommand::Read {
+        account,
+        folder,
+        uid,
+    })
+}
+fn parse_manage_message(
+    command: &str,
+    args: &[(CborValue, CborValue)],
+    message_command: MessageManagementCommand,
+) -> Result<EmailCommand, CborValue> {
+    let (account, folder, uid) = parse_message_target(command, args)?;
+    Ok(EmailCommand::ManageMessage {
+        command: message_command,
+        account,
+        folder,
+        uid,
+    })
+}
+fn parse_trash(command: &str, args: &[(CborValue, CborValue)]) -> Result<EmailCommand, CborValue> {
+    let (account, folder, uid) = parse_message_target(command, args)?;
+    Ok(EmailCommand::Trash {
+        account,
+        folder,
+        uid,
+    })
+}
+fn parse_message_target(
+    command: &str,
+    args: &[(CborValue, CborValue)],
+) -> Result<(String, String, String), CborValue> {
     let mut seen = BTreeSet::new();
     let account = optional_string(args, &mut seen, "account", Some(command))?.unwrap_or_default();
     let folder = optional_string(args, &mut seen, "folder", Some(command))?
         .unwrap_or_else(|| DEFAULT_FOLDER.to_owned());
     let uid = required_string(args, &mut seen, "uid", Some(command))?;
     reject_extra(args, &seen, Some(command))?;
-    Ok(EmailCommand::Read {
-        account,
-        folder,
-        uid,
-    })
+    Ok((account, folder, uid))
 }
 fn parse_send(command: &str, args: &[(CborValue, CborValue)]) -> Result<EmailCommand, CborValue> {
     let mut seen = BTreeSet::new();
@@ -4147,6 +4514,29 @@ fn error_display(arguments: &CborValue, details: &CborValue, message: &str) -> T
     }
 }
 
+fn message_target_display(command: &str, args: Option<&CborValue>) -> Option<String> {
+    let args = args?;
+    let account = cbor_text_field(args, "account");
+    let folder = cbor_text_field(args, "folder");
+    let uid = cbor_text_field(args, "uid")
+        .map(str::to_owned)
+        .or_else(|| cbor_integer_field_string(args, "uid"));
+    let mut display = match (account, folder) {
+        (Some(account), Some(folder)) => format!(
+            "{command} {}/{}",
+            safe_display_line(account),
+            safe_display_line(folder)
+        ),
+        (Some(account), None) => format!("{command} {}", safe_display_line(account)),
+        (None, Some(folder)) => format!("{command} {}", safe_display_line(folder)),
+        (None, None) => command.to_owned(),
+    };
+    if let Some(uid) = uid {
+        display.push_str(&format!(" uid={}", safe_display_line(&uid)));
+    }
+    Some(display)
+}
+
 fn invocation_display_args(arguments: &CborValue) -> Option<String> {
     let command = cbor_text_field(arguments, "command")?;
     let args = cbor_field(arguments, "args");
@@ -4170,28 +4560,8 @@ fn invocation_display_args(arguments: &CborValue) -> Option<String> {
                 (None, None) => Some("list".to_owned()),
             }
         }
-        "read" => {
-            let account = args.and_then(|args| cbor_text_field(args, "account"));
-            let folder = args.and_then(|args| cbor_text_field(args, "folder"));
-            let uid = args.and_then(|args| {
-                cbor_text_field(args, "uid")
-                    .map(str::to_owned)
-                    .or_else(|| cbor_integer_field_string(args, "uid"))
-            });
-            let mut display = match (account, folder) {
-                (Some(account), Some(folder)) => format!(
-                    "read {}/{}",
-                    safe_display_line(account),
-                    safe_display_line(folder)
-                ),
-                (Some(account), None) => format!("read {}", safe_display_line(account)),
-                (None, Some(folder)) => format!("read {}", safe_display_line(folder)),
-                (None, None) => "read".to_owned(),
-            };
-            if let Some(uid) = uid {
-                display.push_str(&format!(" uid={}", safe_display_line(&uid)));
-            }
-            Some(display)
+        "read" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            message_target_display(command, args)
         }
         "send" => {
             let account = args.and_then(|args| cbor_text_field(args, "account"));
@@ -4226,18 +4596,8 @@ fn email_display_args(command: &str, data: Option<&CborValue>) -> Option<String>
             )),
             _ => data.map(|_| "list".to_owned()),
         },
-        "read" => {
-            let scope = match (
-                data.and_then(|data| cbor_text_field(data, "account")),
-                data.and_then(|data| cbor_text_field(data, "folder")),
-            ) {
-                (Some(account), Some(folder)) => format!(" {account}/{folder}"),
-                _ => String::new(),
-            };
-            match data.and_then(|data| cbor_text_field(data, "uid")) {
-                Some(uid) => Some(format!("read{scope} uid={}", safe_display_line(uid))),
-                None => data.map(|_| format!("read{scope}")),
-            }
+        "read" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            message_target_display(command, data)
         }
         "send" => data
             .and_then(|data| cbor_text_field(data, "account"))

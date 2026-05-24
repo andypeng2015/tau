@@ -110,9 +110,38 @@ impl EmailBackend for SpyBackend {
         Ok(self.body.clone())
     }
 
+    fn update_message_flags(
+        &mut self,
+        _account: &str,
+        _folder: &str,
+        _uid: &str,
+        _mutation: MessageFlagMutation,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn move_message_to_trash(
+        &mut self,
+        _account: &str,
+        _folder: &str,
+        _uid: &str,
+    ) -> Result<String, String> {
+        Ok("Trash".to_owned())
+    }
+
     fn send_message(&mut self, _message: &OutgoingMessage) -> Result<String, String> {
         Ok("spy-message-id".to_owned())
     }
+}
+
+fn add_flag(flags: &mut Vec<String>, flag: &str) {
+    if !flags.iter().any(|existing| existing == flag) {
+        flags.push(flag.to_owned());
+    }
+}
+
+fn remove_flag(flags: &mut Vec<String>, flag: &str) {
+    flags.retain(|existing| existing != flag);
 }
 
 impl EmailBackend for FakeBackend {
@@ -137,7 +166,51 @@ impl EmailBackend for FakeBackend {
         self.messages
             .get(&(account.to_owned(), folder.to_owned()))
             .and_then(|messages| messages.iter().find(|message| message.uid == uid).cloned())
-            .ok_or_else(|| "message not found".to_owned())
+            .ok_or_else(|| "message_not_found: message not found".to_owned())
+    }
+
+    fn update_message_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+        mutation: MessageFlagMutation,
+    ) -> Result<(), String> {
+        let message = self
+            .messages
+            .get_mut(&(account.to_owned(), folder.to_owned()))
+            .and_then(|messages| messages.iter_mut().find(|message| message.uid == uid))
+            .ok_or_else(|| "message_not_found: message not found".to_owned())?;
+        match mutation {
+            MessageFlagMutation::AddSeen => add_flag(&mut message.flags, "seen"),
+            MessageFlagMutation::RemoveSeen => remove_flag(&mut message.flags, "seen"),
+            MessageFlagMutation::AddFlagged => add_flag(&mut message.flags, "flagged"),
+            MessageFlagMutation::RemoveFlagged => remove_flag(&mut message.flags, "flagged"),
+        }
+        Ok(())
+    }
+
+    fn move_message_to_trash(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+    ) -> Result<String, String> {
+        let source_key = (account.to_owned(), folder.to_owned());
+        let messages = self
+            .messages
+            .get_mut(&source_key)
+            .ok_or_else(|| "message_not_found: message not found".to_owned())?;
+        let index = messages
+            .iter()
+            .position(|message| message.uid == uid)
+            .ok_or_else(|| "message_not_found: message not found".to_owned())?;
+        let message = messages.remove(index);
+        self.messages
+            .entry((account.to_owned(), "Trash".to_owned()))
+            .or_default()
+            .push(message);
+        Ok("Trash".to_owned())
     }
 
     fn send_message(&mut self, message: &OutgoingMessage) -> Result<String, String> {
@@ -391,6 +464,7 @@ fn publishes_email_action_schema_at_startup() {
             "email.in.list".to_owned(),
             "email.in.open".to_owned(),
             "email.in.approve".to_owned(),
+            "email.in.deny".to_owned(),
             "email.in.whitelist".to_owned(),
         ]
     );
@@ -787,6 +861,10 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
         panic!("messages")
     };
 
+    assert_eq!(
+        text_field(&messages[0], "access"),
+        Some("on-demand".to_owned())
+    );
     assert_eq!(text_field(&messages[0], "subject"), None);
     assert!(matches!(
         map_get(&messages[0], "subject"),
@@ -795,6 +873,10 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
     assert_eq!(
         text_field(&messages[0], "subject_preview"),
         Some("secret subject".to_owned())
+    );
+    assert_eq!(
+        text_field(&messages[1], "access"),
+        Some("granted".to_owned())
     );
     assert_eq!(
         text_field(&messages[1], "subject"),
@@ -1870,6 +1952,191 @@ fn incoming_actions_list_shows_subject_preview_but_open_shows_user_content() {
 }
 
 #[test]
+fn message_management_commands_update_flags_and_trash_without_approval() {
+    // Marking and filing messages changes mailbox metadata only; it must not
+    // involve incoming body approvals even for untrusted messages.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+
+    let marked_read = engine.dispatch(EmailCommand::ManageMessage {
+        command: MessageManagementCommand::MarkRead,
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&marked_read, "status"), Some("marked_read"));
+    assert!(
+        engine
+            .backend
+            .messages
+            .get(&("work".to_owned(), "INBOX".to_owned()))
+            .expect("inbox")
+            .iter()
+            .find(|message| message.uid == "1")
+            .expect("message")
+            .flags
+            .contains(&"seen".to_owned())
+    );
+
+    let marked_unread = engine.dispatch(EmailCommand::ManageMessage {
+        command: MessageManagementCommand::MarkUnread,
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(
+        cbor_text_field(&marked_unread, "status"),
+        Some("marked_unread")
+    );
+    assert!(
+        !engine
+            .backend
+            .messages
+            .get(&("work".to_owned(), "INBOX".to_owned()))
+            .expect("inbox")
+            .iter()
+            .find(|message| message.uid == "1")
+            .expect("message")
+            .flags
+            .contains(&"seen".to_owned())
+    );
+
+    let starred = engine.dispatch(EmailCommand::ManageMessage {
+        command: MessageManagementCommand::Star,
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "2".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&starred, "status"), Some("starred"));
+    let unstarred = engine.dispatch(EmailCommand::ManageMessage {
+        command: MessageManagementCommand::Unstar,
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "2".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&unstarred, "status"), Some("unstarred"));
+    assert!(
+        !engine
+            .backend
+            .messages
+            .get(&("work".to_owned(), "INBOX".to_owned()))
+            .expect("inbox")
+            .iter()
+            .find(|message| message.uid == "2")
+            .expect("message")
+            .flags
+            .contains(&"flagged".to_owned())
+    );
+
+    let trashed = engine.dispatch(EmailCommand::Trash {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "2".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&trashed, "status"), Some("moved_to_trash"));
+    assert_eq!(
+        data_field(&trashed, "trash_folder"),
+        &CborValue::Text("Trash".to_owned())
+    );
+    assert!(
+        engine
+            .backend
+            .messages
+            .get(&("work".to_owned(), "INBOX".to_owned()))
+            .expect("inbox")
+            .iter()
+            .all(|message| message.uid != "2")
+    );
+    assert!(
+        engine
+            .backend
+            .messages
+            .get(&("work".to_owned(), "Trash".to_owned()))
+            .expect("trash")
+            .iter()
+            .any(|message| message.uid == "2")
+    );
+    assert!(
+        engine
+            .state
+            .list_pending_incoming()
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+#[test]
+fn incoming_deny_persists_and_suppresses_future_approvals() {
+    // A user denial is an exact persisted decision for the same message. Future
+    // reads should report denied access instead of creating another approval.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    let queued = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    let id = match data_field(&queued, "approval_id") {
+        CborValue::Text(id) => id.clone(),
+        _ => panic!("approval id"),
+    };
+
+    let denied = engine
+        .dispatch_action("email.in.deny", std::slice::from_ref(&id))
+        .expect("deny action");
+    assert!(denied.contains("Denied incoming email read"));
+    let denied_record = engine
+        .state
+        .denied_incoming_by_id(&id)
+        .expect("denied record");
+    assert_eq!(denied_record.status, "denied");
+    assert!(engine.state.pending_incoming_by_id(&id).is_err());
+
+    let repeated = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&repeated, "status"), Some("access_denied"));
+    assert_eq!(
+        data_field(&repeated, "access"),
+        &CborValue::Text("denied".to_owned())
+    );
+    assert!(map_get(map_get(&repeated, "data").expect("data"), "approval_id").is_none());
+    assert!(!format!("{repeated:?}").contains("secret body"));
+    assert!(
+        engine
+            .state
+            .list_pending_incoming()
+            .expect("pending")
+            .is_empty()
+    );
+
+    let listed = engine.dispatch(EmailCommand::List {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        limit: 10,
+        cursor: None,
+    });
+    let CborValue::Array(messages) = data_field(&listed, "messages") else {
+        panic!("messages")
+    };
+    assert_eq!(
+        text_field(&messages[0], "access"),
+        Some("denied".to_owned())
+    );
+    assert_eq!(
+        text_field(&messages[1], "access"),
+        Some("granted".to_owned())
+    );
+
+    let denied_again = engine
+        .dispatch_action("email.in.deny", std::slice::from_ref(&id))
+        .expect("deny action is idempotent");
+    assert!(denied_again.contains("already denied"));
+}
+
+#[test]
 fn whitelist_actions_reject_when_state_policy_extensions_are_disabled() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine_with_state_policy_extensions(&temp, false);
@@ -1975,6 +2242,11 @@ fn invalid_email_actions_return_errors() {
                 "email.in.approve",
                 &["in_0123456789ABCDEF01234567".to_owned()]
             )
+            .is_err()
+    );
+    assert!(
+        engine
+            .dispatch_action("email.in.deny", &["../1".to_owned()])
             .is_err()
     );
     assert!(
@@ -2496,6 +2768,31 @@ fn parser_accepts_and_rejects_command_shapes() {
         ))
         .expect("read defaults"),
         EmailCommand::Read {
+            account: String::new(),
+            folder: DEFAULT_FOLDER.to_owned(),
+            uid: "1".to_owned()
+        }
+    );
+    assert_eq!(
+        parse_command(&command_args(
+            "mark_read",
+            vec![("uid", CborValue::Text("1".to_owned()))]
+        ))
+        .expect("mark_read defaults"),
+        EmailCommand::ManageMessage {
+            command: MessageManagementCommand::MarkRead,
+            account: String::new(),
+            folder: DEFAULT_FOLDER.to_owned(),
+            uid: "1".to_owned()
+        }
+    );
+    assert_eq!(
+        parse_command(&command_args(
+            "trash",
+            vec![("uid", CborValue::Text("1".to_owned()))]
+        ))
+        .expect("trash defaults"),
+        EmailCommand::Trash {
             account: String::new(),
             folder: DEFAULT_FOLDER.to_owned(),
             uid: "1".to_owned()

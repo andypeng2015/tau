@@ -243,6 +243,15 @@ apply only to that role. Fragments are ordered by priority with extension- and
 tool-provided fragments, so global style instructions, role guidance, and
 tool-specific instructions share one prompt assembly path.
 
+### `std-email` — controlled IMAP/SMTP access
+
+The email extension exposes one `email` tool for configured mail accounts. It can
+list folders and messages, read approved or policy-allowed content, send mail
+through approval gates, and safely manage message state with `mark_read`,
+`mark_unread`, `star`, `unstar`, and `trash`. Message listings include
+`access=granted|denied|on-demand`, and `/email in deny <id>` persists exact read
+denials so the agent does not keep asking for the same message.
+
 ### `provider-builtin` — Built-in provider backend
 
 Publishes hardcoded `chatgpt/*` model metadata from provider-owned ChatGPT OAuth

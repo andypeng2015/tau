@@ -6,7 +6,7 @@ advertise: false
 
 # Tau std-email configuration
 
-Tau's built-in email extension is named `std-email`. It runs `tau ext ext-email`, registers the model-visible `email` tool, and publishes `/email` approval actions.
+Tau's built-in email extension is named `std-email`. It runs `tau ext ext-email`, registers the model-visible `email` tool, and publishes `/email` approval/denial actions.
 
 Use this skill when helping a user configure email. Do not include personal addresses, server names, passwords, authserv-ids, or message contents unless the user explicitly provided them for that answer.
 
@@ -156,10 +156,18 @@ Advice:
 
 Incoming reads:
 
-- `email.list` shows bounded metadata and redacts untrusted message details.
+- `email.list` shows bounded metadata, redacts untrusted message details, and includes `access=granted|denied|on-demand`.
 - `email.read` returns body content only if policy passes or an exact incoming approval exists.
 - If approval is needed, use `/email in list`, `/email in open <id>`, and `/email in approve <id>`.
+- Use `/email in deny <id>` to persist an exact denial. Future matching reads return `access_denied` instead of creating another approval.
 - After approval, the agent must repeat the matching `email.read` call.
+
+Message management:
+
+- The `email` tool commands `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` operate on an `account`/`folder`/`uid` target.
+- These commands do not require content approval.
+- `star` and `unstar` map to the IMAP `\\Flagged` flag.
+- `trash` moves the message to the account's IMAP Trash mailbox.
 
 Outgoing sends:
 

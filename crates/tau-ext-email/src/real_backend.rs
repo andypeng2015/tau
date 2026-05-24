@@ -27,8 +27,8 @@ use tokio_rustls::client::TlsStream;
 
 use super::{
     AuthMethod, AuthenticationResultsEvidence, BackendAttachment, BackendFolder, BackendMessage,
-    BackendMessagePage, EmailBackend, OutgoingMessage, READ_BODY_MAX_BYTES, TlsMode,
-    ValidatedAuthConfig, ValidatedConfig, ValidatedImapConfig, ValidatedSmtpConfig,
+    BackendMessagePage, EmailBackend, MessageFlagMutation, OutgoingMessage, READ_BODY_MAX_BYTES,
+    TlsMode, ValidatedAuthConfig, ValidatedConfig, ValidatedImapConfig, ValidatedSmtpConfig,
 };
 
 pub(super) const READ_MESSAGE_FETCH_MAX_BYTES: usize = READ_BODY_MAX_BYTES * 4;
@@ -167,6 +167,37 @@ impl EmailBackend for RealEmailBackend {
         let uid = uid.to_owned();
         self.block_with_timeout(timeout_seconds, async move {
             read_message_async(&account, &folder, &uid).await
+        })
+    }
+
+    fn update_message_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+        mutation: MessageFlagMutation,
+    ) -> Result<(), String> {
+        let account = self.account(account)?;
+        let timeout_seconds = account.imap_config()?.timeout_seconds;
+        let folder = folder.to_owned();
+        let uid = uid.to_owned();
+        self.block_with_timeout(timeout_seconds, async move {
+            update_message_flags_async(&account, &folder, &uid, mutation).await
+        })
+    }
+
+    fn move_message_to_trash(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: &str,
+    ) -> Result<String, String> {
+        let account = self.account(account)?;
+        let timeout_seconds = account.imap_config()?.timeout_seconds;
+        let folder = folder.to_owned();
+        let uid = uid.to_owned();
+        self.block_with_timeout(timeout_seconds, async move {
+            move_message_to_trash_async(&account, &folder, &uid).await
         })
     }
 
@@ -355,6 +386,127 @@ async fn read_message_async(
     drop(fetches);
     let _ = session.logout().await;
     Ok(message)
+}
+
+async fn update_message_flags_async(
+    account: &RealAccount,
+    folder: &str,
+    uid: &str,
+    mutation: MessageFlagMutation,
+) -> Result<(), String> {
+    let mut session = connect_imap(account).await?;
+    session.select(folder).await.map_err(imap_error)?;
+    let requested_uid = validated_uid_arg(uid)?;
+    ensure_message_uid_exists(&mut session, requested_uid).await?;
+    let uid_arg = requested_uid.to_string();
+    let mut updates = session
+        .uid_store(&uid_arg, mutation.imap_store_query())
+        .await
+        .map_err(imap_error)?;
+    while updates.try_next().await.map_err(imap_error)?.is_some() {}
+    drop(updates);
+    let _ = session.logout().await;
+    Ok(())
+}
+
+async fn move_message_to_trash_async(
+    account: &RealAccount,
+    folder: &str,
+    uid: &str,
+) -> Result<String, String> {
+    let mut session = connect_imap(account).await?;
+    let trash_folder = find_trash_folder(&mut session).await?;
+    session.select(folder).await.map_err(imap_error)?;
+    let requested_uid = validated_uid_arg(uid)?;
+    ensure_message_uid_exists(&mut session, requested_uid).await?;
+    let capabilities = session.capabilities().await.map_err(imap_error)?;
+    let uid_arg = requested_uid.to_string();
+    if capabilities.has_str("MOVE") {
+        session
+            .uid_mv(&uid_arg, &trash_folder)
+            .await
+            .map_err(imap_error)?;
+    } else if capabilities.has_str("UIDPLUS") {
+        session
+            .uid_copy(&uid_arg, &trash_folder)
+            .await
+            .map_err(imap_error)?;
+        let mut updates = session
+            .uid_store(&uid_arg, "+FLAGS.SILENT (\\Deleted)")
+            .await
+            .map_err(imap_error)?;
+        while updates.try_next().await.map_err(imap_error)?.is_some() {}
+        drop(updates);
+        {
+            let expunges = session.uid_expunge(&uid_arg).await.map_err(imap_error)?;
+            futures_util::pin_mut!(expunges);
+            while expunges.try_next().await.map_err(imap_error)?.is_some() {}
+        }
+    } else {
+        return Err(
+            "imap_error: server does not support MOVE or UIDPLUS; refusing unsafe trash fallback"
+                .to_owned(),
+        );
+    }
+    let _ = session.logout().await;
+    Ok(trash_folder)
+}
+
+async fn ensure_message_uid_exists(
+    session: &mut Session<RealImapStream>,
+    requested_uid: u32,
+) -> Result<(), String> {
+    let uid_arg = requested_uid.to_string();
+    let mut fetches = session
+        .uid_fetch(&uid_arg, "(UID)")
+        .await
+        .map_err(imap_error)?;
+    let found = fetches
+        .try_next()
+        .await
+        .map_err(imap_error)?
+        .is_some_and(|fetch| fetch.uid == Some(requested_uid));
+    drop(fetches);
+    if found {
+        Ok(())
+    } else {
+        Err("message_not_found: message not found".to_owned())
+    }
+}
+
+async fn find_trash_folder(session: &mut Session<RealImapStream>) -> Result<String, String> {
+    let mut names = session.list(None, Some("*")).await.map_err(imap_error)?;
+    let mut fallback = None;
+    while let Some(name) = names.try_next().await.map_err(imap_error)? {
+        let selectable = !name.attributes().contains(&NameAttribute::NoSelect);
+        if !selectable {
+            continue;
+        }
+        let folder_name = name.name().to_owned();
+        if name.attributes().contains(&NameAttribute::Trash) {
+            return Ok(folder_name);
+        }
+        let delimiter = name.delimiter().unwrap_or("/");
+        if fallback.is_none() && is_likely_trash_folder(&folder_name, delimiter) {
+            fallback = Some(folder_name);
+        }
+    }
+    fallback.ok_or_else(|| {
+        "imap_error: trash mailbox not found; server did not advertise a selectable \\Trash folder"
+            .to_owned()
+    })
+}
+
+fn is_likely_trash_folder(name: &str, delimiter: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "trash" | "deleted items" | "deleted messages"
+    ) {
+        return true;
+    }
+    let suffix = format!("{delimiter}trash").to_ascii_lowercase();
+    lower.ends_with(&suffix)
 }
 
 async fn send_message_async(

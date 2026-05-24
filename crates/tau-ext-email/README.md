@@ -23,9 +23,9 @@ Email is hostile input. Message bodies, subjects, display names, addresses, MIME
 
 ### Incoming email gating
 
-`email.list` returns bounded metadata. For messages that do not pass the incoming policy, it redacts the full subject and attachment metadata, but includes a short lossy `subject_preview` containing only ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
+`email.list` returns bounded metadata and an `access` field for every message: `granted`, `denied`, or `on-demand`. For messages that do not pass the incoming policy, it redacts the full subject and attachment metadata, but includes a short lossy `subject_preview` containing only ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
 
-`email.read` first fetches bounded headers and makes a policy decision before body text is exposed to the model. If the message is not allowed, the tool creates an incoming approval and returns `approval_required` with a machine-readable `reason` and the same sanitized `subject_preview`; it does not return the body. The user can inspect the message with `/email in open <id>` and approve it with `/email in approve <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content.
+`email.read` first fetches bounded headers and makes a policy decision before body text is exposed to the model. If the message is not allowed, the tool creates an incoming approval and returns `approval_required` with a machine-readable `reason` and the same sanitized `subject_preview`; it does not return the body. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny future exact reads with `/email in deny <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content. After denial, matching reads return `access_denied` and do not create another approval.
 
 Incoming approval records are bound to account, folder, UID, UIDVALIDITY when available, normalized sender, date, and message-id. Approval is not just a free-floating id that can be reused for a different message.
 
@@ -208,7 +208,14 @@ The model-visible tool name is `email`. Commands are selected through the `comma
 - `list_folders`
 - `list`
 - `read`
+- `mark_read`
+- `mark_unread`
+- `star`
+- `unstar`
+- `trash`
 - `send`
+
+`mark_read`, `mark_unread`, `star`, `unstar`, and `trash` take the same `account`/`folder`/`uid` target as `read`. They do not require content approval. `trash` moves the message to the account's IMAP Trash mailbox.
 
 Use `list_accounts` first when the account id is not known.
 
@@ -220,6 +227,7 @@ The extension publishes `/email` actions for review:
 - `/email in list` — list pending incoming read approvals.
 - `/email in open <id>` — inspect an incoming message; may display email content to the user.
 - `/email in approve <id>` — approve that exact incoming read.
+- `/email in deny <id>` — deny that exact incoming read and suppress future approvals for the same message.
 - `/email in whitelist <pattern>` — persist an incoming allow pattern, if state policy extensions are enabled.
 - `/email out list` — list pending outgoing drafts.
 - `/email out open <id>` — inspect an outgoing draft, including Bcc.
