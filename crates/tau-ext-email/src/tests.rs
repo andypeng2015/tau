@@ -637,6 +637,39 @@ fn failed_email_tool_results_show_invoked_command_scope() {
 }
 
 #[test]
+fn approval_required_send_displays_as_success_for_agent() {
+    // Needing user approval is an accepted queued send, not a tool failure or
+    // warning. The model should continue with the knowledge that delivery will
+    // happen after the user approves.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    let result = engine.dispatch(EmailCommand::Send {
+        account: Some("work".to_owned()),
+        from: Some("alice@company.com".to_owned()),
+        to: vec!["external@example.net".to_owned()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "proposal".to_owned(),
+        body_text: "full draft body".to_owned(),
+        reply_to: None,
+        in_reply_to: None,
+    });
+
+    let event = finish_tool_result(tool_started("send", Vec::new()), result);
+
+    let Event::ToolResult(result) = event else {
+        panic!("approval-required send should be a successful tool result")
+    };
+    let display = result.display.expect("display");
+    assert_eq!(display.status, ToolDisplayStatus::Success);
+    assert_eq!(display.status_text, "approval_required");
+    assert_eq!(
+        text_field(map_get(&result.result, "data").expect("data"), "message"),
+        Some("Your email will be delivered after user's approval.".to_owned())
+    );
+}
+
+#[test]
 fn backend_errors_keep_backend_context_for_agent_debugging() {
     let error = backend_error_envelope(
         Some("list"),
@@ -951,6 +984,10 @@ fn outgoing_whitelisted_sends_and_mixed_recipients_queue_whole_message() {
         Some("approval_required")
     );
     assert_eq!(
+        text_field(map_get(&queued, "data").expect("data"), "message"),
+        Some("Your email will be delivered after user's approval.".to_owned())
+    );
+    assert_eq!(
         engine.backend.sent.borrow().len(),
         1,
         "queued message must not partially send"
@@ -993,9 +1030,11 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
     assert!(opened.contains("hidden@example.net"));
     assert!(opened.contains("full draft body"));
 
-    engine
+    let approved = engine
         .dispatch_action("email.out.approve", &[id.clone()])
         .expect("approve action");
+    assert!(approved.contains("Sent approved outgoing email"));
+    assert_eq!(engine.backend.sent.borrow().len(), 1);
     let approved_record = engine
         .state
         .approved_outgoing_by_id(&id)
@@ -1005,8 +1044,8 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
     let approve_again = engine
         .dispatch_action("email.out.approve", &[id.clone()])
         .expect("approve action is idempotent");
-    assert!(approve_again.contains("already approved"));
-    let sent = engine.dispatch(EmailCommand::Send {
+    assert!(approve_again.contains("already approved/sent"));
+    let repeated_send = engine.dispatch(EmailCommand::Send {
         account: Some("work".to_owned()),
         from: Some("alice@company.com".to_owned()),
         to: vec!["external@example.net".to_owned()],
@@ -1017,7 +1056,11 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
         reply_to: None,
         in_reply_to: None,
     });
-    assert_eq!(cbor_text_field(&sent, "status"), Some("sent"));
+    assert_eq!(
+        cbor_text_field(&repeated_send, "status"),
+        Some("already_sent")
+    );
+    assert_eq!(engine.backend.sent.borrow().len(), 1);
 
     engine
         .dispatch_action("email.out.whitelist", &["*@new.test".to_owned()])
@@ -1290,7 +1333,7 @@ fn outgoing_exact_message_approval_matching() {
             &engine.dispatch(mk_send("one", Some("reply@example.net"), Some("<m1>"))),
             "status"
         ),
-        Some("sent")
+        Some("already_sent")
     );
     assert_eq!(
         cbor_text_field(

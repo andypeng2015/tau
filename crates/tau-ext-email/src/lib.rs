@@ -1318,6 +1318,20 @@ fn outgoing_id(message: &OutgoingMessage) -> String {
     stable_id("out", message)
 }
 
+fn outgoing_approval_message(approval: &OutgoingApproval) -> OutgoingMessage {
+    OutgoingMessage {
+        account: approval.account.clone(),
+        from: approval.from.clone(),
+        to: approval.to.clone(),
+        cc: approval.cc.clone(),
+        bcc: approval.bcc.clone(),
+        subject: approval.subject.clone(),
+        body_text: approval.body_text.clone(),
+        reply_to: approval.reply_to.clone(),
+        in_reply_to: approval.in_reply_to.clone(),
+    }
+}
+
 fn stable_id<T: Serialize>(prefix: &str, value: &T) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     let hash = blake3::hash(&bytes);
@@ -1835,7 +1849,7 @@ impl<B: EmailBackend> Engine<B> {
             in_reply_to,
         };
         let blocked = self.blocked_recipients(&message);
-        if blocked.is_empty() || self.state.outgoing_approved_exact(&message) {
+        if blocked.is_empty() {
             return match self.backend.send_message(&message) {
                 Ok(id) => ok_envelope(
                     "send",
@@ -1861,6 +1875,29 @@ impl<B: EmailBackend> Engine<B> {
                 ),
                 Err(message) => backend_error_envelope(Some("send"), "smtp_error", &message),
             };
+        }
+        if self.state.outgoing_approved_exact(&message) {
+            return ok_envelope(
+                "send",
+                "already_sent",
+                cbor_map(vec![
+                    ("account", CborValue::Text(account_id)),
+                    (
+                        "accepted_recipients",
+                        CborValue::Array(
+                            message
+                                .to
+                                .iter()
+                                .chain(message.cc.iter())
+                                .chain(message.bcc.iter())
+                                .cloned()
+                                .map(CborValue::Text)
+                                .collect(),
+                        ),
+                    ),
+                    ("rejected_recipients", CborValue::Array(Vec::new())),
+                ]),
+            );
         }
         let approval = OutgoingApproval {
             schema: 1,
@@ -1919,6 +1956,12 @@ impl<B: EmailBackend> Engine<B> {
                         (
                             "reason",
                             CborValue::Text("recipient_not_whitelisted".to_owned()),
+                        ),
+                        (
+                            "message",
+                            CborValue::Text(
+                                "Your email will be delivered after user's approval.".to_owned(),
+                            ),
                         ),
                     ]),
                 )
@@ -1998,17 +2041,25 @@ impl<B: EmailBackend> Engine<B> {
         validate_approval_id(id, "out")?;
         match self.state.pending_outgoing_by_id(id) {
             Ok(approval) => {
-                self.state.approve_outgoing(id)?;
-                Ok(format!(
-                    "Approved outgoing email {id}; repeat the matching email.send to send it. subject={} to={}",
-                    approval.subject,
-                    approval.to.join(",")
-                ))
+                let message = outgoing_approval_message(&approval);
+                let message_id = self.backend.send_message(&message)?;
+                match self.state.approve_outgoing(id) {
+                    Ok(()) => Ok(format!(
+                        "Sent approved outgoing email {id}. message_id={message_id} subject={} to={}",
+                        approval.subject,
+                        approval.to.join(",")
+                    )),
+                    Err(error) => Ok(format!(
+                        "Sent approved outgoing email {id}, but failed to record approval: {error}. message_id={message_id} subject={} to={}",
+                        approval.subject,
+                        approval.to.join(",")
+                    )),
+                }
             }
             Err(_) => {
                 let approval = self.state.approved_outgoing_by_id(id)?;
                 Ok(format!(
-                    "Outgoing email {id} is already approved; repeat the matching email.send to send it. subject={} to={}",
+                    "Outgoing email {id} is already approved/sent. subject={} to={}",
                     approval.subject,
                     approval.to.join(",")
                 ))
@@ -3119,11 +3170,7 @@ fn cbor_nested_text_field<'a>(value: &'a CborValue, outer: &str, inner: &str) ->
 fn success_display(result: &CborValue) -> ToolDisplay {
     let command = cbor_text_field(result, "command").unwrap_or("email");
     let status_text = cbor_text_field(result, "status").unwrap_or("ok");
-    let status = if status_text == "approval_required" {
-        ToolDisplayStatus::Warning
-    } else {
-        ToolDisplayStatus::Success
-    };
+    let status = ToolDisplayStatus::Success;
     let data = cbor_field(result, "data");
     ToolDisplay {
         args: email_display_args(command, data).unwrap_or_default(),
