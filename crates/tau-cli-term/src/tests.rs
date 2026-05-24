@@ -113,6 +113,25 @@ fn dynamic_slash_commands_are_in_root_completion_menu() {
 }
 
 #[test]
+fn dynamic_arg_completers_are_replaced_with_dynamic_commands() {
+    let data = CompletionData::new();
+    data.set_dynamic_commands_and_arg_completers(
+        vec![SlashCommand::new("/email", "Email approvals")],
+        vec![(
+            CommandName::new("/email"),
+            std::sync::Arc::new(|_| vec![CompletionItem::plain("in")]),
+        )],
+    );
+    assert_eq!(
+        completion::build_candidates(&[], &data, "/email ", 7)[0].label,
+        "in"
+    );
+
+    data.set_dynamic_commands(Vec::new());
+    assert!(completion::build_candidates(&[], &data, "/email ", 7).is_empty());
+}
+
+#[test]
 fn typed_history_item_matching_completion_needs_one_up_per_item() {
     let (mut term, handle, input_tx) = new_test_term(vec![
         SlashCommand::new("/model", "Switch model"),

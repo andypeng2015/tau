@@ -3291,8 +3291,9 @@ impl EventRenderer {
     }
 
     fn refresh_action_completions(&self) {
+        let (commands, arg_completers) = self.action_state.dynamic_completions();
         self.completion_data
-            .set_dynamic_commands(self.action_state.dynamic_slash_commands());
+            .set_dynamic_commands_and_arg_completers(commands, arg_completers);
     }
 
     fn handle_action_result(&mut self, result: &tau_proto::ActionResult) {

@@ -96,6 +96,7 @@ pub type ArgCompleter = Arc<dyn Fn(&[&str]) -> Vec<CompletionItem> + Send + Sync
 #[derive(Default)]
 struct CompletionInner {
     arg_completers: HashMap<CommandName, ArgCompleter>,
+    dynamic_arg_completers: HashMap<CommandName, ArgCompleter>,
     dynamic_commands: Vec<SlashCommand>,
 }
 
@@ -117,10 +118,19 @@ impl CompletionData {
     /// Replaces extension-provided root slash commands shown alongside the
     /// static command registry.
     pub fn set_dynamic_commands(&self, commands: Vec<SlashCommand>) {
-        self.inner
-            .lock()
-            .expect("completion data lock")
-            .dynamic_commands = commands;
+        self.set_dynamic_commands_and_arg_completers(commands, Vec::new());
+    }
+
+    /// Replaces extension-provided root slash commands and their nested
+    /// argument/subcommand completers as one atomic snapshot.
+    pub fn set_dynamic_commands_and_arg_completers(
+        &self,
+        commands: Vec<SlashCommand>,
+        arg_completers: Vec<(CommandName, ArgCompleter)>,
+    ) {
+        let mut inner = self.inner.lock().expect("completion data lock");
+        inner.dynamic_commands = commands;
+        inner.dynamic_arg_completers = arg_completers.into_iter().collect();
     }
 
     /// Sets a flat, single-arg completion list for a slash command.
@@ -178,11 +188,11 @@ impl CompletionData {
     }
 
     fn get_arg_completer(&self, command: &CommandName) -> Option<ArgCompleter> {
-        self.inner
-            .lock()
-            .expect("completion data lock")
+        let inner = self.inner.lock().expect("completion data lock");
+        inner
             .arg_completers
             .get(command)
+            .or_else(|| inner.dynamic_arg_completers.get(command))
             .cloned()
     }
 

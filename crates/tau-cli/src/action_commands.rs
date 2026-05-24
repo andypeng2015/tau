@@ -131,15 +131,33 @@ impl ActionCommandState {
         )
     }
 
-    /// Build root-level completion entries for all active dynamic action roots.
-    pub(crate) fn dynamic_slash_commands(&self) -> Vec<tau_cli_term::SlashCommand> {
-        locked(&self.inner)
+    /// Build completion entries for active dynamic action roots and nested
+    /// action subcommands.
+    pub(crate) fn dynamic_completions(
+        &self,
+    ) -> (
+        Vec<tau_cli_term::SlashCommand>,
+        Vec<(tau_cli_term::CommandName, tau_cli_term::ArgCompleter)>,
+    ) {
+        let inner = locked(&self.inner);
+        let commands = inner
             .roots
             .iter()
             .map(|(root, binding)| {
                 tau_cli_term::SlashCommand::new(root.clone(), binding.description.clone())
             })
-            .collect()
+            .collect();
+        let completers = inner
+            .roots
+            .iter()
+            .map(|(root, binding)| {
+                (
+                    tau_cli_term::CommandName::new(root.clone()),
+                    action_arg_completer(binding.schema.roots[0].clone()),
+                )
+            })
+            .collect();
+        (commands, completers)
     }
 
     fn owner_key(
@@ -169,9 +187,94 @@ impl ActionCommandState {
     }
 }
 
+fn action_arg_completer(root: tau_actions::ActionCommand) -> tau_cli_term::ArgCompleter {
+    Arc::new(move |args| complete_action_args(&root, args))
+}
+
+fn complete_action_args(
+    root: &tau_actions::ActionCommand,
+    args: &[&str],
+) -> Vec<tau_cli_term::CompletionItem> {
+    let Some(partial) = args.last().copied() else {
+        return complete_children(root, "");
+    };
+    let mut command = root;
+    let mut index = 0;
+    while index + 1 < args.len() && !command.children.is_empty() {
+        let token = args[index];
+        let Some(child) = command.children.iter().find(|child| child.name == token) else {
+            return Vec::new();
+        };
+        command = child;
+        index += 1;
+    }
+
+    if !command.children.is_empty() {
+        return complete_children(command, partial);
+    }
+
+    let arg_index = args.len().saturating_sub(index + 1);
+    let Some(arg) = command.args.get(arg_index) else {
+        return Vec::new();
+    };
+    match &arg.kind {
+        tau_actions::ActionArgKind::Enum { values } => complete_choices(values, partial),
+        tau_actions::ActionArgKind::String
+        | tau_actions::ActionArgKind::Integer
+        | tau_actions::ActionArgKind::RestString => Vec::new(),
+    }
+}
+
+fn complete_children(
+    command: &tau_actions::ActionCommand,
+    partial: &str,
+) -> Vec<tau_cli_term::CompletionItem> {
+    ranked_items(
+        command
+            .children
+            .iter()
+            .map(|child| (child.name.as_str(), child.description.as_str())),
+        partial,
+    )
+}
+
+fn complete_choices(
+    choices: &[tau_actions::ActionChoice],
+    partial: &str,
+) -> Vec<tau_cli_term::CompletionItem> {
+    ranked_items(
+        choices
+            .iter()
+            .map(|choice| (choice.value.as_str(), choice.description.as_str())),
+        partial,
+    )
+}
+
+fn ranked_items<'a>(
+    values: impl IntoIterator<Item = (&'a str, &'a str)>,
+    partial: &str,
+) -> Vec<tau_cli_term::CompletionItem> {
+    let needle = partial.to_lowercase();
+    let mut prefix_matches = Vec::new();
+    let mut substr_matches = Vec::new();
+    for (value, description) in values {
+        let lower = value.to_lowercase();
+        let item = tau_cli_term::CompletionItem::new(value, description);
+        if needle.is_empty() || lower.starts_with(&needle) {
+            prefix_matches.push(item);
+        } else if lower.contains(&needle) {
+            substr_matches.push(item);
+        }
+    }
+    prefix_matches.extend(substr_matches);
+    prefix_matches
+}
+
 #[cfg(test)]
 mod tests {
-    use tau_actions::{ACTION_SCHEMA_VERSION, ActionCommand, ActionSchema};
+    use tau_actions::{
+        ACTION_SCHEMA_VERSION, ActionArg, ActionArgKind, ActionChoice, ActionCommand, ActionSchema,
+    };
 
     use super::*;
 
@@ -202,6 +305,75 @@ mod tests {
         }
     }
 
+    fn nested_schema() -> ActionSchema {
+        ActionSchema {
+            version: ACTION_SCHEMA_VERSION,
+            roots: vec![ActionCommand {
+                name: "/email".to_owned(),
+                description: "Email approvals".to_owned(),
+                action_id: None,
+                args: Vec::new(),
+                children: vec![
+                    ActionCommand {
+                        name: "in".to_owned(),
+                        description: "Incoming approvals".to_owned(),
+                        action_id: None,
+                        args: Vec::new(),
+                        children: vec![ActionCommand {
+                            name: "open".to_owned(),
+                            description: "Open incoming approval".to_owned(),
+                            action_id: Some("email.in.open".to_owned()),
+                            args: vec![ActionArg {
+                                name: "id".to_owned(),
+                                description: "Approval id".to_owned(),
+                                required: true,
+                                kind: ActionArgKind::String,
+                            }],
+                            children: Vec::new(),
+                        }],
+                    },
+                    ActionCommand {
+                        name: "out".to_owned(),
+                        description: "Outgoing approvals".to_owned(),
+                        action_id: None,
+                        args: Vec::new(),
+                        children: vec![ActionCommand {
+                            name: "mode".to_owned(),
+                            description: "Set outgoing mode".to_owned(),
+                            action_id: Some("email.out.mode".to_owned()),
+                            args: vec![ActionArg {
+                                name: "mode".to_owned(),
+                                description: "Mode".to_owned(),
+                                required: true,
+                                kind: ActionArgKind::Enum {
+                                    values: vec![
+                                        ActionChoice {
+                                            value: "approve".to_owned(),
+                                            description: "Approve sends".to_owned(),
+                                        },
+                                        ActionChoice {
+                                            value: "block".to_owned(),
+                                            description: "Block sends".to_owned(),
+                                        },
+                                    ],
+                                },
+                            }],
+                            children: Vec::new(),
+                        }],
+                    },
+                ],
+            }],
+        }
+    }
+
+    fn nested_published() -> ActionSchemaPublished {
+        ActionSchemaPublished {
+            extension_name: "std-email".into(),
+            instance_id: 1.into(),
+            schema: nested_schema(),
+        }
+    }
+
     #[test]
     fn parses_known_dynamic_action_line() {
         let state = ActionCommandState::new(["/quit"]);
@@ -218,12 +390,40 @@ mod tests {
     }
 
     #[test]
+    fn completes_dynamic_action_subcommands_and_enum_args() {
+        // Extension-published action schemas are command trees, not just root
+        // commands. The completer must expose nested namespaces such as
+        // `/email in` and `/email out` after the root has been typed.
+        let state = ActionCommandState::new(["/quit"]);
+        state.apply_schema_published(&nested_published());
+        let data = tau_cli_term::CompletionData::new();
+        let (commands, arg_completers) = state.dynamic_completions();
+        data.set_dynamic_commands_and_arg_completers(commands, arg_completers);
+
+        let labels = |buffer: &str| -> Vec<String> {
+            tau_cli_term::completion::build_candidates(&[], &data, buffer, buffer.len())
+                .into_iter()
+                .map(|candidate| candidate.label)
+                .collect()
+        };
+
+        assert_eq!(labels("/email "), vec!["in".to_owned(), "out".to_owned()]);
+        assert_eq!(labels("/email i"), vec!["in".to_owned()]);
+        assert_eq!(labels("/email in "), vec!["open".to_owned()]);
+        assert_eq!(labels("/email out "), vec!["mode".to_owned()]);
+        assert_eq!(
+            labels("/email out mode "),
+            vec!["approve".to_owned(), "block".to_owned()]
+        );
+    }
+
+    #[test]
     fn ignores_roots_that_collide_with_builtin_commands() {
         let state = ActionCommandState::new(["/quit"]);
         state.apply_schema_published(&published("/quit", "quit.dynamic", 1));
 
         assert!(!state.is_known_action_line("/quit list"));
-        assert!(state.dynamic_slash_commands().is_empty());
+        assert!(state.dynamic_completions().0.is_empty());
     }
 
     #[test]
