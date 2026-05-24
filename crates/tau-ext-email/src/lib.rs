@@ -2233,15 +2233,7 @@ impl RuntimeState {
     fn dispatch(&mut self, invoke: ToolStarted) -> Event {
         match &mut self.config_state {
             ConfigState::Configured(engine) => match parse_command(&invoke.arguments) {
-                Ok(command) => Event::ToolResult(ToolResult {
-                    call_id: invoke.call_id,
-                    tool_name: invoke.tool_name,
-                    tool_type: tau_proto::ToolType::Function,
-                    result: engine.dispatch(command),
-                    kind: tau_proto::ToolResultKind::Final,
-                    display: Some(display(ToolDisplayStatus::Success, "email")),
-                    originator: tau_proto::PromptOriginator::User,
-                }),
+                Ok(command) => finish_tool_result(invoke, engine.dispatch(command)),
                 Err(error) => tool_error(invoke, error),
             },
             ConfigState::Unconfigured => {
@@ -2846,10 +2838,23 @@ fn reject_extra(
     Ok(())
 }
 
+fn finish_tool_result(invoke: ToolStarted, result: CborValue) -> Event {
+    if cbor_bool_field(&result, "ok") == Some(false) {
+        return tool_error(invoke, result);
+    }
+    Event::ToolResult(ToolResult {
+        call_id: invoke.call_id,
+        tool_name: invoke.tool_name,
+        tool_type: tau_proto::ToolType::Function,
+        result,
+        kind: tau_proto::ToolResultKind::Final,
+        display: Some(display(ToolDisplayStatus::Success, "email")),
+        originator: tau_proto::PromptOriginator::User,
+    })
+}
+
 fn tool_error(invoke: ToolStarted, details: CborValue) -> Event {
-    let message = cbor_nested_text_field(&details, "error", "message")
-        .unwrap_or("invalid email tool request")
-        .to_owned();
+    let message = email_error_message(&details);
     Event::ToolError(ToolError {
         call_id: invoke.call_id,
         tool_name: invoke.tool_name,
@@ -2859,6 +2864,17 @@ fn tool_error(invoke: ToolStarted, details: CborValue) -> Event {
         display: Some(display(ToolDisplayStatus::Error, &message)),
         originator: tau_proto::PromptOriginator::User,
     })
+}
+fn email_error_message(details: &CborValue) -> String {
+    let message =
+        cbor_nested_text_field(details, "error", "message").unwrap_or("invalid email tool request");
+    let Some(code) = cbor_nested_text_field(details, "error", "code") else {
+        return message.to_owned();
+    };
+    match cbor_text_field(details, "command") {
+        Some(command) => format!("email {command} failed ({code}): {message}"),
+        None => format!("email failed ({code}): {message}"),
+    }
 }
 fn ok_envelope(command: &str, status: &str, data: CborValue) -> CborValue {
     cbor_map(vec![
@@ -2882,8 +2898,27 @@ fn error_envelope(command: Option<&str>, code: &str, message: &str) -> CborValue
 }
 fn backend_error_envelope(command: Option<&str>, default_code: &str, message: &str) -> CborValue {
     let code = backend_error_code(message, default_code);
-    let message = backend_error_text(message);
-    error_envelope(command, code, &message)
+    let text = backend_error_text(message);
+    cbor_map(vec![
+        ("ok", CborValue::Bool(false)),
+        (
+            "command",
+            command
+                .map(|c| CborValue::Text(c.to_owned()))
+                .unwrap_or(CborValue::Null),
+        ),
+        (
+            "error",
+            structured_error_with_details(
+                code,
+                &text,
+                cbor_map(vec![(
+                    "backend_message",
+                    CborValue::Text(message.to_owned()),
+                )]),
+            ),
+        ),
+    ])
 }
 fn backend_error_code<'a>(message: &'a str, default_code: &'a str) -> &'a str {
     for code in [
@@ -2915,10 +2950,13 @@ fn backend_error_text(message: &str) -> String {
     line.chars().take(200).collect()
 }
 fn structured_error(code: &str, message: &str) -> CborValue {
+    structured_error_with_details(code, message, CborValue::Map(Vec::new()))
+}
+fn structured_error_with_details(code: &str, message: &str, details: CborValue) -> CborValue {
     cbor_map(vec![
         ("code", CborValue::Text(code.to_owned())),
         ("message", CborValue::Text(message.to_owned())),
-        ("details", CborValue::Map(Vec::new())),
+        ("details", details),
     ])
 }
 fn attachment_cbor(index: usize, attachment: BackendAttachment) -> CborValue {
@@ -2976,6 +3014,15 @@ fn cbor_text_field<'a>(value: &'a CborValue, field: &str) -> Option<&'a str> {
     };
     entries.iter().find_map(|(key, value)| match (key, value) {
         (CborValue::Text(key), CborValue::Text(value)) if key == field => Some(value.as_str()),
+        _ => None,
+    })
+}
+fn cbor_bool_field(value: &CborValue, field: &str) -> Option<bool> {
+    let CborValue::Map(entries) = value else {
+        return None;
+    };
+    entries.iter().find_map(|(key, value)| match (key, value) {
+        (CborValue::Text(key), CborValue::Bool(value)) if key == field => Some(*value),
         _ => None,
     })
 }

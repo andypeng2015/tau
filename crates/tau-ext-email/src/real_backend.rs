@@ -367,10 +367,12 @@ async fn send_message_async(
         builder = builder.credentials(Credentials::new(smtp.login.clone(), password));
     }
     let mailer = builder.build();
-    mailer
-        .send(email)
-        .await
-        .map_err(|_| "smtp_error: SMTP send failed".to_owned())?;
+    mailer.send(email).await.map_err(|error| {
+        format!(
+            "smtp_error: SMTP send via {}:{} failed: {error}",
+            smtp.host, smtp.port
+        )
+    })?;
     Ok(message_id)
 }
 
@@ -378,7 +380,12 @@ async fn connect_imap(account: &RealAccount) -> Result<Session<RealImapStream>, 
     let imap = account.imap_config()?;
     let tcp = TcpStream::connect((imap.host.as_str(), imap.port))
         .await
-        .map_err(|_| "network_error: IMAP connection failed".to_owned())?;
+        .map_err(|error| {
+            format!(
+                "network_error: IMAP connection to {}:{} failed: {error}",
+                imap.host, imap.port
+            )
+        })?;
     let stream = match imap.tls {
         TlsMode::Required => RealImapStream::Tls(Box::new(tls_connect(&imap.host, tcp).await?)),
         TlsMode::StartTls | TlsMode::None => RealImapStream::Plain(tcp),
@@ -403,17 +410,19 @@ async fn connect_imap(account: &RealAccount) -> Result<Session<RealImapStream>, 
     let password = resolve_password(account.auth.as_ref(), &account.secrets)
         .await?
         .ok_or_else(|| "auth_error: IMAP password source is not configured".to_owned())?;
-    client
-        .login(&imap.login, password)
-        .await
-        .map_err(|_| "auth_error: IMAP authentication failed".to_owned())
+    client.login(&imap.login, password).await.map_err(|error| {
+        format!(
+            "auth_error: IMAP authentication failed for {}: {:?}",
+            imap.login, error.0
+        )
+    })
 }
 
 async fn read_imap_greeting(client: &mut Client<RealImapStream>) -> Result<(), String> {
     client
         .read_response()
         .await
-        .map_err(|_| "network_error: IMAP greeting failed".to_owned())?
+        .map_err(|error| format!("network_error: IMAP greeting failed: {error}"))?
         .ok_or_else(|| "network_error: IMAP server closed before greeting".to_owned())?;
     Ok(())
 }
@@ -432,7 +441,7 @@ async fn tls_connect(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStream>,
     TlsConnector::from(Arc::new(config))
         .connect(server_name, tcp)
         .await
-        .map_err(|_| "tls_error: TLS handshake failed".to_owned())
+        .map_err(|error| format!("tls_error: TLS handshake with {host} failed: {error}"))
 }
 
 fn smtp_tls(host: &str, mode: TlsMode) -> Result<Tls, String> {
@@ -665,11 +674,11 @@ fn clone_outgoing_message(message: &OutgoingMessage) -> OutgoingMessage {
 
 fn imap_error(error: async_imap::error::Error) -> String {
     match error {
-        async_imap::error::Error::No(_) => {
-            "imap_error: IMAP server rejected the command".to_owned()
+        async_imap::error::Error::No(response) => {
+            format!("imap_error: IMAP server rejected the command: {response:?}")
         }
-        async_imap::error::Error::Bad(_) => {
-            "imap_error: IMAP server rejected the command".to_owned()
+        async_imap::error::Error::Bad(response) => {
+            format!("imap_error: IMAP server rejected the command: {response:?}")
         }
         async_imap::error::Error::ConnectionLost => {
             "network_error: IMAP connection lost".to_owned()
@@ -677,7 +686,7 @@ fn imap_error(error: async_imap::error::Error) -> String {
         async_imap::error::Error::Validate(_) => {
             "invalid_input: invalid IMAP command input".to_owned()
         }
-        _ => "network_error: IMAP operation failed".to_owned(),
+        error => format!("network_error: IMAP operation failed: {error}"),
     }
 }
 

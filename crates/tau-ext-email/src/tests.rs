@@ -262,6 +262,15 @@ fn command_args(command: &str, args: Vec<(&str, CborValue)>) -> CborValue {
     ])
 }
 
+fn tool_started(command: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
+    ToolStarted {
+        call_id: tau_proto::ToolCallId::from("call-1"),
+        tool_name: tau_proto::ToolName::new(TOOL_NAME),
+        arguments: command_args(command, args),
+        originator: tau_proto::PromptOriginator::User,
+    }
+}
+
 fn data_field<'a>(value: &'a CborValue, name: &str) -> &'a CborValue {
     let data = map_get(value, "data").expect("data");
     map_get(data, name).expect("field")
@@ -489,6 +498,53 @@ fn list_accounts_returns_config_without_secrets_and_folders_are_whitelisted() {
         .filter_map(|f| text_field(f, "name"))
         .collect();
     assert_eq!(names, vec!["INBOX".to_owned()]);
+}
+
+#[test]
+fn failed_email_command_result_finishes_as_tool_error() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    let result = engine.dispatch(EmailCommand::ListFolders {
+        account: "missing".to_owned(),
+    });
+
+    let event = finish_tool_result(tool_started("list_folders", Vec::new()), result);
+
+    let Event::ToolError(error) = event else {
+        panic!("failed email command should be a tool error")
+    };
+    assert_eq!(error.call_id.as_str(), "call-1");
+    assert_eq!(
+        error.message,
+        "email list_folders failed (account_not_found): account not found"
+    );
+    let details = error.details.expect("details");
+    assert_eq!(
+        cbor_nested_text_field(&details, "error", "code"),
+        Some("account_not_found")
+    );
+}
+
+#[test]
+fn backend_errors_keep_backend_context_for_agent_debugging() {
+    let error = backend_error_envelope(
+        Some("list"),
+        "network_error",
+        "network_error: IMAP connection to imap.example.com:993 failed: connection refused",
+    );
+
+    assert_eq!(
+        email_error_message(&error),
+        "email list failed (network_error): IMAP connection to imap.example.com:993 failed: connection refused"
+    );
+    let details = map_get(map_get(&error, "error").expect("error"), "details").expect("details");
+    assert_eq!(
+        text_field(details, "backend_message"),
+        Some(
+            "network_error: IMAP connection to imap.example.com:993 failed: connection refused"
+                .to_owned()
+        )
+    );
 }
 
 #[test]
