@@ -257,6 +257,9 @@ pub struct FolderPolicy {
 pub struct PolicyConfig {
     /// Config-defined incoming sender allow patterns.
     pub incoming_allow: Vec<String>,
+    /// Authentication policy required before incoming sender allow patterns can
+    /// auto-allow message content.
+    pub incoming_auth: IncomingAuthPolicyConfig,
     /// Config-defined outgoing recipient allow patterns.
     pub outgoing_allow: Vec<String>,
     /// Whether persisted state allowlists may extend config policy.
@@ -267,8 +270,31 @@ impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
             incoming_allow: Vec::new(),
+            incoming_auth: IncomingAuthPolicyConfig::default(),
             outgoing_allow: Vec::new(),
             allow_state_policy_extensions: true,
+        }
+    }
+}
+
+/// Authentication evidence required for incoming sender allow policy.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IncomingAuthPolicyConfig {
+    /// Require trusted `Authentication-Results` alignment before incoming
+    /// allowlists can auto-read. Defaults to true so missing configuration
+    /// fails closed.
+    pub require: bool,
+    /// Exact authserv-id values whose server-provided `Authentication-Results`
+    /// headers may be trusted for incoming auto-read decisions.
+    pub trusted_authserv_ids: Vec<String>,
+}
+
+impl Default for IncomingAuthPolicyConfig {
+    fn default() -> Self {
+        Self {
+            require: true,
+            trusted_authserv_ids: Vec::new(),
         }
     }
 }
@@ -310,6 +336,7 @@ impl EmailExtensionConfig {
             account_order,
             policy: ValidatedPolicy {
                 incoming_allow: compile_address_patterns(&self.policy.incoming_allow)?,
+                incoming_auth: validate_incoming_auth_policy(self.policy.incoming_auth)?,
                 outgoing_allow: compile_address_patterns(&self.policy.outgoing_allow)?,
                 allow_state_policy_extensions: self.policy.allow_state_policy_extensions,
             },
@@ -567,6 +594,31 @@ fn validate_account_auth_support(
     }
 }
 
+fn validate_incoming_auth_policy(
+    config: IncomingAuthPolicyConfig,
+) -> Result<ValidatedIncomingAuthPolicy, String> {
+    let mut trusted_authserv_ids = BTreeSet::new();
+    for id in config.trusted_authserv_ids {
+        let normalized = validate_authserv_id(&id)?;
+        trusted_authserv_ids.insert(normalized);
+    }
+    Ok(ValidatedIncomingAuthPolicy {
+        require: config.require,
+        trusted_authserv_ids,
+    })
+}
+
+fn validate_authserv_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().any(char::is_control)
+        || trimmed.contains([';', ',', ' ', '\t', '\r', '\n', '<', '>'])
+    {
+        return Err(format!("invalid incoming_auth trusted authserv-id `{id}`"));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
 fn validate_config_secrets(
     config: &ValidatedConfig,
     secrets: &BTreeMap<String, tau_proto::SecretValue>,
@@ -634,10 +686,21 @@ impl ValidatedFolderPolicy {
 pub struct ValidatedPolicy {
     /// Compiled config incoming allow patterns.
     pub incoming_allow: Vec<AddressPattern>,
+    /// Compiled authentication policy for incoming allow decisions.
+    pub incoming_auth: ValidatedIncomingAuthPolicy,
     /// Compiled config outgoing allow patterns.
     pub outgoing_allow: Vec<AddressPattern>,
     /// Whether persisted state policy extensions are enabled.
     pub allow_state_policy_extensions: bool,
+}
+
+/// Validated authentication policy for incoming allow decisions.
+pub struct ValidatedIncomingAuthPolicy {
+    /// Whether incoming allow decisions require trusted authentication
+    /// evidence.
+    pub require: bool,
+    /// Lowercase trusted authserv-id values.
+    pub trusted_authserv_ids: BTreeSet<String>,
 }
 
 /// A normalized address pattern.
@@ -735,6 +798,63 @@ fn compile_address_patterns(patterns: &[String]) -> Result<Vec<AddressPattern>, 
         .iter()
         .map(|pattern| AddressPattern::compile(pattern))
         .collect()
+}
+
+fn incoming_auth_decision(
+    message: &BackendMessage,
+    policy: &ValidatedIncomingAuthPolicy,
+) -> PolicyDecision {
+    if message.auth_results.is_empty() {
+        return PolicyDecision::denied("auth missing");
+    }
+    let Some(visible_domain) = normalize_address(&message.from).and_then(|address| {
+        address
+            .split_once('@')
+            .map(|(_, domain)| domain.to_ascii_lowercase())
+    }) else {
+        return PolicyDecision::denied("auth unaligned");
+    };
+    let trusted = message
+        .auth_results
+        .iter()
+        .filter(|evidence| {
+            policy
+                .trusted_authserv_ids
+                .contains(&evidence.authserv_id.to_ascii_lowercase())
+        })
+        .collect::<Vec<_>>();
+    if trusted.is_empty() {
+        return PolicyDecision::denied("untrusted auth server");
+    }
+
+    let mut saw_pass = false;
+    for evidence in &trusted {
+        if evidence.dmarc_result.as_deref() == Some("pass") {
+            saw_pass = true;
+            if evidence
+                .dmarc_header_from
+                .as_deref()
+                .is_some_and(|domain| domain.eq_ignore_ascii_case(&visible_domain))
+            {
+                return PolicyDecision::allowed(Some("auth".to_owned()));
+            }
+        }
+        if evidence.dkim_result.as_deref() == Some("pass") {
+            saw_pass = true;
+            if evidence
+                .dkim_header_d
+                .as_deref()
+                .is_some_and(|domain| domain.eq_ignore_ascii_case(&visible_domain))
+            {
+                return PolicyDecision::allowed(Some("auth".to_owned()));
+            }
+        }
+    }
+    if saw_pass {
+        PolicyDecision::denied("auth unaligned")
+    } else {
+        PolicyDecision::denied("auth failed")
+    }
 }
 
 /// Normalize an email address/header to lowercase `local@domain` for policy
@@ -1257,6 +1377,23 @@ pub struct BackendAttachment {
     pub size_bytes: Option<u64>,
 }
 
+/// Parsed server-provided Authentication-Results evidence used internally for
+/// incoming auto-read policy. Raw authentication headers are never exposed in
+/// model-visible tool output.
+#[derive(Clone, Default)]
+pub struct AuthenticationResultsEvidence {
+    /// Authserv-id that produced the Authentication-Results header.
+    pub authserv_id: String,
+    /// DMARC result token, such as `pass` or `fail`.
+    pub dmarc_result: Option<String>,
+    /// DMARC `header.from` domain reported by the trusted server.
+    pub dmarc_header_from: Option<String>,
+    /// DKIM result token, such as `pass` or `fail`.
+    pub dkim_result: Option<String>,
+    /// DKIM `header.d` domain reported by the trusted server.
+    pub dkim_header_d: Option<String>,
+}
+
 /// Backend message fixture/metadata.
 #[derive(Clone)]
 pub struct BackendMessage {
@@ -1284,6 +1421,8 @@ pub struct BackendMessage {
     pub attachments: Vec<BackendAttachment>,
     /// Optional Message-ID header.
     pub message_id: Option<String>,
+    /// Parsed Authentication-Results evidence from trusted IMAP server fetches.
+    pub auth_results: Vec<AuthenticationResultsEvidence>,
 }
 
 /// Exact incoming read approval target.
@@ -2247,12 +2386,29 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn incoming_decision(&self, message: &BackendMessage) -> PolicyDecision {
-        self.address_decision(
+        let sender_decision = self.address_decision(
             &message.from,
             &self.config.policy.incoming_allow,
             |s| s.load_incoming_allow(),
-            "sender_not_whitelisted",
-        )
+            "untrusted",
+        );
+        if !self.config.policy.incoming_auth.require {
+            return sender_decision;
+        }
+
+        let auth_decision = incoming_auth_decision(message, &self.config.policy.incoming_auth);
+        if sender_decision.allowed && auth_decision.allowed {
+            return PolicyDecision::allowed(sender_decision.matched_pattern);
+        }
+
+        let mut reasons = Vec::new();
+        if !sender_decision.allowed {
+            reasons.push(sender_decision.reason);
+        }
+        if !auth_decision.allowed {
+            reasons.push(auth_decision.reason);
+        }
+        PolicyDecision::denied(&reasons.join(", "))
     }
 
     fn recipient_allowed(&self, recipient: &str) -> bool {

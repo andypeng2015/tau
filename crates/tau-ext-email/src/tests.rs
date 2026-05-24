@@ -51,6 +51,7 @@ impl FakeBackend {
                     has_attachments: false,
                     attachments: Vec::new(),
                     message_id: None,
+                    auth_results: Vec::new(),
                 },
                 BackendMessage {
                     uid: "2".to_owned(),
@@ -65,6 +66,7 @@ impl FakeBackend {
                     has_attachments: false,
                     attachments: Vec::new(),
                     message_id: None,
+                    auth_results: vec![trusted_dmarc_pass("company.com")],
                 },
             ],
         );
@@ -194,6 +196,24 @@ fn drain_action_schema(reader: &mut FrameReader<BufReader<UnixStream>>) -> Actio
     }
 }
 
+fn trusted_dmarc_pass(domain: &str) -> AuthenticationResultsEvidence {
+    AuthenticationResultsEvidence {
+        authserv_id: "mx.company.com".to_owned(),
+        dmarc_result: Some("pass".to_owned()),
+        dmarc_header_from: Some(domain.to_owned()),
+        ..Default::default()
+    }
+}
+
+fn trusted_dkim_pass(domain: &str) -> AuthenticationResultsEvidence {
+    AuthenticationResultsEvidence {
+        authserv_id: "mx.company.com".to_owned(),
+        dkim_result: Some("pass".to_owned()),
+        dkim_header_d: Some(domain.to_owned()),
+        ..Default::default()
+    }
+}
+
 fn cfg() -> EmailExtensionConfig {
     EmailExtensionConfig {
         enable: true,
@@ -224,6 +244,10 @@ fn cfg() -> EmailExtensionConfig {
         }],
         policy: PolicyConfig {
             incoming_allow: vec!["*@company.com".to_owned()],
+            incoming_auth: IncomingAuthPolicyConfig {
+                require: true,
+                trusted_authserv_ids: vec!["mx.company.com".to_owned()],
+            },
             outgoing_allow: vec![
                 "bob@company.com".to_owned(),
                 "re:.*@trusted\\.test".to_owned(),
@@ -737,6 +761,137 @@ fn incoming_list_redacts_untrusted_and_shows_whitelisted_subject() {
     );
 }
 
+fn single_message_engine(
+    temp: &tempfile::TempDir,
+    from: &str,
+    auth_results: Vec<AuthenticationResultsEvidence>,
+) -> Engine<FakeBackend> {
+    let mut backend = FakeBackend::with_work_mail();
+    backend.messages.insert(
+        ("work".to_owned(), "INBOX".to_owned()),
+        vec![BackendMessage {
+            uid: "99".to_owned(),
+            uidvalidity: "uv".to_owned(),
+            date: "d".to_owned(),
+            from: from.to_owned(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            subject: "must stay hidden until trusted auth".to_owned(),
+            body_text: "secret body".to_owned(),
+            flags: Vec::new(),
+            has_attachments: false,
+            attachments: Vec::new(),
+            message_id: None,
+            auth_results,
+        }],
+    );
+    Engine {
+        config: cfg().validate().expect("valid"),
+        state: StateStore::open(temp.path().join("email-state")).expect("state"),
+        backend,
+    }
+}
+
+fn read_reason(result: &CborValue) -> Option<String> {
+    text_field(map_get(result, "data")?, "reason")
+}
+
+#[test]
+fn incoming_allow_requires_trusted_aligned_authentication() {
+    // Regression coverage for spoofed From: visible sender allow policy alone
+    // must not auto-read attacker-controlled email content.
+    let cases = [
+        ("mallory@evil.test", Vec::new(), "untrusted, auth missing"),
+        ("team@company.com", Vec::new(), "auth missing"),
+        (
+            "team@company.com",
+            vec![AuthenticationResultsEvidence {
+                authserv_id: "attacker.example".to_owned(),
+                dmarc_result: Some("pass".to_owned()),
+                dmarc_header_from: Some("company.com".to_owned()),
+                ..Default::default()
+            }],
+            "untrusted auth server",
+        ),
+        (
+            "team@company.com",
+            vec![trusted_dkim_pass("evil.test")],
+            "auth unaligned",
+        ),
+    ];
+    for (from, auth_results, reason) in cases {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let mut engine = single_message_engine(&temp, from, auth_results);
+        let result = engine.dispatch(EmailCommand::Read {
+            account: "work".to_owned(),
+            folder: "INBOX".to_owned(),
+            uid: "99".to_owned(),
+        });
+
+        assert_eq!(
+            cbor_text_field(&result, "status"),
+            Some("approval_required")
+        );
+        assert_eq!(read_reason(&result), Some(reason.to_owned()));
+        assert!(!format!("{result:?}").contains("must stay hidden"));
+        assert!(!format!("{result:?}").contains("secret body"));
+    }
+}
+
+#[test]
+fn incoming_allow_accepts_trusted_dmarc_or_aligned_dkim() {
+    // Trusted server Authentication-Results may unlock an already-whitelisted
+    // visible From domain only when DMARC/DKIM evidence aligns exactly.
+    for auth_results in [
+        vec![trusted_dmarc_pass("company.com")],
+        vec![trusted_dkim_pass("company.com")],
+    ] {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let mut engine = single_message_engine(&temp, "team@company.com", auth_results);
+        let result = engine.dispatch(EmailCommand::Read {
+            account: "work".to_owned(),
+            folder: "INBOX".to_owned(),
+            uid: "99".to_owned(),
+        });
+
+        assert_eq!(cbor_text_field(&result, "status"), Some("ok"));
+        assert!(format!("{result:?}").contains("secret body"));
+    }
+}
+
+#[test]
+fn folded_authentication_results_headers_are_parsed_without_exposure() {
+    // Real IMAP fetches can fold Authentication-Results headers. Preserve only
+    // parsed stable evidence and never expose raw authentication header text.
+    let fallback = BackendMessage {
+        uid: "42".to_owned(),
+        uidvalidity: "uv".to_owned(),
+        date: "fallback-date".to_owned(),
+        from: "fallback@example.com".to_owned(),
+        to: Vec::new(),
+        cc: Vec::new(),
+        subject: "fallback".to_owned(),
+        body_text: String::new(),
+        flags: Vec::new(),
+        has_attachments: false,
+        attachments: Vec::new(),
+        message_id: None,
+        auth_results: Vec::new(),
+    };
+    let raw = b"From: Team <team@company.com>\r\nAuthentication-Results: mx.company.com;\r\n dmarc=pass header.from=company.com;\r\n dkim=pass header.d=company.com\r\nSubject: hi\r\n\r\nbody";
+
+    let parsed = super::real_backend::parse_backend_message_from_rfc822(&fallback, raw);
+
+    assert_eq!(parsed.auth_results.len(), 1);
+    assert_eq!(parsed.auth_results[0].authserv_id, "mx.company.com");
+    assert_eq!(parsed.auth_results[0].dmarc_result.as_deref(), Some("pass"));
+    assert_eq!(
+        parsed.auth_results[0].dmarc_header_from.as_deref(),
+        Some("company.com")
+    );
+    assert!(!parsed.body_text.contains("Authentication-Results"));
+}
+
 #[test]
 fn imap_fetch_requests_avoid_structured_parser_failures() {
     // Some servers emit valid BODYSTRUCTURE or ENVELOPE responses that
@@ -765,6 +920,7 @@ fn rfc822_parser_extracts_text_and_attachment_metadata_without_network() {
         has_attachments: false,
         attachments: Vec::new(),
         message_id: None,
+        auth_results: Vec::new(),
     };
     let raw = b"From: Team <team@company.com>\r\nTo: Alice <alice@company.com>\r\nCc: Ops <ops@company.com>\r\nSubject: Parsed subject\r\nMessage-ID: <m1@example.com>\r\nDate: Mon, 25 May 2026 12:00:00 +0000\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello text\r\n--b\r\nContent-Type: application/pdf; name=\"notes.pdf\"\r\nContent-Disposition: attachment; filename=\"notes.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--b--\r\n";
 
@@ -805,6 +961,7 @@ fn rfc822_parser_failure_omits_raw_message_body() {
             size_bytes: Some(12),
         }],
         message_id: None,
+        auth_results: Vec::new(),
     };
     let raw = b":";
 
@@ -892,6 +1049,7 @@ fn unapproved_read_uses_metadata_without_fetching_full_body() {
         has_attachments: false,
         attachments: Vec::new(),
         message_id: None,
+        auth_results: Vec::new(),
     };
     let body = BackendMessage {
         body_text: "must not be fetched".to_owned(),
@@ -937,6 +1095,7 @@ fn allowed_read_rejects_body_fetch_uidvalidity_mismatch() {
         has_attachments: false,
         attachments: Vec::new(),
         message_id: None,
+        auth_results: vec![trusted_dmarc_pass("company.com")],
     };
     let body = BackendMessage {
         uidvalidity: "uv2".to_owned(),
@@ -1165,6 +1324,7 @@ fn incoming_actions_list_redacts_for_agent_but_open_shows_user_content() {
             has_attachments: false,
             attachments: Vec::new(),
             message_id: None,
+            auth_results: vec![trusted_dmarc_pass("new.test")],
         }],
     );
     engine
@@ -1456,6 +1616,7 @@ fn read_body_and_list_results_report_truncation_metadata() {
                 has_attachments: false,
                 attachments: Vec::new(),
                 message_id: None,
+                auth_results: vec![trusted_dmarc_pass("company.com")],
             },
             BackendMessage {
                 uid: "11".to_owned(),
@@ -1470,6 +1631,7 @@ fn read_body_and_list_results_report_truncation_metadata() {
                 has_attachments: false,
                 attachments: Vec::new(),
                 message_id: None,
+                auth_results: vec![trusted_dmarc_pass("company.com")],
             },
         ],
     );
@@ -1552,6 +1714,7 @@ fn state_allowlist_load_save_and_policy_extension_disable() {
             has_attachments: false,
             attachments: Vec::new(),
             message_id: None,
+            auth_results: Vec::new(),
         }],
     );
     let read = engine.dispatch(EmailCommand::Read {

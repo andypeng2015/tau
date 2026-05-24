@@ -26,9 +26,9 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
 use super::{
-    AuthMethod, BackendAttachment, BackendFolder, BackendMessage, BackendMessagePage, EmailBackend,
-    OutgoingMessage, TlsMode, ValidatedAuthConfig, ValidatedConfig, ValidatedImapConfig,
-    ValidatedSmtpConfig,
+    AuthMethod, AuthenticationResultsEvidence, BackendAttachment, BackendFolder, BackendMessage,
+    BackendMessagePage, EmailBackend, OutgoingMessage, TlsMode, ValidatedAuthConfig,
+    ValidatedConfig, ValidatedImapConfig, ValidatedSmtpConfig,
 };
 
 pub(super) const FETCH_METADATA_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER])";
@@ -506,6 +506,7 @@ fn metadata_from_fetch(fetch: &async_imap::types::Fetch, uidvalidity: &str) -> B
         has_attachments: false,
         attachments: Vec::new(),
         message_id: None,
+        auth_results: Vec::new(),
     };
     fetch
         .header()
@@ -522,6 +523,7 @@ fn parse_backend_message_metadata_from_rfc822(
     };
     let mut message = fallback.clone();
     apply_parsed_headers(&mut message, &parsed);
+    message.auth_results = parse_authentication_results_headers(raw);
     message
 }
 
@@ -537,6 +539,7 @@ pub(crate) fn parse_backend_message_from_rfc822(
     };
     let mut message = fallback.clone();
     apply_parsed_headers(&mut message, &parsed);
+    message.auth_results = parse_authentication_results_headers(raw);
     message.body_text = parsed_body_text(&parsed);
     message.attachments = parsed
         .attachments()
@@ -548,6 +551,103 @@ pub(crate) fn parse_backend_message_from_rfc822(
         .collect();
     message.has_attachments = message.has_attachments || !message.attachments.is_empty();
     message
+}
+
+fn parse_authentication_results_headers(raw: &[u8]) -> Vec<AuthenticationResultsEvidence> {
+    unfolded_header_lines(raw)
+        .into_iter()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("Authentication-Results")
+                .then(|| parse_authentication_results_value(value.trim()))
+                .flatten()
+        })
+        .collect()
+}
+
+fn unfolded_header_lines(raw: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(raw);
+    let header_text = text
+        .split_once("\r\n\r\n")
+        .map(|(headers, _)| headers)
+        .or_else(|| text.split_once("\n\n").map(|(headers, _)| headers))
+        .unwrap_or(&text);
+    let mut lines: Vec<String> = Vec::new();
+    for line in header_text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some(previous) = lines.last_mut() {
+                previous.push(' ');
+                previous.push_str(line.trim());
+            }
+        } else {
+            lines.push(line.to_owned());
+        }
+    }
+    lines
+}
+
+fn parse_authentication_results_value(value: &str) -> Option<AuthenticationResultsEvidence> {
+    let mut clauses = value.split(';').map(str::trim);
+    let authserv_id = sanitize_auth_results_token(clauses.next()?)?;
+    let mut evidence = AuthenticationResultsEvidence {
+        authserv_id: authserv_id.to_ascii_lowercase(),
+        ..Default::default()
+    };
+    for clause in clauses {
+        let mut words = clause.split_whitespace();
+        let Some(method_result) = words.next() else {
+            continue;
+        };
+        let Some((method, result)) = method_result.split_once('=') else {
+            continue;
+        };
+        let method = method.to_ascii_lowercase();
+        let result = clean_auth_results_value(result)?.to_ascii_lowercase();
+        match method.as_str() {
+            "dmarc" => evidence.dmarc_result = Some(result),
+            "dkim" => evidence.dkim_result = Some(result),
+            _ => {}
+        }
+        for word in words {
+            let Some((property, value)) = word.split_once('=') else {
+                continue;
+            };
+            let property = property.to_ascii_lowercase();
+            let value = clean_auth_results_value(value)?.to_ascii_lowercase();
+            match (method.as_str(), property.as_str()) {
+                ("dmarc", "header.from") => evidence.dmarc_header_from = Some(value),
+                ("dkim", "header.d") => evidence.dkim_header_d = Some(value),
+                _ => {}
+            }
+        }
+    }
+    Some(evidence)
+}
+
+fn sanitize_auth_results_token(value: &str) -> Option<&str> {
+    let token = value.split_whitespace().next()?.trim_matches('"');
+    (!token.is_empty()
+        && !token
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, ';' | ',' | '<' | '>')))
+    .then_some(token)
+}
+
+fn clean_auth_results_value(value: &str) -> Option<String> {
+    let cleaned = value
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(';')
+        .trim_end_matches(',');
+    (!cleaned.is_empty()
+        && !cleaned
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, ';' | '<' | '>')))
+    .then(|| cleaned.to_owned())
 }
 
 fn apply_parsed_headers(message: &mut BackendMessage, parsed: &mail_parser::Message<'_>) {
