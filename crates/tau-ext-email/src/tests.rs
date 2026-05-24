@@ -620,6 +620,17 @@ fn incoming_list_redacts_untrusted_and_shows_whitelisted_subject() {
 }
 
 #[test]
+fn imap_fetch_requests_avoid_bodystructure_parser_failures() {
+    // Some servers emit valid BODYSTRUCTURE responses that async-imap's
+    // response parser rejects before Tau can inspect the message. Listing and
+    // metadata reads do not need BODYSTRUCTURE, and full reads can derive
+    // attachments from the RFC822 body instead.
+    assert!(!super::real_backend::FETCH_METADATA_ITEMS.contains("BODYSTRUCTURE"));
+    assert!(!super::real_backend::FETCH_FULL_MESSAGE_ITEMS.contains("BODYSTRUCTURE"));
+    assert!(super::real_backend::FETCH_FULL_MESSAGE_ITEMS.contains("BODY.PEEK[]"));
+}
+
+#[test]
 fn rfc822_parser_extracts_text_and_attachment_metadata_without_network() {
     let fallback = BackendMessage {
         uid: "42".to_owned(),

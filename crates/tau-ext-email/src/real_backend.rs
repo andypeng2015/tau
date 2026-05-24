@@ -30,6 +30,9 @@ use super::{
     ValidatedSmtpConfig,
 };
 
+pub(super) const FETCH_METADATA_ITEMS: &str = "(UID FLAGS INTERNALDATE ENVELOPE)";
+pub(super) const FETCH_FULL_MESSAGE_ITEMS: &str = "(UID FLAGS INTERNALDATE ENVELOPE BODY.PEEK[])";
+
 /// Production IMAP/SMTP backend for configured email accounts.
 pub struct RealEmailBackend {
     accounts: BTreeMap<String, RealAccount>,
@@ -273,7 +276,7 @@ async fn list_messages_page_async(
         .collect::<Vec<_>>()
         .join(",");
     let mut fetches = session
-        .uid_fetch(uid_set, "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE)")
+        .uid_fetch(uid_set, FETCH_METADATA_ITEMS)
         .await
         .map_err(imap_error)?;
     let mut by_uid = BTreeMap::new();
@@ -307,7 +310,7 @@ async fn message_metadata_async(
         .map(|value| value.to_string())
         .unwrap_or_default();
     let mut fetches = session
-        .uid_fetch(uid, "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE)")
+        .uid_fetch(uid, FETCH_METADATA_ITEMS)
         .await
         .map_err(imap_error)?;
     let message = match fetches.try_next().await.map_err(imap_error)? {
@@ -331,10 +334,7 @@ async fn read_message_async(
         .map(|value| value.to_string())
         .unwrap_or_default();
     let mut fetches = session
-        .uid_fetch(
-            uid,
-            "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE BODY.PEEK[])",
-        )
+        .uid_fetch(uid, FETCH_FULL_MESSAGE_ITEMS)
         .await
         .map_err(imap_error)?;
     let message = match fetches.try_next().await.map_err(imap_error)? {
