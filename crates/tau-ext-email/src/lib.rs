@@ -2101,20 +2101,40 @@ impl<B: EmailBackend> Engine<B> {
         Ok(lines.join("\n"))
     }
 
-    fn action_in_open(&self, id: &str) -> Result<String, String> {
+    fn action_in_open(&mut self, id: &str) -> Result<String, String> {
         validate_approval_id(id, "in")?;
         let approval = self.state.pending_incoming_by_id(id)?;
+        let message = self
+            .backend
+            .read_message(&approval.account, &approval.folder, &approval.uid)
+            .map_err(|message| backend_error_text(&message))?;
+        if message.uid != approval.uid || message.uidvalidity != approval.uidvalidity {
+            return Err("message not found".to_owned());
+        }
+        let truncate = truncate_body(&message.body_text);
+        let attachment_names = message
+            .attachments
+            .iter()
+            .filter_map(|attachment| attachment.filename.as_deref())
+            .collect::<Vec<_>>()
+            .join(", ");
         Ok(format!(
-            "Incoming approval {id}\nstatus: {}\naccount: {}\nfolder: {}\nuid: {}\nuidvalidity: {}\nfrom: {}\ndate: {}\nsubject_redacted: {}\nreason: {}\n\nContent is hidden until this read approval is approved or the sender is whitelisted.",
+            "Incoming approval {id}\nstatus: {}\naccount: {}\nfolder: {}\nuid: {}\nuidvalidity: {}\nfrom: {}\nto: {}\ncc: {}\ndate: {}\nsubject: {}\nbody_truncated: {}\nattachments: {}\nattachment_names: {}\nreason: {}\n\n{}",
             approval.status,
             approval.account,
             approval.folder,
             approval.uid,
             approval.uidvalidity,
-            approval.from,
-            approval.date,
-            approval.subject_redacted,
-            approval.reason
+            message.from,
+            message.to.join(", "),
+            message.cc.join(", "),
+            message.date,
+            message.subject,
+            truncate.truncated,
+            message.attachments.len(),
+            attachment_names,
+            approval.reason,
+            truncate.body_text
         ))
     }
 

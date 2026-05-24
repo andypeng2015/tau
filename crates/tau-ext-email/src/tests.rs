@@ -1100,7 +1100,7 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
 }
 
 #[test]
-fn incoming_actions_list_open_approve_and_whitelist_drive_policy_without_leaks() {
+fn incoming_actions_list_redacts_for_agent_but_open_shows_user_content() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
     let queued = engine.dispatch(EmailCommand::Read {
@@ -1123,9 +1123,9 @@ fn incoming_actions_list_open_approve_and_whitelist_drive_policy_without_leaks()
     let opened = engine
         .dispatch_action("email.in.open", &[id.clone()])
         .expect("open action");
-    assert!(opened.contains("subject_redacted: true"));
-    assert!(!opened.contains("secret subject"));
-    assert!(!opened.contains("secret body"));
+    assert!(opened.contains("subject: secret subject"));
+    assert!(opened.contains("secret body"));
+    assert!(!opened.contains("Content is hidden"));
 
     engine
         .dispatch_action("email.in.approve", &[id.clone()])
