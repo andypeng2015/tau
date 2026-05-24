@@ -1431,8 +1431,8 @@ fn approval_ids_reject_path_components_and_wrong_shapes() {
             "{id} should be rejected"
         );
     }
-    assert!(validate_approval_id("1", "in").is_ok());
-    assert!(validate_approval_id("in_0123456789abcdef01234567", "in").is_ok());
+    assert!(validate_approval_id("1").is_ok());
+    assert!(validate_approval_id("in_0123456789abcdef01234567").is_err());
 }
 
 #[test]

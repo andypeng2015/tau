@@ -997,17 +997,17 @@ impl StateStore {
     /// Mark an incoming approval ID as approved by moving/writing it to
     /// approved.
     pub fn approve_incoming(&self, id: &str) -> Result<(), String> {
-        self.approve("incoming", "in", id)
+        self.approve("incoming", id)
     }
 
     /// Mark an outgoing approval ID as approved by moving/writing it to
     /// approved.
     pub fn approve_outgoing(&self, id: &str) -> Result<(), String> {
-        self.approve("outgoing", "out", id)
+        self.approve("outgoing", id)
     }
 
-    fn approve(&self, kind: &str, prefix: &str, id: &str) -> Result<(), String> {
-        validate_approval_id(id, prefix)?;
+    fn approve(&self, kind: &str, id: &str) -> Result<(), String> {
+        validate_approval_id(id)?;
         let from = self.approval_path(kind, "pending", id)?;
         let to = self.approval_path(kind, "approved", id)?;
         if from.exists() {
@@ -1044,8 +1044,8 @@ impl StateStore {
     }
 
     fn approval_path(&self, kind: &str, status: &str, id: &str) -> Result<PathBuf, String> {
-        let prefix = approval_prefix(kind)?;
-        validate_approval_id(id, prefix)?;
+        approval_prefix(kind)?;
+        validate_approval_id(id)?;
         Ok(self
             .state_dir
             .join("approvals")
@@ -1085,21 +1085,8 @@ fn approval_prefix(kind: &str) -> Result<&'static str, String> {
     }
 }
 
-fn validate_approval_id(id: &str, prefix: &str) -> Result<(), String> {
-    if id.is_empty() || id.contains(['/', '\\', '\0']) {
-        return Err(format!("invalid approval id `{id}`"));
-    }
-    if id.bytes().all(|b| b.is_ascii_digit()) {
-        return Ok(());
-    }
-    let Some(suffix) = id.strip_prefix(&format!("{prefix}_")) else {
-        return Err(format!("invalid approval id `{id}`"));
-    };
-    if suffix.len() != 24
-        || !suffix
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-    {
+fn validate_approval_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.contains(['/', '\\', '\0']) || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("invalid approval id `{id}`"));
     }
     Ok(())
@@ -2100,7 +2087,7 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn action_out_open(&self, id: &str) -> Result<String, String> {
-        validate_approval_id(id, "out")?;
+        validate_approval_id(id)?;
         let approval = self.state.pending_outgoing_by_id(id)?;
         Ok(format!(
             "Outgoing approval {id}\nstatus: {}\naccount: {}\nfrom: {}\nto: {}\ncc: {}\nbcc: {}\nsubject: {}\nreply_to: {}\nin_reply_to: {}\nblocked: {}\nreason: {}\n\n{}",
@@ -2120,7 +2107,7 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn action_out_approve(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id, "out")?;
+        validate_approval_id(id)?;
         match self.state.pending_outgoing_by_id(id) {
             Ok(approval) => {
                 let message = outgoing_approval_message(&approval);
@@ -2183,7 +2170,7 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn action_in_open(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id, "in")?;
+        validate_approval_id(id)?;
         let approval = self.state.pending_incoming_by_id(id)?;
         let message = self
             .backend
@@ -2220,7 +2207,7 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn action_in_approve(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id, "in")?;
+        validate_approval_id(id)?;
         match self.state.pending_incoming_by_id(id) {
             Ok(approval) => {
                 self.state.approve_incoming(id)?;
