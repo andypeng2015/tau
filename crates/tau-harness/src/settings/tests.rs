@@ -18,6 +18,7 @@ fn builtin(
         role: Some(role.into()),
         enable,
         config,
+        secrets: BTreeMap::new(),
     }
 }
 
@@ -223,6 +224,25 @@ fn resolve_extensions_user_extension_without_command_errors() {
 }
 
 #[test]
+fn resolve_extensions_disabled_user_extension_without_command_is_inert() {
+    // A disabled custom extension should be a harmless config placeholder. In
+    // particular, it must not require a command just to be dropped from the
+    // resolved extension set.
+    let mut s = HarnessSettings::built_in();
+    s.extensions.insert(
+        "future-extension".into(),
+        ExtensionEntry {
+            enable: Some(false),
+            ..Default::default()
+        },
+    );
+
+    let resolved = resolve_extensions(&s, builtins()).expect("disabled entry is dropped");
+
+    assert!(resolved.iter().all(|e| e.name != "future-extension"));
+}
+
+#[test]
 fn resolve_extensions_loads_from_yaml() {
     // End-to-end: a realistic harness.yaml round-trips through the
     // tau-config loader into the tau-harness resolver.
@@ -290,4 +310,46 @@ fn built_in_extensions_json5_contains_disabled_std_email() {
         Some(["ext".to_owned(), "ext-email".to_owned()].as_slice())
     );
     assert_eq!(email.role.as_deref(), Some("tool"));
+}
+
+#[test]
+fn resolve_extensions_carries_and_merges_secret_declarations() {
+    let mut builtins = builtins();
+    builtins[0].secrets.insert(
+        "builtin_secret".into(),
+        tau_config::settings::ExtensionSecretEntry::default(),
+    );
+    let mut s = HarnessSettings::built_in();
+    s.extensions.insert(
+        "provider-builtin".into(),
+        ExtensionEntry {
+            secrets: Some(BTreeMap::from([(
+                "user_secret".into(),
+                tau_config::settings::ExtensionSecretEntry { optional: true },
+            )])),
+            ..Default::default()
+        },
+    );
+
+    let resolved = resolve_extensions(&s, builtins).expect("resolve");
+    let provider = resolved
+        .iter()
+        .find(|e| e.name == "provider-builtin")
+        .expect("provider");
+    assert!(!provider.secrets["builtin_secret"].optional);
+    assert!(provider.secrets["user_secret"].optional);
+}
+
+#[test]
+fn resolve_extensions_drops_disabled_entries_with_secret_declarations() {
+    let mut builtins = builtins();
+    builtins[2].secrets.insert(
+        "required_secret".into(),
+        tau_config::settings::ExtensionSecretEntry::default(),
+    );
+    let s = HarnessSettings::built_in();
+
+    let resolved = resolve_extensions(&s, builtins).expect("resolve");
+
+    assert!(resolved.iter().all(|e| e.name != "test-dummy"));
 }

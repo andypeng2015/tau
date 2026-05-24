@@ -1053,3 +1053,46 @@ fn extension_state_dir_rejects_unsafe_extension_names() {
         );
     }
 }
+
+#[test]
+fn harness_extension_secrets_parse_with_required_default() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+extensions:
+  std-email:
+    secrets:
+      mail_password: {}
+      optional_token:
+        optional: true
+"#,
+    )
+    .expect("write");
+
+    let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+    let secrets = s.extensions["std-email"].secrets.as_ref().expect("secrets");
+    assert!(!secrets["mail_password"].optional);
+    assert!(secrets["optional_token"].optional);
+}
+
+#[test]
+fn harness_extension_secret_entries_deny_unknown_fields() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+extensions:
+  std-email:
+    secrets:
+      mail_password:
+        bogus: true
+"#,
+    )
+    .expect("write");
+
+    let err = load_harness_settings_in(&dirs_with_config(dir)).expect_err("unknown field rejected");
+    assert!(err.to_string().contains("bogus"), "unexpected error: {err}");
+}

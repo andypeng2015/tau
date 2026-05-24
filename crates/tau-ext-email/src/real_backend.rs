@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -18,9 +17,8 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use mail_parser::{Address as ParsedAddress, MessageParser, MimeHeaders};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::process::Command;
 use tokio::runtime::Runtime;
 use tokio::time;
 use tokio_rustls::TlsConnector;
@@ -31,9 +29,6 @@ use super::{
     OutgoingMessage, TlsMode, ValidatedAuthConfig, ValidatedConfig, ValidatedImapConfig,
     ValidatedSmtpConfig,
 };
-
-const AUTH_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-const AUTH_COMMAND_MAX_STDOUT: usize = 64 * 1024;
 
 /// Production IMAP/SMTP backend for configured email accounts.
 pub struct RealEmailBackend {
@@ -46,13 +41,18 @@ struct RealAccount {
     imap: Option<ValidatedImapConfig>,
     smtp: Option<ValidatedSmtpConfig>,
     auth: Option<ValidatedAuthConfig>,
+    secrets: Arc<BTreeMap<String, tau_proto::SecretValue>>,
 }
 
 impl RealEmailBackend {
     /// Build a production backend from validated extension configuration.
-    pub fn new(config: &ValidatedConfig) -> Result<Self, String> {
+    pub fn new(
+        config: &ValidatedConfig,
+        secrets: BTreeMap<String, tau_proto::SecretValue>,
+    ) -> Result<Self, String> {
         let runtime = Runtime::new()
             .map_err(|error| format!("internal_error: failed to start email runtime: {error}"))?;
+        let secrets = Arc::new(secrets);
         let accounts = config
             .accounts
             .iter()
@@ -63,6 +63,7 @@ impl RealEmailBackend {
                         imap: account.imap.clone(),
                         smtp: account.smtp.clone(),
                         auth: account.auth.clone(),
+                        secrets: Arc::clone(&secrets),
                     },
                 )
             })
@@ -362,7 +363,7 @@ async fn send_message_async(
         .port(smtp.port)
         .timeout(Some(Duration::from_secs(smtp.timeout_seconds)))
         .tls(smtp_tls(&smtp.host, smtp.tls)?);
-    if let Some(password) = resolve_password(account.auth.as_ref()).await? {
+    if let Some(password) = resolve_password(account.auth.as_ref(), &account.secrets).await? {
         builder = builder.credentials(Credentials::new(smtp.login.clone(), password));
     }
     let mailer = builder.build();
@@ -399,7 +400,7 @@ async fn connect_imap(account: &RealAccount) -> Result<Session<RealImapStream>, 
             tls_connect(&imap.host, tcp).await?,
         )));
     }
-    let password = resolve_password(account.auth.as_ref())
+    let password = resolve_password(account.auth.as_ref(), &account.secrets)
         .await?
         .ok_or_else(|| "auth_error: IMAP password source is not configured".to_owned())?;
     client
@@ -448,95 +449,34 @@ fn smtp_tls(host: &str, mode: TlsMode) -> Result<Tls, String> {
     }
 }
 
-async fn resolve_password(auth: Option<&ValidatedAuthConfig>) -> Result<Option<String>, String> {
+async fn resolve_password(
+    auth: Option<&ValidatedAuthConfig>,
+    secrets: &BTreeMap<String, tau_proto::SecretValue>,
+) -> Result<Option<String>, String> {
     let Some(auth) = auth else {
         return Ok(None);
     };
     match auth.method {
         AuthMethod::None => Ok(None),
         AuthMethod::Oauth2 => Err("auth_error: OAuth authentication is not implemented".to_owned()),
-        AuthMethod::Password | AuthMethod::Command => {
-            if matches!(auth.method, AuthMethod::Password)
-                && let Some(env) = &auth.password_env
-            {
-                match std::env::var(env) {
-                    Ok(password) if !password.is_empty() => return Ok(Some(password)),
-                    Ok(_) => {
-                        return Err("auth_error: password environment variable is empty".to_owned());
-                    }
-                    Err(_) if auth.command.is_some() => {}
-                    Err(_) => {
-                        return Err(
-                            "auth_error: password environment variable is not set".to_owned()
-                        );
-                    }
-                }
-            }
-            let Some(command) = &auth.command else {
-                return Err("auth_error: password command is not configured".to_owned());
+        AuthMethod::Command => Err(
+            "auth_error: password commands are no longer supported; use auth.password_secret"
+                .to_owned(),
+        ),
+        AuthMethod::Password => {
+            let Some(secret_name) = auth.password_secret.as_deref() else {
+                return Err("auth_error: password secret is not configured".to_owned());
             };
-            run_password_command(command, AUTH_COMMAND_TIMEOUT)
-                .await
-                .map(Some)
-        }
-    }
-}
-
-pub(crate) async fn run_password_command(
-    command: &[String],
-    timeout: Duration,
-) -> Result<String, String> {
-    let Some((program, args)) = command.split_first() else {
-        return Err("auth_error: password command is empty".to_owned());
-    };
-    let stdout = time::timeout(timeout, async {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| "auth_error: password command failed".to_owned())?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "auth_error: password command failed".to_owned())?;
-        let mut buffer = Vec::new();
-        let mut chunk = [0_u8; 8192];
-        loop {
-            let read = stdout
-                .read(&mut chunk)
-                .await
-                .map_err(|_| "auth_error: password command failed".to_owned())?;
-            if read == 0 {
-                break;
+            let Some(secret) = secrets.get(secret_name) else {
+                return Err("auth_error: configured password secret was not provided".to_owned());
+            };
+            let value = secret.expose_secret();
+            if value.is_empty() {
+                return Err("auth_error: configured password secret is empty".to_owned());
             }
-            if buffer.len().saturating_add(read) > AUTH_COMMAND_MAX_STDOUT {
-                return Err("auth_error: password command output is too large".to_owned());
-            }
-            buffer.extend_from_slice(&chunk[..read]);
+            Ok(Some(value.to_owned()))
         }
-        let status = child
-            .wait()
-            .await
-            .map_err(|_| "auth_error: password command failed".to_owned())?;
-        if !status.success() {
-            return Err("auth_error: password command failed".to_owned());
-        }
-        Ok(buffer)
-    })
-    .await
-    .map_err(|_| "auth_error: password command timed out".to_owned())??;
-    let mut password = String::from_utf8(stdout)
-        .map_err(|_| "auth_error: password command returned invalid UTF-8".to_owned())?;
-    while password.ends_with(['\n', '\r']) {
-        password.pop();
     }
-    if password.is_empty() {
-        return Err("auth_error: password command returned an empty password".to_owned());
-    }
-    Ok(password)
 }
 
 fn metadata_from_fetch(fetch: &async_imap::types::Fetch, uidvalidity: &str) -> BackendMessage {

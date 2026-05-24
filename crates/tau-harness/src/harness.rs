@@ -68,6 +68,7 @@ use crate::prompt::{
     assemble_prompt_context_from, build_system_prompt_with_template_context,
     built_in_system_prompt_templates, render_agents_context_message,
 };
+use crate::secrets::{load_secret_sources, resolve_extension_secrets};
 use crate::settings::{Config, load_harness_settings_or_warn};
 use crate::tool_turn::{ForegroundAction, PendingToolInvocation, ToolTurnMachine};
 use crate::turn::{PromptSubmission, TurnState};
@@ -1316,6 +1317,7 @@ impl Harness {
                 pid: Some(own_pid),
                 in_process_thread: Some(provider_spawn.thread),
                 supervised_config: None,
+                secrets: BTreeMap::new(),
                 restart_attempt: 0,
                 state: ExtensionState::Spawning,
                 last_acked: tau_proto::LogEventId::default(),
@@ -1339,6 +1341,7 @@ impl Harness {
                     pid: Some(own_pid),
                     in_process_thread: Some(tool_spawn.thread),
                     supervised_config: None,
+                    secrets: BTreeMap::new(),
                     restart_attempt: 0,
                     state: ExtensionState::Spawning,
                     last_acked: tau_proto::LogEventId::default(),
@@ -1536,6 +1539,11 @@ impl Harness {
         let store = SessionStore::open_lazy(&sessions_dir)?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session store opened");
 
+        let secret_sources =
+            load_secret_sources().map_err(|error| HarnessError::Participant(error.to_string()))?;
+        let extension_secrets = resolve_extension_secrets(config, &state_dir, &secret_sources)
+            .map_err(|error| HarnessError::Participant(error.to_string()))?;
+
         let mut extension_connects = Vec::new();
         let mut next_iid = instance_id_factory();
 
@@ -1575,6 +1583,10 @@ impl Harness {
                     pid: Some(spawned.child_pid),
                     in_process_thread: None,
                     supervised_config: Some(ext_config.clone()),
+                    secrets: extension_secrets
+                        .get(&ext_config.name)
+                        .cloned()
+                        .unwrap_or_default(),
                     restart_attempt: 0,
                     state: ExtensionState::Spawning,
                     last_acked: tau_proto::LogEventId::default(),
@@ -3131,8 +3143,9 @@ impl Harness {
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| "extension".to_owned());
                 self.emit_info_important(&format!(
-                    "extension {name} rejected its config: {}\nthe value of \
-                     `extensions.{name}.config` in harness.yaml is being ignored",
+                    "extension {name} rejected its config: {}\ncheck \
+                     `extensions.{name}.config` and `extensions.{name}.secrets` in harness.yaml; \
+                     invalid values are being ignored",
                     err.message,
                 ));
             }
@@ -4582,6 +4595,7 @@ impl Harness {
         let instance_id = entry.instance_id;
         let name = entry.name.clone();
         let kind = entry.kind.clone();
+        let secrets = entry.secrets.clone();
         self.publish_event(
             Some("harness"),
             Event::ExtensionRestarting(tau_proto::ExtensionRestarting {
@@ -4627,6 +4641,7 @@ impl Harness {
                 pid: Some(spawned.child_pid),
                 in_process_thread: None,
                 supervised_config: Some(config),
+                secrets,
                 restart_attempt: attempt,
                 state: ExtensionState::Spawning,
                 last_acked: tau_proto::LogEventId::default(),
@@ -4841,6 +4856,7 @@ impl Harness {
             .as_ref()
             .map(|cfg| cfg.config.clone())
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        let secrets = entry.secrets.clone();
         let state_dir =
             match tau_config::settings::extension_state_dir_of(&self.state_dir, &entry.name) {
                 Ok(state_dir) => state_dir,
@@ -4874,6 +4890,7 @@ impl Harness {
             Frame::Message(Message::Configure(tau_proto::Configure {
                 config: tau_proto::json_to_cbor(&config_json),
                 state_dir: Some(state_dir),
+                secrets,
             })),
         );
     }

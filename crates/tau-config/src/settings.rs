@@ -6,7 +6,7 @@
 //!
 //! Uses the `config` crate for layered JSON5/YAML loading.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -697,6 +697,18 @@ pub struct ExtensionEntry {
     /// schema. Absent on the wire means "merge nothing in", so the
     /// built-in's default config object is used unchanged.
     pub config: Option<serde_json::Value>,
+
+    /// Secret names this extension is allowed to receive, keyed by secret name.
+    pub secrets: Option<BTreeMap<String, ExtensionSecretEntry>>,
+}
+
+/// Per-secret declaration for one extension.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExtensionSecretEntry {
+    /// Whether startup may continue when this secret is unavailable. Required
+    /// by default.
+    pub optional: bool,
 }
 
 // ---------------------------------------------------------------------------

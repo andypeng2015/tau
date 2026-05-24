@@ -28,6 +28,7 @@ mod harness;
 pub mod internal_tools;
 mod model;
 mod prompt;
+mod secrets;
 mod session_cleanup;
 mod settings;
 mod tool_turn;

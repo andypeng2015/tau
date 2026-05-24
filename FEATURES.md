@@ -65,6 +65,19 @@ The harness prepends `prefix` to the resolved command. Anything that gives you
 a stdio pipe to a remote process works the same way (`docker exec`, `nsenter`,
 `bwrap`, …).
 
+### Extension secrets
+
+Extensions declare which Tau secrets they may receive in `harness.yaml` under
+`extensions.<name>.secrets`. Values are loaded from
+`<state_dir>/secrets/<name>.yaml` or one-shot `TAU_SECRET_<NAME>` environment
+variables (suffixes are lowercased; use portable names with ASCII letters,
+digits, `.`, `_`, and `-`). Environment secrets are removed from the harness
+environment after startup and values are sent only to that extension during the
+Configure handshake. Secret entries are required by default; set
+`optional: true` to allow startup without a value. For `std-email`, migrate old
+`auth.password_env`, `auth.command`, and `auth.password_command` settings to
+`auth.password_secret` plus `extensions.std-email.secrets`.
+
 ### Model parameters: effort, verbosity, thinking summary, service tier
 
 Per-prompt knobs are bundled into a single `ModelParams` struct

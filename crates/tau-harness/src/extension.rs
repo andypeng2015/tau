@@ -49,6 +49,9 @@ pub(crate) struct ExtensionEntry {
     /// Original config for supervised extensions. Present only for
     /// out-of-process children that the harness can respawn.
     pub(crate) supervised_config: Option<ExtensionConfig>,
+    /// Resolved secret values authorized for this extension. Values must not be
+    /// logged.
+    pub(crate) secrets: std::collections::BTreeMap<String, tau_proto::SecretValue>,
     /// Number of restart attempts performed by the harness.
     pub(crate) restart_attempt: u32,
     /// Current lifecycle state. See `extensions_all_ready` for how this
@@ -188,6 +191,12 @@ pub(crate) fn spawn_supervised(
         .args(&config.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
+    for key in std::env::vars()
+        .map(|(key, _)| key)
+        .filter(|key| key.starts_with("TAU_SECRET_"))
+    {
+        command.env_remove(key);
+    }
     if stderr_log_path.is_some() {
         command.stderr(Stdio::piped());
     } else {

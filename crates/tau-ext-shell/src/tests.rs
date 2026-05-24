@@ -2273,6 +2273,7 @@ fn shell_tool_applies_configured_prefix_and_command() {
                 ]),
             )]),
             state_dir: None,
+            secrets: std::collections::BTreeMap::new(),
         })))
         .expect("configure");
     writer
@@ -2386,6 +2387,7 @@ fn shell_extension_rejects_invalid_config() {
                 )]),
             )]),
             state_dir: None,
+            secrets: std::collections::BTreeMap::new(),
         })))
         .expect("configure");
     writer.flush().expect("flush");

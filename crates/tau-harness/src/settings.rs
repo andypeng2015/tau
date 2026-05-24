@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use tau_config::settings::{ExtensionEntry, HarnessSettings, RoleCliOverride};
+use tau_config::settings::{
+    ExtensionEntry, ExtensionSecretEntry, HarnessSettings, RoleCliOverride,
+};
 
 /// The resolved harness configuration handed to the daemon.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -52,6 +54,8 @@ pub struct ExtensionConfig {
     /// `LifecycleConfigure`. Defaults to an empty object so
     /// extensions always see a value.
     pub config: serde_json::Value,
+    /// Secret declarations authorized for this extension.
+    pub secrets: BTreeMap<String, ExtensionSecretEntry>,
 }
 
 /// Built-in extension shipped with `tau`. Used by
@@ -67,6 +71,8 @@ pub struct BuiltinExtension {
     /// Built-in default config for this extension, merged below any
     /// user-provided `config: { … }` object in `harness.yaml`.
     pub config: serde_json::Value,
+    /// Built-in secret declarations for this extension.
+    pub secrets: BTreeMap<String, ExtensionSecretEntry>,
 }
 
 /// Error returned by [`resolve_extensions`].
@@ -98,6 +104,7 @@ struct ResolvedExtension {
     enable: bool,
     role: Option<String>,
     config: serde_json::Value,
+    secrets: BTreeMap<String, ExtensionSecretEntry>,
 }
 
 /// Merge user-provided `extensions` entries on top of the supplied
@@ -112,8 +119,9 @@ struct ResolvedExtension {
 ///   non-empty `command`. Their `enable` defaults to `true`.
 /// - Entries with a resolved `enable: false` are dropped.
 ///
-/// Returns `Err` for entries that end up with an empty `command` after
-/// the merge — only possible for user-added unknown keys.
+/// Returns `Err` for enabled entries that end up with an empty `command` after
+/// the merge — only possible for user-added unknown keys. Disabled user-added
+/// entries are inert and are dropped before command validation.
 pub fn resolve_extensions(
     settings: &HarnessSettings,
     builtins: Vec<BuiltinExtension>,
@@ -134,6 +142,7 @@ pub fn resolve_extensions(
                     enable: b.enable,
                     role: b.role,
                     config: b.config,
+                    secrets: b.secrets,
                 },
             )
         })
@@ -170,8 +179,14 @@ pub fn resolve_extensions(
                 if let Some(over) = user.config.clone() {
                     existing.config = merge_json(existing.config.take(), over);
                 }
+                if let Some(secrets) = user.secrets.as_ref() {
+                    existing.secrets.extend(secrets.clone());
+                }
             }
             None => {
+                if user.enable == Some(false) {
+                    continue;
+                }
                 let command = user.command.clone().unwrap_or_default();
                 if command.is_empty() {
                     return Err(ResolveExtensionsError::EmptyCommand(name.clone()));
@@ -189,6 +204,7 @@ pub fn resolve_extensions(
                             .config
                             .clone()
                             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+                        secrets: user.secrets.clone().unwrap_or_default(),
                     },
                 );
             }
@@ -217,6 +233,7 @@ pub fn resolve_extensions(
             args,
             role: entry.role,
             config: entry.config,
+            secrets: entry.secrets,
         });
     }
     Ok(out)
@@ -305,6 +322,7 @@ pub fn builtin_extensions() -> Vec<BuiltinExtension> {
             role: def.role.clone(),
             enable: def.enable,
             config: def.config.clone(),
+            secrets: def.secrets.clone().unwrap_or_default(),
         })
         .collect()
 }
@@ -328,6 +346,8 @@ pub(crate) struct BuiltInExtensionDef {
     pub role: Option<String>,
     pub enable: bool,
     pub config: serde_json::Value,
+    #[serde(default)]
+    pub secrets: Option<BTreeMap<String, ExtensionSecretEntry>>,
 }
 
 pub(crate) fn built_in_extension_defs() -> &'static [BuiltInExtensionDef] {

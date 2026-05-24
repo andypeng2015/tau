@@ -23,6 +23,7 @@ fn restart_config(mode: &str) -> Frame {
             CborValue::Text(mode.to_owned()),
         )]),
         state_dir: None,
+        secrets: std::collections::BTreeMap::new(),
     }))
 }
 

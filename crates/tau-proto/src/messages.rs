@@ -13,6 +13,8 @@
 //! ...}` shape so the [`crate::Frame`] envelope can disambiguate by
 //! discriminator.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -83,6 +85,34 @@ pub struct Configure {
     /// Persistent directory reserved for this extension's runtime state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_dir: Option<PathBuf>,
+    /// Secret values explicitly authorized for this extension.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, SecretValue>,
+}
+
+/// Secret text passed from the harness to one authorized extension.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretValue(String);
+
+impl SecretValue {
+    /// Wrap a resolved secret value for protocol transport.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the underlying secret text. Avoid logging this value.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// Reported by an extension when its

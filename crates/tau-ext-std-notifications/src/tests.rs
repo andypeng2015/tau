@@ -126,6 +126,7 @@ fn configure_frame(config: tau_proto::CborValue) -> Frame {
     Frame::Message(Message::Configure(tau_proto::Configure {
         config,
         state_dir: None,
+        secrets: std::collections::BTreeMap::new(),
     }))
 }
 

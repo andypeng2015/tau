@@ -344,6 +344,7 @@ fn representative_messages() -> Vec<Message> {
         Message::Configure(Configure {
             config: CborValue::Null,
             state_dir: Some(std::path::PathBuf::from("/tmp/tau/state/ext/demo")),
+            secrets: std::collections::BTreeMap::new(),
         }),
         Message::ConfigError(ConfigError {
             message: "bad config".to_owned(),
@@ -465,10 +466,12 @@ fn configure_state_dir_is_optional_for_older_payloads() {
 
     assert_eq!(parsed.config, CborValue::Null);
     assert_eq!(parsed.state_dir, None);
+    assert!(parsed.secrets.is_empty());
 
     let with_state = Configure {
         config: CborValue::Null,
         state_dir: Some(std::path::PathBuf::from("/tmp/tau/state/ext/demo")),
+        secrets: std::collections::BTreeMap::new(),
     };
     let json = serde_json::to_value(&with_state).expect("serialize configure");
     assert_eq!(
@@ -481,9 +484,38 @@ fn configure_state_dir_is_optional_for_older_payloads() {
     let without_state = serde_json::to_value(Configure {
         config: CborValue::Null,
         state_dir: None,
+        secrets: std::collections::BTreeMap::new(),
     })
     .expect("serialize configure without state dir");
     assert!(without_state.get("state_dir").is_none());
+}
+
+#[test]
+fn configure_secrets_round_trip_and_debug_redacts_values() {
+    // Secret values travel only to explicitly configured extensions and must not
+    // leak through derived protocol debug output.
+    let mut secrets = std::collections::BTreeMap::new();
+    secrets.insert("mail_password".to_owned(), SecretValue::new("super-secret"));
+    let configure = Configure {
+        config: CborValue::Null,
+        state_dir: None,
+        secrets,
+    };
+
+    let debug = format!("{configure:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("super-secret"));
+
+    let json = serde_json::to_value(&configure).expect("serialize configure");
+    assert_eq!(
+        json["secrets"]["mail_password"],
+        serde_json::json!("super-secret")
+    );
+    let decoded: Configure = serde_json::from_value(json).expect("decode configure");
+    assert_eq!(
+        decoded.secrets["mail_password"].expose_secret(),
+        "super-secret"
+    );
 }
 
 #[test]

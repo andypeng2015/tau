@@ -206,10 +206,10 @@ impl Default for SmtpConfig {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
-    /// Read a password from `password_env` or `command`.
+    /// Read a password from a configured Tau secret.
     #[default]
     Password,
-    /// Read a password from `command`.
+    /// Deprecated command-based password source.
     Command,
     /// Do not configure SMTP authentication. IMAP still requires a password.
     None,
@@ -225,14 +225,15 @@ pub enum AuthMethod {
 pub struct AuthConfig {
     /// Authentication method.
     pub method: AuthMethod,
-    /// Environment variable containing a password.
+    /// Name of the Tau secret containing this account's password.
+    pub password_secret: Option<String>,
+    /// Deprecated environment variable password source.
     pub password_env: Option<String>,
-    /// Password command. The first element is the program and the rest are
-    /// arguments.
+    /// Deprecated password command.
     pub command: Option<Vec<String>>,
-    /// Alias for `command` accepted by config files that want to be explicit.
+    /// Deprecated alias for `command`.
     pub password_command: Option<Vec<String>>,
-    /// OAuth token command placeholder; OAuth is out of scope for Phase E.
+    /// Deprecated OAuth token command placeholder.
     pub oauth2_token_command: Option<Vec<String>>,
 }
 
@@ -293,7 +294,10 @@ impl EmailExtensionConfig {
             if let Some(folder) = &account.folders.special_sent {
                 validate_folder_pattern(folder)?;
             }
-            accounts.insert(account.id.clone(), ValidatedAccount::try_from(account)?);
+            accounts.insert(
+                account.id.clone(),
+                ValidatedAccount::from_config(account, self.enable)?,
+            );
         }
         Ok(ValidatedConfig {
             enable: self.enable,
@@ -337,6 +341,14 @@ pub struct ValidatedAccount {
     pub auth: Option<ValidatedAuthConfig>,
     /// Compiled folder allowlist.
     pub folders: ValidatedFolderPolicy,
+}
+
+impl TryFrom<AccountConfig> for ValidatedAccount {
+    type Error = String;
+
+    fn try_from(value: AccountConfig) -> Result<Self, Self::Error> {
+        Self::from_config(value, true)
+    }
 }
 
 impl ValidatedAccount {
@@ -386,16 +398,12 @@ pub struct ValidatedSmtpConfig {
 pub struct ValidatedAuthConfig {
     /// Authentication method.
     pub method: AuthMethod,
-    /// Environment variable that contains the password.
-    pub password_env: Option<String>,
-    /// Password command to execute when needed.
-    pub command: Option<Vec<String>>,
+    /// Name of the Tau secret containing the password.
+    pub password_secret: Option<String>,
 }
 
-impl TryFrom<AccountConfig> for ValidatedAccount {
-    type Error = String;
-
-    fn try_from(value: AccountConfig) -> Result<Self, Self::Error> {
+impl ValidatedAccount {
+    fn from_config(value: AccountConfig, extension_enabled: bool) -> Result<Self, String> {
         let matchers = value
             .folders
             .allow
@@ -408,11 +416,17 @@ impl TryFrom<AccountConfig> for ValidatedAccount {
             .collect::<Result<Vec<_>, _>>()?;
         let imap = validate_imap_config(&value.id, value.imap)?;
         let smtp = validate_smtp_config(&value.id, value.smtp)?;
-        let auth = validate_auth_config(&value.id, value.auth)?;
-        validate_account_auth_support(&value.id, imap.is_some(), auth.as_ref())?;
+        let account_enabled = value.enable;
+        let auth = if extension_enabled && account_enabled {
+            let auth = validate_auth_config(&value.id, value.auth)?;
+            validate_account_auth_support(&value.id, imap.is_some(), auth.as_ref())?;
+            auth
+        } else {
+            inactive_auth_config(value.auth)
+        };
         Ok(Self {
             id: value.id,
-            enable: value.enable,
+            enable: account_enabled,
             display_name: value.display_name,
             from_normalized: normalize_address(&value.from)
                 .ok_or_else(|| "from identity must contain an email address".to_owned())?,
@@ -470,40 +484,55 @@ fn validate_auth_config(
     let Some(config) = config else {
         return Ok(None);
     };
-    let command = config.command.or(config.password_command);
-    if let Some(command) = &command {
-        validate_auth_command(account_id, command)?;
+    if config.password_env.is_some() {
+        return Err(migration_error(account_id, "auth.password_env"));
     }
-    if let Some(env) = &config.password_env
-        && env.trim().is_empty()
-    {
-        return Err(format!(
-            "account `{account_id}` auth.password_env must not be empty"
-        ));
+    if config.command.is_some() {
+        return Err(migration_error(account_id, "auth.command"));
     }
-    if matches!(config.method, AuthMethod::Command) && command.is_none() {
-        return Err(format!(
-            "account `{account_id}` auth.command is required for command auth"
-        ));
+    if config.password_command.is_some() {
+        return Err(migration_error(account_id, "auth.password_command"));
     }
-    if matches!(config.method, AuthMethod::Password)
-        && config.password_env.is_none()
-        && command.is_none()
-    {
-        return Err(format!(
-            "account `{account_id}` auth.password_env or auth.command is required for password auth"
-        ));
+    if config.oauth2_token_command.is_some() {
+        return Err(migration_error(account_id, "auth.oauth2_token_command"));
+    }
+    if matches!(config.method, AuthMethod::Command) {
+        return Err(migration_error(account_id, "auth.method command"));
     }
     if matches!(config.method, AuthMethod::Oauth2) {
         return Err(format!(
-            "account `{account_id}` oauth2 authentication is not implemented"
+            "account `{account_id}` oauth2 authentication is not implemented; migrate token sources to Tau secrets when OAuth support is added"
+        ));
+    }
+    if matches!(config.method, AuthMethod::Password) && config.password_secret.is_none() {
+        return Err(format!(
+            "account `{account_id}` auth.password_secret is required for password auth; declare the secret under extensions.std-email.secrets and set auth.password_secret to that name"
+        ));
+    }
+    if let Some(secret) = &config.password_secret
+        && secret.trim().is_empty()
+    {
+        return Err(format!(
+            "account `{account_id}` auth.password_secret must not be empty"
         ));
     }
     Ok(Some(ValidatedAuthConfig {
         method: config.method,
-        password_env: config.password_env,
-        command,
+        password_secret: config.password_secret,
     }))
+}
+
+fn inactive_auth_config(config: Option<AuthConfig>) -> Option<ValidatedAuthConfig> {
+    config.map(|config| ValidatedAuthConfig {
+        method: config.method,
+        password_secret: config.password_secret,
+    })
+}
+
+fn migration_error(account_id: &str, field: &str) -> String {
+    format!(
+        "account `{account_id}` {field} is no longer supported; declare the password under extensions.std-email.secrets and set auth.password_secret to that secret name"
+    )
 }
 
 fn validate_account_auth_support(
@@ -515,12 +544,13 @@ fn validate_account_auth_support(
         return Ok(());
     }
     match auth.map(|auth| auth.method) {
-        Some(AuthMethod::Password | AuthMethod::Command) => Ok(()),
+        Some(AuthMethod::Password) => Ok(()),
+        Some(AuthMethod::Command) => Err(migration_error(account_id, "auth.method command")),
         Some(AuthMethod::None) => Err(format!(
             "account `{account_id}` auth.method none is not supported for IMAP accounts"
         )),
         None => Err(format!(
-            "account `{account_id}` IMAP configuration requires password or command auth"
+            "account `{account_id}` IMAP configuration requires password auth with auth.password_secret"
         )),
         Some(AuthMethod::Oauth2) => Err(format!(
             "account `{account_id}` oauth2 authentication is not implemented"
@@ -528,11 +558,34 @@ fn validate_account_auth_support(
     }
 }
 
-fn validate_auth_command(account_id: &str, command: &[String]) -> Result<(), String> {
-    if command.is_empty() || command.iter().any(|part| part.trim().is_empty()) {
-        return Err(format!(
-            "account `{account_id}` auth.command must contain non-empty strings"
-        ));
+fn validate_config_secrets(
+    config: &ValidatedConfig,
+    secrets: &BTreeMap<String, tau_proto::SecretValue>,
+) -> Result<(), String> {
+    if !config.enable {
+        return Ok(());
+    }
+    for account in config.accounts.values() {
+        if !account.enable {
+            continue;
+        }
+        let Some(auth) = account.auth.as_ref() else {
+            continue;
+        };
+        if matches!(auth.method, AuthMethod::Password) {
+            let secret = auth.password_secret.as_deref().ok_or_else(|| {
+                format!(
+                    "account `{}` auth.password_secret is required for password auth",
+                    account.id
+                )
+            })?;
+            if !secrets.contains_key(secret) {
+                return Err(format!(
+                    "account `{}` auth.password_secret `{secret}` was not provided in Configure.secrets; declare it under extensions.std-email.secrets",
+                    account.id
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -2168,7 +2221,8 @@ impl RuntimeState {
             .state_dir
             .ok_or_else(|| "email extension requires Configure.state_dir".to_owned())?;
         let config = cfg.validate()?;
-        let backend = RealEmailBackend::new(&config)?;
+        validate_config_secrets(&config, &configure.secrets)?;
+        let backend = RealEmailBackend::new(&config, configure.secrets)?;
         Ok(Engine {
             config,
             state: StateStore::open(state_dir)?,

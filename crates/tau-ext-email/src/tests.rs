@@ -208,7 +208,7 @@ fn cfg() -> EmailExtensionConfig {
             }),
             auth: Some(AuthConfig {
                 method: AuthMethod::Password,
-                password_env: Some("EMAIL_PASSWORD".to_owned()),
+                password_secret: Some("email_password".to_owned()),
                 ..Default::default()
             }),
             folders: FolderPolicy {
@@ -225,6 +225,13 @@ fn cfg() -> EmailExtensionConfig {
             allow_state_policy_extensions: true,
         },
     }
+}
+
+fn configure_secrets() -> std::collections::BTreeMap<String, tau_proto::SecretValue> {
+    std::collections::BTreeMap::from([(
+        "email_password".to_owned(),
+        tau_proto::SecretValue::new("secret"),
+    )])
 }
 
 fn engine(temp: &tempfile::TempDir) -> Engine<FakeBackend> {
@@ -338,7 +345,7 @@ fn disabled_defaults_and_config_validation() {
 }
 
 #[test]
-fn real_backend_config_requires_connection_identity_and_accepts_command_auth() {
+fn real_backend_config_requires_connection_identity_and_rejects_legacy_auth() {
     let mut missing_host = cfg();
     missing_host.accounts[0].imap.as_mut().expect("imap").host = None;
     let missing_host_error = missing_host
@@ -358,8 +365,12 @@ fn real_backend_config_requires_connection_identity_and_accepts_command_auth() {
         ]),
         ..Default::default()
     });
-    let valid = command_auth.validate().expect("command auth is valid");
-    assert!(valid.accounts["work"].auth.is_some());
+    let command_error = command_auth
+        .validate()
+        .err()
+        .expect("command auth is rejected");
+    assert!(command_error.contains("auth.command"));
+    assert!(command_error.contains("auth.password_secret"));
 
     let mut password_without_source = cfg();
     password_without_source.accounts[0].auth = Some(AuthConfig {
@@ -370,7 +381,7 @@ fn real_backend_config_requires_connection_identity_and_accepts_command_auth() {
         .validate()
         .err()
         .expect("password auth without a source is rejected");
-    assert!(missing_password_source_error.contains("auth.password_env or auth.command"));
+    assert!(missing_password_source_error.contains("auth.password_secret"));
 
     let mut empty_command = cfg();
     empty_command.accounts[0].auth = Some(AuthConfig {
@@ -467,7 +478,8 @@ fn list_accounts_returns_config_without_secrets_and_folders_are_whitelisted() {
     };
     assert_eq!(text_field(&items[0], "id"), Some("work".to_owned()));
     assert!(format!("{accounts:?}").contains("alice@company.com"));
-    assert!(!format!("{accounts:?}").contains("EMAIL_PASSWORD"));
+    assert!(!format!("{accounts:?}").contains("email_password"));
+    assert!(!format!("{accounts:?}").contains("secret"));
 
     let folders = engine.dispatch(EmailCommand::ListFolders {
         account: "work".to_owned(),
@@ -502,23 +514,6 @@ fn incoming_list_redacts_untrusted_and_shows_whitelisted_subject() {
     assert_eq!(
         text_field(&messages[1], "subject"),
         Some("deploy notes".to_owned())
-    );
-}
-
-#[test]
-fn password_command_times_out_instead_of_hanging() {
-    let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let result = runtime.block_on(super::real_backend::run_password_command(
-        &[
-            "sh".to_owned(),
-            "-c".to_owned(),
-            "sleep 10; printf secret".to_owned(),
-        ],
-        std::time::Duration::from_millis(20),
-    ));
-    assert_eq!(
-        result.err().as_deref(),
-        Some("auth_error: password command timed out")
     );
 }
 
@@ -1344,6 +1339,7 @@ fn configure_requires_state_dir_and_rejected_config_is_reported() {
         .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
             config: CborValue::Map(Vec::new()),
             state_dir: None,
+            secrets: configure_secrets(),
         })))
         .expect("configure");
     pair.writer.flush().expect("flush");
@@ -1355,6 +1351,58 @@ fn configure_requires_state_dir_and_rejected_config_is_reported() {
             break;
         }
     }
+}
+
+#[test]
+fn password_secret_must_be_present_in_configure_secrets() {
+    // Account config refers to a secret by name; the extension must reject a
+    // configure handshake where the harness did not provide that secret value.
+    let config = cfg().validate().expect("valid config");
+    let err = validate_config_secrets(&config, &std::collections::BTreeMap::new())
+        .expect_err("missing configure secret rejected");
+    assert!(err.contains("work"));
+    assert!(err.contains("email_password"));
+}
+
+#[test]
+fn disabled_email_config_and_accounts_do_not_require_password_secrets() {
+    // Disabled email configuration is inert: users may keep account templates
+    // or partially migrated auth blocks without providing Configure.secrets
+    // until the extension/account is enabled.
+    let mut disabled_extension = cfg();
+    disabled_extension.enable = false;
+    disabled_extension.accounts[0].auth = Some(AuthConfig {
+        method: AuthMethod::Password,
+        ..Default::default()
+    });
+    let config = disabled_extension
+        .validate()
+        .expect("disabled extension skips password-secret validation");
+    validate_config_secrets(&config, &std::collections::BTreeMap::new())
+        .expect("disabled extension skips Configure.secrets validation");
+
+    let mut disabled_account = cfg();
+    disabled_account.accounts[0].enable = false;
+    disabled_account.accounts[0].auth = Some(AuthConfig {
+        method: AuthMethod::Password,
+        ..Default::default()
+    });
+    let config = disabled_account
+        .validate()
+        .expect("disabled account skips password-secret validation");
+    validate_config_secrets(&config, &std::collections::BTreeMap::new())
+        .expect("disabled account skips Configure.secrets validation");
+
+    let mut enabled_account = cfg();
+    enabled_account.accounts[0].auth = Some(AuthConfig {
+        method: AuthMethod::Password,
+        ..Default::default()
+    });
+    let err = enabled_account
+        .validate()
+        .err()
+        .expect("enabled account still requires password_secret");
+    assert!(err.contains("auth.password_secret"), "{err}");
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::conversation::PendingPrompt;
 use crate::extension::{ExtensionConnectCommand, ExtensionEntry, ExtensionState, spawn_in_process};
@@ -166,6 +168,7 @@ fn connect_handshaking_extension(
             pid: None,
             in_process_thread: None,
             supervised_config: None,
+            secrets: BTreeMap::new(),
             restart_attempt: 0,
             state: ExtensionState::Handshaking,
             last_acked: tau_proto::LogEventId::default(),
@@ -232,6 +235,45 @@ fn configure_includes_extension_state_dir_and_creates_it() {
         tau_config::settings::extension_state_dir_of(&sp, "std-email").expect("safe name");
     assert_eq!(configure.state_dir.as_deref(), Some(expected.as_path()));
     assert!(expected.is_dir(), "{} should exist", expected.display());
+}
+
+#[test]
+fn configure_includes_only_resolved_extension_secrets() {
+    // The lifecycle handshake is the authorization boundary for extension
+    // secrets: only the resolved map stored on that extension entry is sent.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    let sink = connect_handshaking_tool(&mut h, "std-email");
+    h.extensions
+        .get_mut("std-email")
+        .expect("extension entry")
+        .secrets
+        .insert(
+            "mail_password".to_owned(),
+            tau_proto::SecretValue::new("secret"),
+        );
+
+    h.handle_extension_event(
+        "std-email",
+        Frame::Message(Message::Hello(tau_proto::Hello {
+            protocol_version: tau_proto::PROTOCOL_VERSION,
+            client_name: "tau-ext-email".into(),
+            client_kind: tau_proto::ClientKind::Tool,
+        })),
+    )
+    .expect("hello");
+
+    let frames = sink.lock().expect("sink");
+    let configure = frames
+        .iter()
+        .find_map(|routed| match &routed.frame {
+            Frame::Message(Message::Configure(configure)) => Some(configure),
+            _ => None,
+        })
+        .expect("configure sent");
+    assert_eq!(configure.secrets.len(), 1);
+    assert_eq!(configure.secrets["mail_password"].expose_secret(), "secret");
 }
 
 #[test]
@@ -1472,6 +1514,7 @@ fn extension_connect_command_installs_state_before_reader_ack() {
             pid: Some(std::process::id()),
             in_process_thread: Some(spawned.thread),
             supervised_config: None,
+            secrets: BTreeMap::new(),
             restart_attempt: 0,
             state: ExtensionState::Spawning,
             last_acked: tau_proto::LogEventId::default(),
