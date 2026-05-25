@@ -317,6 +317,8 @@ pub(crate) fn parse_role_setting_update(
 const DRAFT_DEBOUNCE: Duration = Duration::from_secs(1);
 const EOF_DURING_AGENT_NOTICE: &str =
     "An agent is still running; use /quit to terminate the session in progress.";
+pub(crate) const SUSPENDED_AGENT_PROMPT: &str =
+    "This agent is suspended, use `/agent resume` to resume it.";
 const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/quit", "Exit the chat session"),
     ("/cancel", "Cancel the current in-flight prompt"),
@@ -325,7 +327,7 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
         "Leave the UI but keep the harness running for later reattach",
     ),
     ("/model", "Switch agent role (e.g. /model engineer)"),
-    ("/agent", "Switch visible agent transcript"),
+    ("/agent", "Manage visible/suspended agent transcripts"),
     ("/role", "Switch, create, edit, or delete an agent role"),
     (
         "/new",
@@ -652,9 +654,14 @@ pub(crate) fn run_chat(
     let current_agent_state = renderer.current_agent_state();
     let known_agents = renderer.known_agents();
     let live_agents = renderer.live_agents();
+    let suspended_agents = renderer.suspended_agents();
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/agent"),
-        build_agent_arg_completer(known_agents.clone()),
+        build_agent_arg_completer(
+            known_agents.clone(),
+            live_agents.clone(),
+            suspended_agents.clone(),
+        ),
     );
     let roles_available = renderer.roles_available();
     let role_groups_available = renderer.role_groups_available();
@@ -671,6 +678,8 @@ pub(crate) fn run_chat(
                 RendererCmd::RemoteDisconnect(reason) => renderer.handle_disconnect(reason),
                 RendererCmd::Set { name, value } => renderer.apply_setting(&name, &value),
                 RendererCmd::SwitchAgent { agent_id } => renderer.switch_agent(agent_id),
+                RendererCmd::SuspendAgent { agent_id } => renderer.suspend_agent(&agent_id),
+                RendererCmd::ResumeAgent { agent_id } => renderer.resume_agent(agent_id),
                 RendererCmd::ClearSelectedAgent => renderer.clear_selected_agent(),
                 RendererCmd::ToolTimerTick => renderer.handle_tool_timer_tick(),
             }
@@ -705,6 +714,7 @@ pub(crate) fn run_chat(
             current_agent_state,
             known_agents,
             live_agents,
+            suspended_agents,
             roles_available,
             role_groups_available,
             role_group_memory,
@@ -814,8 +824,17 @@ enum RendererCmd {
         name: String,
         value: String,
     },
-    /// `/agent <agent_id>` — switch visible agent transcript.
+    /// `/agent switch <agent_id>` — switch visible agent transcript.
     SwitchAgent {
+        agent_id: String,
+    },
+    /// `/agent suspend <agent_id>` — hide agent from active UI choices.
+    SuspendAgent {
+        agent_id: String,
+    },
+    /// `/agent resume <agent_id>` — restore a suspended agent to active UI
+    /// choices.
+    ResumeAgent {
         agent_id: String,
     },
     /// Return to the start-new-agent prompt state.
@@ -835,6 +854,7 @@ struct TerminalInputLoopCtx {
     current_agent_state: Arc<Mutex<Option<String>>>,
     known_agents: Arc<Mutex<Vec<String>>>,
     live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
     roles_available: Arc<Mutex<Vec<String>>>,
     role_groups_available: Arc<Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     role_group_memory: Arc<Mutex<HashMap<String, String>>>,
@@ -1201,8 +1221,8 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn handle_agent_command(&self, text: &str) {
-        let arg = text.strip_prefix("/agent").unwrap_or("").trim();
-        if arg.is_empty() {
+        let rest = text.strip_prefix("/agent").unwrap_or("").trim();
+        if rest.is_empty() {
             let current = self
                 .ctx
                 .current_agent_state
@@ -1210,18 +1230,57 @@ impl<'a> TerminalInputSession<'a> {
                 .ok()
                 .and_then(|agent| agent.clone())
                 .unwrap_or_else(|| "none".to_owned());
-            let agents = self
+            let known_agents = self
                 .ctx
                 .known_agents
                 .lock()
                 .map(|a| a.clone())
                 .unwrap_or_default();
+            let active_count = active_side_agent_count_from_handles(
+                &self.ctx.live_agents,
+                &self.ctx.suspended_agents,
+            );
             self.output.system_info(&format!(
-                "current agent: {current}; known: {}",
-                agents.join(", ")
+                "/agent <switch|suspend|resume> [agent_id]; current: {current}; active: {active_count}; known: {}",
+                known_agents.join(", ")
             ));
             return;
         }
+
+        let mut parts = rest.split_whitespace();
+        let Some(subcommand) = parts.next() else {
+            return;
+        };
+        let target = parts.next();
+        if parts.next().is_some() {
+            self.output.system_info(
+                "/agent: too many arguments (use /agent <switch|suspend|resume> [agent_id])",
+            );
+            return;
+        }
+        match subcommand {
+            "switch" => self.handle_agent_switch(target),
+            "suspend" => self.handle_agent_suspend(target),
+            "resume" => self.handle_agent_resume(target),
+            _ => self.output.system_info(
+                "/agent <new|switch|suspend|resume> [agent_id]; use /agent switch <agent_id>",
+            ),
+        }
+    }
+
+    fn selected_agent_id(&self) -> Option<String> {
+        self.ctx
+            .current_agent_state
+            .lock()
+            .ok()
+            .and_then(|agent| agent.clone())
+    }
+
+    fn handle_agent_switch(&self, target: Option<&str>) {
+        let Some(arg) = target.map(str::trim).filter(|arg| !arg.is_empty()) else {
+            self.output.system_info("/agent switch <agent_id|none>");
+            return;
+        };
         if arg == "none" {
             if let Ok(mut current) = self.ctx.current_agent_state.lock() {
                 *current = None;
@@ -1229,14 +1288,14 @@ impl<'a> TerminalInputSession<'a> {
             let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
             return;
         }
-        let known = self
-            .ctx
-            .known_agents
-            .lock()
-            .map(|agents| agents.iter().any(|known| known == arg))
-            .unwrap_or(false);
-        if !known {
+        if !self.agent_is_known(arg) {
             self.output.system_info(&format!("unknown agent: {arg}"));
+            return;
+        }
+        if !self.agent_is_active(arg) {
+            self.output.system_info(&format!(
+                "agent is suspended: {arg} (use /agent resume {arg})"
+            ));
             return;
         }
         if let Ok(mut current) = self.ctx.current_agent_state.lock() {
@@ -1245,6 +1304,77 @@ impl<'a> TerminalInputSession<'a> {
         let _ = self.ctx.renderer_tx.send(RendererCmd::SwitchAgent {
             agent_id: arg.to_owned(),
         });
+    }
+
+    fn handle_agent_suspend(&self, target: Option<&str>) {
+        let target = target
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.selected_agent_id());
+        let Some(agent_id) = target else {
+            self.output.system_info("/agent suspend <agent_id>");
+            return;
+        };
+        if !self.agent_is_known(&agent_id) {
+            self.output
+                .system_info(&format!("unknown agent: {agent_id}"));
+            return;
+        }
+        mark_agent_suspended(&self.ctx.suspended_agents, &agent_id);
+        let _ = self
+            .ctx
+            .renderer_tx
+            .send(RendererCmd::SuspendAgent { agent_id });
+    }
+
+    fn handle_agent_resume(&self, target: Option<&str>) {
+        let target = target
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                self.selected_agent_id()
+                    .filter(|agent_id| !self.agent_is_active(agent_id))
+            });
+        let Some(agent_id) = target else {
+            self.output.system_info("/agent resume <agent_id>");
+            return;
+        };
+        if !self.agent_is_known(&agent_id) {
+            self.output
+                .system_info(&format!("unknown agent: {agent_id}"));
+            return;
+        }
+        mark_agent_resumed(&self.ctx.live_agents, &self.ctx.suspended_agents, &agent_id);
+        let _ = self
+            .ctx
+            .renderer_tx
+            .send(RendererCmd::ResumeAgent { agent_id });
+    }
+
+    fn agent_is_known(&self, agent_id: &str) -> bool {
+        self.ctx
+            .known_agents
+            .lock()
+            .map(|agents| agents.iter().any(|known| known == agent_id))
+            .unwrap_or(false)
+    }
+
+    fn agent_is_active(&self, agent_id: &str) -> bool {
+        let live = self
+            .ctx
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended = self
+            .ctx
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        agent_is_active_in_sets(&live, &suspended, agent_id)
     }
 
     fn handle_role_selection_command(&self, text: &str) -> bool {
@@ -1353,18 +1483,13 @@ impl<'a> TerminalInputSession<'a> {
             .lock()
             .ok()
             .and_then(|agent| agent.clone());
-        if let Some(selected_agent) = selected_agent.as_deref() {
-            let live = self
-                .ctx
-                .live_agents
-                .lock()
-                .map(|agents| agents.contains(selected_agent))
-                .unwrap_or(false);
-            if !live {
-                self.output
-                    .system_info(&format!("agent is not live: {selected_agent}"));
-                return None;
-            }
+        if let Some(selected_agent) = selected_agent
+            .as_deref()
+            .filter(|selected_agent| *selected_agent != "main")
+            && !self.agent_is_active(selected_agent)
+        {
+            self.output.system_info(SUSPENDED_AGENT_PROMPT);
+            return None;
         }
         self.ctx
             .agent_in_progress
@@ -1546,28 +1671,135 @@ fn terminal_input_loop(
     .run()
 }
 
-fn build_agent_arg_completer(agents: Arc<Mutex<Vec<String>>>) -> tau_cli_term::ArgCompleter {
+pub(crate) fn agent_is_active_in_sets(
+    live_agents: &std::collections::HashSet<String>,
+    suspended_agents: &std::collections::HashSet<String>,
+    agent_id: &str,
+) -> bool {
+    live_agents.contains(agent_id) && !suspended_agents.contains(agent_id)
+}
+
+fn mark_agent_suspended(
+    suspended_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
+    agent_id: &str,
+) {
+    if agent_id == "main" {
+        return;
+    }
+    if let Ok(mut suspended) = suspended_agents.lock() {
+        suspended.insert(agent_id.to_owned());
+    }
+}
+
+fn mark_agent_resumed(
+    live_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
+    agent_id: &str,
+) {
+    if agent_id == "main" {
+        return;
+    }
+    if let Ok(mut live) = live_agents.lock() {
+        live.insert(agent_id.to_owned());
+    }
+    if let Ok(mut suspended) = suspended_agents.lock() {
+        suspended.remove(agent_id);
+    }
+}
+
+fn active_side_agent_count_from_handles(
+    live_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
+) -> usize {
+    let live = live_agents
+        .lock()
+        .map(|agents| agents.clone())
+        .unwrap_or_default();
+    let suspended = suspended_agents
+        .lock()
+        .map(|agents| agents.clone())
+        .unwrap_or_default();
+    live.iter()
+        .filter(|agent| agent.as_str() != "main" && !suspended.contains(*agent))
+        .count()
+}
+
+fn build_agent_arg_completer(
+    known_agents: Arc<Mutex<Vec<String>>>,
+    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+) -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
     Arc::new(move |args: &[&str]| {
-        if 1 < args.len() {
-            return Vec::new();
+        let subcommands = ["switch", "suspend", "resume"];
+        match args.len() {
+            0 | 1 => {
+                let needle = args.first().copied().unwrap_or("").to_lowercase();
+                subcommands
+                    .into_iter()
+                    .filter(|subcommand| completion_matches(subcommand, &needle))
+                    .map(|subcommand| CompletionItem::new(subcommand, "subcommand"))
+                    .collect()
+            }
+            2 => {
+                let known = known_agents
+                    .lock()
+                    .map(|agents| agents.clone())
+                    .unwrap_or_default();
+                let live = live_agents
+                    .lock()
+                    .map(|agents| agents.clone())
+                    .unwrap_or_default();
+                let suspended = suspended_agents
+                    .lock()
+                    .map(|agents| agents.clone())
+                    .unwrap_or_default();
+                let active = live
+                    .into_iter()
+                    .filter(|agent| !suspended.contains(agent))
+                    .collect();
+                let needle = args[1].to_lowercase();
+                agent_completion_candidates(args[0], known, active)
+                    .into_iter()
+                    .filter(|agent| completion_matches(agent, &needle))
+                    .map(|agent| CompletionItem::new(agent, "agent"))
+                    .collect()
+            }
+            _ => Vec::new(),
         }
-        let needle = args.first().copied().unwrap_or("").to_lowercase();
-        let mut agents = agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        agents.insert(0, "none".to_owned());
-        agents
-            .into_iter()
-            .filter(|agent| {
-                let lower = agent.to_lowercase();
-                needle.is_empty() || lower.starts_with(&needle) || lower.contains(&needle)
-            })
-            .map(|agent| CompletionItem::new(agent, "agent"))
-            .collect()
     })
+}
+
+fn completion_matches(candidate: &str, needle: &str) -> bool {
+    let lower = candidate.to_lowercase();
+    needle.is_empty() || lower.starts_with(needle) || lower.contains(needle)
+}
+
+fn agent_completion_candidates(
+    subcommand: &str,
+    known_agents: Vec<String>,
+    active_agents: std::collections::HashSet<String>,
+) -> Vec<String> {
+    match subcommand {
+        "switch" => {
+            let mut agents: Vec<String> = known_agents
+                .into_iter()
+                .filter(|agent| active_agents.contains(agent))
+                .collect();
+            agents.insert(0, "none".to_owned());
+            agents
+        }
+        "suspend" => known_agents
+            .into_iter()
+            .filter(|agent| active_agents.contains(agent))
+            .collect(),
+        "resume" => known_agents
+            .into_iter()
+            .filter(|agent| !active_agents.contains(agent))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Build the `/set` argument completer. The first arg is a setting
@@ -1656,6 +1888,7 @@ pub(crate) fn is_local_slash_command(text: &str) -> bool {
             | "/compact"
             | "/fast"
             | "/provider-auth"
+            | "/agent"
             | "/set"
             | "/role"
             | "/model"
@@ -1815,26 +2048,91 @@ mod role_cycle_tests {
     use super::*;
 
     #[test]
-    fn agent_completer_always_offers_none() {
-        // `/agent none` is the explicit way to return to the start-new-agent
-        // state, so completion must offer it even when no agents are known.
-        let completer = build_agent_arg_completer(Arc::new(Mutex::new(Vec::new())));
+    fn agent_completer_offers_subcommands_first() {
+        // `/agent` is now a command group; the first argument must guide users
+        // to the concrete action instead of switching immediately.
+        let completer = build_agent_arg_completer(
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Default::default())),
+            Arc::new(Mutex::new(Default::default())),
+        );
 
         let completions = completer(&[""]);
 
-        assert!(completions.iter().any(|item| item.value == "none"));
+        let values: Vec<_> = completions.iter().map(|item| item.value.as_str()).collect();
+        assert_eq!(values, vec!["switch", "suspend", "resume"]);
     }
 
     #[test]
-    fn agent_completer_filters_none_like_agents() {
-        // The synthetic `none` candidate should participate in the same fuzzy
-        // filtering as real agent ids.
-        let completer = build_agent_arg_completer(Arc::new(Mutex::new(vec!["worker".to_owned()])));
+    fn agent_suspend_resume_updates_prompt_routing_state_synchronously() {
+        // Regression: `/agent suspend` and `/agent resume` are initiated by the
+        // input thread, while the renderer applies the UI command later. Mirror
+        // the state immediately so a prompt entered on the next line observes
+        // the updated active/suspended sets without racing the renderer thread.
+        let live = Arc::new(Mutex::new(std::collections::HashSet::from([
+            "worker".to_owned()
+        ])));
+        let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
-        let completions = completer(&["no"]);
+        mark_agent_suspended(&suspended, "worker");
+        assert!(!agent_is_active_in_sets(
+            &live.lock().unwrap(),
+            &suspended.lock().unwrap(),
+            "worker"
+        ));
 
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].value, "none");
+        mark_agent_resumed(&live, &suspended, "worker");
+        assert!(agent_is_active_in_sets(
+            &live.lock().unwrap(),
+            &suspended.lock().unwrap(),
+            "worker"
+        ));
+    }
+
+    #[test]
+    fn agent_suspend_resume_ignores_main_agent_state() {
+        // `main` is the unscoped session target rather than a delegate agent;
+        // suspending/resuming it must not poison the delegate routing sets.
+        let live = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
+
+        mark_agent_suspended(&suspended, "main");
+        mark_agent_resumed(&live, &suspended, "main");
+
+        assert!(live.lock().unwrap().is_empty());
+        assert!(suspended.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_completer_filters_active_and_suspended_agents() {
+        // Suspended delegate agents should disappear from switch/suspend menus
+        // but remain available for explicit resume.
+        let known = Arc::new(Mutex::new(vec!["helper".to_owned(), "worker".to_owned()]));
+        let live = Arc::new(Mutex::new(std::collections::HashSet::from([
+            "helper".to_owned(),
+            "worker".to_owned(),
+        ])));
+        let suspended = Arc::new(Mutex::new(std::collections::HashSet::from([
+            "helper".to_owned()
+        ])));
+        let completer = build_agent_arg_completer(known, live, suspended);
+
+        let switch_values: Vec<_> = completer(&["switch", ""])
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        let suspend_values: Vec<_> = completer(&["suspend", ""])
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+        let resume_values: Vec<_> = completer(&["resume", ""])
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+
+        assert_eq!(switch_values, vec!["none", "worker"]);
+        assert_eq!(suspend_values, vec!["worker"]);
+        assert_eq!(resume_values, vec!["helper"]);
     }
 
     fn groups() -> Vec<tau_proto::HarnessRoleGroup> {

@@ -45,8 +45,11 @@ pub(crate) struct EventRenderer {
     agents_ui_state: HashMap<String, AgentUiState>,
     /// Agent ids known to the UI for `/agent` completion.
     known_agents: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    /// Agent ids that can still receive prompts.
+    /// Agent ids that the harness has announced as live.
     live_agents: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Agent ids locally hidden from active prompt targets until explicitly
+    /// resumed. Effective active agents are `live_agents - suspended_agents`.
+    suspended_agents: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     /// Map side-query ids to the accepted agent id for routing prompt/provider
     /// events whose originator only carries `query_id`.
     query_agents: HashMap<String, String>,
@@ -905,6 +908,7 @@ impl EventRenderer {
             agents_ui_state: HashMap::new(),
             known_agents: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             live_agents: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
+            suspended_agents: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             query_agents: HashMap::new(),
             prompt_agents: HashMap::new(),
             tool_agents: HashMap::new(),
@@ -987,6 +991,10 @@ impl EventRenderer {
 
     pub(crate) fn live_agents(&self) -> std::sync::Arc<std::sync::Mutex<HashSet<String>>> {
         self.live_agents.clone()
+    }
+
+    pub(crate) fn suspended_agents(&self) -> std::sync::Arc<std::sync::Mutex<HashSet<String>>> {
+        self.suspended_agents.clone()
     }
 
     pub(crate) fn current_agent_state(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
@@ -1155,14 +1163,42 @@ impl EventRenderer {
         if let Ok(mut agents) = self.live_agents.lock() {
             agents.insert(agent_id);
         }
+        self.render_model_status_if_present();
     }
 
-    fn mark_agent_stopped(&mut self, agent_id: &str) {
+    fn mark_agent_live_and_unsuspended(&mut self, agent_id: String) {
+        self.remember_agent(agent_id.clone());
+        if let Ok(mut agents) = self.live_agents.lock() {
+            agents.insert(agent_id.clone());
+        }
+        if let Ok(mut agents) = self.suspended_agents.lock() {
+            agents.remove(&agent_id);
+        }
+        self.render_model_status_if_present();
+    }
+
+    pub(crate) fn resume_agent(&mut self, agent_id: String) {
+        self.mark_agent_live_and_unsuspended(agent_id);
+    }
+
+    pub(crate) fn suspend_agent(&mut self, agent_id: &str) {
+        self.mark_agent_suspended(agent_id);
+    }
+
+    fn mark_agent_suspended(&mut self, agent_id: &str) {
         if agent_id == MAIN_AGENT_ID {
             return;
         }
-        if let Ok(mut agents) = self.live_agents.lock() {
-            agents.remove(agent_id);
+        self.remember_agent(agent_id.to_owned());
+        if let Ok(mut agents) = self.suspended_agents.lock() {
+            agents.insert(agent_id.to_owned());
+        }
+        self.render_model_status_if_present();
+    }
+
+    fn render_model_status_if_present(&mut self) {
+        if self.model_status_block.is_some() {
+            self.render_model_status();
         }
     }
 
@@ -1727,6 +1763,9 @@ impl EventRenderer {
         if let Ok(mut agents) = self.live_agents.lock() {
             agents.clear();
         }
+        if let Ok(mut agents) = self.suspended_agents.lock() {
+            agents.clear();
+        }
         self.clear_selected_agent();
         self.agents_ui_state.clear();
         self.prompts.clear();
@@ -1800,6 +1839,7 @@ impl EventRenderer {
         let verbosity_style = themed.add_style(names::STATUS_VERBOSITY);
         let service_tier_style = themed.add_style(names::STATUS_SERVICE_TIER);
         let tools_style = right_themed.add_style(names::STATUS_TOOLS);
+        let agents_style = right_themed.add_style(names::STATUS_AGENTS);
         let context_style = right_themed.add_style(names::STATUS_CONTEXT);
         let redraw_style = right_themed.add_style(names::REDRAW_COUNTER);
         let mut needs_space = false;
@@ -1903,6 +1943,15 @@ impl EventRenderer {
                 format!("%{tools}"),
             );
         }
+        let active_agents = self.active_side_agent_count();
+        if 0 < active_agents {
+            push_status_chip(
+                &mut right_themed,
+                agents_style,
+                &mut right_needs_space,
+                format!("&{active_agents}"),
+            );
+        }
         if let Some(context) = self.context_status_chip() {
             push_status_chip(
                 &mut right_themed,
@@ -1970,6 +2019,22 @@ impl EventRenderer {
             .as_deref()?
             .parse()
             .ok()
+    }
+
+    fn active_side_agent_count(&self) -> usize {
+        let live = self
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended = self
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        live.iter()
+            .filter(|agent| agent.as_str() != MAIN_AGENT_ID && !suspended.contains(*agent))
+            .count()
     }
 
     fn main_tools_status_chip(&self) -> Option<String> {
@@ -2370,11 +2435,11 @@ impl EventRenderer {
             Event::StartAgentAccepted(accepted) => {
                 self.query_agents
                     .insert(accepted.query_id.clone(), accepted.agent_id.clone());
-                self.mark_agent_live(accepted.agent_id.clone());
+                self.mark_agent_live_and_unsuspended(accepted.agent_id.clone());
             }
             Event::StartAgentResult(result) => {
                 if let Some(agent_id) = self.query_agents.get(&result.query_id).cloned() {
-                    self.mark_agent_stopped(&agent_id);
+                    self.mark_agent_suspended(&agent_id);
                 }
             }
             Event::UiPromptSubmitted(prompt) => {

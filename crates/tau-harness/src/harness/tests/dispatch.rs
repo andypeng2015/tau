@@ -5753,6 +5753,27 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
         })
         .expect("query result routed");
     assert_eq!(result.text, "delegated answer");
+
+    let side_cid = h
+        .agent_conversations
+        .get("test-agent-q1")
+        .expect("completed delegate remains targetable")
+        .clone();
+    let side_conv = h
+        .conversations
+        .get(&side_cid)
+        .expect("completed delegate conversation is kept");
+    // Tool-backed delegates are detached rather than removed after their tool
+    // result is returned so a resumed UI agent can receive follow-up prompts on
+    // the same branch without being treated as an extension side query again.
+    assert!(matches!(
+        side_conv.originator,
+        tau_proto::PromptOriginator::User
+    ));
+    assert!(side_conv.source_connection.is_none());
+    assert!(side_conv.parent_tool_call_id.is_none());
+    assert!(side_conv.parent_conversation_id.is_none());
+    assert_eq!(side_conv.agent_id.as_deref(), Some("test-agent-q1"));
     h.shutdown().expect("shutdown");
 }
 
@@ -5874,8 +5895,8 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
     .expect("side message response");
 
     assert!(
-        !h.conversations.contains_key(&side_cid),
-        "side conversation tears down after message turn"
+        h.conversations.contains_key(&side_cid),
+        "tool-backed side conversation stays targetable after message turn"
     );
     let events = delegate_events.lock().expect("delegate events");
     let result = events
@@ -6661,13 +6682,16 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
     h.shutdown().expect("shutdown");
 }
 
-/// Background tool completion must survive side-conversation teardown. A
-/// sub-agent can finish after its foreground receives the synthetic background
-/// placeholder while the real tool is still running; the late completion prompt
-/// is transferred to the live parent agent conversation instead of being lost
-/// with the removed side conversation.
+/// Background tool completion stays with a preserved tool-backed delegate.
+///
+/// A sub-agent can finish after its foreground receives the synthetic
+/// background placeholder while the real tool is still running. Tool-backed
+/// delegate conversations are now detached instead of removed at completion, so
+/// the late completion prompt must remain owned by the delegate conversation;
+/// otherwise a resumed delegate could not receive results from tools it
+/// started.
 #[test]
-fn background_completion_from_removed_side_conversation_queues_on_parent() {
+fn background_completion_from_preserved_delegate_queues_on_delegate() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -6808,8 +6832,11 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
         ws_pool_delta: None,
     })
     .expect("finish side conversation");
-    assert!(!h.conversations.contains_key(&side_cid));
-    assert_eq!(h.tool_conversations.get("slow-call"), Some(&parent_cid));
+    assert!(
+        h.conversations.contains_key(&side_cid),
+        "tool-backed delegate conversation is detached/preserved after completion"
+    );
+    assert_eq!(h.tool_conversations.get("slow-call"), Some(&side_cid));
 
     h.handle_extension_event_inner(
         "conn-slow",
@@ -6835,9 +6862,83 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
         .conversations
         .get(&parent_cid)
         .expect("parent conversation remains live");
-    assert!(parent.pending_prompts.iter().any(|prompt| prompt.text
-        == background_completion_prompt(&"slow-call".into())
-        && prompt.is_internal()));
+    assert!(
+        parent
+            .pending_prompts
+            .iter()
+            .all(|prompt| prompt.text != background_completion_prompt(&"slow-call".into()))
+    );
+    assert_eq!(
+        h.background_completion_targets.get("slow-call"),
+        Some(&side_cid),
+        "late background completions stay routed to the preserved delegate"
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Background tool completions from removed non-tool side conversations are
+/// transferred to a live parent/default conversation instead of being lost with
+/// the removed conversation.
+#[test]
+fn background_completion_from_removed_side_conversation_queues_on_parent() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _ = connect_test_tool(&mut h, "conn-agent");
+    let _ = connect_test_tool(&mut h, "conn-slow");
+    h.registry.register(
+        "conn-slow",
+        ToolSpec {
+            name: ToolName::new("slow"),
+            model_visible_name: None,
+            description: None,
+            parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
+            enabled_by_default: true,
+            execution_mode: ToolExecutionMode::Shared,
+            background_support: Some(tau_proto::BackgroundSupport::Instant),
+        },
+    );
+
+    let parent_cid = h.default_conversation_id.clone();
+    h.handle_start_agent_request(
+        "conn-agent",
+        ext_query("q-removed-bg", ToolExecutionMode::Shared),
+    )
+    .expect("side query");
+    let side_cid = ext_query_cid(&h, "q-removed-bg").expect("side conversation");
+    let call_id: ToolCallId = "removed-slow-call".into();
+
+    h.tool_conversations
+        .insert(call_id.clone(), side_cid.clone());
+    h.background_completion_targets
+        .insert(call_id.clone(), side_cid.clone());
+    h.tool_turn.record_in_flight_for_test(
+        side_cid.clone(),
+        call_id.clone(),
+        ToolExecutionMode::Shared,
+    );
+    assert!(h.tool_turn.mark_backgrounded(&call_id));
+    h.queue_background_completion_prompt(&side_cid, &call_id);
+
+    h.transfer_background_completion_target_before_teardown(&side_cid);
+    h.remove_conversation(&side_cid);
+
+    assert!(!h.conversations.contains_key(&side_cid));
+    assert_eq!(h.tool_conversations.get(&call_id), Some(&parent_cid));
+    assert_eq!(
+        h.background_completion_targets.get(&call_id),
+        Some(&parent_cid)
+    );
+
+    assert!(
+        h.conversations.contains_key(&parent_cid),
+        "parent conversation remains live"
+    );
 
     h.shutdown().expect("shutdown");
 }

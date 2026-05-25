@@ -59,6 +59,7 @@
     "status.verbosity":     { fg: "magenta" },
     "status.service_tier":  { fg: "green" },
     "status.tools":         { fg: "dark_yellow" },
+    "status.agents":        { fg: "cyan" },
     "redraw.counter":       { fg: "red" },
 
     // -- Token stats --

@@ -16,8 +16,8 @@ use tau_proto::{
 };
 
 use super::chat::{
-    DraftSlot, invalidate_pending_draft, is_local_slash_command, role_cycling_enabled,
-    should_send_draft_snapshot,
+    DraftSlot, SUSPENDED_AGENT_PROMPT, agent_is_active_in_sets, invalidate_pending_draft,
+    is_local_slash_command, role_cycling_enabled, should_send_draft_snapshot,
 };
 use super::event_renderer::EventRenderer;
 use super::tool_render::{
@@ -189,8 +189,22 @@ fn local_slash_commands_are_identified_for_history_rendering() {
     assert!(is_local_slash_command("/model engineer"));
     assert!(is_local_slash_command("/set show-tools compact"));
     assert!(is_local_slash_command("/quit"));
+    assert!(is_local_slash_command("/agent"));
+    assert!(is_local_slash_command("/agent switch worker-1"));
+    assert!(is_local_slash_command("/agent suspend"));
+    assert!(is_local_slash_command("/agent resume worker-1"));
     assert!(!is_local_slash_command("/unknown please answer"));
     assert!(!is_local_slash_command("hello /model engineer"));
+}
+
+#[test]
+fn suspended_agent_prompt_text_is_stable() {
+    // Regression coverage for the exact prompt shown when the selected agent is
+    // suspended and the user tries to submit another message to it.
+    assert_eq!(
+        SUSPENDED_AGENT_PROMPT,
+        "This agent is suspended, use `/agent resume` to resume it."
+    );
 }
 
 /// Writer that feeds bytes into a vt100::Parser. Bytes are
@@ -758,6 +772,114 @@ fn hidden_agent_events_do_not_force_visible_full_redraw() {
     }));
     sync(&handle);
     assert_eq!(handle.full_render_count(), full_render_count);
+}
+
+#[test]
+fn start_agent_result_suspends_and_resume_reactivates_agent() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::SessionStarted(tau_proto::SessionStarted {
+        session_id: "s1".into(),
+        reason: tau_proto::SessionStartReason::Initial,
+    }));
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: "worker-1".to_owned(),
+    }));
+    assert!(renderer.live_agents().lock().unwrap().contains("worker-1"));
+
+    // Completed delegated agents become suspended UI choices: the transcript is
+    // still known, but `/agent switch` should not offer it until resumed.
+    renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
+        query_id: "q-worker".to_owned(),
+        text: "done".to_owned(),
+        error: None,
+    }));
+    assert!(renderer.live_agents().lock().unwrap().contains("worker-1"));
+    assert!(
+        renderer
+            .suspended_agents()
+            .lock()
+            .unwrap()
+            .contains("worker-1")
+    );
+
+    renderer.resume_agent("worker-1".to_owned());
+    assert!(renderer.live_agents().lock().unwrap().contains("worker-1"));
+    assert!(
+        !renderer
+            .suspended_agents()
+            .lock()
+            .unwrap()
+            .contains("worker-1")
+    );
+    renderer.switch_agent("worker-1".to_owned());
+    sync(&handle);
+    assert!(vt.screen_contains(80, "&1"));
+
+    renderer.suspend_agent("worker-1");
+    assert!(renderer.live_agents().lock().unwrap().contains("worker-1"));
+    assert!(
+        renderer
+            .suspended_agents()
+            .lock()
+            .unwrap()
+            .contains("worker-1")
+    );
+}
+
+#[test]
+fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
+    // Regression: manual suspension is a separate UI state. Later lifecycle
+    // updates may prove the harness still knows the agent, but they must not
+    // make prompt submission active again until `/agent resume` clears the
+    // suspension set.
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::SessionStarted(tau_proto::SessionStarted {
+        session_id: "s1".into(),
+        reason: tau_proto::SessionStartReason::Initial,
+    }));
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: "worker-1".to_owned(),
+    }));
+    renderer.suspend_agent("worker-1");
+
+    renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+        target_agent_id: Some("worker-1".to_owned()),
+        ..session_prompt_created("worker-sp", "s1")
+    }));
+    renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        target_agent_id: Some("worker-1".to_owned()),
+        ..finished_response("worker-sp", vec![assistant_message_item("done")])
+    }));
+    renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
+        query_id: "q-worker".to_owned(),
+        text: "done".to_owned(),
+        error: None,
+    }));
+
+    let live = renderer.live_agents().lock().unwrap().clone();
+    let suspended = renderer.suspended_agents().lock().unwrap().clone();
+    assert!(live.contains("worker-1"));
+    assert!(suspended.contains("worker-1"));
+    assert!(!agent_is_active_in_sets(&live, &suspended, "worker-1"));
+
+    renderer.resume_agent("worker-1".to_owned());
+    let live = renderer.live_agents().lock().unwrap().clone();
+    let suspended = renderer.suspended_agents().lock().unwrap().clone();
+    assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
 }
 
 #[test]

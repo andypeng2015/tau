@@ -5579,6 +5579,23 @@ impl Harness {
         Ok(())
     }
 
+    fn detach_completed_tool_backed_start_agent(&mut self, cid: &ConversationId) {
+        if let Some(conv) = self.conversations.get_mut(cid) {
+            // A completed delegate remains addressable by its `agent_id`, but
+            // it is no longer fulfilling the parent tool call or owned by the
+            // extension query that started it. Clearing the side-query fields
+            // makes later user prompts behave like a normal active conversation
+            // on the same branch.
+            conv.originator = tau_proto::PromptOriginator::User;
+            conv.source_connection = None;
+            conv.parent_tool_call_id = None;
+            conv.parent_conversation_id = None;
+            conv.task_name = None;
+            conv.delegate_execution_mode = None;
+            conv.delegate_input_stats = Default::default();
+        }
+    }
+
     fn release_start_agent_request(&mut self, cid: &ConversationId) {
         if self.active_start_agent_requests.remove(cid).is_some()
             && let Err(error) = self.drain_pending_start_agent_requests()
@@ -8140,13 +8157,20 @@ impl Harness {
             // local head so the user's next interactive prompt
             // continues on the main branch instead of the side branch.
             self.snap_to_default_conversation();
-            // Release before removing the side conversation so any queued
-            // descendants can still resolve their parent conversation while
-            // starting. Active descendants keep their own copied state after
-            // the parent is torn down.
+            let keep_tool_backed_conversation = self
+                .conversations
+                .get(&cid)
+                .is_some_and(|conv| conv.parent_tool_call_id.is_some());
+            // Release before removing or detaching the side conversation so
+            // queued descendants can still resolve their parent conversation
+            // while starting. Active descendants keep their own copied state.
             self.release_start_agent_request(&cid);
-            self.transfer_background_completion_target_before_teardown(&cid);
-            self.remove_conversation(&cid);
+            if keep_tool_backed_conversation {
+                self.detach_completed_tool_backed_start_agent(&cid);
+            } else {
+                self.transfer_background_completion_target_before_teardown(&cid);
+                self.remove_conversation(&cid);
+            }
             self.try_advance_queue();
             return Ok(());
         }
