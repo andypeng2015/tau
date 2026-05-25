@@ -1,8 +1,9 @@
 use super::*;
 use crate::conversation::{Conversation, ConversationId, PendingPrompt};
 use crate::harness::{
-    PendingTool, background_completion_prompt,
-    extension_disconnected_background_tool_call_error_message,
+    ActiveStartAgentRequest, ConversationHeadSync, DeferredPublish, PendingCompaction,
+    PendingCompactionResume, PendingIntercept, PendingStartAgentRequest, PendingTool,
+    background_completion_prompt, extension_disconnected_background_tool_call_error_message,
     extension_disconnected_tool_call_error_message, is_restore_notice_prompt_text,
     restore_notice_prompt_for_elapsed, unavailable_tool_error_message,
 };
@@ -58,6 +59,322 @@ fn user_prompt_mints_first_agent_for_empty_startup() {
         Event::SessionPromptCreated(created)
             if created.target_agent_id.as_deref() == Some(agent_id)
     )));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn ui_new_agent_rotates_default_conversation_without_switching_sessions() {
+    // Regression: `/agent new` must not masquerade as `/session new`. It keeps
+    // the same session bound to the daemon, but clears the foreground
+    // conversation so the next untargeted prompt mints a fresh agent id instead
+    // of reusing the prior default agent.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    h.handle_ui_prompt_submitted(tau_proto::UiPromptSubmitted {
+        session_id: "s1".into(),
+        text: "first".to_owned(),
+        target_agent_id: None,
+        message_class: tau_proto::PromptMessageClass::User,
+        originator: tau_proto::PromptOriginator::User,
+        ctx_id: None,
+    })
+    .expect("submit first prompt");
+    let first_agent = h
+        .conversations
+        .get(&h.default_conversation_id)
+        .and_then(|conversation| conversation.agent_id.clone())
+        .expect("first prompt minted an agent");
+    let session_before = h.current_session_id.clone();
+    let before_new_agent_seq = event_log_last_seq(&h).expect("event log not empty");
+
+    h.handle_ui_new_agent(
+        "ui-test",
+        tau_proto::UiNewAgent {
+            session_id: session_before.clone(),
+        },
+    )
+    .expect("handle /agent new");
+    assert_eq!(h.current_session_id, session_before);
+    assert!(
+        h.conversations
+            .get(&h.default_conversation_id)
+            .expect("default conversation")
+            .agent_id
+            .is_none(),
+        "/agent new clears the default agent binding before the next prompt"
+    );
+    let archived_first_agent_cid = h
+        .agent_conversations
+        .get(&first_agent)
+        .cloned()
+        .expect("old foreground agent remains targetable");
+    assert_ne!(archived_first_agent_cid, h.default_conversation_id);
+    assert_eq!(
+        h.conversation_id_for_target_agent(Some(first_agent.as_str())),
+        Some(archived_first_agent_cid.clone())
+    );
+    assert!(!h.stopped_agent_ids.contains(&first_agent));
+
+    h.handle_ui_prompt_submitted(tau_proto::UiPromptSubmitted {
+        session_id: session_before.clone(),
+        text: "second".to_owned(),
+        target_agent_id: None,
+        message_class: tau_proto::PromptMessageClass::User,
+        originator: tau_proto::PromptOriginator::User,
+        ctx_id: None,
+    })
+    .expect("submit second prompt");
+    let second_agent = h
+        .conversations
+        .get(&h.default_conversation_id)
+        .and_then(|conversation| conversation.agent_id.clone())
+        .expect("second prompt minted an agent");
+
+    assert_ne!(first_agent, second_agent);
+    assert_eq!(h.current_session_id, session_before);
+    assert!(
+        event_log_position_after(&h, before_new_agent_seq, |event| matches!(
+            event,
+            Event::UiNewAgent(req) if req.session_id == session_before
+        ))
+        .is_some()
+    );
+    assert!(
+        event_log_position_after(&h, before_new_agent_seq, |event| matches!(
+            event,
+            Event::UiSwitchSession(_) | Event::SessionStarted(_) | Event::SessionShutdown(_)
+        ))
+        .is_none()
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn ui_new_agent_rewrites_runtime_conversation_references_to_archive() {
+    // Regression: rotating the default conversation must not leave queued,
+    // in-flight, or deferred runtime state pointing at the fresh default
+    // conversation. Existing work belongs to the archived old agent.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let old = h.default_conversation_id.clone();
+    let archived = ConversationId::new("archived-default-0");
+    let session_id = h.current_session_id.clone();
+
+    let child_cid = ConversationId::new("child-conversation");
+    let mut child = Conversation::new(
+        child_cid.clone(),
+        session_id.clone(),
+        tau_proto::PromptOriginator::User,
+        None,
+        None,
+    );
+    child.parent_conversation_id = Some(old.clone());
+    h.conversations.insert(child_cid.clone(), child);
+
+    h.tool_conversations
+        .insert("tool-owner".into(), old.clone());
+    h.prompt_conversations
+        .insert("prompt-owner".into(), old.clone());
+    h.pending_user_prompt_dispatches.push_back(old.clone());
+    h.pending_publish_idle_dispatches.push_back(old.clone());
+    h.background_completion_targets
+        .insert("background-call".into(), old.clone());
+    h.tool_turn.push(
+        old.clone(),
+        wait_no_args_call("queued-tool"),
+        ToolExecutionMode::Exclusive,
+        tau_proto::BackgroundSupport::Never,
+    );
+    h.tool_turn.record_in_flight_for_test(
+        old.clone(),
+        "running-tool".into(),
+        ToolExecutionMode::Shared,
+    );
+
+    let pending_query = ext_query("queued-parent", ToolExecutionMode::Shared);
+    h.pending_start_agent_requests
+        .push_back(PendingStartAgentRequest {
+            source_id: "source".to_owned(),
+            extension_name: "source".to_owned(),
+            role: "engineer".to_owned(),
+            cid: ConversationId::new("queued-start-agent"),
+            parent_cid: old.clone(),
+            agent_id: pending_query.agent_id.clone(),
+            query: pending_query,
+            pending_agent_messages: std::collections::VecDeque::new(),
+        });
+    h.pending_compactions.insert(
+        ConversationId::new("compact-summary"),
+        PendingCompaction {
+            target_cid: old.clone(),
+            session_id: session_id.clone(),
+            target_agent_id: None,
+            originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: None,
+            resume: PendingCompactionResume::None,
+        },
+    );
+    h.pending_compactions.insert(
+        old.clone(),
+        PendingCompaction {
+            target_cid: old.clone(),
+            session_id: session_id.clone(),
+            target_agent_id: None,
+            originator: tau_proto::PromptOriginator::User,
+            original_input_tokens: None,
+            resume: PendingCompactionResume::None,
+        },
+    );
+    h.active_start_agent_requests.insert(
+        old.clone(),
+        ActiveStartAgentRequest {
+            execution_mode: ToolExecutionMode::Exclusive,
+        },
+    );
+    h.pending_intercept = Some(PendingIntercept {
+        conn_id: "interceptor".to_owned(),
+        event: Event::HarnessInfo(tau_proto::HarnessInfo {
+            message: "pending".to_owned(),
+            level: tau_proto::HarnessInfoLevel::Normal,
+        }),
+        transient: false,
+        source: None,
+        must_pass: false,
+        sync_head_for: Some(ConversationHeadSync {
+            cid: old.clone(),
+            session_id: session_id.clone(),
+        }),
+        cursor: (
+            tau_proto::InterceptionPriority::default(),
+            "interceptor".to_owned(),
+        ),
+    });
+    h.deferred_publishes.push_back(DeferredPublish {
+        source: None,
+        event: Event::HarnessInfo(tau_proto::HarnessInfo {
+            message: "deferred".to_owned(),
+            level: tau_proto::HarnessInfoLevel::Normal,
+        }),
+        transient: false,
+        must_pass: false,
+        sync_head_for: Some(ConversationHeadSync {
+            cid: old.clone(),
+            session_id: session_id.clone(),
+        }),
+    });
+
+    h.handle_ui_new_agent("ui-test", tau_proto::UiNewAgent { session_id })
+        .expect("handle /agent new");
+
+    assert!(h.conversations.contains_key(&archived));
+    assert!(h.conversations.contains_key(&h.default_conversation_id));
+    assert_eq!(h.tool_conversations.get("tool-owner"), Some(&archived));
+    assert_eq!(h.prompt_conversations.get("prompt-owner"), Some(&archived));
+    assert!(h.tool_turn.any_pending_for(&archived));
+    assert!(h.tool_turn.any_in_flight_for(&archived));
+    assert!(!h.tool_turn.any_pending_for(&old));
+    assert!(!h.tool_turn.any_in_flight_for(&old));
+    assert_eq!(
+        h.conversations
+            .get(&child_cid)
+            .expect("child conversation")
+            .parent_conversation_id
+            .as_ref(),
+        Some(&archived)
+    );
+    assert_eq!(h.pending_user_prompt_dispatches.front(), Some(&archived));
+    assert_eq!(h.pending_publish_idle_dispatches.front(), Some(&archived));
+    assert_eq!(
+        h.background_completion_targets.get("background-call"),
+        Some(&archived)
+    );
+    assert_eq!(
+        h.pending_start_agent_requests
+            .front()
+            .map(|pending| &pending.parent_cid),
+        Some(&archived)
+    );
+    assert!(
+        h.pending_compactions
+            .values()
+            .all(|pending| pending.target_cid == archived)
+    );
+    assert!(h.pending_compactions.contains_key(&archived));
+    assert!(!h.pending_compactions.contains_key(&old));
+    assert!(h.active_start_agent_requests.contains_key(&archived));
+    assert!(!h.active_start_agent_requests.contains_key(&old));
+    assert_eq!(
+        h.pending_intercept
+            .as_ref()
+            .and_then(|pending| pending.sync_head_for.as_ref())
+            .map(|sync| &sync.cid),
+        Some(&archived)
+    );
+    assert!(h.deferred_publishes.iter().any(|deferred| {
+        deferred
+            .sync_head_for
+            .as_ref()
+            .is_some_and(|sync| sync.cid == archived)
+    }));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn ui_new_agent_replays_to_late_ui_subscribers() {
+    // Regression: `/agent new` is a durable UI coordination event. A UI that
+    // attaches after another UI issued it must replay the event so both clients
+    // converge on the same empty foreground-agent state.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let session_id = h.current_session_id.clone();
+
+    h.handle_ui_new_agent(
+        "ui-test",
+        tau_proto::UiNewAgent {
+            session_id: session_id.clone(),
+        },
+    )
+    .expect("handle /agent new");
+
+    let (server_end, client_end) = UnixStream::pair().expect("pair");
+    client_end
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("read timeout");
+    h.accept_client(server_end).expect("accept");
+    let ui_conn = h
+        .bus
+        .connections()
+        .into_iter()
+        .find(|c| c.name == "socket-ui")
+        .expect("ui connection")
+        .id
+        .to_string();
+    h.handle_client_event(
+        &ui_conn,
+        Frame::Message(Message::Subscribe(Subscribe {
+            selectors: vec![EventSelector::Prefix("ui.".to_owned())],
+        })),
+    )
+    .expect("subscribe");
+
+    let mut reader = FrameReader::new(BufReader::new(client_end));
+    let mut replayed = Vec::new();
+    while let Ok(Some(frame)) = reader.read_frame() {
+        let (_log_id, inner) = frame.peel_log();
+        if let Frame::Event(Event::UiNewAgent(event)) = inner {
+            replayed.push(event);
+        }
+    }
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].session_id, session_id);
 
     h.shutdown().expect("shutdown");
 }
@@ -567,6 +884,16 @@ fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) 
         }
     }
     false
+}
+
+fn event_log_last_seq(h: &Harness) -> Option<u64> {
+    let mut seq = 0;
+    let mut last = None;
+    while let Some(entry) = h.event_log.get_next_from(seq) {
+        seq = entry.seq + 1;
+        last = Some(entry.seq);
+    }
+    last
 }
 
 fn event_log_position(h: &Harness, matches_event: impl Fn(&Event) -> bool) -> Option<u64> {
@@ -4146,7 +4473,7 @@ fn repeated_resume_does_not_duplicate_background_errors() {
 
 #[test]
 fn switch_session_rebinds_default_conversation() {
-    // Regression: `/new` flips `current_session_id` but used to leave
+    // Regression: `/session new` flips `current_session_id` but used to leave
     // the default conversation pointing at the old session, which made
     // the next user prompt panic in `dispatch_user_prompt`'s
     // assert_eq!.

@@ -100,6 +100,31 @@ fn reply_error(reply: WaitReply) -> (String, Option<CborValue>) {
     }
 }
 
+#[test]
+fn rewrite_conversation_id_updates_wait_tracker_owners_and_any_waits() {
+    // Regression: `/agent new` can archive a conversation while background
+    // waits are registered against it. Wait state must follow the archived
+    // conversation instead of leaking onto the fresh default conversation.
+    let mut tracker = WaitTracker::default();
+    let old = conv("default");
+    let new = conv("archived-default-0");
+    let call_id: ToolCallId = "slow-call".into();
+
+    tracker.record_tool_invoke(call_id.clone(), slow_tool_name(), old.clone());
+    tracker.record_tool_result(background_placeholder("slow-call"), old.clone());
+    assert!(
+        start_wait_any(&mut tracker, &old, "wait-any")
+            .reply
+            .is_none()
+    );
+
+    tracker.rewrite_conversation_id(&old, &new);
+
+    assert_eq!(tracker.call_owners.get(&call_id), Some(&new));
+    assert!(!tracker.any_waiters.contains_key(&old));
+    assert!(tracker.any_waiters.contains_key(&new));
+}
+
 fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
     let CborValue::Map(entries) = value else {
         return None;

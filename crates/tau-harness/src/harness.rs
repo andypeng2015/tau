@@ -988,7 +988,7 @@ pub struct Harness {
     pub(crate) selected_model: Option<ModelId>,
     /// State that belongs to exactly the currently bound session.
     /// Keep session-scoped counters here instead of as top-level
-    /// harness fields, so `/new` resets them with one assignment.
+    /// harness fields, so `/session new` resets them with one assignment.
     pub(crate) current_session_state: CurrentSessionState,
     /// Provider/model for each prompt sent to the provider, used to
     /// attribute the corresponding finished response even if the user
@@ -2507,6 +2507,7 @@ impl Harness {
             Event::UiPromptSubmitted(prompt) => Some(prompt.session_id.clone()),
             Event::UiShellCommand(command) => Some(command.session_id.clone()),
             Event::UiSwitchSession(req) => Some(req.new_session_id.clone()),
+            Event::UiNewAgent(req) => Some(req.session_id.clone()),
             Event::UiTreeRequest(req) => Some(req.session_id.clone()),
             Event::UiNavigateTree(req) => Some(req.session_id.clone()),
             Event::UiCompactRequest(req) => Some(req.session_id.clone()),
@@ -3738,6 +3739,7 @@ impl Harness {
                 Ok(true)
             }
             Event::UiSwitchSession(req) => self.handle_ui_switch_session(client_id, req),
+            Event::UiNewAgent(req) => self.handle_ui_new_agent(client_id, req),
             Event::UiTreeRequest(req) => self.handle_ui_tree_request(client_id, req),
             Event::UiNavigateTree(req) => self.handle_ui_navigate_tree(client_id, req),
             Event::UiCompactRequest(req) => self.handle_ui_compact_request(client_id, req),
@@ -3927,6 +3929,18 @@ impl Harness {
     ) -> Result<bool, HarnessError> {
         self.publish_event(Some(client_id), Event::UiSwitchSession(req.clone()));
         self.switch_session(req.new_session_id, req.reason)?;
+        Ok(true)
+    }
+
+    fn handle_ui_new_agent(
+        &mut self,
+        client_id: &str,
+        req: tau_proto::UiNewAgent,
+    ) -> Result<bool, HarnessError> {
+        self.publish_event(Some(client_id), Event::UiNewAgent(req.clone()));
+        if req.session_id == self.current_session_id {
+            self.rotate_default_agent_conversation();
+        }
         Ok(true)
     }
 
@@ -6412,7 +6426,7 @@ impl Harness {
         // session id.
         let default_id = self.default_conversation_id.clone();
         let new_head = if matches!(reason, tau_proto::SessionStartReason::New) {
-            // `/new` must start a fresh branch even if the requested
+            // `/session new` must start a fresh branch even if the requested
             // id already has durable history (e.g. a short-id
             // collision, or an explicit same-id reset in tests). If
             // we reused the existing tree head, the dedup map would
@@ -7044,6 +7058,119 @@ impl Harness {
             self.stopped_agent_ids.insert(agent_id.clone());
         }
         self.conversations.remove(cid)
+    }
+
+    fn rotate_default_agent_conversation(&mut self) {
+        let cid = self.default_conversation_id.clone();
+        let archive_cid = self.archive_default_conversation_id();
+        if let Some(mut conversation) = self.conversations.remove(&cid) {
+            conversation.id = archive_cid.clone();
+            if let Some(agent_id) = conversation.agent_id.clone() {
+                self.agent_conversations
+                    .insert(agent_id, archive_cid.clone());
+            }
+            self.conversations.insert(archive_cid.clone(), conversation);
+            self.rewrite_conversation_references(&cid, &archive_cid);
+        }
+        self.conversations.insert(
+            cid.clone(),
+            Conversation::new(
+                cid,
+                self.current_session_id.clone(),
+                tau_proto::PromptOriginator::User,
+                None,
+                None,
+            ),
+        );
+    }
+
+    fn archive_default_conversation_id(&self) -> ConversationId {
+        for index in 0_u64.. {
+            let candidate = ConversationId::new(format!("archived-default-{index}"));
+            if !self.conversations.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+        unreachable!("unbounded archive conversation id search cannot exhaust")
+    }
+
+    fn rewrite_conversation_references(&mut self, old: &ConversationId, new: &ConversationId) {
+        for cid in self.tool_conversations.values_mut() {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for cid in self.prompt_conversations.values_mut() {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for conversation in self.conversations.values_mut() {
+            Self::rewrite_optional_conversation_id(
+                &mut conversation.parent_conversation_id,
+                old,
+                new,
+            );
+        }
+        for cid in self.agent_conversations.values_mut() {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for cid in &mut self.pending_user_prompt_dispatches {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for cid in &mut self.pending_publish_idle_dispatches {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for cid in self.background_completion_targets.values_mut() {
+            Self::rewrite_conversation_id(cid, old, new);
+        }
+        for pending in self.pending_compactions.values_mut() {
+            Self::rewrite_conversation_id(&mut pending.target_cid, old, new);
+        }
+        for pending in &mut self.pending_start_agent_requests {
+            Self::rewrite_conversation_id(&mut pending.cid, old, new);
+            Self::rewrite_conversation_id(&mut pending.parent_cid, old, new);
+        }
+        if let Some(pending) = &mut self.pending_intercept {
+            Self::rewrite_conversation_head_sync(&mut pending.sync_head_for, old, new);
+        }
+        for deferred in &mut self.deferred_publishes {
+            Self::rewrite_conversation_head_sync(&mut deferred.sync_head_for, old, new);
+        }
+        self.tool_turn.rewrite_conversation_id(old, new);
+        self.subagents.rewrite_conversation_id(old, new);
+        if let Some(pending) = self.pending_compactions.remove(old) {
+            self.pending_compactions.insert(new.clone(), pending);
+        }
+        if let Some(active) = self.active_start_agent_requests.remove(old) {
+            self.active_start_agent_requests.insert(new.clone(), active);
+        }
+    }
+
+    fn rewrite_conversation_id(
+        cid: &mut ConversationId,
+        old: &ConversationId,
+        new: &ConversationId,
+    ) {
+        if cid == old {
+            *cid = new.clone();
+        }
+    }
+
+    fn rewrite_optional_conversation_id(
+        cid: &mut Option<ConversationId>,
+        old: &ConversationId,
+        new: &ConversationId,
+    ) {
+        if cid.as_ref() == Some(old) {
+            *cid = Some(new.clone());
+        }
+    }
+
+    fn rewrite_conversation_head_sync(
+        sync: &mut Option<ConversationHeadSync>,
+        old: &ConversationId,
+        new: &ConversationId,
+    ) {
+        if let Some(sync) = sync {
+            Self::rewrite_conversation_id(&mut sync.cid, old, new);
+        }
     }
 
     fn rehydrate_default_agent_from_session(&mut self) {

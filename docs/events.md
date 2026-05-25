@@ -213,6 +213,9 @@ intent.
   `include_in_context` flag.
 - **`ui.switch_session`** — User wants to switch to a different session
   in the same daemon, with `new`/`resume` reason.
+- **`ui.new_agent`** — User typed `/agent new`: keep the current session
+  but clear the foreground agent so the next untargeted prompt starts a
+  fresh agent.
 - **`ui.tree_request`** — User typed `/tree`: render the session
   branching tree to chat.
 - **`ui.navigate_tree`** — User typed `/tree <id>`: move the session

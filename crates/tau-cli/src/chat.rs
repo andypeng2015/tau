@@ -45,6 +45,15 @@ fn send_event(writer: &WriterHandle, event: &Event) -> io::Result<()> {
     send_frame(writer, &Frame::Event(event.clone()))
 }
 
+fn send_new_agent_request(writer: &WriterHandle, session_id: &str) -> io::Result<()> {
+    send_event(
+        writer,
+        &Event::UiNewAgent(tau_proto::UiNewAgent {
+            session_id: session_id.into(),
+        }),
+    )
+}
+
 fn peel_log_with_timestamp(
     frame: Frame,
 ) -> (Option<tau_proto::LogEventId>, Option<UnixMicros>, Frame) {
@@ -330,8 +339,8 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/agent", "Manage visible/suspended agent transcripts"),
     ("/role", "Switch, create, edit, or delete an agent role"),
     (
-        "/new",
-        "Start a fresh session in this harness (current session is left as-is on disk)",
+        "/session",
+        "Manage chat sessions (e.g. /session new starts a fresh session)",
     ),
     (
         "/tree",
@@ -662,6 +671,10 @@ pub(crate) fn run_chat(
             live_agents.clone(),
             suspended_agents.clone(),
         ),
+    );
+    completion_data.set_arg_completer(
+        tau_cli_term::CommandName::new("/session"),
+        build_session_arg_completer(),
     );
     let roles_available = renderer.roles_available();
     let role_groups_available = renderer.role_groups_available();
@@ -1016,8 +1029,8 @@ impl<'a> TerminalInputSession<'a> {
 
     fn handle_known_command(&mut self, text: &str) -> Result<CommandOutcome, CliError> {
         // Keep session-lifecycle commands first: `/quit` and `/detach` exit
-        // immediately, while `/new` mutates `session_id` for later commands and
-        // prompt submission.
+        // immediately, while `/session new` mutates `session_id` for later
+        // commands and prompt submission.
         let outcome = self.handle_session_command(text)?;
         if !matches!(outcome, CommandOutcome::NotHandled) {
             return Ok(outcome);
@@ -1072,25 +1085,45 @@ impl<'a> TerminalInputSession<'a> {
             );
             return Ok(CommandOutcome::Exit(InputLoopExit::Detach));
         }
-        if text == "/new" {
-            let cwd = std::env::current_dir()?;
-            let new_id = crate::daemon::mint_session_id(&cwd);
-            let _ = send_event(
-                self.writer,
-                &Event::UiSwitchSession(tau_proto::UiSwitchSession {
-                    new_session_id: new_id.as_str().into(),
-                    reason: tau_proto::SessionStartReason::New,
-                }),
-            );
-            *self.session_id = new_id;
-            if let Ok(mut current) = self.ctx.current_agent_state.lock() {
-                *current = None;
-            }
-            let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
+        if text == "/session" || text.starts_with("/session ") {
+            self.handle_session_namespace(text)?;
             return Ok(CommandOutcome::Continue);
         }
 
         Ok(CommandOutcome::NotHandled)
+    }
+
+    fn handle_session_namespace(&mut self, text: &str) -> Result<(), CliError> {
+        let rest = text.strip_prefix("/session").unwrap_or("").trim();
+        let mut parts = rest.split_whitespace();
+        let subcommand = parts.next();
+        let extra = parts.next();
+        match (subcommand, extra) {
+            (Some("new"), None) => self.start_new_session(),
+            (None, None) => {
+                self.output.system_info("/session new");
+                Ok(())
+            }
+            _ => {
+                self.output.system_info("/session new");
+                Ok(())
+            }
+        }
+    }
+
+    fn start_new_session(&mut self) -> Result<(), CliError> {
+        let cwd = std::env::current_dir()?;
+        let new_id = crate::daemon::mint_session_id(&cwd);
+        let _ = send_event(
+            self.writer,
+            &Event::UiSwitchSession(tau_proto::UiSwitchSession {
+                new_session_id: new_id.as_str().into(),
+                reason: tau_proto::SessionStartReason::New,
+            }),
+        );
+        *self.session_id = new_id;
+        self.clear_selected_agent();
+        Ok(())
     }
 
     fn send_cancel_prompt(&self) {
@@ -1241,7 +1274,7 @@ impl<'a> TerminalInputSession<'a> {
                 &self.ctx.suspended_agents,
             );
             self.output.system_info(&format!(
-                "/agent <switch|suspend|resume> [agent_id]; current: {current}; active: {active_count}; known: {}",
+                "/agent <new|switch|suspend|resume> [agent_id]; current: {current}; active: {active_count}; known: {}",
                 known_agents.join(", ")
             ));
             return;
@@ -1254,11 +1287,12 @@ impl<'a> TerminalInputSession<'a> {
         let target = parts.next();
         if parts.next().is_some() {
             self.output.system_info(
-                "/agent: too many arguments (use /agent <switch|suspend|resume> [agent_id])",
+                "/agent: too many arguments (use /agent <new|switch|suspend|resume> [agent_id])",
             );
             return;
         }
         match subcommand {
+            "new" => self.handle_agent_new(target),
             "switch" => self.handle_agent_switch(target),
             "suspend" => self.handle_agent_suspend(target),
             "resume" => self.handle_agent_resume(target),
@@ -1276,16 +1310,33 @@ impl<'a> TerminalInputSession<'a> {
             .and_then(|agent| agent.clone())
     }
 
+    fn handle_agent_new(&self, target: Option<&str>) {
+        if target.is_some() {
+            self.output.system_info("/agent new");
+            return;
+        }
+        self.send_new_agent_request();
+        self.clear_selected_agent();
+    }
+
+    fn send_new_agent_request(&self) {
+        let _ = send_new_agent_request(self.writer, self.session_id.as_str());
+    }
+
+    fn clear_selected_agent(&self) {
+        if let Ok(mut current) = self.ctx.current_agent_state.lock() {
+            *current = None;
+        }
+        let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
+    }
+
     fn handle_agent_switch(&self, target: Option<&str>) {
         let Some(arg) = target.map(str::trim).filter(|arg| !arg.is_empty()) else {
             self.output.system_info("/agent switch <agent_id|none>");
             return;
         };
         if arg == "none" {
-            if let Ok(mut current) = self.ctx.current_agent_state.lock() {
-                *current = None;
-            }
-            let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
+            self.clear_selected_agent();
             return;
         }
         if !self.agent_is_known(arg) {
@@ -1724,6 +1775,22 @@ fn active_side_agent_count_from_handles(
         .count()
 }
 
+fn build_session_arg_completer() -> tau_cli_term::ArgCompleter {
+    use tau_cli_term::CompletionItem;
+
+    Arc::new(move |args: &[&str]| match args.len() {
+        0 | 1 => {
+            let needle = args.first().copied().unwrap_or("").to_lowercase();
+            ["new"]
+                .into_iter()
+                .filter(|subcommand| completion_matches(subcommand, &needle))
+                .map(|subcommand| CompletionItem::new(subcommand, "subcommand"))
+                .collect()
+        }
+        _ => Vec::new(),
+    })
+}
+
 fn build_agent_arg_completer(
     known_agents: Arc<Mutex<Vec<String>>>,
     live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
@@ -1732,7 +1799,7 @@ fn build_agent_arg_completer(
     use tau_cli_term::CompletionItem;
 
     Arc::new(move |args: &[&str]| {
-        let subcommands = ["switch", "suspend", "resume"];
+        let subcommands = ["new", "switch", "suspend", "resume"];
         match args.len() {
             0 | 1 => {
                 let needle = args.first().copied().unwrap_or("").to_lowercase();
@@ -1883,7 +1950,7 @@ pub(crate) fn is_local_slash_command(text: &str) -> bool {
         "/quit"
             | "/cancel"
             | "/detach"
-            | "/new"
+            | "/session"
             | "/tree"
             | "/compact"
             | "/fast"
@@ -2060,7 +2127,57 @@ mod role_cycle_tests {
         let completions = completer(&[""]);
 
         let values: Vec<_> = completions.iter().map(|item| item.value.as_str()).collect();
-        assert_eq!(values, vec!["switch", "suspend", "resume"]);
+        assert_eq!(values, vec!["new", "switch", "suspend", "resume"]);
+    }
+
+    #[test]
+    fn session_completer_offers_new_subcommand() {
+        // `/session new` replaces the old top-level `/new` command, so the
+        // namespace needs a first-argument completion that exposes the rename.
+        let completer = build_session_arg_completer();
+
+        let values: Vec<_> = completer(&[""])
+            .into_iter()
+            .map(|item| item.value)
+            .collect();
+
+        assert_eq!(values, vec!["new"]);
+    }
+
+    #[test]
+    fn agent_new_sends_new_agent_request_not_session_switch() {
+        // Regression: `/agent new` starts a fresh foreground agent inside the
+        // current session. The CLI must send the dedicated request instead of
+        // reusing `/session new`'s `UiSwitchSession` path.
+        let (server_end, client_end) = UnixStream::pair().expect("socket pair");
+        let writer = Arc::new(Mutex::new(FrameWriter::new(BufWriter::new(client_end))));
+        send_new_agent_request(&writer, "s1").expect("send /agent new request");
+
+        let mut reader = FrameReader::new(BufReader::new(server_end));
+        let frame = reader
+            .read_frame()
+            .expect("read frame")
+            .expect("frame present");
+        assert!(matches!(
+            frame,
+            Frame::Event(Event::UiNewAgent(tau_proto::UiNewAgent { session_id }))
+                if session_id.as_str() == "s1"
+        ));
+    }
+
+    #[test]
+    fn agent_new_takes_no_agent_id_completion() {
+        // `/agent new` only clears the selected agent; it must not offer or
+        // accept an agent-id argument like switch/suspend/resume do.
+        let completer = build_agent_arg_completer(
+            Arc::new(Mutex::new(vec!["worker".to_owned()])),
+            Arc::new(Mutex::new(std::collections::HashSet::from([
+                "worker".to_owned()
+            ]))),
+            Arc::new(Mutex::new(Default::default())),
+        );
+
+        assert!(completer(&["new", ""]).is_empty());
     }
 
     #[test]

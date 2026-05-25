@@ -1767,6 +1767,16 @@ pub struct UiSwitchSession {
     pub reason: SessionStartReason,
 }
 
+/// The user typed `/agent new`: rotate the foreground conversation within the
+/// current session. The harness keeps the session id unchanged, clears the
+/// current foreground agent binding, and lets the next untargeted prompt mint a
+/// fresh agent id on a fresh conversation branch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UiNewAgent {
+    /// Session whose foreground conversation should be rotated.
+    pub session_id: SessionId,
+}
+
 /// The user typed `/tree`: render the session's branching tree (one
 /// `harness.info` line per node) to the chat output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2683,6 +2693,8 @@ pub enum Event {
     UiShellCommand(UiShellCommand),
     #[serde(rename = "ui.switch_session")]
     UiSwitchSession(UiSwitchSession),
+    #[serde(rename = "ui.new_agent")]
+    UiNewAgent(UiNewAgent),
     #[serde(rename = "ui.tree_request")]
     UiTreeRequest(UiTreeRequest),
     #[serde(rename = "ui.navigate_tree")]
@@ -2801,6 +2813,7 @@ impl Event {
             Self::UiDetachRequest(_) => EventName::UI_DETACH_REQUEST,
             Self::UiShellCommand(_) => EventName::UI_SHELL_COMMAND,
             Self::UiSwitchSession(_) => EventName::UI_SWITCH_SESSION,
+            Self::UiNewAgent(_) => EventName::UI_NEW_AGENT,
             Self::UiTreeRequest(_) => EventName::UI_TREE_REQUEST,
             Self::UiNavigateTree(_) => EventName::UI_NAVIGATE_TREE,
             Self::UiCompactRequest(_) => EventName::UI_COMPACT_REQUEST,

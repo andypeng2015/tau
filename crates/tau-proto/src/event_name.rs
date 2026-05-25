@@ -266,6 +266,7 @@ impl EventName {
     pub const UI_DETACH_REQUEST: Self = Self::from_static(EventCategory::Ui, "detach_request");
     pub const UI_SHELL_COMMAND: Self = Self::from_static(EventCategory::Ui, "shell_command");
     pub const UI_SWITCH_SESSION: Self = Self::from_static(EventCategory::Ui, "switch_session");
+    pub const UI_NEW_AGENT: Self = Self::from_static(EventCategory::Ui, "new_agent");
     pub const UI_TREE_REQUEST: Self = Self::from_static(EventCategory::Ui, "tree_request");
     pub const UI_NAVIGATE_TREE: Self = Self::from_static(EventCategory::Ui, "navigate_tree");
     pub const UI_COMPACT_REQUEST: Self = Self::from_static(EventCategory::Ui, "compact_request");

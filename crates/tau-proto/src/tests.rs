@@ -127,6 +127,9 @@ fn representative_events() -> Vec<Event> {
             originator: PromptOriginator::User,
             ctx_id: None,
         }),
+        Event::UiNewAgent(UiNewAgent {
+            session_id: "s1".into(),
+        }),
         Event::AgentMessage(AgentMessage {
             session_id: "s1".into(),
             sender_id: "engineer_abcd1234".to_owned(),

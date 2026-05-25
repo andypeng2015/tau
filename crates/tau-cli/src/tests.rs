@@ -193,6 +193,9 @@ fn local_slash_commands_are_identified_for_history_rendering() {
     assert!(is_local_slash_command("/agent switch worker-1"));
     assert!(is_local_slash_command("/agent suspend"));
     assert!(is_local_slash_command("/agent resume worker-1"));
+    assert!(is_local_slash_command("/agent new"));
+    assert!(is_local_slash_command("/session new"));
+    assert!(!is_local_slash_command("/new"));
     assert!(!is_local_slash_command("/unknown please answer"));
     assert!(!is_local_slash_command("hello /model engineer"));
 }
@@ -356,7 +359,7 @@ fn renderer_starts_without_selected_or_default_agent() {
 fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
     // Regression: the first prompt created for the default conversation carries
     // the new agent id; seeing it from the empty state selects that agent. A
-    // later `/new` session returns to the empty start-new-agent state.
+    // later `/session new` returns to the empty start-new-agent state.
     let (_term, handle, _vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
         handle,
@@ -392,6 +395,50 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
     renderer.handle(&Event::SessionStarted(SessionStarted {
         session_id: "s2".into(),
         reason: SessionStartReason::New,
+    }));
+    assert_eq!(
+        *renderer
+            .current_agent_state()
+            .lock()
+            .expect("current agent"),
+        None
+    );
+}
+
+#[test]
+fn ui_new_agent_clears_selected_agent_for_matching_session() {
+    // Regression: `/agent new` is broadcast and replayed, so renderers that did
+    // not initiate the command must also leave the selected-agent state for the
+    // matching session while ignoring events for other sessions.
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    renderer.handle(&Event::SessionStarted(SessionStarted {
+        session_id: "s1".into(),
+        reason: SessionStartReason::Initial,
+    }));
+    renderer.handle(&Event::SessionPromptCreated(SessionPromptCreated {
+        target_agent_id: Some("engineer_abc12345".to_owned()),
+        ..session_prompt_created("sp1", "s1")
+    }));
+
+    renderer.handle(&Event::UiNewAgent(tau_proto::UiNewAgent {
+        session_id: "other".into(),
+    }));
+    assert_eq!(
+        renderer
+            .current_agent_state()
+            .lock()
+            .expect("current agent")
+            .as_deref(),
+        Some("engineer_abc12345")
+    );
+
+    renderer.handle(&Event::UiNewAgent(tau_proto::UiNewAgent {
+        session_id: "s1".into(),
     }));
     assert_eq!(
         *renderer
@@ -638,9 +685,10 @@ fn first_agent_event_does_not_force_full_redraw() {
 
 #[test]
 fn new_agent_after_new_session_does_not_force_full_redraw() {
-    // `/new` intentionally moves to the start-new-agent screen and clears the
-    // old transcript. Starting the next agent from that already-visible empty
-    // screen should only update target/status metadata, not redraw scrollback.
+    // `/session new` intentionally moves to the start-new-agent screen and clears
+    // the old transcript. Starting the next agent from that already-visible
+    // empty screen should only update target/status metadata, not redraw
+    // scrollback.
     let (_term, handle, _vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
         handle.clone(),

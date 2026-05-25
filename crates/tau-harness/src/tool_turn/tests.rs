@@ -234,6 +234,26 @@ fn conversation_predicates_report_pending_and_in_flight_work() {
 }
 
 #[test]
+fn rewrite_conversation_id_updates_queued_and_in_flight_owners() {
+    // Regression: `/agent new` archives the old default conversation while its
+    // tools may still be queued or running. The scheduler must keep those
+    // calls attached to the archived conversation instead of the fresh default.
+    let mut machine = ToolTurnMachine::default();
+    let old = cid("default");
+    let new = cid("archived-default-0");
+    push(&mut machine, &old, "in-flight", ToolExecutionMode::Shared);
+    push(&mut machine, &old, "queued", ToolExecutionMode::Exclusive);
+
+    assert_eq!(pop_id(&mut machine).as_deref(), Some("in-flight"));
+    machine.rewrite_conversation_id(&old, &new);
+
+    assert!(!machine.any_pending_for(&old));
+    assert!(!machine.any_in_flight_for(&old));
+    assert!(machine.any_pending_for(&new));
+    assert!(machine.any_in_flight_for(&new));
+}
+
+#[test]
 fn fifo_is_preserved_with_compatible_shared_and_exclusive_calls() {
     let mut machine = ToolTurnMachine::default();
     let conv = cid("conv");

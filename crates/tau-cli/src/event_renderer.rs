@@ -97,7 +97,7 @@ pub(crate) struct EventRenderer {
     /// Live extension blocks keyed by instance_id. Shown in
     /// above_active while starting, moved to history when ready.
     extension_blocks: HashMap<tau_proto::ExtensionInstanceId, tau_cli_term::BlockId>,
-    /// Extensions that are already up in this daemon. `/new` starts a
+    /// Extensions that are already up in this daemon. `/session new` starts a
     /// fresh session, but these processes are intentionally kept.
     ready_extensions: HashSet<String>,
     /// Persistent status bar block showing the current model + effort.
@@ -1788,7 +1788,7 @@ impl EventRenderer {
         self.prompt_tool_summary = None;
         self.prompt_tool_summary_active = false;
         // Model selection and effort are harness-global, not
-        // session-scoped. `/new` only causes a SessionStarted event;
+        // session-scoped. `/session new` only causes a SessionStarted event;
         // the harness does not re-emit HarnessRoleSelected for the
         // unchanged model. Keep the cached selection so the status bar
         // can be recreated after clearing the terminal output.
@@ -2322,6 +2322,9 @@ impl EventRenderer {
     }
 
     pub(crate) fn handle_recorded_at(&mut self, event: &Event, recorded_at: UnixMicros) {
+        if self.handle_ui_new_agent(event) {
+            return;
+        }
         self.learn_agent_metadata(event);
         let target_agent_id = self.agent_id_for_event(event);
         if self.current_agent_id.is_none() {
@@ -2394,6 +2397,16 @@ impl EventRenderer {
         });
         self.displayed_agent_id = Some(visible_agent_id);
         self.update_agent_in_progress();
+    }
+
+    fn handle_ui_new_agent(&mut self, event: &Event) -> bool {
+        let Event::UiNewAgent(req) = event else {
+            return false;
+        };
+        if self.current_session_id.as_ref() == Some(&req.session_id) {
+            self.clear_selected_agent();
+        }
+        true
     }
 
     fn event_selects_agent_from_empty(&self, event: &Event) -> bool {

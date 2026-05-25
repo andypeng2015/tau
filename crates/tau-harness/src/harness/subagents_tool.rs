@@ -22,6 +22,14 @@ pub(crate) struct SubagentToolState {
     wait_tracker: WaitTracker,
 }
 
+impl SubagentToolState {
+    /// Rewrite conversation ids held by harness-owned sub-agent tool state
+    /// after the harness re-keys a conversation.
+    pub(crate) fn rewrite_conversation_id(&mut self, old: &ConversationId, new: &ConversationId) {
+        self.wait_tracker.rewrite_conversation_id(old, new);
+    }
+}
+
 impl Harness {
     #[cfg(test)]
     pub(crate) fn register_harness_tools(&mut self) {
@@ -1026,6 +1034,17 @@ impl WaitTracker {
                 .map(|wait| wait_interrupted_any_reply(wait.call_id, wait.tool_name)),
         );
         replies
+    }
+
+    fn rewrite_conversation_id(&mut self, old: &ConversationId, new: &ConversationId) {
+        if let Some(wait) = self.any_waiters.remove(old) {
+            self.any_waiters.entry(new.clone()).or_insert(wait);
+        }
+        for owner in self.call_owners.values_mut() {
+            if owner == old {
+                *owner = new.clone();
+            }
+        }
     }
 
     fn transfer_call_owner(

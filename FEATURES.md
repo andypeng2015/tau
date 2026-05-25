@@ -338,7 +338,11 @@ Type `/` for menu autocompletion. The built-in set:
 | ------------------- | ---------------------------------------------------- |
 | `/quit`             | Exit the session                                     |
 | `/detach`           | Leave the UI, keep the harness running for reattach  |
-| `/new`              | Start a fresh session in this harness                |
+| `/session new`      | Start a fresh session in this harness                |
+| `/agent new`        | Clear the selected agent and start the next prompt as a new agent |
+| `/agent switch <id>` | Switch to an existing live agent transcript (`none` clears selection) |
+| `/agent suspend [id]` | Hide a live agent from prompt targets until resumed |
+| `/agent resume <id>` | Re-enable a suspended agent for switching and prompts |
 | `/model <role>`     | Switch agent role                                    |
 | `/role <role> ...`  | Switch, create, edit, or delete an agent role        |
 | `/fast`             | Toggle Codex Fast mode (`service_tier: fast`)        |
