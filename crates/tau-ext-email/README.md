@@ -23,9 +23,11 @@ Email is hostile input. Message bodies, subjects, display names, addresses, MIME
 
 ### Incoming email gating
 
-`email.list` returns bounded metadata and an `access` field for every message: `granted`, `denied`, or `on-demand`. For messages that do not pass the incoming policy, it redacts the full subject and attachment metadata, but includes a short lossy `subject_preview` containing only ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
+`email.list` returns bounded metadata and an `access` field for every message: `full`, `preview`, or `none`. `full` means `email.read` can return simplified full content. `preview` means `email.read` returns only a stripped `body_preview`. `none` means `email.read` returns an `approval_required` error and no body preview.
 
-`email.read` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. If the message is not allowed, the tool creates an incoming approval and returns `approval_required` with a machine-readable `reason`, the same sanitized `subject_preview`, and a heavily stripped `body_preview`. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny future exact reads with `/email in deny <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content. After denial, matching reads return `access_denied` and do not create another approval.
+For messages that do not have `full` access, listing redacts the full subject and attachment metadata, but includes a short lossy `subject_preview` containing only ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
+
+`email.read` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. In `preview` mode, it returns a heavily stripped `body_preview` without creating a user approval request. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. If the preview justifies full access, the agent can call `email.request_full` for the same message to create an incoming approval. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny the exact request with `/email in deny <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content. After denial, matching reads report `access=none`; an explicit `request_full` can still ask the user again.
 
 Incoming approval records are bound to account, folder, UID, UIDVALIDITY when available, normalized sender, date, and message-id. Approval is not just a free-floating id that can be reused for a different message.
 
@@ -99,7 +101,7 @@ Queued outgoing approvals persist the full draft for user review. Bcc recipients
 
 Approval files are validated on load and written atomically without overwriting existing records on id collision. Incoming and outgoing approval ids should still be treated as sensitive user-interface tokens: do not ask the model to invent or reuse them.
 
-Agent email access and mutation commands append sanitized JSONL entries to `logs/email.jsonl` under the extension state directory. Use `/email log last [number]` to review recent `list`, `read`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity without exposing message bodies.
+Agent email access and mutation commands append sanitized JSONL entries to `logs/email.jsonl` under the extension state directory. Use `/email log last [number]` to review recent `list`, `read`, `request_full`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity without exposing message bodies.
 
 The `/email in whitelist <pattern>` and `/email out whitelist <pattern>` actions persist additional allowlist patterns when `policy.allow_state_policy_extensions` is true. This is convenient, but it means UI actions can extend policy outside the static config file. Set it to false if you want config-only policy:
 
@@ -210,6 +212,7 @@ The model-visible tool name is `email`. Commands are selected through the `comma
 - `list_folders`
 - `list`
 - `read`
+- `request_full`
 - `mark_read`
 - `mark_unread`
 - `star`
@@ -217,7 +220,7 @@ The model-visible tool name is `email`. Commands are selected through the `comma
 - `trash`
 - `send`
 
-`mark_read`, `mark_unread`, `star`, `unstar`, and `trash` take the same `account`/`folder`/`uid` target as `read`. They do not require content approval. `trash` moves the message to the account's IMAP Trash mailbox.
+`read`, `request_full`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` take the same `account`/`folder`/`uid` target. `request_full` creates or reuses a pending incoming approval so the user can decide whether the agent may read the full message. Message-management commands do not require content approval. `trash` moves the message to the account's IMAP Trash mailbox.
 
 Use `list_accounts` first when the account id is not known.
 
@@ -230,7 +233,7 @@ The extension publishes `/email` actions for review:
 - `/email in list` — list pending incoming read approvals.
 - `/email in open <id>` — inspect an incoming message; may display email content to the user.
 - `/email in approve <id>` — approve that exact incoming read.
-- `/email in deny <id>` — deny that exact incoming read and suppress future approvals for the same message.
+- `/email in deny <id>` — deny that exact incoming read; future `read` calls report `access=none`, while explicit `request_full` calls can ask again.
 - `/email in whitelist <pattern>` — persist an incoming allow pattern, if state policy extensions are enabled.
 - `/email out list` — list pending outgoing drafts.
 - `/email out open <id>` — inspect an outgoing draft, including Bcc.

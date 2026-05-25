@@ -156,10 +156,11 @@ Advice:
 
 Incoming reads:
 
-- `email.list` shows bounded metadata, redacts untrusted message details, and includes `access=granted|denied|on-demand`.
-- `email.read` returns full body content only if policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
-- If approval is needed, `email.read` returns `approval_required` with a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. Use `/email in list`, `/email in open <id>`, and `/email in approve <id>`.
-- Use `/email in deny <id>` to persist an exact denial. Future matching reads return `access_denied` instead of creating another approval.
+- `email.list` shows bounded metadata, redacts untrusted message details, and includes `access=full|preview|none`.
+- `email.read` returns full body content only when access is `full`, meaning policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
+- For `preview` access, `email.read` returns only a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. It does not ask the user for approval.
+- Use `email.request_full` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id>`.
+- Use `/email in deny <id>` to persist an exact denial. Future matching reads report `access=none`; explicit `request_full` calls can ask again.
 - After approval, the agent must repeat the matching `email.read` call.
 
 Message management:
@@ -178,7 +179,7 @@ Outgoing sends:
 
 Audit log:
 
-- Agent `list`, `read`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity is appended as sanitized JSONL under the email state directory.
+- Agent `list`, `read`, `request_full`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity is appended as sanitized JSONL under the email state directory.
 - Use `/email log last [number]` to review recent activity; the number defaults to 20.
 - The pretty log is intentionally minimal and does not include message bodies.
 

@@ -246,16 +246,16 @@ tool-specific instructions share one prompt assembly path.
 ### `std-email` — controlled IMAP/SMTP access
 
 The email extension exposes one `email` tool for configured mail accounts. It can
-list folders and messages, read approved or policy-allowed content, send mail
-through approval gates, and safely manage message state with `mark_read`,
-`mark_unread`, `star`, `unstar`, and `trash`. Message listings include
-`access=granted|denied|on-demand`, and `/email in deny <id>` persists exact read
-denials so the agent does not keep asking for the same message. Reads always
-return simplified body text wrapped in `<external_unstrusted_message>`, while
-on-demand reads expose only a heavily stripped `body_preview` with HTML removed,
-links replaced by `LINK`, and a tiny ASCII character set. Agent access and
-mutation activity is appended as JSONL and can be reviewed with
-`/email log last [number]`.
+list folders and messages, read approved or policy-allowed content, request full
+read approval with `request_full`, send mail through approval gates, and safely
+manage message state with `mark_read`, `mark_unread`, `star`, `unstar`, and
+`trash`. Message listings include `access=full|preview|none`; `preview` reads
+return only a heavily stripped `body_preview` with HTML removed, links replaced
+by `LINK`, and a tiny ASCII character set, while `full` reads return simplified
+body text wrapped in `<external_unstrusted_message>`. `/email in deny <id>`
+persists exact read denials as `none` access, but explicit `request_full` calls
+can ask again. Agent access and mutation activity is appended as JSONL and can
+be reviewed with `/email log last [number]`.
 
 ### `provider-builtin` — Built-in provider backend
 

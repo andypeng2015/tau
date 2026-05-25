@@ -458,7 +458,8 @@ fn registers_email_tool_prompt_fragment() {
 
     assert_eq!(fragment.name, "email.instructions");
     assert!(fragment.template.contains("approval_required"));
-    assert!(fragment.template.contains("do not call `send` again"));
+    assert!(fragment.template.contains("request_full"));
+    assert!(fragment.template.contains("do not repeat it"));
 }
 
 #[test]
@@ -885,7 +886,7 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
 
     assert_eq!(
         text_field(&messages[0], "access"),
-        Some("on-demand".to_owned())
+        Some("preview".to_owned())
     );
     assert_eq!(text_field(&messages[0], "subject"), None);
     assert!(matches!(
@@ -896,10 +897,7 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
         text_field(&messages[0], "subject_preview"),
         Some("secret subject".to_owned())
     );
-    assert_eq!(
-        text_field(&messages[1], "access"),
-        Some("granted".to_owned())
-    );
+    assert_eq!(text_field(&messages[1], "access"), Some("full".to_owned()));
     assert_eq!(
         text_field(&messages[1], "subject"),
         Some("deploy notes".to_owned())
@@ -1078,10 +1076,7 @@ fn incoming_allow_requires_trusted_aligned_authentication() {
             uid: "99".to_owned(),
         });
 
-        assert_eq!(
-            cbor_text_field(&result, "status"),
-            Some("approval_required")
-        );
+        assert_eq!(cbor_text_field(&result, "status"), Some("preview"));
         assert_eq!(read_reason(&result), Some(reason.to_owned()));
         assert_eq!(
             data_field(&result, "subject_preview"),
@@ -1107,10 +1102,7 @@ fn incoming_allow_requires_trusted_aligned_dkim_by_default() {
         folder: "INBOX".to_owned(),
         uid: "99".to_owned(),
     });
-    assert_eq!(
-        cbor_text_field(&result, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&result, "status"), Some("preview"));
     assert_eq!(read_reason(&result), Some("dkim missing".to_owned()));
     assert_unapproved_preview_only(&result);
 
@@ -1157,10 +1149,7 @@ fn incoming_auth_ignores_forged_lower_authentication_results() {
         uid: "99".to_owned(),
     });
 
-    assert_eq!(
-        cbor_text_field(&result, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&result, "status"), Some("preview"));
     assert_eq!(read_reason(&result), Some("auth failed".to_owned()));
     assert_unapproved_preview_only(&result);
 }
@@ -1184,10 +1173,7 @@ fn incoming_auth_requires_topmost_authentication_results_from_trusted_server() {
         uid: "99".to_owned(),
     });
 
-    assert_eq!(
-        cbor_text_field(&result, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&result, "status"), Some("preview"));
     assert_eq!(
         read_reason(&result),
         Some("untrusted auth server".to_owned())
@@ -1326,10 +1312,30 @@ fn rfc822_parser_failure_omits_raw_message_body() {
 }
 
 #[test]
-fn read_approval_creation_repeat_stability_and_exact_approval() {
+fn request_full_creation_repeat_stability_and_exact_approval() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
-    let first = engine.dispatch(EmailCommand::Read {
+    let preview = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&preview, "status"), Some("preview"));
+    assert_unapproved_preview_only(&preview);
+    assert_eq!(
+        data_field(&preview, "subject_preview"),
+        &CborValue::Text("secret subject".to_owned())
+    );
+    assert!(
+        engine
+            .state
+            .list_pending_incoming()
+            .expect("pending")
+            .is_empty(),
+        "plain preview reads must not request user approval"
+    );
+
+    let first = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
@@ -1339,13 +1345,12 @@ fn read_approval_creation_repeat_stability_and_exact_approval() {
         CborValue::Text(id) => id.clone(),
         _ => panic!("id"),
     };
-    assert_unapproved_preview_only(&first);
     assert_eq!(
-        data_field(&first, "subject_preview"),
-        &CborValue::Text("secret subject".to_owned())
+        data_field(&first, "access"),
+        &CborValue::Text("preview".to_owned())
     );
 
-    let second = engine.dispatch(EmailCommand::Read {
+    let second = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
@@ -1386,10 +1391,7 @@ fn read_approval_creation_repeat_stability_and_exact_approval() {
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
     });
-    assert_eq!(
-        cbor_text_field(&changed, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&changed, "status"), Some("preview"));
 
     engine.backend.messages.insert(
         ("work".to_owned(), "INBOX".to_owned()),
@@ -1411,10 +1413,7 @@ fn read_approval_creation_repeat_stability_and_exact_approval() {
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
     });
-    assert_eq!(
-        cbor_text_field(&changed, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&changed, "status"), Some("preview"));
 }
 
 #[test]
@@ -1459,12 +1458,18 @@ fn unapproved_read_returns_sanitized_preview_without_raw_body_text() {
         uid: "77".to_owned(),
     });
 
-    assert_eq!(
-        cbor_text_field(&result, "status"),
-        Some("approval_required")
-    );
+    assert_eq!(cbor_text_field(&result, "status"), Some("preview"));
     assert_eq!(*engine.backend.body_reads.borrow(), 1);
     let data = map_get(&result, "data").expect("data");
+    assert!(map_get(data, "approval_id").is_none());
+    assert!(
+        engine
+            .state
+            .list_pending_incoming()
+            .expect("pending")
+            .is_empty(),
+        "reading a preview must not request full-access approval"
+    );
     assert!(map_get(data, "body_text").is_none());
     let preview = text_field(data, "body_preview").expect("preview");
     assert!(preview.starts_with("<external_unstrusted_message>\n"));
@@ -1960,7 +1965,7 @@ fn action_outputs_escape_controls_and_row_forgery() {
         }],
     );
 
-    let incoming = engine.dispatch(EmailCommand::Read {
+    let incoming = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "77".to_owned(),
@@ -2010,7 +2015,7 @@ fn action_outputs_escape_controls_and_row_forgery() {
 fn incoming_actions_list_shows_subject_preview_but_open_shows_user_content() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
-    let queued = engine.dispatch(EmailCommand::Read {
+    let queued = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
@@ -2217,6 +2222,11 @@ fn email_log_records_agent_access_and_mutations() {
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
     });
+    let _ = engine.dispatch(EmailCommand::RequestFull {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
     let _ = engine.dispatch(EmailCommand::ManageMessage {
         command: MessageManagementCommand::MarkUnread,
         account: "work".to_owned(),
@@ -2236,23 +2246,28 @@ fn email_log_records_agent_access_and_mutations() {
     });
 
     let entries = engine.state.recent_email_log(10).expect("log");
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 4);
     assert_eq!(entries[0].kind, "access");
     assert_eq!(entries[0].command, "read");
-    assert_eq!(entries[0].status, "approval_required");
-    assert_eq!(entries[0].access.as_deref(), Some("on-demand"));
+    assert_eq!(entries[0].status, "preview");
+    assert_eq!(entries[0].access.as_deref(), Some("preview"));
     assert!(entries[0].title_redacted);
     assert_eq!(entries[0].from.as_deref(), Some("mallory@evil.test"));
+    assert_eq!(entries[1].kind, "access");
+    assert_eq!(entries[1].command, "request_full");
+    assert_eq!(entries[1].status, "approval_required");
+    assert_eq!(entries[1].access.as_deref(), Some("preview"));
+    assert_eq!(entries[1].approval_id.as_deref(), Some("1"));
     let raw_entries = format!("{entries:?}");
     assert!(!raw_entries.contains("secret body"));
     assert!(!raw_entries.contains("outgoing body"));
-    assert_eq!(entries[1].kind, "mutable");
-    assert_eq!(entries[1].command, "mark_unread");
-    assert_eq!(entries[1].status, "marked_unread");
     assert_eq!(entries[2].kind, "mutable");
-    assert_eq!(entries[2].command, "send");
-    assert_eq!(entries[2].status, "approval_required");
-    assert_eq!(entries[2].title.as_deref(), Some("Need approval"));
+    assert_eq!(entries[2].command, "mark_unread");
+    assert_eq!(entries[2].status, "marked_unread");
+    assert_eq!(entries[3].kind, "mutable");
+    assert_eq!(entries[3].command, "send");
+    assert_eq!(entries[3].status, "approval_required");
+    assert_eq!(entries[3].title.as_deref(), Some("Need approval"));
 
     let output = engine
         .dispatch_action("email.log.last", &["2".to_owned()])
@@ -2266,12 +2281,12 @@ fn email_log_records_agent_access_and_mutations() {
 }
 
 #[test]
-fn incoming_deny_persists_and_suppresses_future_approvals() {
-    // A user denial is an exact persisted decision for the same message. Future
-    // reads should report denied access instead of creating another approval.
+fn incoming_deny_persists_none_access_but_request_full_can_ask_again() {
+    // A denial blocks automatic preview reads from escalating into another
+    // approval, but an explicit request_full can still ask the user again.
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
-    let queued = engine.dispatch(EmailCommand::Read {
+    let queued = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
@@ -2297,12 +2312,17 @@ fn incoming_deny_persists_and_suppresses_future_approvals() {
         folder: "INBOX".to_owned(),
         uid: "1".to_owned(),
     });
-    assert_eq!(cbor_text_field(&repeated, "status"), Some("access_denied"));
     assert_eq!(
-        data_field(&repeated, "access"),
-        &CborValue::Text("denied".to_owned())
+        cbor_nested_text_field(&repeated, "error", "code"),
+        Some("approval_required")
     );
-    assert!(map_get(map_get(&repeated, "data").expect("data"), "approval_id").is_none());
+    let repeated_details =
+        map_get(map_get(&repeated, "error").expect("error"), "details").expect("details");
+    assert_eq!(
+        text_field(repeated_details, "access"),
+        Some("none".to_owned())
+    );
+    assert!(map_get(repeated_details, "approval_id").is_none());
     assert!(!format!("{repeated:?}").contains("secret body"));
     assert!(
         engine
@@ -2321,19 +2341,73 @@ fn incoming_deny_persists_and_suppresses_future_approvals() {
     let CborValue::Array(messages) = data_field(&listed, "messages") else {
         panic!("messages")
     };
+    assert_eq!(text_field(&messages[0], "access"), Some("none".to_owned()));
+    assert_eq!(text_field(&messages[1], "access"), Some("full".to_owned()));
+
+    engine
+        .state
+        .append_incoming_allow_record(StatePattern {
+            kind: "glob".to_owned(),
+            pattern: "*@evil.test".to_owned(),
+            created_at: "now".to_owned(),
+            created_by: "test".to_owned(),
+            note: None,
+        })
+        .expect("allow denied sender");
+    engine
+        .backend
+        .messages
+        .get_mut(&("work".to_owned(), "INBOX".to_owned()))
+        .expect("inbox")[0]
+        .auth_results = vec![trusted_dkim_pass("evil.test")];
+    let still_denied = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
     assert_eq!(
-        text_field(&messages[0], "access"),
-        Some("denied".to_owned())
+        cbor_nested_text_field(&still_denied, "error", "code"),
+        Some("approval_required")
     );
+    let still_denied_details =
+        map_get(map_get(&still_denied, "error").expect("error"), "details").expect("details");
     assert_eq!(
-        text_field(&messages[1], "access"),
-        Some("granted".to_owned())
+        text_field(still_denied_details, "access"),
+        Some("none".to_owned())
     );
 
     let denied_again = engine
         .dispatch_action("email.in.deny", std::slice::from_ref(&id))
         .expect("deny action is idempotent");
     assert!(denied_again.contains("already denied"));
+
+    let requeued = engine.dispatch(EmailCommand::RequestFull {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(
+        cbor_text_field(&requeued, "status"),
+        Some("approval_required")
+    );
+    assert_eq!(
+        data_field(&requeued, "access"),
+        &CborValue::Text("none".to_owned())
+    );
+    let second_id = match data_field(&requeued, "approval_id") {
+        CborValue::Text(id) => id.clone(),
+        _ => panic!("approval id"),
+    };
+    assert_ne!(second_id, id);
+    engine
+        .dispatch_action("email.in.approve", &[second_id])
+        .expect("approve denied message after explicit request");
+    let approved = engine.dispatch(EmailCommand::Read {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        uid: "1".to_owned(),
+    });
+    assert_eq!(cbor_text_field(&approved, "status"), Some("ok"));
 }
 
 #[test]
@@ -2772,7 +2846,7 @@ fn source_truncated_read_and_open_report_body_truncated() {
     assert_eq!(data_field(&read, "body_truncated"), &CborValue::Bool(true));
     assert!(format!("{read:?}").contains("small parsed prefix"));
 
-    let approval_required = engine.dispatch(EmailCommand::Read {
+    let approval_required = engine.dispatch(EmailCommand::RequestFull {
         account: "work".to_owned(),
         folder: "INBOX".to_owned(),
         uid: "21".to_owned(),
@@ -2834,7 +2908,7 @@ fn state_allowlist_load_save_and_policy_extension_disable() {
         folder: "INBOX".to_owned(),
         uid: "9".to_owned(),
     });
-    assert_eq!(cbor_text_field(&read, "status"), Some("approval_required"));
+    assert_eq!(cbor_text_field(&read, "status"), Some("preview"));
 }
 
 #[test]
@@ -2973,6 +3047,18 @@ fn parser_accepts_and_rejects_command_shapes() {
         ))
         .expect("read defaults"),
         EmailCommand::Read {
+            account: String::new(),
+            folder: DEFAULT_FOLDER.to_owned(),
+            uid: "1".to_owned()
+        }
+    );
+    assert_eq!(
+        parse_command(&command_args(
+            "request_full",
+            vec![("uid", CborValue::Text("1".to_owned()))]
+        ))
+        .expect("request_full defaults"),
+        EmailCommand::RequestFull {
             account: String::new(),
             folder: DEFAULT_FOLDER.to_owned(),
             uid: "1".to_owned()
