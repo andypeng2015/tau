@@ -887,27 +887,42 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
     };
 
     assert_eq!(
-        text_field(&messages[0], "access"),
-        Some("preview".to_owned())
+        data_field(&result, "format"),
+        &CborValue::Text("uid date from flags access attachments subject".to_owned())
     );
-    assert_eq!(text_field(&messages[0], "subject"), None);
-    assert!(matches!(
-        map_get(&messages[0], "subject"),
-        Some(CborValue::Null)
-    ));
     assert_eq!(
-        text_field(&messages[0], "subject_preview"),
-        Some("secret subject".to_owned())
+        messages[0],
+        CborValue::Text(
+            "1 2026-05-24T00:00:00Z mallory@evil.test seen,redacted preview ? secret subject"
+                .to_owned()
+        )
     );
-    assert_eq!(text_field(&messages[1], "access"), Some("full".to_owned()));
     assert_eq!(
-        text_field(&messages[1], "subject"),
-        Some("deploy notes".to_owned())
+        messages[1],
+        CborValue::Text("2 2026-05-24T00:01:00Z team@company.com - full 0 deploy notes".to_owned())
     );
-    assert!(matches!(
-        map_get(&messages[1], "subject_preview"),
-        Some(CborValue::Null)
-    ));
+
+    engine
+        .backend
+        .messages
+        .get_mut(&("work".to_owned(), "INBOX".to_owned()))
+        .expect("inbox")[1]
+        .subject
+        .clear();
+    let empty_subject_result = engine.dispatch(EmailCommand::ListByUid {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        limit: 10,
+        cursor: None,
+    });
+    let CborValue::Array(empty_subject_messages) = data_field(&empty_subject_result, "messages")
+    else {
+        panic!("messages")
+    };
+    assert_eq!(
+        empty_subject_messages[1],
+        CborValue::Text("2 2026-05-24T00:01:00Z team@company.com - full 0 -".to_owned())
+    );
 }
 
 #[test]
@@ -2343,8 +2358,14 @@ fn incoming_deny_persists_none_access_but_request_full_can_ask_again() {
     let CborValue::Array(messages) = data_field(&listed, "messages") else {
         panic!("messages")
     };
-    assert_eq!(text_field(&messages[0], "access"), Some("none".to_owned()));
-    assert_eq!(text_field(&messages[1], "access"), Some("full".to_owned()));
+    assert!(matches!(
+        &messages[0],
+        CborValue::Text(line) if line.contains(" none ") && line.contains("redacted")
+    ));
+    assert!(matches!(
+        &messages[1],
+        CborValue::Text(line) if line.contains(" full ")
+    ));
 
     engine
         .state

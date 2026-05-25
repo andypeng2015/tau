@@ -156,7 +156,7 @@ Advice:
 
 Incoming reads:
 
-- `email.list` shows bounded metadata, redacts untrusted message details, and includes `access=full|preview|none`.
+- `email.list_recent` shows recent messages from IMAP internal-date search; `email.list_by_uid` shows raw UID-ordered pages. Both return a `format` header plus one line per message, redact untrusted message details, and include `access=full|preview|none`.
 - `email.read` returns full body content only when access is `full`, meaning policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
 - For `preview` access, `email.read` returns only a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. It does not ask the user for approval.
 - Use `email.request_full` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id>`.
@@ -179,7 +179,7 @@ Outgoing sends:
 
 Audit log:
 
-- Agent `list`, `read`, `request_full`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity is appended as sanitized JSONL under the email state directory.
+- Agent `list_recent`, `list_by_uid`, `read`, `request_full`, `send`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` activity is appended as sanitized JSONL under the email state directory.
 - Use `/email log last [number]` to review recent activity; the number defaults to 20.
 - The pretty log is intentionally minimal and does not include message bodies.
 

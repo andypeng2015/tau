@@ -23,9 +23,9 @@ Email is hostile input. Message bodies, subjects, display names, addresses, MIME
 
 ### Incoming email gating
 
-`email.list_recent` and `email.list_by_uid` return bounded metadata and an `access` field for every message: `full`, `preview`, or `none`. `full` means `email.read` can return simplified full content. `preview` means `email.read` returns only a stripped `body_preview`. `none` means `email.read` returns an `approval_required` error and no body preview.
+`email.list_recent` and `email.list_by_uid` return bounded line-oriented metadata with a `format` header and one line per message. Each line includes an `access` field: `full`, `preview`, or `none`. `full` means `email.read` can return simplified full content. `preview` means `email.read` returns only a stripped `body_preview`. `none` means `email.read` returns an `approval_required` error and no body preview.
 
-For messages that do not have `full` access, listing redacts the full subject and attachment metadata, but includes a short lossy `subject_preview` containing only ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
+The list format is `uid date from flags access attachments subject`. For messages that do not have `full` access, `flags` includes `redacted`, attachment metadata is `?`, and `subject` is only a short lossy preview containing ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
 
 `email.read` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. In `preview` mode, it returns a heavily stripped `body_preview` without creating a user approval request. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. If the preview justifies full access, the agent can call `email.request_full` for the same message to create an incoming approval. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny the exact request with `/email in deny <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content. After denial, matching reads report `access=none`; an explicit `request_full` can still ask the user again.
 
@@ -85,7 +85,7 @@ Model-visible incoming `From` values are normalized to the address instead of tr
 
 ### Bounded IMAP access
 
-Metadata and body fetches are bounded. Header fetches use a fixed byte window, body reads have a byte and line cap, and outputs mark truncation. `list_recent` uses IMAP `UID SEARCH SINCE` against server internal dates and sorts the matched metadata by internal date descending. `list_by_uid` pages a bounded newest-UID window without claiming date order. UID and folder arguments are validated before use, and returned UIDs are checked against the requested UID.
+Metadata and body fetches are bounded. Header fetches use a fixed byte window, body reads have a byte and line cap, and outputs mark truncation. `list_recent` uses IMAP `UID SEARCH SINCE` against server internal dates, pages matching UIDs, and sorts the fetched page by internal date descending. `list_by_uid` pages a bounded newest-UID window without claiming date order. UID and folder arguments are validated before use, and returned UIDs are checked against the requested UID.
 
 If authentication headers are truncated during the metadata fetch, the extension denies auto-read with `auth truncated` instead of guessing.
 
