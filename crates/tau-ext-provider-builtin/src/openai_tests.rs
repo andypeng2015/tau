@@ -48,6 +48,7 @@ fn prompt() -> tau_proto::SessionPromptCreated {
     tau_proto::SessionPromptCreated {
         session_prompt_id: "sp-1".into(),
         session_id: "s1".into(),
+        target_agent_id: None,
         system_prompt: String::new(),
         context_items: vec![ContextItem::Message(tau_proto::MessageItem {
             role: tau_proto::ContextRole::User,
