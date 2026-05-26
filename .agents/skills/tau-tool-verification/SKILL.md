@@ -141,6 +141,8 @@ Current background timing: most tools background after about 5 seconds, `delegat
 
 Slow `delegate` calls should include the same `duration_seconds` header semantics as `shell`: omit fast calls, include approximate whole seconds for calls that took longer than about 5 seconds, and allow internal overheads and jitter. Verify this both for direct background delegate results and for delegate results collected through `wait`.
 
+When asked to verify the `delegate` tool, also verify delayed `message` delivery to a live delegated sub-agent whose own tool turn is parked behind a backgrounded tool. This is a delegate-specific regression path, not only a `message` tool test. Use a delegate prompt that first runs `sleep 30`, then after the background placeholder requests a second shell command `sleep 5`, and asks it to report to `user` if it receives a parent message. After the first shell backgrounds and the second shell request is queued, send `message` to the delegate `sub_agent_id` with a nonce. Expected: `Message sent`, the queued `sleep 5` is terminalized internally, and the delegate promptly reports receiving the nonce instead of staying stuck until `sleep 30` finishes. If event logs are available, confirm `AgentMessage`, `ToolCancelled` for the not-yet-started queued call, and a new `SessionPromptCreated` for the delegate message prompt. Treat omission of this scenario as incomplete `delegate` verification.
+
 A completed background result is consumed by the first successful `wait`. Later waits for the same id should fail with an already-consumed error. Parallel duplicate waits on the same id race; at most one should receive the result, and the rest should fail. Parallel duplicate no-arg waits in the same conversation should also fail clearly because only one waiter can consume the next completion. The exact error depends on timing: an in-progress duplicate-wait error, an already-consumed error, or another clear race-related error can be acceptable if only one wait receives the result.
 
 ### Background tool `cancel`
@@ -319,7 +321,7 @@ Record all of these observations:
 * Sub-agent to the main agent using the main agent recipient ID.
 * Sub-agent to `user` delivery, noting that this may be visible in the UI but may not appear as a model-visible inbound message to the main agent.
 * Main agent to itself, after the main agent recipient ID is known.
-* Delivery while a sub-agent is sleeping or otherwise between model turns.
+* Delivery while a sub-agent is sleeping, backgrounded on a long tool, queued behind another tool call, or otherwise between model turns.
 * Delivery order, or any reorderings, especially for parallel `message` calls.
 * Sender IDs visible to recipients.
 * Message payload preservation in durable events, and XML escaping in hidden prompts, for multiline content, blank lines, unicode, JSON-like text, backticks, and literal `<message>` tags inside the payload.
@@ -400,7 +402,42 @@ Wait for both delegates. In their final logs, verify that:
 
 After both delegates complete, try to send a post-completion message to each old `sub_agent_id`. Expect an error until completed-agent wakeup is implemented. Current behavior may report this the same way as an unknown recipient.
 
-#### Phase 2: verify sub-agent to main-agent routing
+#### Phase 2: verify delivery to a delegate queued behind a backgrounded tool
+
+Start one shared delegate whose job is to create the message-delivery edge case where the sub-agent has a long backgrounded tool still actually running and a second not-yet-started tool queued behind it.
+
+Use this prompt:
+
+```text
+You are a Tau message-tool verification sub-agent for queued-tool preemption. Goal: prove parent messages are delivered even when your next tool call would otherwise be queued behind a long backgrounded tool.
+
+Procedure:
+1. Start a long shell command: `sleep 30`.
+2. After Tau returns the background placeholder for that shell call, immediately request another shell command: `sleep 5`.
+3. If you receive any inbound `[tau-internal]` message from the parent, respond to `user` exactly: `QUEUED-TOOL MESSAGE RECEIVED nonce=queued-tool-message-001` plus the exact inbound message text and visible sender id.
+4. If no inbound message arrives, final answer exactly: `UNEXPECTED queued-tool message missing`.
+
+Do not invent messages. Do not finish before checking for the parent message.
+```
+
+After the delegate placeholder returns, wait until the delegate has had enough time for the first `sleep 30` to background and for the second `sleep 5` request to be queued. In normal UI output this often looks like delegate progress with a running/backgrounded shell call and no response from the second shell yet.
+
+Send a message to the delegate `sub_agent_id`:
+
+```text
+Parent queued-tool delivery probe. nonce=queued-tool-message-001. Reply via message to user when received.
+```
+
+Expected behavior:
+
+* The message call returns `Message sent`.
+* The delegate responds to `user` with `QUEUED-TOOL MESSAGE RECEIVED nonce=queued-tool-message-001` instead of remaining stuck behind the queued `sleep 5`.
+* If event logs are available, verify that the `AgentMessage` was recorded, the not-yet-started queued tool call was terminalized with `ToolCancelled`, and a new `SessionPromptCreated` was emitted for the delegate message prompt.
+* The long backgrounded `sleep 30` may still complete later in the delegate conversation. Its completion should not be delivered to the parent conversation or block the message response.
+
+This scenario specifically protects the code path where `agent.message` delivery preempts queued-but-not-started tool calls behind an already-backgrounded exclusive tool. Without that behavior, the message can be received by the harness but never become a model-visible prompt for the sub-agent.
+
+#### Phase 3: verify sub-agent to main-agent routing
 
 Use the main agent recipient ID learned from Phase 1. Spawn two fresh shared delegates, Agent C and Agent D. These agents should report back to the main agent recipient ID, not to `user`. This proves that parent-directed messages are delivered as model-visible `[tau-internal]` inbound messages to the main agent.
 
@@ -450,7 +487,7 @@ Wait for both delegates. Verify that their final logs match the parent-visible r
 
 After both complete, again send post-completion messages to both old `sub_agent_id` values and expect errors until completed-agent wakeup is implemented.
 
-#### Phase 3: verify self, content, and simple validation errors
+#### Phase 4: verify self, content, and simple validation errors
 
 After the main agent recipient ID is known, send a message from the main agent to itself. Expect a model-visible `[tau-internal]` inbound message whose sender is the same main agent ID and whose payload is exact.
 

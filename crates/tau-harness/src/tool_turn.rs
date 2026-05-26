@@ -274,8 +274,7 @@ impl ToolTurnMachine {
             .any(|pending| &pending.conversation_id == conversation_id)
     }
 
-    /// Whether `conversation_id` has in-flight work.
-    #[cfg(test)]
+    /// Whether `conversation_id` has foreground in-flight work.
     pub(crate) fn any_in_flight_for(&self, conversation_id: &ConversationId) -> bool {
         self.in_flight_tool_execution_modes
             .values()

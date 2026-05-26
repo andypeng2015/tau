@@ -6466,6 +6466,158 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
     h.shutdown().expect("shutdown");
 }
 
+/// Regression for a delegated agent that backgrounds a long exclusive tool,
+/// then asks for another exclusive tool before the long background result
+/// returns. A later `agent.message` must not sit behind that not-yet-started
+/// tool forever; the harness cancels the queued tool call and dispatches the
+/// hidden message prompt immediately.
+#[test]
+fn agent_message_preempts_queued_tool_behind_backgrounded_exclusive_call() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let _delegate_events = connect_test_tool(&mut h, "conn-delegate");
+    let tool_events = connect_test_tool(&mut h, "conn-tool");
+    h.registry.register(
+        "conn-tool",
+        scheduled_test_tool_spec(
+            "exclusive_tool",
+            ToolExecutionMode::Exclusive,
+            tau_proto::BackgroundSupport::Instant,
+        ),
+    );
+
+    h.handle_start_agent_request(
+        "conn-delegate",
+        StartAgentRequest {
+            query_id: "q-preempt".to_owned(),
+            agent_id: "test-agent-q-preempt".to_owned(),
+            instruction: "side task".to_owned(),
+            role: None,
+            execution_mode: ToolExecutionMode::Shared,
+            input_stats: tau_proto::ToolDisplayStats::default(),
+            tool_call_id: Some("delegate-call".into()),
+            task_name: None,
+        },
+    )
+    .expect("query");
+
+    let (initial_spid, side_cid) = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid.as_str() != "default").then(|| (spid.clone(), prompt_cid.clone()))
+        })
+        .expect("side prompt id");
+    let recipient_id = h
+        .conversations
+        .get(&side_cid)
+        .and_then(|conv| conv.agent_id.clone())
+        .expect("side agent id");
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: initial_spid.clone(),
+        target_agent_id: None,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "long-background".into(),
+            name: ToolName::new("exclusive_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "conn-delegate".into(),
+            query_id: "q-preempt".to_owned(),
+        },
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("background tool response");
+    assert!(h.tool_turn.is_backgrounded(&"long-background".into()));
+
+    let followup_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid == &side_cid && spid != &initial_spid).then_some(spid.clone())
+        })
+        .expect("follow-up prompt after background placeholder");
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        session_prompt_id: followup_spid.clone(),
+        target_agent_id: None,
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "queued-wait".into(),
+            name: ToolName::new("exclusive_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "conn-delegate".into(),
+            query_id: "q-preempt".to_owned(),
+        },
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("queued wait response");
+    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert!(
+        tool_events
+            .lock()
+            .expect("tool events")
+            .iter()
+            .all(|routed| !matches!(
+                &routed.frame,
+                Frame::Event(Event::ToolRequest(request))
+                    if request.call_id.as_str() == "queued-wait"
+            )),
+        "the second exclusive tool is queued behind the long background tool"
+    );
+
+    h.publish_event(
+        Some(HARNESS_CONNECTION_ID),
+        Event::AgentMessage(tau_proto::AgentMessage {
+            session_id: "s1".into(),
+            sender_id: "manager".to_owned(),
+            recipient_id,
+            message: "status please".to_owned(),
+        }),
+    );
+
+    assert!(
+        event_log_contains_any_source(&h, |event| matches!(
+            event,
+            Event::ToolCancelled(cancelled) if cancelled.call_id.as_str() == "queued-wait"
+        )),
+        "queued tool call must be closed before the message prompt is sent"
+    );
+    let message_spid = h
+        .prompt_conversations
+        .iter()
+        .find_map(|(spid, prompt_cid)| {
+            (prompt_cid == &side_cid && spid != &initial_spid && spid != &followup_spid)
+                .then_some(spid.clone())
+        })
+        .expect("agent message prompt dispatched");
+    let prompt = read_prompt_created(&h, &message_spid);
+    let serialized = serde_json::to_string(&prompt.context_items).expect("json");
+    assert!(serialized.contains("status please"));
+    assert!(matches!(
+        h.conversations
+            .get(&side_cid)
+            .expect("side conversation")
+            .turn_state,
+        ConversationTurnState::AgentThinking { .. }
+    ));
+
+    h.shutdown().expect("shutdown");
+}
+
 /// A tool-backed `StartAgentRequest` (`tool_call_id: Some(...)`) is the
 /// `delegate` path: it dispatches *while the parent's tool call is
 /// still in flight*, so the parent conv's tip is a `ToolUse` block

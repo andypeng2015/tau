@@ -2448,6 +2448,7 @@ impl Harness {
                 conv.pending_prompts
                     .push_back(PendingPrompt::agent_message(text));
             }
+            self.preempt_queued_tool_calls_for_agent_message(&cid);
             self.try_advance_queue();
             return;
         }
@@ -2459,6 +2460,52 @@ impl Harness {
             pending
                 .pending_agent_messages
                 .push_back(PendingPrompt::agent_message(text));
+        }
+    }
+
+    fn preempt_queued_tool_calls_for_agent_message(&mut self, cid: &ConversationId) {
+        let Some(remaining_calls) =
+            self.conversations
+                .get(cid)
+                .and_then(|conv| match &conv.turn_state {
+                    ConversationTurnState::ToolsRunning { remaining_calls } => {
+                        Some(remaining_calls.clone())
+                    }
+                    _ => None,
+                })
+        else {
+            return;
+        };
+        if self.tool_turn.any_in_flight_for(cid)
+            || self.tool_turn.backgrounded_calls_for(cid).is_empty()
+        {
+            return;
+        }
+
+        let remaining: std::collections::HashSet<ToolCallId> =
+            remaining_calls.iter().cloned().collect();
+        let cancelled = self.tool_turn.cancel_queued_for(cid, &remaining);
+        if cancelled.len() != remaining_calls.len() {
+            return;
+        }
+        let cancelled_call_ids: std::collections::HashSet<ToolCallId> = cancelled
+            .iter()
+            .map(|(call_id, _, _)| call_id.clone())
+            .collect();
+        self.record_wait_tool_cancelled(&cancelled_call_ids);
+        for (call_id, tool_name, tool_type) in cancelled {
+            self.publish_for_conversation(
+                cid,
+                Event::ToolCancelled(ToolCancelled {
+                    call_id: call_id.clone(),
+                    tool_name,
+                    tool_type,
+                }),
+            );
+            self.clear_tool_call_tracking(call_id.as_str());
+        }
+        if let Some(conv) = self.conversations.get_mut(cid) {
+            conv.turn_state = ConversationTurnState::Idle;
         }
     }
 
