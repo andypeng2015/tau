@@ -5543,11 +5543,16 @@ fn cbor_integer_field_string(value: &CborValue, field: &str) -> Option<String> {
 }
 
 fn cbor_array_len(value: &CborValue, field: &str) -> Option<u64> {
+    cbor_array_field(value, field).map(|values| values.len() as u64)
+}
+
+fn cbor_array_field<'a>(value: &'a CborValue, field: &str) -> Option<&'a [CborValue]> {
     match cbor_field(value, field) {
-        Some(CborValue::Array(values)) => Some(values.len() as u64),
+        Some(CborValue::Array(values)) => Some(values),
         _ => None,
     }
 }
+
 fn cbor_nested_text_field<'a>(value: &'a CborValue, outer: &str, inner: &str) -> Option<&'a str> {
     let CborValue::Map(entries) = value else {
         return None;
@@ -5688,9 +5693,9 @@ fn email_display_stats(command: &str, data: Option<&CborValue>) -> ToolDisplaySt
         return ToolDisplayStats::default();
     };
     match command {
-        "list_accounts" => count_stats(cbor_array_len(data, "accounts")),
-        "list_folders" => count_stats(cbor_array_len(data, "folders")),
-        "list" | "list_by_uid" | "list_recent" => count_stats(cbor_array_len(data, "messages")),
+        "list_accounts" => line_array_stats(data, "accounts"),
+        "list_folders" => line_array_stats(data, "folders"),
+        "list" | "list_by_uid" | "list_recent" => line_array_stats(data, "messages"),
         "read" => cbor_text_field(data, "body_text")
             .or_else(|| cbor_text_field(data, "body_preview"))
             .map(ToolDisplayStats::for_text)
@@ -5711,6 +5716,25 @@ fn count_stats(count: Option<u64>) -> ToolDisplayStats {
     }
 }
 
+fn line_array_stats(data: &CborValue, field: &str) -> ToolDisplayStats {
+    let Some(lines) = cbor_array_field(data, field) else {
+        return ToolDisplayStats::default();
+    };
+    let line_count = lines.len() as u64;
+    let byte_count = lines
+        .iter()
+        .filter_map(|line| match line {
+            CborValue::Text(text) => Some(text.len() as u64),
+            _ => None,
+        })
+        .sum();
+    ToolDisplayStats {
+        matches: Some(line_count),
+        lines: (0 < line_count).then_some(line_count),
+        bytes: (0 < line_count).then_some(byte_count),
+    }
+}
+
 fn email_display_info(command: &str, data: Option<&CborValue>) -> Vec<String> {
     let Some(data) = data else {
         return Vec::new();
@@ -5721,9 +5745,6 @@ fn email_display_info(command: &str, data: Option<&CborValue>) -> Vec<String> {
         "list_folders" => push_count_chip(&mut chips, cbor_array_len(data, "folders"), "folder"),
         "list" | "list_by_uid" | "list_recent" => {
             push_count_chip(&mut chips, cbor_array_len(data, "messages"), "message");
-            if cbor_bool_field(data, "truncated") == Some(true) {
-                chips.push("truncated".to_owned());
-            }
         }
         "read" => {
             push_count_chip(

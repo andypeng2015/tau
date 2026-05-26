@@ -797,7 +797,19 @@ fn successful_email_tool_results_show_command_scope_and_counts() {
     assert_eq!(display.status, ToolDisplayStatus::Success);
     assert_eq!(display.status_text, "ok");
     assert_eq!(display.args, "list_by_uid work/INBOX");
+    let CborValue::Array(messages) = data_field(&result.result, "messages") else {
+        panic!("messages should be an array")
+    };
+    let expected_bytes: u64 = messages
+        .iter()
+        .map(|message| match message {
+            CborValue::Text(line) => line.len() as u64,
+            _ => panic!("messages should be text lines"),
+        })
+        .sum();
     assert_eq!(display.stats.matches, Some(2));
+    assert_eq!(display.stats.lines, Some(2));
+    assert_eq!(display.stats.bytes, Some(expected_bytes));
     assert_eq!(display.info_chips, vec!["2 messages".to_owned()]);
 }
 
@@ -2921,6 +2933,23 @@ fn read_body_and_list_results_report_truncation_metadata() {
     assert_eq!(
         data_field(&listed, "next_cursor"),
         &CborValue::Text("1".to_owned())
+    );
+    let Event::ToolResult(result) = finish_tool_result(
+        tool_started(
+            "list",
+            vec![
+                ("account", CborValue::Text("work".to_owned())),
+                ("folder", CborValue::Text("INBOX".to_owned())),
+                ("limit", CborValue::Integer(1.into())),
+            ],
+        ),
+        listed.clone(),
+    ) else {
+        panic!("successful list command should be a tool result")
+    };
+    assert_eq!(
+        result.display.expect("display").info_chips,
+        vec!["1 message".to_owned()]
     );
 
     let second_page = engine.dispatch(EmailCommand::ListByUid {
