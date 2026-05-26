@@ -76,3 +76,45 @@ fn provider_config_rejects_unknown_fields() {
 
     assert!(error.to_string().contains("unknown field"), "got: {error}");
 }
+
+#[test]
+fn empty_end_turn_is_rejected_before_harness_completion() {
+    // Regression: some local Chat Completions servers occasionally answer a
+    // tool-result follow-up with `finish_reason: stop`, usage, and no content
+    // or tool calls. Treating that as a normal turn silently marks the agent as
+    // done with an empty message, so the backend must surface it as retryable.
+    let state = StreamState::new();
+
+    assert!(matches!(
+        ensure_non_empty_end_turn(state),
+        Err(LlmError::EmptyResponse)
+    ));
+}
+
+#[test]
+fn non_empty_end_turn_is_accepted() {
+    // A normal assistant text response should not be affected by the empty-turn
+    // guard.
+    let mut state = StreamState::new();
+    state.text = "done".to_owned();
+
+    assert!(ensure_non_empty_end_turn(state).is_ok());
+}
+
+#[test]
+fn tool_call_turn_is_accepted_without_text() {
+    // Tool-call turns often have no assistant text; they are valid as long as a
+    // parsed tool call is present.
+    let mut state = StreamState::new();
+    state.stop_reason = ProviderStopReason::ToolCalls;
+    state.tool_calls.insert(
+        0,
+        ToolCallAccumulator {
+            id: "call-1".to_owned(),
+            name: "shell".to_owned(),
+            arguments: "{}".to_owned(),
+        },
+    );
+
+    assert!(ensure_non_empty_end_turn(state).is_ok());
+}

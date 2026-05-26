@@ -13,6 +13,7 @@ use tau_proto::{
 };
 
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+const EMPTY_RESPONSE_MAX_ATTEMPTS: usize = 2;
 
 /// One Chat Completions-compatible provider entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -105,21 +106,51 @@ fn run_prompt<W: Write>(
     model: ChatCompletionsModel,
     writer: &mut FrameWriter<W>,
 ) -> ProviderResponseFinished {
-    let mut on_update = |text: &str, thinking: Option<&str>| {
-        let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
-            ProviderResponseUpdated {
-                agent_prompt_id: agent_prompt_id.clone(),
-                text: text.to_owned(),
-                thinking: thinking.map(str::to_owned),
-                originator: prompt.originator.clone(),
-            },
-        )));
-        let _ = writer.flush();
-    };
-    match chat_completions_stream(&provider, &model, prompt, &mut on_update) {
-        Ok(state) => finish_success(agent_prompt_id, prompt, &provider, state),
-        Err(error) => finish_error(agent_prompt_id, prompt, &provider, error),
+    let mut attempt = 0_usize;
+    loop {
+        attempt += 1;
+        let result = {
+            let mut on_update = |text: &str, thinking: Option<&str>| {
+                let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
+                    ProviderResponseUpdated {
+                        agent_prompt_id: agent_prompt_id.clone(),
+                        text: text.to_owned(),
+                        thinking: thinking.map(str::to_owned),
+                        originator: prompt.originator.clone(),
+                    },
+                )));
+                let _ = writer.flush();
+            };
+            chat_completions_stream(&provider, &model, prompt, &mut on_update)
+        };
+        match result {
+            Ok(state) => return finish_success(agent_prompt_id, prompt, &provider, state),
+            Err(LlmError::EmptyResponse) if attempt < EMPTY_RESPONSE_MAX_ATTEMPTS => {
+                emit_empty_response_retry_update(agent_prompt_id, prompt, attempt, writer);
+            }
+            Err(error) => return finish_error(agent_prompt_id, prompt, &provider, error),
+        }
     }
+}
+
+fn emit_empty_response_retry_update<W: Write>(
+    agent_prompt_id: &AgentPromptId,
+    prompt: &tau_proto::AgentPromptCreated,
+    attempt: usize,
+    writer: &mut FrameWriter<W>,
+) {
+    let text = format!(
+        "provider returned an empty response; retrying (attempt {attempt}/{EMPTY_RESPONSE_MAX_ATTEMPTS})"
+    );
+    let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
+        ProviderResponseUpdated {
+            agent_prompt_id: agent_prompt_id.clone(),
+            text,
+            thinking: None,
+            originator: prompt.originator.clone(),
+        },
+    )));
+    let _ = writer.flush();
 }
 
 /// Runs one prompt against a registered Chat Completions-compatible provider
@@ -192,6 +223,7 @@ fn model_efforts(compat: ChatCompletionsCompat) -> Vec<tau_proto::Effort> {
 
 #[derive(Debug)]
 enum LlmError {
+    EmptyResponse,
     Http(Box<ureq::Error>),
     HttpStatus(u16, String),
     Io(std::io::Error),
@@ -201,6 +233,7 @@ enum LlmError {
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::EmptyResponse => write!(f, "provider returned an empty response"),
             Self::Http(error) => write!(f, "HTTP error: {error}"),
             Self::HttpStatus(code, body) => write!(f, "HTTP {code}: {body}"),
             Self::Io(error) => write!(f, "I/O error: {error}"),
@@ -274,6 +307,14 @@ impl StreamState {
             })
         }
     }
+
+    fn has_output_items(&self) -> bool {
+        !self.text.is_empty() || self.tool_calls.values().any(|call| !call.name.is_empty())
+    }
+
+    fn is_empty_end_turn(&self) -> bool {
+        self.stop_reason == ProviderStopReason::EndTurn && !self.has_output_items()
+    }
 }
 
 #[derive(Default)]
@@ -328,7 +369,15 @@ fn chat_completions_stream(
         apply_event(&mut state, &event, on_update);
     }
     flush_pending_content(&mut state, on_update);
-    Ok(state)
+    ensure_non_empty_end_turn(state)
+}
+
+fn ensure_non_empty_end_turn(state: StreamState) -> Result<StreamState, LlmError> {
+    if state.is_empty_end_turn() {
+        Err(LlmError::EmptyResponse)
+    } else {
+        Ok(state)
+    }
 }
 
 #[derive(Serialize)]
