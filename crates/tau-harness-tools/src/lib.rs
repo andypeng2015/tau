@@ -30,8 +30,6 @@ const DELEGATE_TOOL_NAME: &str = "delegate";
 const WAIT_TOOL_NAME: &str = "wait";
 const CANCEL_TOOL_NAME: &str = "cancel";
 const MESSAGE_TOOL_NAME: &str = "message";
-const DELEGATE_PREFIX: &str =
-    include_str!("../../tau-harness/src/harness/prompts/delegate_prefix.md");
 const SLOW_DELEGATE_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 
 /// Return handlers for Tau's built-in harness-process tools.
@@ -183,7 +181,7 @@ impl BuiltinTools {
         let start_request = StartAgentRequest {
             query_id: query_id.clone(),
             agent_id: agent_id.clone(),
-            instruction: format!("{DELEGATE_PREFIX}{}", parsed.prompt),
+            instruction: delegate_instruction(&self_agent_id, &parsed.prompt),
             role: parsed.role,
             execution_mode: parsed.execution_mode,
             input_stats: ToolDisplayStats::for_text(&parsed.prompt),
@@ -941,6 +939,14 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
     })
 }
 
+fn delegate_instruction(self_agent_id: &str, prompt: &str) -> String {
+    format!(
+        include_str!("../../tau-harness/src/harness/prompts/delegate_prefix.md"),
+        self_agent_id = self_agent_id,
+        prompt = prompt,
+    )
+}
+
 fn delegate_background_placeholder(
     call_id: &ToolCallId,
     self_agent_id: &str,
@@ -1107,6 +1113,19 @@ mod tests {
                     _ => None,
                 })
         })
+    }
+
+    #[test]
+    fn delegate_instruction_names_parent_and_message_followup_path() {
+        // Delegated agents get a fresh context, so their injected instruction
+        // must explicitly name the parent and explain that only the first final
+        // response flows back through the delegate tool result.
+        let instruction = delegate_instruction("engineer_parent", "inspect the change");
+
+        assert!(instruction.contains("You were started by this agent:\n\nengineer_parent"));
+        assert!(instruction.contains("Only your first final response"));
+        assert!(instruction.contains("Use the `message` tool to ask `engineer_parent`"));
+        assert!(instruction.contains("Task:\ninspect the change"));
     }
 
     #[test]
