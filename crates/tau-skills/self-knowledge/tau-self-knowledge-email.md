@@ -160,8 +160,8 @@ Incoming reads:
 - `email.list_recent` shows recent messages from IMAP internal-date search; `email.list_by_uid` shows raw UID-ordered pages. Both return a `format` header plus one line per message, redact untrusted message details, and include `access=full|preview|none`.
 - `email.read` returns full body content only when access is `full`, meaning policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
 - For `preview` access, `email.read` returns only a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. It does not ask the user for approval.
-- Use `email.request_full` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id>`.
-- Use `/email in deny <id>` to persist an exact denial. Future matching reads report `access=none`; explicit `request_full` calls can ask again.
+- Use `email.request_full` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id> [id...]`.
+- Use `/email in deny <id> [id...]` to persist exact denials. Future matching reads report `access=none`; explicit `request_full` calls can ask again.
 - After approval, the agent must repeat the matching `email.read` call.
 
 Message management:
@@ -175,7 +175,7 @@ Outgoing sends:
 
 - `email.send` sends immediately only when every `to`, `cc`, `bcc`, and `reply_to` address is allowed.
 - Otherwise it queues the full draft and returns `approval_required`.
-- Use `/email out list`, `/email out open <id>`, and `/email out approve <id>` to review and send.
+- Use `/email out list`, `/email out open <id>`, and `/email out approve <id> [id...]` to review and send.
 - If `email.send` returns `approval_required`, the agent should not call `send` again for the same draft.
 
 Audit log:

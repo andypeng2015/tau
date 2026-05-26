@@ -233,12 +233,12 @@ The extension publishes `/email` actions for review:
 - `/email log last [number]` — show recent agent email access and mutation log entries; defaults to 20.
 - `/email in list` — list pending incoming read approvals.
 - `/email in open <id>` — inspect an incoming message; may display email content to the user.
-- `/email in approve <id>` — approve that exact incoming read.
-- `/email in deny <id>` — deny that exact incoming read; future `read` calls report `access=none`, while explicit `request_full` calls can ask again.
+- `/email in approve <id> [id...]` — approve exact incoming reads.
+- `/email in deny <id> [id...]` — deny exact incoming reads; future `read` calls report `access=none`, while explicit `request_full` calls can ask again.
 - `/email in whitelist <pattern>` — persist an incoming allow pattern, if state policy extensions are enabled.
 - `/email out list` — list pending outgoing drafts.
 - `/email out open <id>` — inspect an outgoing draft, including Bcc.
-- `/email out approve <id>` — send the approved draft.
+- `/email out approve <id> [id...]` — send the approved draft(s).
 - `/email out whitelist <pattern>` — persist an outgoing recipient allow pattern, if state policy extensions are enabled.
 
 

@@ -489,13 +489,11 @@ fn publishes_email_action_schema_at_startup() {
             "email.in.whitelist".to_owned(),
         ]
     );
-    assert_eq!(
-        schema
-            .parse_line("/email out approve 1")
-            .expect("parse")
-            .action_id,
-        "email.out.approve"
-    );
+    let parsed_approve = schema
+        .parse_line("/email out approve 1 2")
+        .expect("parse approve");
+    assert_eq!(parsed_approve.action_id, "email.out.approve");
+    assert_eq!(parsed_approve.argv, vec!["1 2".to_owned()]);
     let parsed_log = schema.parse_line("/email log last 5").expect("parse log");
     assert_eq!(parsed_log.action_id, "email.log.last");
     assert_eq!(parsed_log.argv, vec!["5".to_owned()]);
@@ -1700,6 +1698,117 @@ fn outgoing_actions_list_open_approve_and_whitelist_drive_policy() {
         in_reply_to: None,
     });
     assert_eq!(cbor_text_field(&whitelisted, "status"), Some("sent"));
+}
+
+#[test]
+fn outgoing_approve_accepts_multiple_ids() {
+    // Users often review several queued drafts from one `/email out list` output.
+    // A single approve action should accept all selected ids and send each draft.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    for subject in ["proposal one", "proposal two"] {
+        let _queued = engine.dispatch(EmailCommand::Send {
+            account: Some("work".to_owned()),
+            from: None,
+            to: vec!["external@example.net".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.to_owned(),
+            body_text: "body".to_owned(),
+            reply_to: None,
+            in_reply_to: None,
+        });
+    }
+    let first_id = pending_outgoing_id(&engine, 0);
+    let second_id = pending_outgoing_id(&engine, 1);
+
+    let approved = engine
+        .dispatch_action("email.out.approve", &[format!("{first_id} {second_id}")])
+        .expect("approve batch");
+
+    assert!(approved.contains("Approving 2 outgoing email(s):"));
+    assert_eq!(engine.backend.sent.borrow().len(), 2);
+    assert!(engine.state.pending_outgoing_by_id(&first_id).is_err());
+    assert!(engine.state.pending_outgoing_by_id(&second_id).is_err());
+}
+
+#[test]
+fn incoming_approve_and_deny_accept_multiple_ids() {
+    // Incoming approval and denial use the same slash parser shape as outgoing
+    // approval, so verify both actions split whitespace ids safely.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    engine.backend.messages.insert(
+        ("work".to_owned(), "INBOX".to_owned()),
+        [
+            (
+                "10",
+                "Mallory <mallory@evil.test>",
+                "secret one",
+                "body one",
+            ),
+            ("11", "Eve <eve@evil.test>", "secret two", "body two"),
+            (
+                "12",
+                "Mallory <mallory@evil.test>",
+                "secret three",
+                "body three",
+            ),
+            ("13", "Eve <eve@evil.test>", "secret four", "body four"),
+        ]
+        .into_iter()
+        .map(|(uid, from, subject, body_text)| BackendMessage {
+            uid: uid.to_owned(),
+            uidvalidity: "uv1".to_owned(),
+            date: "2026-05-24T00:00:00Z".to_owned(),
+            from: from.to_owned(),
+            to: vec!["alice@company.com".to_owned()],
+            cc: Vec::new(),
+            subject: subject.to_owned(),
+            source_truncated: false,
+            body_text: body_text.to_owned(),
+            flags: Vec::new(),
+            has_attachments: false,
+            attachments: Vec::new(),
+            message_id: None,
+            auth_results: Vec::new(),
+        })
+        .collect(),
+    );
+    for uid in ["10", "11"] {
+        let _queued = engine.dispatch(EmailCommand::RequestFull {
+            account: "work".to_owned(),
+            folder: "INBOX".to_owned(),
+            uid: uid.to_owned(),
+        });
+    }
+    let first_id = pending_incoming_id(&engine, 0);
+    let second_id = pending_incoming_id(&engine, 1);
+
+    let approved = engine
+        .dispatch_action("email.in.approve", &[first_id.clone(), second_id.clone()])
+        .expect("approve batch");
+
+    assert!(approved.contains("Approving 2 incoming email read(s):"));
+    assert!(engine.state.approved_incoming_by_id(&first_id).is_ok());
+    assert!(engine.state.approved_incoming_by_id(&second_id).is_ok());
+
+    for uid in ["12", "13"] {
+        let _queued = engine.dispatch(EmailCommand::RequestFull {
+            account: "work".to_owned(),
+            folder: "INBOX".to_owned(),
+            uid: uid.to_owned(),
+        });
+    }
+    let first_id = pending_incoming_id(&engine, 0);
+    let second_id = pending_incoming_id(&engine, 1);
+    let denied = engine
+        .dispatch_action("email.in.deny", &[format!("{first_id} {second_id}")])
+        .expect("deny batch");
+
+    assert!(denied.contains("Denying 2 incoming email read(s):"));
+    assert!(engine.state.denied_incoming_by_id(&first_id).is_ok());
+    assert!(engine.state.denied_incoming_by_id(&second_id).is_ok());
 }
 
 #[test]

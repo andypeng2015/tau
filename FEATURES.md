@@ -255,10 +255,11 @@ manage message state with `mark_read`, `mark_unread`, `star`, `unstar`, and
 `trash`. Message listings include `access=full|preview|none`; `preview` reads
 return only a heavily stripped `body_preview` with HTML removed, links replaced
 by `LINK`, and a tiny ASCII character set, while `full` reads return simplified
-body text wrapped in `<external_unstrusted_message>`. `/email in deny <id>`
+body text wrapped in `<external_unstrusted_message>`. `/email in deny <id> [id...]`
 persists exact read denials as `none` access, but explicit `request_full` calls
-can ask again. Agent access and mutation activity is appended as JSONL and can
-be reviewed with `/email log last [number]`.
+can ask again. `/email in approve`, `/email in deny`, and `/email out approve`
+accept multiple ids. Agent access and mutation activity is appended as JSONL and
+can be reviewed with `/email log last [number]`.
 
 ### `provider-builtin` — Built-in provider backend
 

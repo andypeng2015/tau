@@ -3796,14 +3796,20 @@ impl<B: EmailBackend> Engine<B> {
         match action_id {
             "email.out.list" => require_no_args(argv).and_then(|()| self.action_out_list()),
             "email.out.open" => require_one_arg(argv).and_then(|id| self.action_out_open(id)),
-            "email.out.approve" => require_one_arg(argv).and_then(|id| self.action_out_approve(id)),
+            "email.out.approve" => {
+                require_approval_ids(argv).and_then(|ids| self.action_out_approve_many(&ids))
+            }
             "email.out.whitelist" => {
                 require_one_arg(argv).and_then(|pattern| self.action_out_whitelist(pattern))
             }
             "email.in.list" => require_no_args(argv).and_then(|()| self.action_in_list()),
             "email.in.open" => require_one_arg(argv).and_then(|id| self.action_in_open(id)),
-            "email.in.approve" => require_one_arg(argv).and_then(|id| self.action_in_approve(id)),
-            "email.in.deny" => require_one_arg(argv).and_then(|id| self.action_in_deny(id)),
+            "email.in.approve" => {
+                require_approval_ids(argv).and_then(|ids| self.action_in_approve_many(&ids))
+            }
+            "email.in.deny" => {
+                require_approval_ids(argv).and_then(|ids| self.action_in_deny_many(&ids))
+            }
             "email.in.whitelist" => {
                 require_one_arg(argv).and_then(|pattern| self.action_in_whitelist(pattern))
             }
@@ -3873,8 +3879,34 @@ impl<B: EmailBackend> Engine<B> {
         ))
     }
 
+    fn action_out_approve_many(&mut self, ids: &[String]) -> Result<String, String> {
+        if ids.len() == 1 {
+            return self.action_out_approve(&ids[0]);
+        }
+
+        let mut lines = vec![format!("Approving {} outgoing email(s):", ids.len())];
+        let mut errors = Vec::new();
+        for id in ids {
+            match self.action_out_approve(id) {
+                Ok(message) => lines.push(message),
+                Err(error) => {
+                    lines.push(format!(
+                        "Failed outgoing email {id}: {}",
+                        safe_display_line(&error)
+                    ));
+                    errors.push(id.clone());
+                }
+            }
+        }
+        let output = lines.join("\n");
+        if errors.is_empty() {
+            Ok(output)
+        } else {
+            Err(output)
+        }
+    }
+
     fn action_out_approve(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id)?;
         if self.state.outgoing_pending_exists(id)? {
             let pending = self.state.pending_outgoing_by_id(id)?;
             self.validate_outgoing_approval_for_send(&pending)?;
@@ -3990,8 +4022,34 @@ impl<B: EmailBackend> Engine<B> {
         ))
     }
 
+    fn action_in_approve_many(&mut self, ids: &[String]) -> Result<String, String> {
+        if ids.len() == 1 {
+            return self.action_in_approve(&ids[0]);
+        }
+
+        let mut lines = vec![format!("Approving {} incoming email read(s):", ids.len())];
+        let mut errors = Vec::new();
+        for id in ids {
+            match self.action_in_approve(id) {
+                Ok(message) => lines.push(message),
+                Err(error) => {
+                    lines.push(format!(
+                        "Failed incoming email read {id}: {}",
+                        safe_display_line(&error)
+                    ));
+                    errors.push(id.clone());
+                }
+            }
+        }
+        let output = lines.join("\n");
+        if errors.is_empty() {
+            Ok(output)
+        } else {
+            Err(output)
+        }
+    }
+
     fn action_in_approve(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id)?;
         match self.state.pending_incoming_by_id(id) {
             Ok(approval) => {
                 self.state.approve_incoming(id)?;
@@ -4014,8 +4072,34 @@ impl<B: EmailBackend> Engine<B> {
         }
     }
 
+    fn action_in_deny_many(&mut self, ids: &[String]) -> Result<String, String> {
+        if ids.len() == 1 {
+            return self.action_in_deny(&ids[0]);
+        }
+
+        let mut lines = vec![format!("Denying {} incoming email read(s):", ids.len())];
+        let mut errors = Vec::new();
+        for id in ids {
+            match self.action_in_deny(id) {
+                Ok(message) => lines.push(message),
+                Err(error) => {
+                    lines.push(format!(
+                        "Failed incoming email read {id}: {}",
+                        safe_display_line(&error)
+                    ));
+                    errors.push(id.clone());
+                }
+            }
+        }
+        let output = lines.join("\n");
+        if errors.is_empty() {
+            Ok(output)
+        } else {
+            Err(output)
+        }
+    }
+
     fn action_in_deny(&mut self, id: &str) -> Result<String, String> {
-        validate_approval_id(id)?;
         match self.state.pending_incoming_by_id(id) {
             Ok(approval) => {
                 self.state.deny_incoming(id)?;
@@ -4204,6 +4288,21 @@ fn require_one_arg(argv: &[String]) -> Result<&str, String> {
         [] => Err("missing required action argument".to_owned()),
         _ => Err("too many action arguments".to_owned()),
     }
+}
+
+fn require_approval_ids(argv: &[String]) -> Result<Vec<String>, String> {
+    let ids = argv
+        .iter()
+        .flat_map(|value| value.split_whitespace())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Err("missing required action argument".to_owned());
+    }
+    for id in &ids {
+        validate_approval_id(id)?;
+    }
+    Ok(ids)
 }
 
 fn parse_log_limit(argv: &[String]) -> Result<usize, String> {
@@ -4425,6 +4524,14 @@ fn email_action_schema() -> ActionSchema {
             kind: ActionArgKind::String,
         }
     }
+    fn rest_string_arg(name: &str, description: &str) -> ActionArg {
+        ActionArg {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            required: true,
+            kind: ActionArgKind::RestString,
+        }
+    }
     fn optional_integer_arg(name: &str, description: &str) -> ActionArg {
         ActionArg {
             name: name.to_owned(),
@@ -4453,6 +4560,7 @@ fn email_action_schema() -> ActionSchema {
     }
 
     let id_arg = || string_arg("id", "approval id");
+    let ids_arg = || rest_string_arg("ids", "one or more approval ids");
     let pattern_arg = || string_arg("pattern", "glob or email address");
     let limit_arg =
         || optional_integer_arg("number", "number of recent log entries; defaults to 20");
@@ -4483,8 +4591,8 @@ fn email_action_schema() -> ActionSchema {
                         leaf(
                             "approve",
                             "email.out.approve",
-                            "Approve an outgoing draft",
-                            vec![id_arg()],
+                            "Approve one or more outgoing drafts",
+                            vec![ids_arg()],
                         ),
                         leaf(
                             "whitelist",
@@ -4523,14 +4631,14 @@ fn email_action_schema() -> ActionSchema {
                         leaf(
                             "approve",
                             "email.in.approve",
-                            "Approve an incoming read",
-                            vec![id_arg()],
+                            "Approve one or more incoming reads",
+                            vec![ids_arg()],
                         ),
                         leaf(
                             "deny",
                             "email.in.deny",
-                            "Deny an incoming read and persist that exact denial",
-                            vec![id_arg()],
+                            "Deny one or more incoming reads and persist exact denials",
+                            vec![ids_arg()],
                         ),
                         leaf(
                             "whitelist",

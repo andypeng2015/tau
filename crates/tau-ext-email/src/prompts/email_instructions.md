@@ -8,4 +8,4 @@ Read bodies and unapproved previews are simplified, wrapped in `<external_unstru
 
 If `send` or `request_full` returns `approval_required`, treat it as a successful queued request and do not repeat it. Message-management commands such as `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` do not require approval.
 
-Use `/email out approve <id>` only when acting as the user reviewing pending outgoing approvals.
+Use `/email out approve <id> [id...]` only when acting as the user reviewing pending outgoing approvals.
