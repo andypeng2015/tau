@@ -365,9 +365,9 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
     // Regression: the first prompt created for the default conversation carries
     // the new agent id; seeing it from the empty state selects that agent. A
     // later `/session new` returns to the empty start-new-agent state.
-    let (_term, handle, _vt) = setup(80, 24);
+    let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
-        handle,
+        handle.clone(),
         tau_cli_term::CompletionData::new(),
         tau_themes::Theme::builtin(),
     );
@@ -388,6 +388,7 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
         agent_id: "engineer_abc12345".to_owned().into(),
         ..agent_prompt_created("sp1", "s1")
     }));
+    sync(&handle);
     assert_eq!(
         renderer
             .current_agent_state()
@@ -396,6 +397,7 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
             .as_deref(),
         Some("engineer_abc12345")
     );
+    assert!(vt.screen_contains(80, "@s1 &engineer_abc12345"));
 
     renderer.handle(&Event::SessionStarted(SessionStarted {
         session_id: "s2".into(),
@@ -408,6 +410,28 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
             .expect("current agent"),
         None
     );
+}
+
+#[test]
+fn initial_session_started_renders_session_status_without_role_placeholder() {
+    // Regression: startup may announce SessionStarted before role selection.
+    // The status bar must still show the human-readable session id, without
+    // adding a misleading no-role placeholder next to it.
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::SessionStarted(SessionStarted {
+        session_id: "tau-agent-test".into(),
+        reason: SessionStartReason::Initial,
+    }));
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "@tau-agent-test"));
+    assert!(!vt.screen_contains(80, "no role selected"));
 }
 
 #[test]
@@ -1615,6 +1639,7 @@ fn new_session_clears_session_ui_state() {
     assert!(!vt.screen_contains(80, "old prompt"));
     assert!(!vt.screen_contains(80, "old response"));
     assert!(!vt.screen_contains(80, "read src/lib.rs"));
+    assert!(vt.screen_contains(80, "@s2"));
     assert!(!vt.screen_contains(80, "no role selected"));
 }
 

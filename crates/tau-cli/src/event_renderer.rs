@@ -1798,7 +1798,10 @@ impl EventRenderer {
         self.update_agent_in_progress();
         self.handle.clear_output();
         self.render_session_preamble();
-        if self.current_model.is_some() || self.current_role.is_some() {
+        if self.current_session_id.is_some()
+            || self.current_model.is_some()
+            || self.current_role.is_some()
+        {
             self.render_model_status();
         }
     }
@@ -1870,12 +1873,13 @@ impl EventRenderer {
                 &mut needs_space,
                 format!("={model}"),
             ),
-            (None, None, None) => push_status_chip(
+            (None, None, None) if self.current_session_id.is_none() => push_status_chip(
                 &mut themed,
                 status_style,
                 &mut needs_space,
                 "no role selected".to_owned(),
             ),
+            (None, None, None) => {}
         }
         let show_effort = self.baseline_params.map_or_else(
             || {
@@ -2840,12 +2844,7 @@ impl EventRenderer {
 
     fn handle_existing_session_started(&mut self, started: &tau_proto::SessionStarted) {
         self.current_session_id = Some(started.session_id.clone());
-        if self.model_status_block.is_some()
-            || self.current_model.is_some()
-            || self.current_role.is_some()
-        {
-            self.render_model_status();
-        }
+        self.render_model_status();
     }
 
     fn handle_prompt_events(&mut self, event: &Event) -> bool {

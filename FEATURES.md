@@ -162,9 +162,9 @@ level (e.g. `effort xhigh` on a mini model, `verbosity high` on a provider
 that doesn't support it) degrades and surfaces a `HarnessInfo` notice rather
 than silently dropping the field.
 
-The status bar renders only the selected agent role, falling back to the
-model id when no role is selected. Model knobs and context usage stay out
-of the bar to keep it compact.
+The status bar renders the current session id and selected agent role,
+falling back to the model id when no role is selected. Model knobs and
+context usage stay out of the bar to keep it compact.
 
 ### Prompt input caching
 

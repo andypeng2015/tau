@@ -400,6 +400,7 @@ fn late_joining_ui_client_receives_replayed_session_events() {
         &ui_conn,
         Frame::Message(Message::Subscribe(Subscribe {
             selectors: vec![
+                EventSelector::Prefix("session.".to_owned()),
                 EventSelector::Prefix("agent.".to_owned()),
                 EventSelector::Prefix("provider.".to_owned()),
             ],
@@ -408,15 +409,19 @@ fn late_joining_ui_client_receives_replayed_session_events() {
     .expect("subscribe");
 
     let mut reader = FrameReader::new(BufReader::new(client_end));
+    let mut got_session_started = false;
     let mut got_prompt = false;
     let mut got_response = false;
     let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && !(got_prompt && got_response) {
+    while Instant::now() < deadline && !(got_session_started && got_prompt && got_response) {
         let Ok(Some(frame)) = reader.read_frame() else {
             break;
         };
         let (_log_id, inner) = frame.peel_log();
         match inner {
+            Frame::Event(Event::SessionStarted(started)) if started.session_id.as_str() == "s1" => {
+                got_session_started = true;
+            }
             Frame::Event(Event::AgentPromptSubmitted(prompt)) if prompt.text == "hello replay" => {
                 got_prompt = true;
             }
@@ -436,6 +441,10 @@ fn late_joining_ui_client_receives_replayed_session_events() {
         }
     }
 
+    assert!(
+        got_session_started,
+        "late UI should replay current session start"
+    );
     assert!(got_prompt, "late UI should replay prior user prompt");
     assert!(got_response, "late UI should replay prior agent response");
 

@@ -26,6 +26,16 @@ use crate::model::{
 
 impl Harness {
     pub(crate) fn replay_session_events(&mut self, client_id: &str, selectors: &[EventSelector]) {
+        let session_started = Event::SessionStarted(tau_proto::SessionStarted {
+            session_id: self.current_session_id.clone(),
+            reason: self.current_session_start_reason,
+        });
+        if selector_matches_event(selectors, &session_started) {
+            let _ = self
+                .bus
+                .send_to(client_id, None, Frame::Event(session_started));
+        }
+
         let loaded_agents: Vec<tau_proto::AgentId> = {
             match self.store.load_session(self.current_session_id.as_str()) {
                 Ok(Some(membership)) => membership.loaded_agents().into_iter().cloned().collect(),

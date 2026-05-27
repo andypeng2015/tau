@@ -858,6 +858,9 @@ pub struct Harness {
     /// harness down and respawns extensions; that's a future
     /// `switch_session` operation, not silent multi-session.
     pub(crate) current_session_id: SessionId,
+    /// Reason associated with the current session binding. Late UI subscribers
+    /// receive a replayed `SessionStarted` snapshot with this reason.
+    pub(crate) current_session_start_reason: tau_proto::SessionStartReason,
     /// `call_id` → owning agent for every tool call currently
     /// in flight. Read by `session_id_for_event` (via the
     /// conversation) to attribute incoming `ToolResult` / `ToolError`
@@ -1444,6 +1447,7 @@ impl Harness {
             store,
             agent_store,
             current_session_id: eager_session_id.into(),
+            current_session_start_reason: eager_session_start_reason,
             tool_agents: std::collections::HashMap::new(),
             pending_tools: std::collections::HashMap::new(),
             completed_tool_calls: std::collections::HashSet::new(),
@@ -1683,6 +1687,7 @@ impl Harness {
             store,
             agent_store,
             current_session_id: eager_session_id.into(),
+            current_session_start_reason: eager_session_start_reason,
             tool_agents: std::collections::HashMap::new(),
             pending_tools: std::collections::HashMap::new(),
             completed_tool_calls: std::collections::HashSet::new(),
@@ -6656,6 +6661,7 @@ impl Harness {
         self.stopped_agent_ids.clear();
 
         self.current_session_id = new_session_id.clone();
+        self.current_session_start_reason = reason;
         if matches!(reason, tau_proto::SessionStartReason::Resume) {
             self.rehydrate_agents_from_session();
         }
