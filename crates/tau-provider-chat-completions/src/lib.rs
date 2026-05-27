@@ -16,7 +16,7 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 /// Default Chat Completions output-token cap Tau sends when no
 /// provider-specific override is set.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8192;
-const EMPTY_RESPONSE_MAX_ATTEMPTS: usize = 2;
+const EMPTY_RESPONSE_MAX_RETRIES: usize = 10;
 
 /// One Chat Completions-compatible provider entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -140,9 +140,8 @@ fn run_prompt<W: Write>(
     model: ChatCompletionsModel,
     writer: &mut FrameWriter<W>,
 ) -> ProviderResponseFinished {
-    let mut attempt = 0_usize;
+    let mut empty_response_retries = 0_usize;
     loop {
-        attempt += 1;
         let result = {
             let mut on_update = |text: &str, thinking: Option<&str>| {
                 let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
@@ -159,8 +158,14 @@ fn run_prompt<W: Write>(
         };
         match result {
             Ok(state) => return finish_success(agent_prompt_id, prompt, &provider, state),
-            Err(LlmError::EmptyResponse) if attempt < EMPTY_RESPONSE_MAX_ATTEMPTS => {
-                emit_empty_response_retry_update(agent_prompt_id, prompt, attempt, writer);
+            Err(LlmError::EmptyResponse) if empty_response_retries < EMPTY_RESPONSE_MAX_RETRIES => {
+                empty_response_retries += 1;
+                emit_empty_response_retry_update(
+                    agent_prompt_id,
+                    prompt,
+                    empty_response_retries,
+                    writer,
+                );
             }
             Err(error) => return finish_error(agent_prompt_id, prompt, &provider, error),
         }
@@ -170,11 +175,11 @@ fn run_prompt<W: Write>(
 fn emit_empty_response_retry_update<W: Write>(
     agent_prompt_id: &AgentPromptId,
     prompt: &tau_proto::AgentPromptCreated,
-    attempt: usize,
+    retry: usize,
     writer: &mut FrameWriter<W>,
 ) {
     let text = format!(
-        "provider returned an empty response; retrying (attempt {attempt}/{EMPTY_RESPONSE_MAX_ATTEMPTS})"
+        "provider returned an empty response; retrying ({retry}/{EMPTY_RESPONSE_MAX_RETRIES})"
     );
     let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
         ProviderResponseUpdated {
