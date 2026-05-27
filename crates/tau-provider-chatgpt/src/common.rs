@@ -477,7 +477,10 @@ pub fn prompt_cache_key_for(base_url: &str, session_id: &SessionId) -> String {
     hasher.update(base_url.as_bytes());
     hasher.update(b"\0");
     hasher.update(session_id.as_str().as_bytes());
-    format!("tau-{}", hasher.finalize().to_hex())
+
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    uuid::Uuid::new_v8(bytes).to_string()
 }
 
 /// Produce the wire `prompt_cache_key` for an outgoing request from a
@@ -522,7 +525,10 @@ pub fn mix_originator_into_cache_key(
             hasher.update(base.as_bytes());
             hasher.update(b"\0ext:");
             hasher.update(name.as_str().as_bytes());
-            Some(format!("tau-{}", hasher.finalize().to_hex()))
+
+            let mut bytes = [0; 16];
+            bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+            Some(uuid::Uuid::new_v8(bytes).to_string())
         }
     }
 }

@@ -38,7 +38,7 @@ fn build_request_includes_prompt_cache_key_when_supported() {
     let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
     let prompt_cache_key = body["prompt_cache_key"].as_str().expect("prompt_cache_key");
 
-    assert!(prompt_cache_key.starts_with("tau-"));
+    assert!(uuid::Uuid::parse_str(prompt_cache_key).is_ok());
 }
 
 #[test]

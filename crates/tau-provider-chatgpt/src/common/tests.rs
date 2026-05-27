@@ -129,7 +129,7 @@ fn mix_originator_passes_through_absent_base() {
 /// routing to the same cache machine.
 #[test]
 fn mix_originator_user_returns_base_verbatim() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     assert_eq!(
         mix_originator_into_cache_key(Some(base), &PromptOriginator::User, false),
         Some(base.to_owned()),
@@ -165,7 +165,7 @@ fn prompt_cache_key_distinct_base_urls_diverge() {
 /// the ~15 RPM threshold the OpenAI deployment checklist warns about.
 #[test]
 fn mix_originator_extension_diverges_from_user() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     let ext = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-1".into(),
@@ -174,13 +174,14 @@ fn mix_originator_extension_diverges_from_user() {
     let ext_key = mix_originator_into_cache_key(Some(base), &ext, false);
     assert!(user_key.is_some() && ext_key.is_some());
     assert_ne!(user_key, ext_key);
+    assert!(uuid::Uuid::parse_str(ext_key.as_deref().unwrap()).is_ok());
 }
 
 /// Two distinct side-query originators must route to distinct cache buckets so
 /// e.g. a websearch helper and a delegate sub-agent don't share load.
 #[test]
 fn mix_originator_distinct_extensions_diverge() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     let delegate = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "q-1".into(),
@@ -201,7 +202,7 @@ fn mix_originator_distinct_extensions_diverge() {
 /// would be a cold cache.
 #[test]
 fn mix_originator_ignores_extension_query_id() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     let first = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-1".into(),
@@ -223,7 +224,7 @@ fn mix_originator_ignores_extension_query_id() {
 /// prefix cache instead of cold-starting its own.
 #[test]
 fn mix_originator_share_user_bucket_overrides_extension_split() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     let ext = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("std-notifications"),
         query_id: "idle-0".into(),
@@ -240,7 +241,7 @@ fn mix_originator_share_user_bucket_overrides_extension_split() {
 /// invalidate every cache key in the wild.
 #[test]
 fn mix_originator_is_deterministic() {
-    let base = "tau-abc123";
+    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
     let ext = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-1".into(),
