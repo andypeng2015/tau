@@ -77,6 +77,16 @@ fn seed_restored_tool_round(state_dir: &Path, call_ids: &[&str], completed_call_
         .append_agent_event(
             "main",
             None,
+            Event::AgentStarted(tau_proto::AgentStarted {
+                agent_id: "main".into(),
+                role: "engineer".to_owned(),
+            }),
+        )
+        .expect("seed agent start");
+    agent_store
+        .append_agent_event(
+            "main",
+            None,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
                 agent_id: "main".into(),
                 text: "before restart".to_owned(),
@@ -125,6 +135,16 @@ fn seed_restored_tool_round_for_agent(
         .expect("seed session membership");
     let mut agent_store =
         tau_core::AgentStore::open(state_dir.join("agents")).expect("agent store");
+    agent_store
+        .append_agent_event(
+            agent_id,
+            None,
+            Event::AgentStarted(tau_proto::AgentStarted {
+                agent_id: agent_id.into(),
+                role: "engineer".to_owned(),
+            }),
+        )
+        .expect("seed agent start");
     agent_store
         .append_agent_event(
             agent_id,

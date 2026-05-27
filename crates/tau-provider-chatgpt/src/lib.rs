@@ -256,6 +256,7 @@ fn request_for_transport<'a>(
         tool_choice: request.tool_choice,
         originator: request.originator,
         session_id: request.session_id,
+        agent_id: request.agent_id,
         share_user_cache_key: request.share_user_cache_key,
     }
 }

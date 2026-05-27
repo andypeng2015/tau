@@ -108,53 +108,51 @@ fn ws_stream_error_without_type_suffix_is_retryable() {
     assert_eq!(error.retry_after(), Some(std::time::Duration::ZERO));
 }
 
-/// `None` base in → `None` out, regardless of originator. The resolver
-/// already decided this provider doesn't get a key; the agent must not
-/// resurrect one.
-#[test]
-fn mix_originator_passes_through_absent_base() {
-    let ext = PromptOriginator::Extension {
-        name: tau_proto::ExtensionName::new("__harness__"),
-        query_id: "delegate-1".into(),
-    };
-    assert_eq!(
-        mix_originator_into_cache_key(None, &PromptOriginator::User, false),
-        None
-    );
-    assert_eq!(mix_originator_into_cache_key(None, &ext, false), None);
+fn cache_key(originator: &PromptOriginator, share_user_bucket: bool) -> String {
+    prompt_cache_key_for(
+        "https://api.openai.com/v1",
+        &tau_proto::AgentId::new("agent-1"),
+        originator,
+        share_user_bucket,
+    )
 }
 
-/// A user-originated turn must reuse the already session-scoped base
-/// verbatim, so successive turns of an interactive session keep
-/// routing to the same cache machine.
-#[test]
-fn mix_originator_user_returns_base_verbatim() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
-    assert_eq!(
-        mix_originator_into_cache_key(Some(base), &PromptOriginator::User, false),
-        Some(base.to_owned()),
-    );
-}
-
-/// Distinct sessions on the same provider endpoint must not share the
+/// Distinct agents on the same provider endpoint must not share the
 /// same routing bucket.
 #[test]
-fn prompt_cache_key_distinct_sessions_diverge() {
+fn prompt_cache_key_distinct_agents_diverge() {
     assert_ne!(
-        prompt_cache_key_for("https://api.openai.com/v1", &SessionId::new("session-1"),),
-        prompt_cache_key_for("https://api.openai.com/v1", &SessionId::new("session-2"),),
+        prompt_cache_key_for(
+            "https://api.openai.com/v1",
+            &tau_proto::AgentId::new("agent-1"),
+            &PromptOriginator::User,
+            false,
+        ),
+        prompt_cache_key_for(
+            "https://api.openai.com/v1",
+            &tau_proto::AgentId::new("agent-2"),
+            &PromptOriginator::User,
+            false,
+        ),
     );
 }
 
 /// Distinct provider endpoints must not share the same routing bucket,
-/// even for the same session id.
+/// even for the same agent lifetime.
 #[test]
 fn prompt_cache_key_distinct_base_urls_diverge() {
     assert_ne!(
-        prompt_cache_key_for("https://api.openai.com/v1", &SessionId::new("session-1"),),
+        prompt_cache_key_for(
+            "https://api.openai.com/v1",
+            &tau_proto::AgentId::new("agent-1"),
+            &PromptOriginator::User,
+            false,
+        ),
         prompt_cache_key_for(
             "https://chatgpt.com/backend-api",
-            &SessionId::new("session-1"),
+            &tau_proto::AgentId::new("agent-1"),
+            &PromptOriginator::User,
+            false,
         ),
     );
 }
@@ -164,24 +162,21 @@ fn prompt_cache_key_distinct_base_urls_diverge() {
 /// routing bucket and push the `(prefix, prompt_cache_key)` pair past
 /// the ~15 RPM threshold the OpenAI deployment checklist warns about.
 #[test]
-fn mix_originator_extension_diverges_from_user() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
+fn prompt_cache_key_extension_diverges_from_user() {
     let ext = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-1".into(),
     };
-    let user_key = mix_originator_into_cache_key(Some(base), &PromptOriginator::User, false);
-    let ext_key = mix_originator_into_cache_key(Some(base), &ext, false);
-    assert!(user_key.is_some() && ext_key.is_some());
+    let user_key = cache_key(&PromptOriginator::User, false);
+    let ext_key = cache_key(&ext, false);
     assert_ne!(user_key, ext_key);
-    assert!(uuid::Uuid::parse_str(ext_key.as_deref().unwrap()).is_ok());
+    assert!(uuid::Uuid::parse_str(&ext_key).is_ok());
 }
 
 /// Two distinct side-query originators must route to distinct cache buckets so
 /// e.g. a websearch helper and a delegate sub-agent don't share load.
 #[test]
-fn mix_originator_distinct_extensions_diverge() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
+fn prompt_cache_key_distinct_extensions_diverge() {
     let delegate = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "q-1".into(),
@@ -190,10 +185,7 @@ fn mix_originator_distinct_extensions_diverge() {
         name: tau_proto::ExtensionName::new("websearch"),
         query_id: "q-2".into(),
     };
-    assert_ne!(
-        mix_originator_into_cache_key(Some(base), &delegate, false),
-        mix_originator_into_cache_key(Some(base), &websearch, false),
-    );
+    assert_ne!(cache_key(&delegate, false), cache_key(&websearch, false),);
 }
 
 /// The `query_id` is intentionally NOT mixed in: a sub-agent's own
@@ -201,8 +193,7 @@ fn mix_originator_distinct_extensions_diverge() {
 /// hitting the same cache. If this regressed, every delegate turn
 /// would be a cold cache.
 #[test]
-fn mix_originator_ignores_extension_query_id() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
+fn prompt_cache_key_ignores_extension_query_id() {
     let first = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-1".into(),
@@ -211,10 +202,7 @@ fn mix_originator_ignores_extension_query_id() {
         name: tau_proto::ExtensionName::new("__harness__"),
         query_id: "delegate-2".into(),
     };
-    assert_eq!(
-        mix_originator_into_cache_key(Some(base), &first, false),
-        mix_originator_into_cache_key(Some(base), &second, false),
-    );
+    assert_eq!(cache_key(&first, false), cache_key(&second, false),);
 }
 
 /// When the harness flags a side query as "share the user's bucket"
@@ -223,31 +211,14 @@ fn mix_originator_ignores_extension_query_id() {
 /// single-shot probe (idle-summary) hits the user's already-warm
 /// prefix cache instead of cold-starting its own.
 #[test]
-fn mix_originator_share_user_bucket_overrides_extension_split() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
+fn prompt_cache_key_share_user_bucket_overrides_extension_split() {
     let ext = PromptOriginator::Extension {
         name: tau_proto::ExtensionName::new("std-notifications"),
         query_id: "idle-0".into(),
     };
-    let user_key = mix_originator_into_cache_key(Some(base), &PromptOriginator::User, false);
-    let ext_shared_key = mix_originator_into_cache_key(Some(base), &ext, true);
-    let ext_split_key = mix_originator_into_cache_key(Some(base), &ext, false);
+    let user_key = cache_key(&PromptOriginator::User, false);
+    let ext_shared_key = cache_key(&ext, true);
+    let ext_split_key = cache_key(&ext, false);
     assert_eq!(ext_shared_key, user_key);
     assert_ne!(ext_split_key, user_key);
-}
-
-/// Determinism: same inputs → byte-equal output. Locks the hash
-/// format so a stray reformatting of the salt prefix doesn't silently
-/// invalidate every cache key in the wild.
-#[test]
-fn mix_originator_is_deterministic() {
-    let base = "1f39c322-3f3b-8022-bbc8-44c903966a3e";
-    let ext = PromptOriginator::Extension {
-        name: tau_proto::ExtensionName::new("__harness__"),
-        query_id: "delegate-1".into(),
-    };
-    assert_eq!(
-        mix_originator_into_cache_key(Some(base), &ext, false),
-        mix_originator_into_cache_key(Some(base), &ext, false),
-    );
 }

@@ -7,6 +7,7 @@ use tau_proto::{
     PromptOriginator, ProviderBackendTransport, ProviderTokenUsage, SessionId, ToolCallItem,
     ToolDefinition,
 };
+use uuid::Uuid;
 
 /// The parts of a prompt needed by an LLM backend client.
 pub struct PromptPayload<'a> {
@@ -39,10 +40,9 @@ pub struct PromptPayload<'a> {
     /// machines and degrades hit rate).
     pub originator: &'a PromptOriginator,
     /// When `true`, force the wire `prompt_cache_key` to the user's
-    /// session-scoped base key for this turn even though
+    /// user bucket key for this turn even though
     /// [`Self::originator`] is an extension. Lets a single-shot side query
     /// (idle-summary) reuse the user's already-warm prefix cache. See
-    /// [`mix_originator_into_cache_key`].
     pub share_user_cache_key: bool,
     /// Harness session this prompt belongs to. Used by the Responses
     /// WebSocket pool to key per-conversation connections — same
@@ -50,6 +50,8 @@ pub struct PromptPayload<'a> {
     /// connection-local `previous_response_id` cache stays warm.
     /// Backends without a connection pool ignore this.
     pub session_id: &'a SessionId,
+    /// Durable agent this prompt belongs to.
+    pub agent_id: &'a tau_proto::AgentId,
 }
 
 /// See [`PromptPayload::previous_response`].
@@ -470,67 +472,40 @@ pub fn verbosity_wire(level: tau_proto::Verbosity) -> &'static str {
     level.as_openai_wire()
 }
 
-/// Derive the per-(provider endpoint, session) cache key the OpenAI
-/// guide expects.
-pub fn prompt_cache_key_for(base_url: &str, session_id: &SessionId) -> String {
+/// Derive the wire `prompt_cache_key` for the OpenAI-style provider cache.
+///
+/// The resulting UUID is version 7 shaped: its timestamp bits come from the
+/// durable `AgentStarted` record's timestamp, while the non-time bits are a
+/// deterministic hash of the provider endpoint, agent lifetime, and cache
+/// bucket namespace. This preserves cache reuse across turns while making the
+/// key sort/debug like a UUIDv7 value.
+pub fn prompt_cache_key_for(
+    base_url: &str,
+    agent_id: &tau_proto::AgentId,
+    originator: &PromptOriginator,
+    share_user_bucket: bool,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(base_url.as_bytes());
     hasher.update(b"\0");
-    hasher.update(session_id.as_str().as_bytes());
+    hasher.update(agent_id.as_str().as_bytes());
+    hasher.update(b"\0bucket:");
+    match originator {
+        PromptOriginator::User => {
+            hasher.update(b"user");
+        }
+        PromptOriginator::Extension { .. } if share_user_bucket => {
+            hasher.update(b"user");
+        }
+        PromptOriginator::Extension { name, .. } => {
+            hasher.update(b"ext:");
+            hasher.update(name.as_str().as_bytes());
+        }
+    };
 
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    uuid::Uuid::new_v8(bytes).to_string()
-}
-
-/// Produce the wire `prompt_cache_key` for an outgoing request from a
-/// per-`(base_url, session_id)` base key, the originator of the current
-/// prompt, and a `share_user_bucket` override.
-///
-/// User turns pass `base` through unchanged so a single interactive
-/// session's successive turns keep landing on the same cache machine.
-/// Side-query turns (e.g. delegated sub-agents) get a distinct key derived from
-/// the originator name so:
-///   - sub-agent traffic doesn't pile onto the user's provider routing bucket —
-///     OpenAI's deployment checklist warns that >15 RPM per `(prefix,
-///     prompt_cache_key)` overflows to additional machines and degrades cache
-///     effectiveness, and a parallel-delegate turn easily blows past that on a
-///     shared key;
-///   - the sub-agent's own multi-turn loop still reuses *its* cache because the
-///     query id is intentionally NOT mixed in.
-///
-/// When `share_user_bucket` is `true`, the extension branch is skipped
-/// and the session-scoped base key is returned. Used by the harness
-/// for non-fan-out side queries (idle-summary) so a single side turn
-/// can hit the user's already-warm prefix cache. Delegate sub-agents leave
-/// it `false` to preserve the fan-out isolation above.
-///
-/// `None` in / `None` out: when the resolver chose not to send a
-/// prompt cache key (provider doesn't support it), no key is sent
-/// regardless of originator.
-#[must_use]
-pub fn mix_originator_into_cache_key(
-    base: Option<&str>,
-    originator: &PromptOriginator,
-    share_user_bucket: bool,
-) -> Option<String> {
-    let base = base?;
-    if share_user_bucket {
-        return Some(base.to_owned());
-    }
-    match originator {
-        PromptOriginator::User => Some(base.to_owned()),
-        PromptOriginator::Extension { name, .. } => {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(base.as_bytes());
-            hasher.update(b"\0ext:");
-            hasher.update(name.as_str().as_bytes());
-
-            let mut bytes = [0; 16];
-            bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            Some(uuid::Uuid::new_v8(bytes).to_string())
-        }
-    }
+    Uuid::new_v8(bytes).to_string()
 }
 
 // ---------------------------------------------------------------------------

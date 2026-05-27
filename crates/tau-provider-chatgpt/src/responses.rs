@@ -18,8 +18,7 @@ use serde::Serialize;
 use tau_proto::{ContentPart, ContextItem, ContextRole, ToolResponseHeader, ToolResultStatus};
 
 use crate::common::{
-    LlmError, PromptPayload, StreamState, cbor_to_json, effort_wire, mix_originator_into_cache_key,
-    prompt_cache_key_for,
+    LlmError, PromptPayload, StreamState, cbor_to_json, effort_wire, prompt_cache_key_for,
 };
 
 pub mod pool;
@@ -239,6 +238,7 @@ pub fn responses_stream(
         tool_choice: request.tool_choice,
         originator: request.originator,
         session_id: request.session_id,
+        agent_id: request.agent_id,
         share_user_cache_key: false,
     };
     let mut state = responses_stream_once(agent_prompt_id, config, &fallback, on_update)?;
@@ -752,14 +752,14 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
     } else {
         None
     };
-    let prompt_cache_key = config
-        .supports_prompt_cache_key
-        .then(|| prompt_cache_key_for(&config.base_url, request.session_id));
-    let prompt_cache_key = mix_originator_into_cache_key(
-        prompt_cache_key.as_deref(),
-        request.originator,
-        request.share_user_cache_key,
-    );
+    let prompt_cache_key = config.supports_prompt_cache_key.then(|| {
+        prompt_cache_key_for(
+            &config.base_url,
+            request.agent_id,
+            request.originator,
+            request.share_user_cache_key,
+        )
+    });
     let include: Vec<&'static str> = if config.supports_encrypted_reasoning {
         vec!["reasoning.encrypted_content"]
     } else {
@@ -806,6 +806,7 @@ fn build_compact_request(
             originator: request.originator,
             share_user_cache_key: request.share_user_cache_key,
             session_id: request.session_id,
+            agent_id: request.agent_id,
         },
     );
     body.stream = None;

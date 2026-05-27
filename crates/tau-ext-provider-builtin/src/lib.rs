@@ -1458,6 +1458,7 @@ fn handle_prewarm(
         originator: &prewarm.originator,
         share_user_cache_key: prewarm.share_user_cache_key,
         session_id: &prewarm.session_id,
+        agent_id: &prewarm.agent_id,
     };
     tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "starting prompt prewarm");
     match chatgpt_runtime.prewarm(&config, session_id_str, &request) {
@@ -1531,6 +1532,7 @@ where
         originator: &prompt.originator,
         share_user_cache_key: prompt.share_user_cache_key,
         session_id: &prompt.session_id,
+        agent_id: &prompt.agent_id,
     };
 
     let originator = prompt.originator.clone();
@@ -1620,6 +1622,7 @@ where
         originator: &prompt.originator,
         share_user_cache_key: prompt.share_user_cache_key,
         session_id: &prompt.session_id,
+        agent_id: &prompt.agent_id,
     };
     let backend = backend_descriptor(config, ProviderBackendTransport::HttpSse, false);
     let result = if config.supports_compaction {

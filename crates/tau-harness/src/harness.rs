@@ -7278,20 +7278,16 @@ impl Harness {
                 conv.head = head;
                 conv.role = role.clone();
             } else {
-                self.agents.insert(
+                let mut conv = Agent::new(
                     cid.clone(),
-                    Agent::new(
-                        cid.clone(),
-                        self.current_session_id.clone(),
-                        originator,
-                        head,
-                        None,
-                    ),
+                    self.current_session_id.clone(),
+                    originator,
+                    head,
+                    None,
                 );
-                if let Some(conv) = self.agents.get_mut(&cid) {
-                    conv.agent_id = Some(agent_id_string.clone());
-                    conv.role = role.clone();
-                }
+                conv.agent_id = Some(agent_id_string.clone());
+                conv.role = role.clone();
+                self.agents.insert(cid.clone(), conv);
             }
             self.agent_routes.insert(agent_id_string.clone(), cid);
             self.agent_states

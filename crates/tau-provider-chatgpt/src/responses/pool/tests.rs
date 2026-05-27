@@ -83,6 +83,7 @@ fn pool_routes_each_session_to_its_own_socket_and_reuses_them() {
             previous_response: None,
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,
+            agent_id: &tau_proto::AgentId::new("test-agent"),
             share_user_cache_key: false,
         };
         run_turn_through_pool(
@@ -225,6 +226,7 @@ fn shared_prewarm_skips_busy_same_key_without_waiting() {
                 previous_response: None,
                 originator: &originator,
                 session_id: &session_id,
+                agent_id: &tau_proto::AgentId::new("test-agent"),
                 share_user_cache_key: false,
             };
             let started = std::time::Instant::now();
@@ -378,6 +380,7 @@ fn ws_turn_captures_response_id_for_chain_continuation() {
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
@@ -421,6 +424,7 @@ fn prewarm_anchor_chains_next_matching_turn_as_delta() {
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     run_prewarm_through_pool(&mut pool, &config, "session-prewarm", &prewarm).expect("prewarm ok");
@@ -488,6 +492,7 @@ fn fresh_open_with_previous_response_rebuilds_ws_warmth() {
         }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     run_turn_through_pool(
@@ -544,6 +549,7 @@ fn fresh_open_with_previous_response_preserves_compacted_items() {
         }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
@@ -600,6 +606,7 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     let state1 = run_turn_through_pool(
@@ -629,6 +636,7 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
         }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     run_turn_through_pool(
@@ -922,6 +930,7 @@ fn run_turn(
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     run_turn_through_pool(pool, config, session, "sp-test", &request, on_update).expect("turn ok");
@@ -944,6 +953,7 @@ fn run_shared_turn(
         previous_response: None,
         originator: &originator,
         session_id: &session_id,
+        agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
     let mut on_update = |_: &str, _: Option<&str>| {};
