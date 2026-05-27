@@ -411,51 +411,6 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
 }
 
 #[test]
-fn ui_new_agent_event_does_not_clear_selected_agent() {
-    // Current-agent selection is UI-local. Only the invoking input loop clears
-    // its renderer via `RendererCmd::ClearSelectedAgent`; a replayed/live
-    // UiNewAgent request must not make other renderers change selection.
-    let (_term, handle, _vt) = setup(80, 24);
-    let mut renderer = EventRenderer::new(
-        handle,
-        tau_cli_term::CompletionData::new(),
-        tau_themes::Theme::builtin(),
-    );
-    renderer.handle(&Event::SessionStarted(SessionStarted {
-        session_id: "s1".into(),
-        reason: SessionStartReason::Initial,
-    }));
-    renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "engineer_abc12345".to_owned().into(),
-        ..agent_prompt_created("sp1", "s1")
-    }));
-
-    renderer.handle(&Event::UiNewAgent(tau_proto::UiNewAgent {
-        session_id: "other".into(),
-    }));
-    assert_eq!(
-        renderer
-            .current_agent_state()
-            .lock()
-            .expect("current agent")
-            .as_deref(),
-        Some("engineer_abc12345")
-    );
-
-    renderer.handle(&Event::UiNewAgent(tau_proto::UiNewAgent {
-        session_id: "s1".into(),
-    }));
-    assert_eq!(
-        renderer
-            .current_agent_state()
-            .lock()
-            .expect("current agent")
-            .as_deref(),
-        Some("engineer_abc12345")
-    );
-}
-
-#[test]
 fn extension_prompt_with_target_does_not_select_from_empty_state() {
     // Regression: extension side prompts now carry target_agent_id for routing,
     // but `/agent none`/startup must stay on the no-agent screen until the user
@@ -1829,6 +1784,71 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
 }
 
 #[test]
+fn model_status_shows_context_window_until_usage_is_known() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
+        model: Some("test/model".into()),
+        context_window: Some(200_000),
+        role: "engineer".into(),
+        baseline_params: None,
+        model_params: tau_proto::ModelParams::default(),
+    }));
+    sync(&handle);
+
+    let status_row = vt
+        .screen_text(100)
+        .into_iter()
+        .find(|row| row.contains("+engineer"))
+        .expect("status row");
+    assert!(status_row.ends_with("#?/200k"));
+}
+
+#[test]
+fn focused_agent_context_usage_event_replaces_unknown_context_window() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
+        model: Some("test/model".into()),
+        context_window: Some(200_000),
+        role: "engineer".into(),
+        baseline_params: None,
+        model_params: tau_proto::ModelParams::default(),
+    }));
+    renderer.handle(&Event::AgentPromptCreated(agent_prompt_created(
+        "main-sp", "s1",
+    )));
+    renderer.handle(&Event::HarnessAgentContextUsageChanged(
+        tau_proto::HarnessAgentContextUsageChanged {
+            agent_id: "main".into(),
+            input_tokens: Some(12_000),
+            cached_tokens: Some(0),
+            context_window: Some(200_000),
+            percent_used: Some(6),
+        },
+    ));
+    sync(&handle);
+
+    let status_row = vt
+        .screen_text(100)
+        .into_iter()
+        .find(|row| row.contains("&main"))
+        .expect("status row");
+    assert!(status_row.ends_with("#12k/200k"));
+    assert!(!status_row.contains("#?/200k"));
+}
+
+#[test]
 fn model_status_shows_main_tool_usage_before_context() {
     let (_term, handle, vt) = setup(100, 24);
     let mut renderer = EventRenderer::new(
@@ -1884,6 +1904,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     assert!(status_row.ends_with("#12k/200k"));
     assert!(!status_row.contains('%'));
 
+    renderer.handle(&Event::AgentPromptCreated(agent_prompt_created(
+        "main-sp", "s1",
+    )));
     renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "main-sp",
         vec![
@@ -1905,9 +1928,12 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after main response");
-    assert!(status_row.ends_with("%0/2 #12k/200k"));
+    assert!(
+        status_row.ends_with("%0/2 &1 #12k/200k"),
+        "unexpected status row: {status_row:?}"
+    );
 
     renderer.handle(&Event::ToolResult(ToolResult {
         call_id: "side-call".into(),
@@ -1934,9 +1960,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after tool result");
-    assert!(status_row.ends_with("%1/2 #12k/200k"));
+    assert!(status_row.ends_with("%1/2 &1 #12k/200k"));
 
     // Regression coverage for turn visibility: once an extension/sub-agent
     // prompt becomes active, it must not steal the main transcript's tool chip;
@@ -1954,9 +1980,12 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after side prompt starts");
-    assert!(status_row.ends_with("%1/2 #12k/200k"));
+    assert!(
+        status_row.ends_with("%1/2 &1 #12k/200k"),
+        "unexpected status row: {status_row:?}"
+    );
     assert!(status_row.contains('%'));
 
     renderer.handle(&Event::ToolResult(ToolResult {
@@ -1972,9 +2001,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after second main tool result during side turn");
-    assert!(status_row.ends_with("%2/2 #12k/200k"));
+    assert!(status_row.ends_with("%2/2 &1 #12k/200k"));
     assert!(status_row.contains('%'));
 
     // Main tool completions that arrive while a side conversation is active
@@ -1988,9 +2017,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after main prompt resumes");
-    assert!(status_row.ends_with("%2/2 #12k/200k"));
+    assert!(status_row.ends_with("%2/2 &1 #12k/200k"));
 
     // The main agent's final no-tool response ends the tool-using turn and
     // hides the chip while preserving context stats.
@@ -2002,9 +2031,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after final main response");
-    assert!(status_row.ends_with("#12k/200k"));
+    assert!(status_row.ends_with("&1 #12k/200k"));
     assert!(!status_row.contains('%'));
 
     // Starting a new user task in the same session also keeps the chip hidden
@@ -2021,9 +2050,9 @@ fn model_status_shows_main_tool_usage_before_context() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after next prompt");
-    assert!(status_row.ends_with("#12k/200k"));
+    assert!(status_row.ends_with("&1 #12k/200k"));
     assert!(!status_row.contains('%'));
 }
 
@@ -2149,6 +2178,9 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
             percent_used: Some(6),
         },
     ));
+    renderer.handle(&Event::AgentPromptCreated(agent_prompt_created(
+        "main-sp", "s1",
+    )));
     renderer.handle(&Event::ProviderResponseFinished(finished_response(
         "main-sp",
         vec![ContextItem::ToolCall(ToolCallItem {
@@ -2190,9 +2222,9 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row during delegate side conversation");
-    assert!(status_row.ends_with("%0/1 #12k/200k"));
+    assert!(status_row.ends_with("%0/1 &1 #12k/200k"));
 
     // Once the delegated side conversation reports its own tool progress,
     // the status bar should prefer that live `%complete/total` chip over the
@@ -2221,7 +2253,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         }),
     }));
     assert!(
-        eventually_screen_contains(&vt, 100, "%1/3 #12k/200k"),
+        eventually_screen_contains(&vt, 100, "%1/3 &1 #12k/200k"),
         "delegate progress should repaint the status bar with sub-agent tool progress: {:?}",
         vt.screen_text(100)
     );
@@ -2230,8 +2262,8 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         .into_iter()
         .find(|row| row.contains("#12k/200k"))
         .expect("status row after delegate progress");
-    assert!(status_row.contains("+engineer"));
-    assert!(status_row.ends_with("%1/3 #12k/200k"));
+    assert!(status_row.contains("&main"));
+    assert!(status_row.ends_with("%1/3 &1 #12k/200k"));
 
     renderer.handle(&Event::ToolCancelled(ToolCancelled {
         call_id: "delegate-call".into(),
@@ -2250,9 +2282,9 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("+engineer"))
+        .find(|row| row.contains("&main"))
         .expect("status row after delegate cancellation");
-    assert!(status_row.ends_with("#12k/200k"));
+    assert!(status_row.ends_with("&1 #12k/200k"));
 }
 
 #[test]

@@ -209,21 +209,6 @@ impl ToolTurnMachine {
         queued
     }
 
-    /// Rewrite queued and in-flight owner conversation ids after a harness
-    /// conversation has been re-keyed.
-    pub(crate) fn rewrite_agent_id(&mut self, old: &AgentId, new: &AgentId) {
-        for pending in &mut self.pending_tool_invocations {
-            if &pending.conversation_id == old {
-                pending.conversation_id = new.clone();
-            }
-        }
-        for in_flight in self.in_flight_tool_execution_modes.values_mut() {
-            if &in_flight.conversation_id == old {
-                in_flight.conversation_id = new.clone();
-            }
-        }
-    }
-
     /// Remove all queued and in-flight scheduler state.
     pub(crate) fn clear(&mut self) {
         self.pending_tool_invocations.clear();

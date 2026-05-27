@@ -1,30 +1,35 @@
 use super::*;
 
 fn publish(
-    store: &mut SessionContextStore,
-    session: &str,
+    store: &mut AgentContextStore,
+    agent: &str,
     key: &str,
     contributor: &str,
     extension_name: &str,
     value: serde_json::Value,
 ) {
     store.publish(
-        SessionId::from(session),
-        tau_proto::SessionContextKey::from(key),
+        tau_proto::AgentId::from(agent),
+        tau_proto::AgentContextKey::from(key),
         tau_proto::ConnectionId::from(contributor),
         extension_name.to_owned(),
-        tau_proto::SessionContextValue(value),
+        tau_proto::AgentContextValue(value),
     );
 }
 
-/// Contributions are isolated by `(session, key, contributor)` so one
+fn template_value(store: &AgentContextStore, agent: &str) -> serde_json::Value {
+    let agent_id = tau_proto::AgentId::from(agent);
+    store.template_value(Some(&agent_id))
+}
+
+/// Contributions are isolated by `(agent, key, contributor)` so one
 /// extension can publish multiple keys without overwriting another.
 #[test]
-fn publish_stores_per_session_key_and_contributor() {
-    let mut store = SessionContextStore::default();
+fn publish_stores_per_agent_key_and_contributor() {
+    let mut store = AgentContextStore::default();
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c1",
         "alpha",
@@ -32,7 +37,7 @@ fn publish_stores_per_session_key_and_contributor() {
     );
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "project",
         "c1",
         "alpha",
@@ -40,27 +45,27 @@ fn publish_stores_per_session_key_and_contributor() {
     );
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c2",
         "beta",
         serde_json::json!([2]),
     );
 
-    let visible = store.template_value(&SessionId::from("s1"));
+    let visible = template_value(&store, "agent-1");
 
     assert_eq!(visible["skills"].as_array().expect("skills").len(), 2);
     assert_eq!(visible["project"].as_array().expect("project").len(), 1);
 }
 
-/// Republishing the same `(session, key, contributor)` replaces the
+/// Republishing the same `(agent, key, contributor)` replaces the
 /// contributor's previous JSON value instead of appending a duplicate.
 #[test]
 fn same_contributor_replaces_own_value() {
-    let mut store = SessionContextStore::default();
+    let mut store = AgentContextStore::default();
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c1",
         "alpha",
@@ -68,14 +73,14 @@ fn same_contributor_replaces_own_value() {
     );
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c1",
         "alpha",
         serde_json::json!(["new"]),
     );
 
-    let visible = store.template_value(&SessionId::from("s1"));
+    let visible = template_value(&store, "agent-1");
 
     assert_eq!(
         visible["skills"],
@@ -87,10 +92,10 @@ fn same_contributor_replaces_own_value() {
 /// objects sorted by extension name and then connection id.
 #[test]
 fn multiple_contributors_are_stable_wrappers_under_same_key() {
-    let mut store = SessionContextStore::default();
+    let mut store = AgentContextStore::default();
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c-z",
         "zeta",
@@ -98,7 +103,7 @@ fn multiple_contributors_are_stable_wrappers_under_same_key() {
     );
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c-a",
         "alpha",
@@ -106,14 +111,14 @@ fn multiple_contributors_are_stable_wrappers_under_same_key() {
     );
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c-b",
         "alpha",
         serde_json::json!([2]),
     );
 
-    let visible = store.template_value(&SessionId::from("s1"));
+    let visible = template_value(&store, "agent-1");
 
     assert_eq!(
         visible["skills"],
@@ -125,31 +130,37 @@ fn multiple_contributors_are_stable_wrappers_under_same_key() {
     );
 }
 
-/// Session context never leaks between sessions, which matters when one
-/// daemon serves different working directories over time.
+/// Agent context never leaks between agents, which matters when one session can
+/// contain agents with different working directories.
 #[test]
-fn different_sessions_do_not_leak_context() {
-    let mut store = SessionContextStore::default();
+fn different_agents_do_not_leak_context() {
+    let mut store = AgentContextStore::default();
     publish(
         &mut store,
-        "s1",
+        "agent-1",
         "skills",
         "c1",
         "alpha",
-        serde_json::json!(["s1"]),
+        serde_json::json!(["agent-1"]),
     );
     publish(
         &mut store,
-        "s2",
+        "agent-2",
         "skills",
         "c1",
         "alpha",
-        serde_json::json!(["s2"]),
+        serde_json::json!(["agent-2"]),
     );
 
-    let s1 = store.template_value(&SessionId::from("s1"));
-    let s2 = store.template_value(&SessionId::from("s2"));
+    let agent_1 = template_value(&store, "agent-1");
+    let agent_2 = template_value(&store, "agent-2");
 
-    assert_eq!(s1["skills"][0]["value"], serde_json::json!(["s1"]));
-    assert_eq!(s2["skills"][0]["value"], serde_json::json!(["s2"]));
+    assert_eq!(
+        agent_1["skills"][0]["value"],
+        serde_json::json!(["agent-1"])
+    );
+    assert_eq!(
+        agent_2["skills"][0]["value"],
+        serde_json::json!(["agent-2"])
+    );
 }

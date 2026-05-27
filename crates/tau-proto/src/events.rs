@@ -6,14 +6,14 @@
 //! There are no requests or responses, only announcements.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionInvocationId, AgentId, AgentMessageId, AgentPromptId, CborValue, ContextItem,
-    DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId, PromptFragment,
-    ProviderTokenUsage, SessionContextKey, SessionId, SkillName, ToolCallId, ToolDefinition,
-    ToolName,
+    ActionInvocationId, AgentContextKey, AgentId, AgentMessageId, AgentPromptId, CborValue,
+    ContextItem, DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId,
+    PromptFragment, ProviderTokenUsage, SessionId, SkillName, ToolCallId, ToolDefinition, ToolName,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -193,6 +193,29 @@ pub struct HarnessContextUsageChanged {
     /// Percentage of the context window currently used. `None` when
     /// the selected provider model metadata is unavailable, so the UI
     /// can fall back to showing raw token count instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent_used: Option<u8>,
+}
+
+/// Current context usage for one durable agent transcript.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessAgentContextUsageChanged {
+    /// Durable agent whose context usage changed.
+    pub agent_id: AgentId,
+    /// Input tokens consumed by that agent's most recent response, if the
+    /// provider reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    /// Cached input tokens consumed by that agent's most recent response, if
+    /// the provider reported them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    /// Total context window size for the model that produced the response, if
+    /// known from provider metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Percentage of the context window currently used. `None` when either
+    /// usage or provider model metadata is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent_used: Option<u8>,
 }
@@ -1415,21 +1438,21 @@ pub struct ExtensionContextReady {
     pub session_id: SessionId,
 }
 
-/// Arbitrary JSON value published by an extension for one session context key.
+/// Arbitrary JSON value published by an extension for one agent context key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct SessionContextValue(pub serde_json::Value);
+pub struct AgentContextValue(pub serde_json::Value);
 
-/// An extension publishes its complete session-scoped contribution for one key.
+/// An extension publishes its complete agent-scoped contribution for one key.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ExtSessionContextPublish {
-    /// Session this context belongs to.
-    pub session_id: SessionId,
+pub struct ExtAgentContextPublish {
+    /// Durable agent this context belongs to.
+    pub agent_id: AgentId,
     /// Top-level context key exposed to templates under
-    /// `session_context.<key>`.
-    pub key: SessionContextKey,
+    /// `agent_context.<key>`.
+    pub key: AgentContextKey,
     /// Complete JSON contribution from this extension for the key.
-    pub value: SessionContextValue,
+    pub value: AgentContextValue,
 }
 
 /// An extension publishes or replaces one extension-level prompt fragment.
@@ -1833,14 +1856,31 @@ pub struct UiSwitchSession {
     pub reason: SessionStartReason,
 }
 
-/// The user typed `/agent new`: create/load a fresh global agent in the current
-/// session and make it the default target for that UI. Current-agent selection
-/// is UI-local; this request must not be replayed to make other UIs clear their
-/// selected agent.
+/// The UI requests creation of a durable agent and may include the first prompt
+/// that should be submitted to it. This is the explicit boundary between
+/// pre-agent UI state (role/cwd can still change freely) and durable agent
+/// state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct UiNewAgent {
-    /// Session in which the fresh agent should be loaded.
+pub struct UiCreateAgent {
+    /// Session in which the agent should be loaded.
     pub session_id: SessionId,
+    /// Role to bind to the new durable agent.
+    pub role: String,
+    /// Working directory used for agent-scoped context discovery.
+    pub cwd: PathBuf,
+    /// Optional first prompt to append after agent context has been loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// Whether the initial prompt is user-authored or hidden internal control
+    /// text.
+    #[serde(default)]
+    pub message_class: PromptMessageClass,
+    #[serde(default)]
+    pub originator: PromptOriginator,
+    /// Correlation tag copied forward onto the first `AgentPromptCreated` for
+    /// `initial_prompt`, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_id: Option<String>,
 }
 
 /// The user typed `/tree`: render an agent's branching tree (one
@@ -2701,8 +2741,8 @@ pub enum Event {
     ExtAgentsMdAvailable(ExtAgentsMdAvailable),
     #[serde(rename = "extension.context_ready")]
     ExtensionContextReady(ExtensionContextReady),
-    #[serde(rename = "extension.session_context_publish")]
-    ExtSessionContextPublish(ExtSessionContextPublish),
+    #[serde(rename = "extension.agent_context_publish")]
+    ExtAgentContextPublish(ExtAgentContextPublish),
     #[serde(rename = "extension.prompt_fragment_publish")]
     ExtPromptFragmentPublish(ExtPromptFragmentPublish),
     #[serde(rename = "agent.start_request")]
@@ -2739,6 +2779,8 @@ pub enum Event {
     HarnessRoleSelected(HarnessRoleSelected),
     #[serde(rename = "harness.context_usage_changed")]
     HarnessContextUsageChanged(HarnessContextUsageChanged),
+    #[serde(rename = "harness.agent_context_usage_changed")]
+    HarnessAgentContextUsageChanged(HarnessAgentContextUsageChanged),
     #[serde(rename = "harness.efforts_available")]
     HarnessEffortsAvailable(HarnessEffortsAvailable),
     #[serde(rename = "harness.verbosities_available")]
@@ -2761,8 +2803,8 @@ pub enum Event {
     UiShellCommand(UiShellCommand),
     #[serde(rename = "ui.switch_session")]
     UiSwitchSession(UiSwitchSession),
-    #[serde(rename = "ui.new_agent")]
-    UiNewAgent(UiNewAgent),
+    #[serde(rename = "ui.create_agent")]
+    UiCreateAgent(UiCreateAgent),
     #[serde(rename = "ui.tree_request")]
     UiTreeRequest(UiTreeRequest),
     #[serde(rename = "ui.navigate_tree")]
@@ -2864,7 +2906,7 @@ impl Event {
             Self::ExtSkillAvailable(_) => EventName::EXTENSION_SKILL_AVAILABLE,
             Self::ExtAgentsMdAvailable(_) => EventName::EXTENSION_AGENTS_MD_AVAILABLE,
             Self::ExtensionContextReady(_) => EventName::EXTENSION_CONTEXT_READY,
-            Self::ExtSessionContextPublish(_) => EventName::EXTENSION_SESSION_CONTEXT_PUBLISH,
+            Self::ExtAgentContextPublish(_) => EventName::EXTENSION_AGENT_CONTEXT_PUBLISH,
             Self::ExtPromptFragmentPublish(_) => EventName::EXTENSION_PROMPT_FRAGMENT_PUBLISH,
             Self::StartAgentRequest(_) => EventName::AGENT_START_REQUEST,
             Self::StartAgentAccepted(_) => EventName::AGENT_START_ACCEPTED,
@@ -2882,6 +2924,9 @@ impl Event {
             Self::HarnessRolesAvailable(_) => EventName::HARNESS_ROLES_AVAILABLE,
             Self::HarnessRoleSelected(_) => EventName::HARNESS_ROLE_SELECTED,
             Self::HarnessContextUsageChanged(_) => EventName::HARNESS_CONTEXT_USAGE_CHANGED,
+            Self::HarnessAgentContextUsageChanged(_) => {
+                EventName::HARNESS_AGENT_CONTEXT_USAGE_CHANGED
+            }
             Self::HarnessEffortsAvailable(_) => EventName::HARNESS_EFFORTS_AVAILABLE,
             Self::HarnessVerbositiesAvailable(_) => EventName::HARNESS_VERBOSITIES_AVAILABLE,
             Self::HarnessThinkingSummariesAvailable(_) => {
@@ -2894,7 +2939,7 @@ impl Event {
             Self::UiDetachRequest(_) => EventName::UI_DETACH_REQUEST,
             Self::UiShellCommand(_) => EventName::UI_SHELL_COMMAND,
             Self::UiSwitchSession(_) => EventName::UI_SWITCH_SESSION,
-            Self::UiNewAgent(_) => EventName::UI_NEW_AGENT,
+            Self::UiCreateAgent(_) => EventName::UI_CREATE_AGENT,
             Self::UiTreeRequest(_) => EventName::UI_TREE_REQUEST,
             Self::UiNavigateTree(_) => EventName::UI_NAVIGATE_TREE,
             Self::UiCompactRequest(_) => EventName::UI_COMPACT_REQUEST,
@@ -2955,7 +3000,7 @@ impl Event {
                 | Self::AgentPromptTerminated(_)
                 | Self::AgentPromptPrewarmRequested(_)
                 | Self::UiCompactRequest(_)
-                | Self::UiNewAgent(_)
+                | Self::UiCreateAgent(_)
                 | Self::UiPromptDraft(_)
         )
     }

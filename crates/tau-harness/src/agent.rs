@@ -179,8 +179,8 @@ pub(crate) struct Agent {
     /// (currently just `delegate`): the parent agent's tool call id
     /// that this conversation is fulfilling. Lets the harness emit
     /// [`tau_proto::DelegateProgress`] under that call id as the
-    /// sub-agent runs. `None` for the default agent and for
-    /// non-tool ext-queries (e.g. notifications' idle summary).
+    /// sub-agent runs. `None` for user agents and for non-tool
+    /// ext-queries (e.g. notifications' idle summary).
     pub(crate) parent_tool_call_id: Option<ToolCallId>,
     /// Direct parent agent resolved when this side agent is
     /// spawned. Kept alongside `parent_tool_call_id` because the tool-call
@@ -200,7 +200,7 @@ pub(crate) struct Agent {
     /// Stable id assigned when this conversation first starts an agent turn.
     pub(crate) agent_id: Option<String>,
     /// Scheduling mode requested for this delegate side agent. `None`
-    /// for the default agent and non-tool side agents.
+    /// for user agents and non-tool side agents.
     pub(crate) delegate_execution_mode: Option<ToolExecutionMode>,
     /// Number of tool calls currently in flight on this conversation.
     pub(crate) tools_in_flight: u32,
@@ -210,6 +210,9 @@ pub(crate) struct Agent {
     /// Most recent input-token count this agent's agent
     /// reported on a finished response. Used for `DelegateProgress`.
     pub(crate) context_input_tokens: Option<u64>,
+    /// Most recent cached input-token count this agent's provider reported on
+    /// a finished response.
+    pub(crate) context_cached_tokens: Option<u64>,
     /// Most recent percent-of-context-window this conversation's
     /// agent has used. Computed from `context_input_tokens` and the
     /// model's window size; `None` when the window is unknown.
@@ -381,6 +384,7 @@ impl Agent {
             tools_in_flight: 0,
             tools_total: 0,
             context_input_tokens: None,
+            context_cached_tokens: None,
             context_percent_used: None,
             chain_anchor: None,
             result_dedup: ResultDedupMap::new(),

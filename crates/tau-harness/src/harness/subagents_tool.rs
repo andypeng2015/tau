@@ -3,9 +3,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use tau_proto::{
-    AgentId, AgentMessageReceived, AgentMessageSent, CborValue, Event, SessionContextKey,
-    SessionContextValue, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolDisplay,
-    ToolError, ToolName, ToolResult, ToolResultKind, ToolType,
+    AgentContextKey, AgentContextValue, AgentId, AgentMessageReceived, AgentMessageSent, CborValue,
+    Event, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolDisplay, ToolError, ToolName,
+    ToolResult, ToolResultKind, ToolType,
 };
 
 use crate::error::HarnessError;
@@ -19,14 +19,6 @@ pub(crate) const MESSAGE_TOOL_NAME: &str = "message";
 pub(crate) struct SubagentToolState {
     /// State used by the wait tool to track background completions.
     wait_tracker: WaitTracker,
-}
-
-impl SubagentToolState {
-    /// Rewrite live agent ids held by harness-owned sub-agent tool state after
-    /// the harness re-keys an agent.
-    pub(crate) fn rewrite_agent_id(&mut self, old: &AgentId, new: &AgentId) {
-        self.wait_tracker.rewrite_agent_id(old, new);
-    }
 }
 
 impl Harness {
@@ -63,18 +55,27 @@ impl Harness {
         })
         .collect();
         roles.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        self.session_context.publish(
-            self.current_session_id.clone(),
-            SessionContextKey::new("delegate_roles"),
-            tau_proto::ConnectionId::from(HARNESS_CONNECTION_ID),
-            "harness".to_owned(),
-            SessionContextValue(serde_json::Value::Array(roles)),
-        );
+        let agent_ids: Vec<_> = self
+            .agents
+            .values()
+            .filter_map(|agent| agent.agent_id.clone())
+            .collect();
+        for agent_id in agent_ids {
+            self.agent_context.publish(
+                tau_proto::AgentId::from(agent_id),
+                AgentContextKey::new("delegate_roles"),
+                tau_proto::ConnectionId::from(HARNESS_CONNECTION_ID),
+                "harness".to_owned(),
+                AgentContextValue(serde_json::Value::Array(roles.clone())),
+            );
+        }
     }
 
     pub(crate) fn record_wait_tool_request(&mut self, call_id: &ToolCallId) {
         if let Some(tool) = self.pending_tools.get(call_id) {
-            let owner = self.wait_owner_for_call(call_id);
+            let Some(owner) = self.wait_owner_for_call(call_id) else {
+                return;
+            };
             self.subagents.wait_tracker.record_tool_invoke(
                 call_id.clone(),
                 tool.name.clone(),
@@ -84,7 +85,9 @@ impl Harness {
     }
 
     pub(crate) fn record_wait_tool_result(&mut self, result: ToolResult) {
-        let owner = self.wait_owner_for_call(&result.call_id);
+        let Some(owner) = self.wait_owner_for_call(&result.call_id) else {
+            return;
+        };
         let replies = self
             .subagents
             .wait_tracker
@@ -93,13 +96,17 @@ impl Harness {
     }
 
     pub(crate) fn record_wait_tool_error(&mut self, error: ToolError) {
-        let owner = self.wait_owner_for_call(&error.call_id);
+        let Some(owner) = self.wait_owner_for_call(&error.call_id) else {
+            return;
+        };
         let replies = self.subagents.wait_tracker.record_tool_error(error, owner);
         self.publish_wait_replies(replies);
     }
 
     pub(crate) fn record_wait_background_result(&mut self, result: ToolBackgroundResult) {
-        let owner = self.wait_owner_for_call(&result.call_id);
+        let Some(owner) = self.wait_owner_for_call(&result.call_id) else {
+            return;
+        };
         let replies = self
             .subagents
             .wait_tracker
@@ -108,7 +115,9 @@ impl Harness {
     }
 
     pub(crate) fn record_wait_background_error(&mut self, error: ToolBackgroundError) {
-        let owner = self.wait_owner_for_call(&error.call_id);
+        let Some(owner) = self.wait_owner_for_call(&error.call_id) else {
+            return;
+        };
         let replies = self
             .subagents
             .wait_tracker
@@ -141,12 +150,11 @@ impl Harness {
             .discard_call_owner(call_id, source);
     }
 
-    fn wait_owner_for_call(&self, call_id: &ToolCallId) -> AgentId {
+    fn wait_owner_for_call(&self, call_id: &ToolCallId) -> Option<AgentId> {
         self.tool_agents
             .get(call_id)
             .or_else(|| self.background_completion_targets.get(call_id))
             .cloned()
-            .unwrap_or_else(|| self.default_agent_id.clone())
     }
 
     pub(crate) fn interrupt_active_waits(&mut self) {
@@ -380,11 +388,9 @@ impl Harness {
 
     pub(crate) fn finish_prebuilt_internal_tool_result(&mut self, result: ToolResult) {
         let call_id = result.call_id.clone();
-        let owner_cid = self
-            .tool_agents
-            .get(&call_id)
-            .cloned()
-            .unwrap_or_else(|| self.default_agent_id.clone());
+        let Some(owner_cid) = self.tool_agents.get(&call_id).cloned() else {
+            return;
+        };
         if self.tool_turn.is_backgrounded(&call_id) {
             self.handle_background_tool_result(HARNESS_CONNECTION_ID, result);
         } else {
@@ -396,11 +402,9 @@ impl Harness {
 
     pub(crate) fn finish_prebuilt_internal_tool_error(&mut self, error: ToolError) {
         let call_id = error.call_id.clone();
-        let owner_cid = self
-            .tool_agents
-            .get(&call_id)
-            .cloned()
-            .unwrap_or_else(|| self.default_agent_id.clone());
+        let Some(owner_cid) = self.tool_agents.get(&call_id).cloned() else {
+            return;
+        };
         if self.tool_turn.is_backgrounded(&call_id) {
             self.handle_background_tool_error(Some(HARNESS_CONNECTION_ID), error);
         } else {
@@ -1048,17 +1052,6 @@ impl WaitTracker {
                 .map(|wait| wait_interrupted_any_reply(wait.call_id, wait.tool_name)),
         );
         replies
-    }
-
-    fn rewrite_agent_id(&mut self, old: &AgentId, new: &AgentId) {
-        if let Some(wait) = self.any_waiters.remove(old) {
-            self.any_waiters.entry(new.clone()).or_insert(wait);
-        }
-        for owner in self.call_owners.values_mut() {
-            if owner == old {
-                *owner = new.clone();
-            }
-        }
     }
 
     fn transfer_call_owner(&mut self, call_id: &ToolCallId, source: &AgentId, target: &AgentId) {

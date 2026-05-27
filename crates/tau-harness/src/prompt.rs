@@ -61,7 +61,7 @@ pub(crate) fn build_system_prompt_with_template_context(
     system_template: &str,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
-    session_context: serde_json::Value,
+    agent_context: serde_json::Value,
     template_context: RolePromptTemplateContext<'_>,
 ) -> String {
     build_system_prompt_with_tool_template_context(
@@ -69,7 +69,7 @@ pub(crate) fn build_system_prompt_with_template_context(
         skills,
         prompt_fragments,
         &[],
-        session_context,
+        agent_context,
         template_context,
     )
 }
@@ -81,7 +81,7 @@ pub(crate) fn build_system_prompt_with_tool_template_context(
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
     tool_prompt_fragments: &[PromptFragment],
-    session_context: serde_json::Value,
+    agent_context: serde_json::Value,
     template_context: RolePromptTemplateContext<'_>,
 ) -> String {
     // Tool definitions are delivered out-of-band via the provider's
@@ -94,7 +94,7 @@ pub(crate) fn build_system_prompt_with_tool_template_context(
         skills,
         &fragments,
         &tool_fragments,
-        session_context,
+        agent_context,
     )
 }
 
@@ -104,14 +104,14 @@ fn render_system_prompt_template(
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
     tool_prompt_fragments: &[PromptFragment],
-    session_context: serde_json::Value,
+    agent_context: serde_json::Value,
 ) -> String {
     let data = system_prompt_template_data(
         context,
         skills,
         prompt_fragments,
         tool_prompt_fragments,
-        session_context,
+        agent_context,
     );
     let handlebars = prompt_template_renderer();
     match handlebars.render_template(system_template, &data) {
@@ -140,14 +140,14 @@ fn render_system_prompt_template(
 fn prompt_template_data(
     context: RolePromptTemplateContext<'_>,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
-    session_context: serde_json::Value,
+    agent_context: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "role": {
             "name": context.role_name,
         },
         "skills": prompt_template_skills(skills),
-        "session_context": session_context,
+        "agent_context": agent_context,
     })
 }
 
@@ -156,9 +156,9 @@ fn system_prompt_template_data(
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
     tool_prompt_fragments: &[PromptFragment],
-    session_context: serde_json::Value,
+    agent_context: serde_json::Value,
 ) -> serde_json::Value {
-    let mut data = prompt_template_data(context, skills, session_context);
+    let mut data = prompt_template_data(context, skills, agent_context);
     let rendered_fragments = rendered_prompt_fragment_template_parts(prompt_fragments, &data);
     let rendered_tool_fragments =
         rendered_prompt_fragment_template_parts(tool_prompt_fragments, &data);

@@ -127,9 +127,6 @@ fn representative_events() -> Vec<Event> {
             originator: PromptOriginator::User,
             ctx_id: None,
         }),
-        Event::UiNewAgent(UiNewAgent {
-            session_id: "s1".into(),
-        }),
         Event::AgentMessageSent(AgentMessageSent {
             message_id: "msg-1".into(),
             sender_id: "engineer_abcd1234".into(),
@@ -820,9 +817,6 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
             ctx_id: None,
-        }),
-        Event::UiNewAgent(UiNewAgent {
-            session_id: "s1".into(),
         }),
         Event::AgentCompactionStarted(AgentCompactionStarted {
             agent_id: "worker".into(),

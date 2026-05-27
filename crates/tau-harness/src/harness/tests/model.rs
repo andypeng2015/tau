@@ -256,7 +256,7 @@ fn provider_models_snapshot_selects_first_model_and_drains_queue() {
             .expect("submit prompt"),
         PromptSubmission::Queued,
     );
-    assert_eq!(h.agents[&h.default_agent_id].pending_prompts.len(), 1,);
+    assert_eq!(h.agents[&test_user_agent(&h)].pending_prompts.len(), 1,);
 
     let model_id: ModelId = "openai/gpt-4.1".parse().expect("model id");
     h.handle_extension_event(
@@ -269,7 +269,7 @@ fn provider_models_snapshot_selects_first_model_and_drains_queue() {
 
     assert_eq!(h.selected_model.as_ref(), Some(&model_id));
     assert_eq!(h.selected_model_params().effort, Effort::High);
-    let conv = &h.agents[&h.default_agent_id];
+    let conv = &h.agents[&test_user_agent(&h)];
     assert!(conv.pending_prompts.is_empty());
     assert!(matches!(
         conv.turn_state,
@@ -991,7 +991,7 @@ fn selected_params_use_runtime_role_fields() {
         supports_compaction: false,
     }]);
 
-    let params = selected_params_for_role(&provider_models, &roles, &selected_role, &model);
+    let params = selected_params_for_role(&provider_models, &roles, selected_role, &model);
     assert_eq!(params.effort, Effort::High);
     assert_eq!(params.verbosity, Verbosity::Low);
     assert_eq!(params.thinking_summary, ThinkingSummary::Concise);

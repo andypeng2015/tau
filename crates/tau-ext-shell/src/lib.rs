@@ -12,10 +12,10 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::{Arc, Mutex, mpsc};
 
 use tau_proto::{
-    Ack, ConfigError, Event, ExtPromptFragmentPublish, ExtSessionContextPublish, Frame,
-    FrameReader, FrameWriter, LogEventId, Message, PromptContent, PromptFragment, PromptPriority,
-    SessionContextKey, SessionContextValue, SessionStarted, ToolCancelled, ToolExecutionMode,
-    ToolResult, ToolResultKind, ToolSpec,
+    Ack, AgentContextKey, AgentContextValue, ConfigError, Event, ExtAgentContextPublish,
+    ExtPromptFragmentPublish, Frame, FrameReader, FrameWriter, LogEventId, Message, PromptContent,
+    PromptFragment, PromptPriority, SessionAgentLoaded, SessionStarted, ToolCancelled,
+    ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
 };
 use tracing::{debug, trace};
 
@@ -442,6 +442,7 @@ where
         tau_proto::EventName::TOOL_STARTED,
         tau_proto::EventName::TOOL_CANCEL_REQUEST,
         tau_proto::EventName::SESSION_STARTED,
+        tau_proto::EventName::SESSION_AGENT_LOADED,
         tau_proto::EventName::UI_SHELL_COMMAND,
     ]);
     for tool in tools {
@@ -513,6 +514,9 @@ where
             }
             Frame::Event(Event::SessionStarted(started)) => {
                 dispatch_session_started(started, &tx);
+            }
+            Frame::Event(Event::SessionAgentLoaded(loaded)) => {
+                dispatch_session_agent_loaded(loaded, &tx);
             }
             Frame::Event(Event::ToolCancelRequest(request)) => {
                 let cancel_tx = running_shells
@@ -663,6 +667,18 @@ fn dispatch_session_started(started: SessionStarted, tx: &mpsc::Sender<Frame>) {
     }
 }
 
+fn dispatch_session_agent_loaded(loaded: SessionAgentLoaded, tx: &mpsc::Sender<Frame>) {
+    if let Ok(cwd) = std::env::current_dir() {
+        let _ = tx.send(Frame::Event(Event::ExtAgentContextPublish(
+            ExtAgentContextPublish {
+                agent_id: loaded.agent_id,
+                key: AgentContextKey::new("cwd"),
+                value: AgentContextValue(serde_json::Value::String(cwd.display().to_string())),
+            },
+        )));
+    }
+}
+
 fn ack_if_logged(
     id: Option<LogEventId>,
     tx: &mpsc::Sender<Frame>,
@@ -706,14 +722,6 @@ fn is_echo_tool(_name: &str) -> bool {
 fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
     let mut events = Vec::new();
 
-    if let Ok(cwd) = std::env::current_dir() {
-        events.push(Event::ExtSessionContextPublish(ExtSessionContextPublish {
-            session_id: started.session_id.clone(),
-            key: SessionContextKey::new("cwd"),
-            value: SessionContextValue(serde_json::Value::String(cwd.display().to_string())),
-        }));
-    }
-
     let skill_dirs = session_skill_dirs(std::env::current_dir().ok(), dirs::home_dir());
 
     let result = tau_skills::load_skills_from_skill_dirs(&skill_dirs);
@@ -750,7 +758,7 @@ fn shell_cwd_prompt_fragment() -> PromptFragment {
         "shell.cwd",
         PromptPriority::new(900),
         PromptContent::new(
-            "{{#each session_context.cwd}}{{#if @first}}Current working directory: \
+            "{{#each agent_context.cwd}}{{#if @first}}Current working directory: \
              {{value}}{{/if}}{{/each}}",
         ),
     )

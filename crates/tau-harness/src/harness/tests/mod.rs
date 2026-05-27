@@ -159,8 +159,39 @@ fn agent_tree_for_conversation<'a>(h: &'a Harness, cid: &AgentId) -> &'a AgentTr
     h.agent_store.agent(agent_id).expect("agent tree")
 }
 
+fn test_cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn ensure_test_user_agent(h: &mut Harness) -> AgentId {
+    h.agents
+        .iter()
+        .find_map(|(cid, conv)| conv.originator.is_user().then_some(cid.clone()))
+        .unwrap_or_else(|| {
+            let session_id = h.current_session_id.clone();
+            let role = h.selected_role.clone();
+            h.create_durable_user_agent(session_id, &role, test_cwd())
+        })
+}
+
+fn test_user_agent(h: &Harness) -> AgentId {
+    h.agents
+        .iter()
+        .find_map(|(cid, conv)| conv.originator.is_user().then_some(cid.clone()))
+        .expect("test should create a user agent first")
+}
+
+fn durable_agent_id_for_conversation(h: &Harness, cid: &AgentId) -> tau_proto::AgentId {
+    h.agents
+        .get(cid)
+        .and_then(|conv| conv.agent_id.clone())
+        .expect("conversation has durable agent id")
+        .into()
+}
+
 fn default_agent_tree(h: &Harness) -> &AgentTree {
-    agent_tree_for_conversation(h, &h.default_agent_id)
+    let cid = test_user_agent(h);
+    agent_tree_for_conversation(h, &cid)
 }
 
 fn agent_branch_for_conversation<'a>(h: &'a Harness, cid: &AgentId) -> Vec<&'a AgentEntry> {
@@ -169,7 +200,8 @@ fn agent_branch_for_conversation<'a>(h: &'a Harness, cid: &AgentId) -> Vec<&'a A
 }
 
 fn default_agent_branch(h: &Harness) -> Vec<&AgentEntry> {
-    agent_branch_for_conversation(h, &h.default_agent_id)
+    let cid = test_user_agent(h);
+    agent_branch_for_conversation(h, &cid)
 }
 
 fn default_agent_node(h: &Harness, id: NodeId) -> &tau_core::AgentNode {
@@ -201,28 +233,35 @@ fn loaded_agent_events(h: &Harness, session_id: &str) -> Vec<Event> {
 }
 
 fn persisted_agent_branch(state_dir: &Path, session_id: &str) -> Vec<AgentEntry> {
-    let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
-    let store = open_session_store(&sessions_dir).expect("session store");
-    let session = store.session(session_id).expect("session membership");
-    let agent_id = session
-        .loaded_agents()
+    persisted_agent_branches(state_dir, session_id)
         .into_iter()
         .next()
         .expect("loaded agent")
-        .clone();
+}
+
+fn persisted_agent_branches(state_dir: &Path, session_id: &str) -> Vec<Vec<AgentEntry>> {
+    let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
+    let store = open_session_store(&sessions_dir).expect("session store");
+    let session = store.session(session_id).expect("session membership");
     let mut agent_store = AgentStore::open(state_dir.join("agents")).expect("agent store");
-    let tree = agent_store
-        .load_agent(agent_id.as_str())
-        .expect("load agent")
-        .expect("agent tree");
-    tree.current_branch().into_iter().cloned().collect()
+    session
+        .loaded_agents()
+        .into_iter()
+        .map(|agent_id| {
+            let tree = agent_store
+                .load_agent(agent_id.as_str())
+                .expect("load agent")
+                .expect("agent tree");
+            tree.current_branch().into_iter().cloned().collect()
+        })
+        .collect()
 }
 
 /// Test-only helper that appends a user message through the harness's normal
 /// agent-transcript publish path without driving a provider turn.
 fn append_user_message_via_event(h: &mut Harness, session_id: &str, text: &str) {
     assert_eq!(session_id, h.current_session_id.as_str());
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(h);
     h.publish_pending_prompt_for_agent(&cid, PendingPrompt::user(text.to_owned()))
         .expect("append user message");
 }

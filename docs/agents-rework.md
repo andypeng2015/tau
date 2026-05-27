@@ -225,8 +225,8 @@ A good crate-by-crate order is:
    - On session start/resume, fold the session membership journal, load and lock
      each current agent, announce the loaded-agent snapshot, then replay each
      loaded agent's durable events once in agent-log order.
-   - If a resumed session has no loaded agents, create a new default agent and
-     append `session.agent_loaded` for it.
+   - If a resumed session has no loaded agents, wait for the first prompt or an
+     explicit UI create-agent request to mint and load a durable user agent.
    - Route persistence from the runtime event log: membership facts go to the
      session store; transcript/tool/compaction/metadata facts go to the relevant
      agent store; cross-agent messages write the sender/recipient projections;

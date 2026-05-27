@@ -135,7 +135,7 @@ fn cross_turn_identical_result_collapses_to_pointer() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let big = CborValue::Text("a".repeat(2048));
 
     let first = run_tool_result(&mut h, "s1", &cid, "call_first", "read", big.clone());
@@ -182,7 +182,7 @@ fn small_results_below_threshold_are_not_deduped() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     // Stay well clear of the threshold even after CBOR framing
     // overhead — 50 raw bytes of text encodes to ~52 B of CBOR.
     let small = CborValue::Text("ok".repeat(25));
@@ -216,7 +216,7 @@ fn pointer_entries_are_not_themselves_dedup_anchors() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let big = CborValue::Text("z".repeat(2048));
     let _ = run_tool_result(&mut h, "s1", &cid, "call_orig", "read", big.clone());
     let _ = run_tool_result(&mut h, "s1", &cid, "call_dup", "read", big.clone());
@@ -254,7 +254,7 @@ fn identical_errors_collapse_but_distinct_details_stay() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     // Above the threshold: a 300-char "compile failed" message with
     // a long hex digest dump as details.
     let long_msg = "compile failed: ".to_owned() + &"E0277 ".repeat(50);
@@ -327,7 +327,7 @@ fn dedup_map_rebuilds_on_session_restore() {
 
     {
         let mut h = echo_harness(&sp).expect("start");
-        let cid = h.default_agent_id.clone();
+        let cid = ensure_test_user_agent(&mut h);
         let _ = run_tool_result(&mut h, "s1", &cid, "call_pre_restore", "read", big.clone());
         h.shutdown().expect("shutdown");
         drop(h);
@@ -340,7 +340,7 @@ fn dedup_map_rebuilds_on_session_restore() {
     // resumed tree; the first intake triggers a rebuild.
     let mut h = echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
         .expect("resume");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     assert!(
         h.agents.get(&cid).expect("default conv").head.is_some(),
         "resumed default conversation must have a non-empty branch head",
@@ -370,14 +370,14 @@ fn new_session_reset_does_not_dedup_against_previous_branch() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let big = CborValue::Text("n".repeat(2048));
     let _ = run_tool_result(&mut h, "s1", &cid, "call_before_new", "ls", big.clone());
 
     h.switch_session("s1".into(), tau_proto::SessionStartReason::New)
         .expect("same-id /session new reset");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     assert_eq!(
         h.agents.get(&cid).expect("default conv").head,
         None,
@@ -406,7 +406,7 @@ fn dedup_is_scoped_to_a_single_branch() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let default_cid = h.default_agent_id.clone();
+    let default_cid = ensure_test_user_agent(&mut h);
     let big = CborValue::Text("p".repeat(2048));
 
     // Land an entry on the default conversation's branch.
@@ -463,7 +463,7 @@ fn dedup_refuses_to_self_point() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let big = CborValue::Text("s".repeat(2048));
 
     let _first = run_tool_result(&mut h, "s1", &cid, "call_solo", "read", big.clone());

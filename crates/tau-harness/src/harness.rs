@@ -10,21 +10,21 @@ use std::time::{Duration, Instant};
 
 use tau_core::{
     ActionRegistry, AgentStore, Connection, ConnectionMetadata, ConnectionOrigin,
-    DefaultSubscriptionPolicy, EventBus, PolicyStore, RouteError, SessionStore, ToolRegistry,
-    ToolRouteError, ToolRouteTarget, validate_tool_arguments,
+    DefaultSubscriptionPolicy, EventBus, NodeId, PolicyStore, RouteError, SessionStore,
+    ToolRegistry, ToolRouteError, ToolRouteTarget, validate_tool_arguments,
 };
 use tau_proto::{
     ActionError, ActionInvocationId, ActionInvoke, ActionResult, ActionSchemaPublished,
-    AgentCompactionRequested, AgentId, AgentPromptCreated, AgentPromptId,
-    AgentPromptPrewarmRequested, AgentPromptQueued, AgentPromptRecalled, AgentPromptTerminated,
-    AgentPromptTerminationReason, BackgroundSupport, CborValue, ClientKind, ContentPart,
-    ContextItem, ContextRole, Disconnect, Event, EventSelector, ExtensionName, Frame,
-    HarnessContextUsageChanged, HarnessRoleSelected, Message, MessageItem, ModelId,
-    PreviousResponseCandidate, PromptFragment, PromptOriginator, ProviderCacheMissDiagnostic,
-    ProviderModelInfo, ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage, SessionId,
-    TokenUsageStats, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem,
-    ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected,
-    ToolRequest, ToolResult, ToolResultKind, ToolType, UiCancelPrompt,
+    AgentCompactionRequested, AgentId, AgentPromptCreated, AgentPromptId, AgentPromptQueued,
+    AgentPromptRecalled, AgentPromptTerminated, AgentPromptTerminationReason, BackgroundSupport,
+    CborValue, ClientKind, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
+    ExtensionName, Frame, HarnessAgentContextUsageChanged, HarnessContextUsageChanged,
+    HarnessRoleSelected, Message, MessageItem, ModelId, PreviousResponseCandidate, PromptFragment,
+    PromptOriginator, ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderResponseFinished,
+    ProviderStopReason, ProviderTokenUsage, SessionId, TokenUsageStats, ToolBackgroundError,
+    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition,
+    ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind,
+    ToolType, UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -293,18 +293,18 @@ fn load_system_prompt_templates(config_dir: Option<&Path>) -> HashMap<String, St
 }
 
 #[derive(Clone, Debug)]
-struct SessionContextContribution {
+struct AgentContextContribution {
     extension_name: String,
-    value: tau_proto::SessionContextValue,
+    value: tau_proto::AgentContextValue,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SessionContextStore {
-    by_session: BTreeMap<
-        SessionId,
+pub(crate) struct AgentContextStore {
+    by_agent: BTreeMap<
+        tau_proto::AgentId,
         BTreeMap<
-            tau_proto::SessionContextKey,
-            BTreeMap<tau_proto::ConnectionId, SessionContextContribution>,
+            tau_proto::AgentContextKey,
+            BTreeMap<tau_proto::ConnectionId, AgentContextContribution>,
         >,
     >,
 }
@@ -362,34 +362,40 @@ fn sorted_prompt_fragments(
         .collect()
 }
 
-impl SessionContextStore {
-    /// Store or replace one contributor's value for a session context key.
+impl AgentContextStore {
+    /// Store or replace one contributor's value for an agent context key.
     pub(crate) fn publish(
         &mut self,
-        session_id: SessionId,
-        key: tau_proto::SessionContextKey,
+        agent_id: tau_proto::AgentId,
+        key: tau_proto::AgentContextKey,
         contributor: tau_proto::ConnectionId,
         extension_name: String,
-        value: tau_proto::SessionContextValue,
+        value: tau_proto::AgentContextValue,
     ) {
-        self.by_session
-            .entry(session_id)
+        self.by_agent
+            .entry(agent_id)
             .or_default()
             .entry(key)
             .or_default()
             .insert(
                 contributor,
-                SessionContextContribution {
+                AgentContextContribution {
                     extension_name,
                     value,
                 },
             );
     }
 
-    /// Return the Handlebars-visible `session_context` object for one session.
-    pub(crate) fn template_value(&self, session_id: &SessionId) -> serde_json::Value {
+    /// Return the Handlebars-visible `agent_context` object for one agent.
+    pub(crate) fn template_value(
+        &self,
+        agent_id: Option<&tau_proto::AgentId>,
+    ) -> serde_json::Value {
         let mut object = serde_json::Map::new();
-        let Some(keys) = self.by_session.get(session_id) else {
+        let Some(agent_id) = agent_id else {
+            return serde_json::Value::Object(object);
+        };
+        let Some(keys) = self.by_agent.get(agent_id) else {
             return serde_json::Value::Object(object);
         };
         for (key, contributions) in keys {
@@ -773,8 +779,8 @@ struct ExtensionActivationStage {
     skill_announcements: Vec<tau_proto::ExtSkillAvailable>,
     /// AGENTS.md announcements received before `Ready`, in wire order.
     agents_files: Vec<tau_proto::ExtAgentsMdAvailable>,
-    /// Session context publishes received before `Ready`, in wire order.
-    session_context_publishes: Vec<tau_proto::ExtSessionContextPublish>,
+    /// Agent context publishes received before `Ready`, in wire order.
+    agent_context_publishes: Vec<tau_proto::ExtAgentContextPublish>,
     /// Extension-level prompt fragments received before `Ready`, keyed by name
     /// so repeated publishes replace earlier staged content.
     prompt_fragments: BTreeMap<String, PromptFragment>,
@@ -920,11 +926,8 @@ pub struct Harness {
     /// metadata like the previous-response candidate.
     pub(crate) prompt_cache_diagnostics:
         std::collections::HashMap<AgentPromptId, PromptCacheDiagnosticContext>,
-    /// All in-flight agents keyed by `AgentId`. The
-    /// user's interactive UI thread is one fixed entry (see
-    /// `default_agent_id`); side queries from extensions spawn
-    /// additional entries that live until their final response is
-    /// routed back to the requesting extension.
+    /// All in-flight agents keyed by durable `AgentId`. User agents and side
+    /// agents use the same identity; there is no default/main alias.
     pub(crate) agents: std::collections::HashMap<AgentId, Agent>,
     /// Agent id to conversation routing for addressable agents in the current
     /// session. Suspended agents remain here so `/agent resume` and follow-up
@@ -934,9 +937,6 @@ pub struct Harness {
     pub(crate) agent_states: HashMap<String, AgentState>,
     /// Agent ids that were once known but can no longer receive messages.
     pub(crate) stopped_agent_ids: HashSet<String>,
-    /// Id of the user's main interactive conversation. Always present
-    /// in `agents` for the harness's whole lifetime.
-    pub(crate) default_agent_id: AgentId,
     /// Global harness state. Currently only tracks per-session init
     /// (waiting on extensions to announce skills + AGENTS.md). Agent
     /// turn state is per-agent; multiple agents may have
@@ -1021,7 +1021,7 @@ pub struct Harness {
     /// AGENTS.md files discovered by extensions, in delivery order.
     pub(crate) discovered_agents_files: Vec<DiscoveredAgentsFile>,
     /// Session-scoped JSON context contributions published by extensions.
-    pub(crate) session_context: SessionContextStore,
+    pub(crate) agent_context: AgentContextStore,
     /// Extension-level prompt fragments keyed by source connection and name.
     pub(crate) extension_prompt_fragments:
         BTreeMap<tau_proto::ConnectionId, BTreeMap<String, PromptFragment>>,
@@ -1037,7 +1037,7 @@ pub struct Harness {
     /// before the next real user prompt, not dispatched as standalone turns.
     pub(crate) pending_restore_background_notices: HashMap<SessionId, Vec<String>>,
     /// Tool availability notices waiting to be folded before the next real
-    /// user prompt on the default agent, keyed by internal tool name for
+    /// user prompt on the target user agent, keyed by internal tool name for
     /// deterministic delivery.
     pending_tool_availability_notices: BTreeMap<String, PendingToolAvailabilityNotice>,
     /// Tools whose unavailable notice has already been delivered and that are
@@ -1429,21 +1429,9 @@ impl Harness {
             sessions_dir.clone(),
             harness_settings.session_retention(),
         );
-        let default_agent_id: AgentId = "default".into();
         let mut store = store;
         let _ = store.load_session(eager_session_id)?;
-        let default_head = None;
-        let mut agents = std::collections::HashMap::new();
-        agents.insert(
-            default_agent_id.clone(),
-            Agent::new(
-                default_agent_id.clone(),
-                eager_session_id.into(),
-                tau_proto::PromptOriginator::User,
-                default_head,
-                None,
-            ),
-        );
+        let agents = std::collections::HashMap::new();
 
         let mut harness = Self {
             tx,
@@ -1476,7 +1464,6 @@ impl Harness {
             agent_routes: HashMap::new(),
             agent_states: HashMap::new(),
             stopped_agent_ids: HashSet::new(),
-            default_agent_id,
             turn_state: TurnState::Idle,
             debug_log: None,
             interceptors: InterceptorRegistry::default(),
@@ -1499,7 +1486,7 @@ impl Harness {
             prompt_fingerprints: std::collections::HashMap::new(),
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
-            session_context: SessionContextStore::default(),
+            agent_context: AgentContextStore::default(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
@@ -1681,21 +1668,9 @@ impl Harness {
             sessions_dir.clone(),
             harness_settings.session_retention(),
         );
-        let default_agent_id: AgentId = "default".into();
         let mut store = store;
         let _ = store.load_session(eager_session_id)?;
-        let default_head = None;
-        let mut agents = std::collections::HashMap::new();
-        agents.insert(
-            default_agent_id.clone(),
-            Agent::new(
-                default_agent_id.clone(),
-                eager_session_id.into(),
-                tau_proto::PromptOriginator::User,
-                default_head,
-                None,
-            ),
-        );
+        let agents = std::collections::HashMap::new();
 
         let mut harness = Self {
             tx,
@@ -1728,7 +1703,6 @@ impl Harness {
             agent_routes: HashMap::new(),
             agent_states: HashMap::new(),
             stopped_agent_ids: HashSet::new(),
-            default_agent_id,
             turn_state: TurnState::Idle,
             debug_log: None,
             interceptors: InterceptorRegistry::default(),
@@ -1751,7 +1725,7 @@ impl Harness {
             prompt_fingerprints: std::collections::HashMap::new(),
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
-            session_context: SessionContextStore::default(),
+            agent_context: AgentContextStore::default(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
@@ -1882,6 +1856,16 @@ impl Harness {
         }
         self.emit_extension_starting(&name);
         let _ = initialized_ack.send(());
+    }
+
+    /// Session id for a loaded durable agent, or `None` if that agent is not
+    /// live.
+    #[allow(dead_code)]
+    fn session_id_for_durable_agent(&self, agent_id: &tau_proto::AgentId) -> Option<SessionId> {
+        self.agent_routes
+            .get(agent_id.as_ref())
+            .and_then(|cid| self.agents.get(cid))
+            .map(|agent| agent.session_id.clone())
     }
 
     /// Session id of the agent that owns a given in-flight
@@ -2024,9 +2008,9 @@ impl Harness {
     /// [`Harness::commit_event`] keeps `c.head` in sync with the
     /// freshly-folded node.
     ///
-    /// This helper is what makes branching prompts work: the default
-    /// (user) conversation can keep advancing while a side agent
-    /// from an extension grows its own branch off some earlier node;
+    /// This helper is what makes branching prompts work: a user
+    /// conversation can keep advancing while a side agent from an
+    /// extension grows its own branch off some earlier node;
     /// each side publish brackets its own navigate-then-append.
     pub(crate) fn publish_for_agent(&mut self, cid: &AgentId, event: Event) {
         self.publish_for_agent_from(cid, None, event);
@@ -2657,7 +2641,7 @@ impl Harness {
             Event::UiPromptSubmitted(prompt) => Some(prompt.session_id.clone()),
             Event::UiShellCommand(command) => Some(command.session_id.clone()),
             Event::UiSwitchSession(req) => Some(req.new_session_id.clone()),
-            Event::UiNewAgent(req) => Some(req.session_id.clone()),
+            Event::UiCreateAgent(req) => Some(req.session_id.clone()),
             Event::UiTreeRequest(req) => Some(req.session_id.clone()),
             Event::UiNavigateTree(req) => Some(req.session_id.clone()),
             Event::UiCompactRequest(req) => Some(req.session_id.clone()),
@@ -2723,7 +2707,9 @@ impl Harness {
             Event::ExtAgentsMdAvailable(_) | Event::ExtensionContextReady(_) => {
                 Some(self.current_session_id.clone())
             }
-            Event::ExtSessionContextPublish(publish) => Some(publish.session_id.clone()),
+            Event::ExtAgentContextPublish(publish) => {
+                self.session_id_for_durable_agent(&publish.agent_id)
+            }
             Event::ExtensionEvent(event) => event.session_id.clone(),
             _ => None,
         }
@@ -3085,13 +3071,13 @@ impl Harness {
             .push(agents);
     }
 
-    fn stage_session_context_publish(
+    fn stage_agent_context_publish(
         &mut self,
         source_id: &str,
-        publish: tau_proto::ExtSessionContextPublish,
+        publish: tau_proto::ExtAgentContextPublish,
     ) {
         self.extension_activation_stage_mut(source_id)
-            .session_context_publishes
+            .agent_context_publishes
             .push(publish);
     }
 
@@ -3227,6 +3213,19 @@ impl Harness {
             });
         }
         self.publish_event(Some(source_id), Event::ExtAgentsMdAvailable(agents));
+        let live_agents: Vec<_> = self
+            .agents
+            .iter()
+            .filter_map(|(cid, agent)| {
+                agent
+                    .agent_id
+                    .as_ref()
+                    .map(|agent_id| (cid.clone(), agent_id.clone()))
+            })
+            .collect();
+        for (cid, agent_id) in live_agents {
+            self.insert_agents_context_for_agent(&cid, &agent_id);
+        }
     }
 
     fn publish_provider_models_update(
@@ -3280,10 +3279,10 @@ impl Harness {
         );
     }
 
-    fn publish_session_context_publish(
+    fn publish_agent_context_publish(
         &mut self,
         source_id: &str,
-        publish: tau_proto::ExtSessionContextPublish,
+        publish: tau_proto::ExtAgentContextPublish,
     ) {
         let contributor = tau_proto::ConnectionId::from(source_id);
         let extension_name = self
@@ -3291,14 +3290,14 @@ impl Harness {
             .get(&contributor)
             .map(|entry| entry.name.clone())
             .unwrap_or_else(|| source_id.to_owned());
-        self.session_context.publish(
-            publish.session_id.clone(),
+        self.agent_context.publish(
+            publish.agent_id.clone(),
             publish.key.clone(),
             contributor,
             extension_name,
             publish.value.clone(),
         );
-        self.publish_event(Some(source_id), Event::ExtSessionContextPublish(publish));
+        self.publish_event(Some(source_id), Event::ExtAgentContextPublish(publish));
     }
 
     fn publish_extension_context_ready(
@@ -3338,8 +3337,8 @@ impl Harness {
         for agents in stage.agents_files {
             self.publish_agents_md_available(source_id, agents);
         }
-        for publish in stage.session_context_publishes {
-            self.publish_session_context_publish(source_id, publish);
+        for publish in stage.agent_context_publishes {
+            self.publish_agent_context_publish(source_id, publish);
         }
         for fragment in stage.prompt_fragments.into_values() {
             self.publish_extension_prompt_fragment(
@@ -3629,7 +3628,7 @@ impl Harness {
                     self.dedup_tool_result(&cid, &mut result);
                     // Snap to the owning agent's head before
                     // folding the result. Without this, a sibling side
-                    // conv that just ran `snap_to_default_agent`
+                    // conv that just touched the parent agent
                     // (during its teardown) leaves `tree.head` on the
                     // *parent* branch — folding the result there
                     // misplaces it and produces orphan ToolUse blocks
@@ -3752,11 +3751,11 @@ impl Harness {
                     self.publish_extension_context_ready(source_id, ready)?;
                 }
             }
-            Event::ExtSessionContextPublish(publish) => {
+            Event::ExtAgentContextPublish(publish) => {
                 if self.should_stage_extension_capabilities(source_id) {
-                    self.stage_session_context_publish(source_id, publish);
+                    self.stage_agent_context_publish(source_id, publish);
                 } else {
-                    self.publish_session_context_publish(source_id, publish);
+                    self.publish_agent_context_publish(source_id, publish);
                 }
             }
             Event::ExtPromptFragmentPublish(publish) => {
@@ -3907,7 +3906,7 @@ impl Harness {
                 Ok(true)
             }
             Event::UiSwitchSession(req) => self.handle_ui_switch_session(client_id, req),
-            Event::UiNewAgent(req) => self.handle_ui_new_agent(req),
+            Event::UiCreateAgent(req) => self.handle_ui_create_agent(req),
             Event::UiTreeRequest(req) => self.handle_ui_tree_request(client_id, req),
             Event::UiNavigateTree(req) => self.handle_ui_navigate_tree(client_id, req),
             Event::UiCompactRequest(req) => self.handle_ui_compact_request(client_id, req),
@@ -4045,9 +4044,7 @@ impl Harness {
         &mut self,
         prompt: tau_proto::UiPromptSubmitted,
     ) -> Result<bool, HarnessError> {
-        if let Some(target_agent_id) = prompt.target_agent_id.as_deref()
-            && target_agent_id != "main"
-        {
+        if let Some(target_agent_id) = prompt.target_agent_id.as_deref() {
             let submission = self.submit_prompt_to_agent(
                 prompt.session_id.clone(),
                 target_agent_id,
@@ -4060,23 +4057,39 @@ impl Harness {
             return Ok(true);
         }
 
-        // Stash the correlation tag on the default agent
-        // before submission; `send_prompt_to_agent_for` will consume
-        // it when it constructs the matching `AgentPromptCreated`.
-        // Queued prompts drop the tag (the queue stores text only) —
-        // the daemon helper only exercises the synchronous-dispatch
-        // path.
-        if let Some(c) = self.agents.get_mut(&self.default_agent_id) {
+        if prompt.session_id != self.current_session_id {
+            let reason = format!(
+                "harness is bound to session `{}`; prompt for `{}` rejected",
+                self.current_session_id.as_str(),
+                prompt.session_id.as_str()
+            );
+            self.emit_info(&reason);
+            return Ok(true);
+        }
+        let role = self.selected_role.clone();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cid = self.create_durable_user_agent(prompt.session_id.clone(), &role, cwd);
+        if !prompt.message_class.is_internal() {
+            self.preempt_blocking_ext_side_agents(&prompt.session_id);
+        }
+        if let Some(c) = self.agents.get_mut(&cid) {
             c.next_ctx_id = prompt.ctx_id.clone();
         }
-        let submission = self.submit_user_prompt(prompt.session_id.clone(), prompt.text.clone())?;
-        if matches!(submission, PromptSubmission::Queued) {
+        let pending = if prompt.message_class.is_internal() {
+            PendingPrompt::internal(prompt.text.clone())
+        } else {
+            PendingPrompt::user(prompt.text.clone())
+        };
+        if self.dispatch_blocked_for(&cid) || !self.session_initialized(&prompt.session_id) {
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                conv.pending_prompts.push_back(pending);
+            }
             self.publish_event(
                 None,
                 Event::AgentPromptQueued(AgentPromptQueued {
                     agent_id: self
-                        .target_agent_id_for_agent(&self.default_agent_id)
-                        .unwrap_or_else(|| "main".to_owned())
+                        .target_agent_id_for_agent(&cid)
+                        .unwrap_or_else(|| cid.to_string())
                         .into(),
                     text: prompt.text.clone(),
                     message_class: prompt.message_class,
@@ -4090,6 +4103,8 @@ impl Harness {
                     "selected role has no available model — use /model to pick a role or enable a provider",
                 );
             }
+        } else {
+            self.dispatch_prompt_for_agent(&cid, pending)?;
         }
         Ok(true)
     }
@@ -4104,13 +4119,45 @@ impl Harness {
         Ok(true)
     }
 
-    fn handle_ui_new_agent(&mut self, req: tau_proto::UiNewAgent) -> Result<bool, HarnessError> {
-        // `/agent new` is an invoking-UI-local selection reset plus this harness
-        // request to rotate the default agent. Do not publish or persist
-        // the request: late/other UIs must not clear their local current-agent
-        // selection in response.
-        if req.session_id == self.current_session_id {
-            self.rotate_default_agent();
+    fn handle_ui_create_agent(
+        &mut self,
+        req: tau_proto::UiCreateAgent,
+    ) -> Result<bool, HarnessError> {
+        if req.session_id != self.current_session_id {
+            let reason = format!(
+                "harness is bound to session `{}`; create-agent for `{}` rejected",
+                self.current_session_id.as_str(),
+                req.session_id.as_str()
+            );
+            self.emit_info(&reason);
+            return Ok(true);
+        }
+        if !self.available_roles.contains_key(&req.role) {
+            self.emit_info(&format!("unknown role `{}`", req.role));
+            return Ok(true);
+        }
+
+        let cid = self.create_durable_user_agent(req.session_id.clone(), &req.role, req.cwd);
+        if let Some(conv) = self.agents.get_mut(&cid) {
+            conv.next_ctx_id = req.ctx_id.clone();
+        }
+        if let Some(initial_prompt) = req.initial_prompt {
+            if !req.message_class.is_internal() {
+                self.preempt_blocking_ext_side_agents(&req.session_id);
+            }
+            let prompt = if req.message_class.is_internal() {
+                PendingPrompt::internal(initial_prompt)
+            } else {
+                PendingPrompt::user(initial_prompt)
+            };
+            if self.dispatch_blocked_for(&cid) || !self.session_initialized(&req.session_id) {
+                if let Some(conv) = self.agents.get_mut(&cid) {
+                    conv.pending_prompts.push_back(prompt);
+                }
+                self.try_advance_queue();
+            } else {
+                self.dispatch_prompt_for_agent(&cid, prompt)?;
+            }
         }
         Ok(true)
     }
@@ -4159,18 +4206,11 @@ impl Harness {
     }
 
     fn runtime_agent_id_for_target_agent(&self, target_agent_id: Option<&str>) -> Option<AgentId> {
-        match target_agent_id {
-            Some(agent_id) if agent_id != "main" => self.agent_routes.get(agent_id).cloned(),
-            _ => Some(self.default_agent_id.clone()),
-        }
+        self.agent_routes.get(target_agent_id?).cloned()
     }
 
     fn target_agent_id_for_agent(&self, cid: &AgentId) -> Option<String> {
-        self.agents
-            .get(cid)
-            .and_then(|conv| conv.agent_id.as_ref())
-            .filter(|agent_id| agent_id.as_str() != "main")
-            .cloned()
+        self.agents.get(cid).and_then(|conv| conv.agent_id.clone())
     }
 
     fn handle_recall_queued_prompt(&mut self, req: &tau_proto::UiRecallQueuedPrompt) {
@@ -4195,7 +4235,7 @@ impl Harness {
             Event::AgentPromptRecalled(AgentPromptRecalled {
                 agent_id: self
                     .target_agent_id_for_agent(&cid)
-                    .unwrap_or_else(|| "main".to_owned())
+                    .expect("agent has durable id")
                     .into(),
                 text: prompt.text,
             }),
@@ -4359,7 +4399,7 @@ impl Harness {
             Event::AgentCompactionFinished(tau_proto::AgentCompactionFinished {
                 agent_id: pending
                     .target_agent_id
-                    .unwrap_or_else(|| "main".to_owned())
+                    .expect("agent has durable id")
                     .into(),
                 originator: pending.originator,
                 original_input_tokens: pending.original_input_tokens,
@@ -4522,13 +4562,13 @@ impl Harness {
         self.cancel_remaining_tool_calls(&cid, cancelled_calls, "delegate cancel tool");
         if let Some(spid) = spid {
             self.canceled_prompts.insert(spid.clone());
-            self.prompt_agents.remove(&spid);
             self.publish_prompt_terminated(
                 session_id.clone(),
                 spid.clone(),
                 AgentPromptTerminationReason::Canceled,
                 originator,
             );
+            self.prompt_agents.remove(&spid);
             self.publish_event(
                 None,
                 Event::UiCancelPrompt(UiCancelPrompt {
@@ -5067,17 +5107,10 @@ impl Harness {
     // The helpers below only maintain the runtime maps that attribute
     // incoming results back to the originating agent.
 
-    /// Records that an extension-originated `ToolRequest` belongs to
-    /// the harness's *default* conversation (the user's UI thread).
-    /// Extensions don't currently carry an owning agent on
-    /// their tool tool requests; future work could extend the protocol so
-    /// extension-side tools also attribute to a specific conversation.
-    /// Must run *before* the request is published, so
-    /// `session_id_for_event` can attribute the corresponding
-    /// persisted event.
+    /// Records bookkeeping for an extension-originated `ToolRequest` that does
+    /// not have an owning agent. Agent-owned tool calls are tracked through the
+    /// prompt/tool routing path instead.
     fn track_tool_request_session(&mut self, request: &ToolRequest) {
-        self.tool_agents
-            .insert(request.call_id.clone(), self.default_agent_id.clone());
         self.pending_tools.insert(
             request.call_id.clone(),
             PendingTool {
@@ -5323,7 +5356,7 @@ impl Harness {
             .get(&agent_prompt_id)
             .and_then(|cid| self.agents.get(cid))
             .and_then(|conv| conv.agent_id.clone())
-            .unwrap_or_else(|| "main".to_owned())
+            .expect("agent has durable id")
             .into();
         self.publish_event(
             None,
@@ -5582,13 +5615,13 @@ impl Harness {
 
         // Resolve the parent agent at enqueue time: tool-backed requests
         // inherit from the conversation that owns the triggering tool call;
-        // non-tool tool requests inherit from the default user conversation.
+        // non-tool requests start without an in-memory parent agent.
         let parent_cid = query
             .tool_call_id
             .as_ref()
             .and_then(|call_id| self.tool_agents.get(call_id))
             .cloned()
-            .unwrap_or_else(|| self.default_agent_id.clone());
+            .unwrap_or_else(|| cid.clone());
         let agent_id = self.mint_available_agent_id_for_role(&role);
 
         Ok(Some(PendingStartAgentRequest {
@@ -5771,11 +5804,15 @@ impl Harness {
         };
         let execution_mode = query.execution_mode;
         let delegate_execution_mode = parent_call_id.as_ref().map(|_| execution_mode);
-        let parent_conv = self
+        let parent_agent_id = self
             .agents
-            .get(&parent_cid)
-            .expect("parent agent always present");
-        let session_id = parent_conv.session_id.clone();
+            .contains_key(&parent_cid)
+            .then(|| parent_cid.clone());
+        let session_id = parent_agent_id
+            .as_ref()
+            .and_then(|parent_cid| self.agents.get(parent_cid))
+            .map(|parent| parent.session_id.clone())
+            .unwrap_or_else(|| self.current_session_id.clone());
         // Start-agent requests create distinct agent transcripts, so their
         // runtime cursor starts at the root. Parent branch NodeIds belong
         // to the parent's agent log and must not be reused in the child log.
@@ -5797,7 +5834,7 @@ impl Harness {
         // sub-agent state changes can be surfaced to the user under
         // that tool block via `DelegateProgress`.
         conv.parent_tool_call_id = parent_call_id;
-        conv.parent_agent_id = Some(parent_cid.clone());
+        conv.parent_agent_id = parent_agent_id;
         conv.task_name = task_name;
         conv.delegate_input_stats = query.input_stats;
         conv.role = conversation_role;
@@ -5852,8 +5889,8 @@ impl Harness {
     }
 
     /// Publish a `DelegateProgress` snapshot for `cid` if it is a side
-    /// conversation backing a `delegate` tool call. No-op for the
-    /// default agent and for non-tool start-agent requests.
+    /// conversation backing a `delegate` tool call. No-op for user
+    /// agents and for non-tool start-agent requests.
     fn emit_delegate_progress(&mut self, cid: &AgentId) {
         let Some(conv) = self.agents.get(cid) else {
             return;
@@ -5894,44 +5931,6 @@ impl Harness {
         self.publish_event(None, Event::ToolDelegateProgress(progress));
     }
 
-    /// Emit a `UiNavigateTree` to move the *UI's* view cursor back
-    /// to the default agent's tip after a side agent
-    /// finishes. Only a UI affordance now — fold parentage no
-    /// longer depends on `tree.head()` (Phase 4 of the interception
-    /// refactor: each publish carries its explicit parent), so
-    /// nothing in the harness's append path needs the bounce. UIs
-    /// that subscribe to `ui.navigate_tree` rely on this to render
-    /// the user back on their main branch when a delegated query
-    /// completes.
-    fn snap_to_default_agent(&mut self) {
-        let session_id = self
-            .agents
-            .get(&self.default_agent_id)
-            .map(|c| c.session_id.clone())
-            .expect("default agent always present");
-        let want = self.agents.get(&self.default_agent_id).and_then(|c| c.head);
-        let have = self
-            .agents
-            .get(&self.default_agent_id)
-            .and_then(|c| c.agent_id.as_deref())
-            .and_then(|agent_id| self.agent_store.agent(agent_id))
-            .and_then(|t| t.head());
-        if want != have
-            && let Some(target) = want
-        {
-            self.publish_event(
-                None,
-                Event::UiNavigateTree(tau_proto::UiNavigateTree {
-                    session_id,
-                    target_agent_id: self
-                        .target_agent_id_for_agent(&self.default_agent_id)
-                        .map(Into::into),
-                    node_id: target.get(),
-                }),
-            );
-        }
-    }
-
     fn maybe_start_auto_compaction_for_user_prompt(&mut self, cid: &AgentId, text: &str) -> bool {
         if !self.should_auto_compact_for_agent(cid) {
             return false;
@@ -5968,7 +5967,7 @@ impl Harness {
             return;
         }
         let Some(conv) = self.agents.get(&cid) else {
-            self.emit_info("default agent is missing");
+            self.emit_info("target user agent is missing");
             return;
         };
         let Some(tree) = conv
@@ -6005,12 +6004,7 @@ impl Harness {
         let current_percent = self
             .agents
             .get(cid)
-            .and_then(|conv| conv.context_percent_used)
-            .or_else(|| {
-                (cid == &self.default_agent_id)
-                    .then_some(self.current_session_state.context_percent_used)
-                    .flatten()
-            });
+            .and_then(|conv| conv.context_percent_used);
         let threshold = self.compaction_threshold_for_agent(cid);
         current_percent.is_some_and(|p| threshold <= p)
     }
@@ -6298,11 +6292,7 @@ impl Harness {
         let target_head = target_conv.head;
         let target_session_id = target_conv.session_id.clone();
         let target_originator = target_conv.originator.clone();
-        let original_input_tokens = target_conv.context_input_tokens.or_else(|| {
-            (target_cid == &self.default_agent_id)
-                .then_some(self.current_session_state.context_input_tokens)
-                .flatten()
-        });
+        let original_input_tokens = target_conv.context_input_tokens;
         let summary_cid: AgentId = format!("compact-{}", self.next_agent_prompt_id).into();
         let mut conv = Agent::new(
             summary_cid.clone(),
@@ -6331,7 +6321,7 @@ impl Harness {
         }
         let compaction_agent_id: tau_proto::AgentId = self
             .target_agent_id_for_agent(target_cid)
-            .unwrap_or_else(|| "main".to_owned())
+            .expect("agent has durable id")
             .into();
         self.publish_event(
             None,
@@ -6344,14 +6334,7 @@ impl Harness {
         self.dispatch_prompt_after_publish_idle(&summary_cid);
     }
 
-    /// Queue a prompt when it cannot be sent directly yet, or dispatch
-    /// it immediately when the session is initialized and the harness is
-    /// ready to talk to the agent.
-    ///
-    /// Rejects prompts whose `session_id` doesn't match the harness's
-    /// bound session — one harness owns one session, period. Switching
-    /// sessions is a separate (future) operation that tears down +
-    /// respawns extensions, not a silent fan-out.
+    #[cfg(test)]
     fn submit_user_prompt(
         &mut self,
         session_id: SessionId,
@@ -6366,29 +6349,29 @@ impl Harness {
             self.emit_info(&reason);
             return Ok(PromptSubmission::Rejected { reason });
         }
-
-        let cid = self.default_agent_id.clone();
-        self.ensure_agent_id_for_agent(&cid);
-
-        // A user prompt outranks any best-effort side agent
-        // (idle-summary etc.). The agent processes prompts on a
-        // single thread, so an in-flight side query stuck in a
-        // retry backoff would otherwise stall the user's turn for
-        // up to the side conv's full retry budget. Abort first;
-        // dispatch second.
+        let cid = self
+            .agents
+            .iter()
+            .find_map(|(cid, conv)| {
+                (conv.session_id == session_id
+                    && conv.originator.is_user()
+                    && conv.agent_id.is_some())
+                .then_some(cid.clone())
+            })
+            .unwrap_or_else(|| {
+                let role = self.selected_role.clone();
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                self.create_durable_user_agent(session_id.clone(), &role, cwd)
+            });
         self.preempt_blocking_ext_side_agents(&session_id);
-
         if self.dispatch_blocked_for(&cid) || !self.session_initialized(&session_id) {
-            self.agents
-                .get_mut(&cid)
-                .expect("default agent always present")
-                .pending_prompts
-                .push_back(PendingPrompt::user(text));
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                conv.pending_prompts.push_back(PendingPrompt::user(text));
+            }
             self.try_advance_queue();
             return Ok(PromptSubmission::Queued);
         }
-
-        self.dispatch_user_prompt(session_id, text)?;
+        self.dispatch_prompt_for_agent(&cid, PendingPrompt::user(text))?;
         Ok(PromptSubmission::Dispatched)
     }
 
@@ -6451,9 +6434,6 @@ impl Harness {
             .agents
             .iter()
             .filter_map(|(cid, conv)| {
-                if cid == &self.default_agent_id {
-                    return None;
-                }
                 if conv.parent_tool_call_id.is_some() {
                     return None;
                 }
@@ -6486,7 +6466,6 @@ impl Harness {
 
         for (cid, prompt_session_id, spid, originator) in &to_cancel {
             self.canceled_prompts.insert(spid.clone());
-            self.prompt_agents.remove(spid);
             if let Some(conv) = self.agents.get_mut(cid) {
                 conv.in_flight_prompt = None;
                 conv.turn_state = AgentTurnState::Idle;
@@ -6499,6 +6478,7 @@ impl Harness {
                 AgentPromptTerminationReason::Canceled,
                 originator.clone(),
             );
+            self.prompt_agents.remove(spid);
             self.emit_info(&format!(
                 "preempting side conv `{cid}` ({spid}) for incoming user prompt",
             ));
@@ -6538,7 +6518,7 @@ impl Harness {
         };
         let agent_id = self
             .target_agent_id_for_agent(&cid)
-            .unwrap_or_else(|| "main".to_owned());
+            .expect("agent has durable id");
         let lines: Vec<String> = match self.agent_store.agent(&agent_id) {
             Some(tree) if !tree.nodes().is_empty() => {
                 let selected_head = self.agents.get(&cid).and_then(|conv| conv.head);
@@ -6596,7 +6576,7 @@ impl Harness {
         };
         let agent_id: tau_proto::AgentId = self
             .target_agent_id_for_agent(&cid)
-            .unwrap_or_else(|| "main".to_owned())
+            .expect("agent has durable id")
             .into();
         let node_id = tau_core::NodeId::new(node_id);
         let valid = self
@@ -6668,39 +6648,12 @@ impl Harness {
         // cumulative totals.
         self.current_session_state = CurrentSessionState::default();
 
-        // Rebind the default agent to the new session and drop
-        // any side agents that were tied to the old one. Without
-        // this, the next `dispatch_user_prompt` would assert because
-        // `agents[default].session_id` still points at the old
-        // session id.
-        let default_id = self.default_agent_id.clone();
-        let new_head = if matches!(reason, tau_proto::SessionStartReason::New) {
-            // `/session new` must start a fresh branch even if the requested
-            // id already has durable history (e.g. a short-id
-            // collision, or an explicit same-id reset in tests). If
-            // we reused the existing tree head, the dedup map would
-            // lazily rebuild from old tool results and emit confusing
-            // `[tau-internal]` pointers to outputs the model cannot see
-            // in the fresh conversation.
-            None
-        } else {
-            let _ = self.store.load_session(new_session_id.as_str())?;
-            None
-        };
+        // Drop agents from the previous bound session. New user agents are
+        // created explicitly by `UiCreateAgent`/first prompt in the new session.
         self.agents.clear();
         self.agent_routes.clear();
         self.agent_states.clear();
         self.stopped_agent_ids.clear();
-        self.agents.insert(
-            default_id.clone(),
-            Agent::new(
-                default_id,
-                new_session_id.clone(),
-                tau_proto::PromptOriginator::User,
-                new_head,
-                None,
-            ),
-        );
 
         self.current_session_id = new_session_id.clone();
         if matches!(reason, tau_proto::SessionStartReason::Resume) {
@@ -6896,15 +6849,12 @@ impl Harness {
         prompts
     }
 
-    /// Consume pending internal notices for the default agent, if the
-    /// next prompt is a real user prompt on the current session.
+    /// Consume pending internal notices before the next real user prompt on the
+    /// current session.
     pub(crate) fn take_pending_restore_prompts_for_user_prompt(
         &mut self,
         cid: &AgentId,
     ) -> Vec<PendingPrompt> {
-        if cid != &self.default_agent_id {
-            return Vec::new();
-        }
         let Some(session_id) = self.agents.get(cid).map(|conv| conv.session_id.clone()) else {
             return Vec::new();
         };
@@ -7012,6 +6962,8 @@ impl Harness {
     fn seed_restored_wait_background_completions(&mut self, session_id: &SessionId) {
         for cid in self.restored_agent_ids(session_id) {
             for state in self.restored_background_tool_states_for_agent(&cid) {
+                self.tool_agents
+                    .insert(state.placeholder.call_id.clone(), cid.clone());
                 match state.completion {
                     Some(tau_core::BackgroundToolCompletion::Result(result)) => {
                         self.record_wait_background_result(result);
@@ -7167,19 +7119,11 @@ impl Harness {
     fn complete_session_init(
         &mut self,
         session_id: SessionId,
-        reason: tau_proto::SessionStartReason,
+        _reason: tau_proto::SessionStartReason,
     ) -> Result<(), HarnessError> {
-        // A resumed session already has its model-visible startup context in
-        // history. Re-injecting AGENTS.md would append a duplicate user message;
-        // restore/tool notices are queued separately before the next real prompt.
-        if !matches!(reason, tau_proto::SessionStartReason::Resume) {
-            self.ensure_agents_context_inserted(session_id.as_str())?;
-        }
-        // No explicit head sync needed: when the AGENTS.md
-        // injection is for `current_session_id` it's stamped with
-        // `default_agent_id` and the post-commit hook keeps
-        // `c.head` aligned. For other sessions there's no
-        // matching live conversation anyway.
+        // AGENTS.md and skill context is agent-scoped. Session init only waits
+        // for discovery; the discovered context is injected when a durable agent
+        // is explicitly created from the UI's current role/cwd state.
         self.initialized_sessions.insert(session_id.clone());
         self.request_prompt_prewarm(&session_id);
         self.turn_state = TurnState::Idle;
@@ -7188,99 +7132,31 @@ impl Harness {
     }
 
     fn request_prompt_prewarm(&mut self, session_id: &SessionId) {
-        let Some(model) = self.selected_model.clone() else {
-            tracing::debug!(
-                target: "harness",
-                session_id = %session_id,
-                "skipping prompt prewarm: no selected model",
-            );
-            return;
-        };
-        if session_id != &self.current_session_id {
-            tracing::debug!(
-                target: "harness",
-                session_id = %session_id,
-                "skipping prompt prewarm: session is not bound to this harness",
-            );
-            return;
-        }
-
-        let cid = self.default_agent_id.clone();
-        let Some(conv) = self.agents.get(&cid) else {
-            tracing::debug!(
-                target: "harness",
-                session_id = %session_id,
-                "skipping prompt prewarm: default agent missing",
-            );
-            return;
-        };
-        let head = conv.head;
-        let agent_id = conv.agent_id.clone().unwrap_or_else(|| "main".to_owned());
-        let tree = self.agent_store.agent(&agent_id);
-        let context_items = tree
-            .map(|t| assemble_conversation_from(t, head))
-            .unwrap_or_default();
-        let tools = self.gather_tool_definitions();
-        let system_prompt = self.build_current_system_prompt();
-        let event = Event::AgentPromptPrewarmRequested(AgentPromptPrewarmRequested {
-            agent_id: agent_id.into(),
-            system_prompt,
-            context_items,
-            tools,
-            model: Some(model),
-            model_params: self
-                .selected_model
-                .as_ref()
-                .map(|model| self.params_for_role_model(&self.selected_role, model))
-                .unwrap_or_default(),
-            tool_choice: tau_proto::ToolChoice::Auto,
-            originator: tau_proto::PromptOriginator::User,
-            share_user_cache_key: false,
-        });
         tracing::debug!(
             target: "harness",
             session_id = %session_id,
-            "scheduled prompt prewarm",
+            "skipping prompt prewarm: no agent has been created yet",
         );
-        self.publish_event(None, event);
     }
 
     // -----------------------------------------------------------------------
     // Agent prompt assembly
     // -----------------------------------------------------------------------
 
-    fn ensure_agents_context_inserted(&mut self, session_id: &str) -> Result<(), HarnessError> {
+    fn insert_agents_context_for_agent(&mut self, cid: &AgentId, agent_id: &str) {
         if self.discovered_agents_files.is_empty() {
-            return Ok(());
+            return;
         }
-
         let text = render_agents_context_message(self.discovered_agents_files.iter());
-        let agent_id = if self.current_session_id == session_id {
-            let cid = self.default_agent_id.clone();
-            self.ensure_agent_id_for_agent(&cid)
-                .unwrap_or_else(|| "main".to_owned())
-        } else {
-            "main".to_owned()
-        };
-        let event = Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-            agent_id: agent_id.into(),
-            text,
-            message_class: tau_proto::PromptMessageClass::User,
-        });
-        // Publish the injection as an event so it reaches the durable
-        // agent log and folds into the AgentTree the same way every
-        // other entry does. Stamp it with the default
-        // conversation when the session matches, so the post-commit
-        // hook syncs `c.head` automatically — replaces the old
-        // `sync_default_conversation_head()` call site that raced
-        // when AgentUserMessageInjected was intercepted.
-        if self.current_session_id == session_id {
-            let cid = self.default_agent_id.clone();
-            self.publish_event_for_agent(&cid, None, event);
-        } else {
-            self.publish_event(None, event);
-        }
-        Ok(())
+        self.publish_event_for_agent(
+            cid,
+            None,
+            Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
+                agent_id: agent_id.to_owned().into(),
+                text,
+                message_class: tau_proto::PromptMessageClass::User,
+            }),
+        );
     }
 
     /// Persist a user-initiated `!` shell command's output as a
@@ -7307,7 +7183,7 @@ impl Harness {
                 self.runtime_agent_id_for_target_agent(finished.target_agent_id.as_deref())
                     .and_then(|cid| self.agents.get(&cid).and_then(|conv| conv.agent_id.clone()))
             })
-            .unwrap_or_else(|| "main".to_owned());
+            .expect("agent has durable id");
         let event = Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
             agent_id: agent_id.into(),
             text,
@@ -7332,26 +7208,21 @@ impl Harness {
         }
     }
 
-    /// Convenience wrapper that dispatches a prompt for the harness's
-    /// default (user) conversation. Used by tests that want a quick
-    /// "send the next prompt" without going through the full
-    /// dispatch pipeline.
+    /// Convenience wrapper that dispatches a prompt for the first user agent in
+    /// the requested session. Used by tests that want a quick "send the next
+    /// prompt" without going through the full dispatch pipeline.
     #[cfg(test)]
     fn send_prompt_to_agent(&mut self, session_id: &str) -> AgentPromptId {
-        debug_assert_eq!(
-            self.agents[&self.default_agent_id].session_id.as_str(),
-            session_id,
-            "send_prompt_to_agent only valid for the default agent; \
-             use send_prompt_to_agent_for() for side agents",
-        );
-        let cid = self.default_agent_id.clone();
+        let cid = self
+            .agents
+            .iter()
+            .find(|(_, conv)| conv.session_id.as_str() == session_id && conv.originator.is_user())
+            .map(|(cid, _)| cid.clone())
+            .expect("test requires an existing user agent");
         self.send_prompt_to_agent_for(&cid)
     }
 
     fn set_agent_state(&mut self, agent_id: &str, state: AgentState) {
-        if agent_id == "main" {
-            return;
-        }
         self.agent_states.insert(agent_id.to_owned(), state);
     }
 
@@ -7369,108 +7240,8 @@ impl Harness {
         self.agents.remove(cid)
     }
 
-    fn rotate_default_agent(&mut self) {
-        let cid = self.default_agent_id.clone();
-        let archive_cid = self.archive_default_agent_id();
-        if let Some(mut conversation) = self.agents.remove(&cid) {
-            conversation.id = archive_cid.clone();
-            if let Some(agent_id) = conversation.agent_id.clone() {
-                self.agent_routes.insert(agent_id, archive_cid.clone());
-            }
-            self.agents.insert(archive_cid.clone(), conversation);
-            self.rewrite_agent_references(&cid, &archive_cid);
-        }
-        self.agents.insert(
-            cid.clone(),
-            Agent::new(
-                cid,
-                self.current_session_id.clone(),
-                tau_proto::PromptOriginator::User,
-                None,
-                None,
-            ),
-        );
-    }
-
-    fn archive_default_agent_id(&self) -> AgentId {
-        for index in 0_u64.. {
-            let candidate: AgentId = format!("archived-default-{index}").into();
-            if !self.agents.contains_key(&candidate) {
-                return candidate;
-            }
-        }
-        unreachable!("unbounded archive agent id search cannot exhaust")
-    }
-
-    fn rewrite_agent_references(&mut self, old: &AgentId, new: &AgentId) {
-        for cid in self.tool_agents.values_mut() {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for cid in self.prompt_agents.values_mut() {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for conversation in self.agents.values_mut() {
-            Self::rewrite_optional_agent_id(&mut conversation.parent_agent_id, old, new);
-        }
-        for cid in self.agent_routes.values_mut() {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for cid in &mut self.pending_user_prompt_dispatches {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for cid in &mut self.pending_publish_idle_dispatches {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for cid in self.background_completion_targets.values_mut() {
-            Self::rewrite_agent_id(cid, old, new);
-        }
-        for pending in self.pending_compactions.values_mut() {
-            Self::rewrite_agent_id(&mut pending.target_cid, old, new);
-        }
-        for pending in &mut self.pending_start_agent_requests {
-            Self::rewrite_agent_id(&mut pending.cid, old, new);
-            Self::rewrite_agent_id(&mut pending.parent_cid, old, new);
-        }
-        if let Some(pending) = &mut self.pending_intercept {
-            Self::rewrite_agent_head_sync(&mut pending.sync_head_for, old, new);
-        }
-        for deferred in &mut self.deferred_publishes {
-            Self::rewrite_agent_head_sync(&mut deferred.sync_head_for, old, new);
-        }
-        self.tool_turn.rewrite_agent_id(old, new);
-        self.subagents.rewrite_agent_id(old, new);
-        if let Some(pending) = self.pending_compactions.remove(old) {
-            self.pending_compactions.insert(new.clone(), pending);
-        }
-        if let Some(active) = self.active_start_agent_requests.remove(old) {
-            self.active_start_agent_requests.insert(new.clone(), active);
-        }
-    }
-
-    fn rewrite_agent_id(cid: &mut AgentId, old: &AgentId, new: &AgentId) {
-        if cid == old {
-            *cid = new.clone();
-        }
-    }
-
-    fn rewrite_optional_agent_id(cid: &mut Option<AgentId>, old: &AgentId, new: &AgentId) {
-        if cid.as_ref() == Some(old) {
-            *cid = Some(new.clone());
-        }
-    }
-
-    fn rewrite_agent_head_sync(
-        sync: &mut Option<ConversationHeadSync>,
-        old: &AgentId,
-        new: &AgentId,
-    ) {
-        if let Some(sync) = sync {
-            Self::rewrite_agent_id(&mut sync.cid, old, new);
-        }
-    }
-
     fn unload_agent_from_session_if_loaded(&mut self, session_id: &SessionId, agent_id: &str) {
-        if agent_id == "main" || session_id != &self.current_session_id {
+        if session_id != &self.current_session_id {
             return;
         }
         let agent_id_proto: tau_proto::AgentId = agent_id.to_owned().into();
@@ -7497,19 +7268,19 @@ impl Harness {
                 Ok(Some(membership)) => membership.loaded_agents().into_iter().cloned().collect(),
                 _ => return,
             };
-        for (index, agent_id) in loaded_agents.into_iter().enumerate() {
+        for agent_id in loaded_agents {
             let agent_id_string = agent_id.to_string();
             let _ = self.agent_store.load_agent(agent_id.as_str());
             let head = self
-                .agent_store
-                .agent(agent_id.as_str())
-                .and_then(|tree| tree.head());
-            let cid = if index == 0 {
-                self.default_agent_id.clone()
-            } else {
-                self.synthetic_resumed_agent_id(agent_id.as_str())
-            };
+                .agent_head_moved_from_log(agent_id.as_str())
+                .or_else(|| {
+                    self.agent_store
+                        .agent(agent_id.as_str())
+                        .and_then(|tree| tree.head())
+                });
+            let cid: AgentId = agent_id_string.clone().into();
             let role = self.agent_role_from_log(agent_id.as_str());
+            let originator = self.agent_originator_from_log(agent_id.as_str());
             if let Some(conv) = self.agents.get_mut(&cid) {
                 conv.agent_id = Some(agent_id_string.clone());
                 conv.head = head;
@@ -7520,7 +7291,7 @@ impl Harness {
                     Agent::new(
                         cid.clone(),
                         self.current_session_id.clone(),
-                        tau_proto::PromptOriginator::User,
+                        originator,
                         head,
                         None,
                     ),
@@ -7536,6 +7307,38 @@ impl Harness {
         }
     }
 
+    fn agent_head_moved_from_log(&self, agent_id: &str) -> Option<NodeId> {
+        self.agent_store
+            .agent_events(agent_id)
+            .ok()?
+            .into_iter()
+            .filter_map(|record| match record.event {
+                Event::AgentHeadMoved(moved) => Some(moved.node_id),
+                _ => None,
+            })
+            .next_back()
+    }
+
+    fn agent_originator_from_log(&self, agent_id: &str) -> tau_proto::PromptOriginator {
+        self.agent_store
+            .agent_events(agent_id)
+            .ok()
+            .and_then(|events| {
+                events.into_iter().find_map(|record| match record.event {
+                    Event::AgentPromptSubmitted(submitted) => Some(submitted.originator),
+                    Event::ProviderResponseFinished(finished) => Some(finished.originator),
+                    Event::ProviderToolResult(result) => Some(result.originator),
+                    Event::ToolBackgroundResult(result) => Some(result.originator),
+                    Event::ToolBackgroundError(error) => Some(error.originator),
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| tau_proto::PromptOriginator::Extension {
+                name: HARNESS_CONNECTION_ID.into(),
+                query_id: format!("restored-{agent_id}"),
+            })
+    }
+
     fn agent_role_from_log(&self, agent_id: &str) -> Option<String> {
         self.agent_store
             .agent_events(agent_id)
@@ -7546,30 +7349,6 @@ impl Harness {
                 _ => None,
             })
             .filter(|role| self.available_roles.contains_key(role))
-    }
-
-    fn synthetic_resumed_agent_id(&self, agent_id: &str) -> AgentId {
-        let sanitized: String = agent_id
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                    ch
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        for index in 0_u64.. {
-            let candidate = if index == 0 {
-                format!("resumed-agent-{sanitized}").into()
-            } else {
-                format!("resumed-agent-{sanitized}-{index}").into()
-            };
-            if !self.agents.contains_key(&candidate) {
-                return candidate;
-            }
-        }
-        unreachable!("unbounded resumed agent id search cannot exhaust")
     }
 
     fn agent_id_is_taken(&self, agent_id: &str) -> bool {
@@ -7588,6 +7367,38 @@ impl Harness {
             |agent_id| self.agent_id_is_taken(agent_id),
             |_, candidate_count| random_agent_id_suffix_search_start(candidate_count),
         )
+    }
+
+    pub(crate) fn create_durable_user_agent(
+        &mut self,
+        session_id: SessionId,
+        role: &str,
+        cwd: PathBuf,
+    ) -> AgentId {
+        let agent_id = self.mint_available_agent_id_for_role(role);
+        let cid: AgentId = agent_id.clone().into();
+        let mut conv = Agent::new(
+            cid.clone(),
+            session_id,
+            tau_proto::PromptOriginator::User,
+            None,
+            None,
+        );
+        conv.role = Some(role.to_owned());
+        conv.agent_id = Some(agent_id.clone());
+        self.agent_context.publish(
+            tau_proto::AgentId::from(agent_id.clone()),
+            tau_proto::AgentContextKey::new("cwd"),
+            tau_proto::ConnectionId::from("tau-harness"),
+            "tau-harness".to_owned(),
+            tau_proto::AgentContextValue(serde_json::Value::String(cwd.display().to_string())),
+        );
+        self.agents.insert(cid.clone(), conv);
+        self.publish_delegate_roles_context();
+        let _ = self.agent_store.record_agent_meta(&agent_id, Some(cwd));
+        self.ensure_loaded_agent_for_agent(&cid, &agent_id);
+        self.insert_agents_context_for_agent(&cid, &agent_id);
+        cid
     }
 
     pub(crate) fn ensure_agent_id_for_agent(&mut self, cid: &AgentId) -> Option<String> {
@@ -7731,7 +7542,9 @@ impl Harness {
             });
         let context_items = prompt_context.context_items;
         let tools = self.gather_tool_definitions_for_role(&role_name);
-        let system_prompt = self.build_system_prompt_for_role(&role_name);
+        let durable_agent_id = agent_id_for_tree.as_deref().map(tau_proto::AgentId::from);
+        let system_prompt =
+            self.build_system_prompt_for_role_and_agent(&role_name, durable_agent_id.as_ref());
         // Fingerprint the non-input fields of the impending request.
         // Used to (a) drop the chain anchor when any of those fields
         // drifted since the anchor was minted (matches Pi's
@@ -7856,7 +7669,7 @@ impl Harness {
         } else {
             self.ensure_agent_id_for_agent(cid)
         }
-        .unwrap_or_else(|| "main".to_owned())
+        .expect("agent has durable id")
         .into();
         let prompt = AgentPromptCreated {
             agent_prompt_id: agent_prompt_id.clone(),
@@ -7923,11 +7736,15 @@ impl Harness {
         )
     }
 
-    fn build_current_system_prompt(&self) -> String {
-        self.build_system_prompt_for_role(&self.selected_role)
+    fn build_system_prompt_for_role(&self, role_name: &str) -> String {
+        self.build_system_prompt_for_role_and_agent(role_name, None)
     }
 
-    fn build_system_prompt_for_role(&self, role_name: &str) -> String {
+    fn build_system_prompt_for_role_and_agent(
+        &self,
+        role_name: &str,
+        agent_id: Option<&tau_proto::AgentId>,
+    ) -> String {
         let (prompt_fragments, tool_prompt_fragments) =
             self.gather_prompt_fragment_groups_for_role(role_name);
         let system_template = self.system_template_for_role(role_name);
@@ -7936,8 +7753,7 @@ impl Harness {
             &self.discovered_skills,
             &prompt_fragments,
             &tool_prompt_fragments,
-            self.session_context
-                .template_value(&self.current_session_id),
+            self.agent_context.template_value(agent_id),
             RolePromptTemplateContext { role_name },
         )
     }
@@ -8033,10 +7849,6 @@ impl Harness {
             })
             .collect::<Vec<_>>();
         (fragments, tool_fragments)
-    }
-
-    fn gather_tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.gather_tool_definitions_for_role(&self.selected_role)
     }
 
     fn gather_tool_definitions_for_role(&self, role_name: &str) -> Vec<ToolDefinition> {
@@ -8221,7 +8033,7 @@ impl Harness {
         response.agent_id = pending
             .target_agent_id
             .clone()
-            .unwrap_or_else(|| "main".to_owned())
+            .expect("agent has durable id")
             .into();
         self.publish_for_agent_from(
             &summary_cid,
@@ -8246,7 +8058,7 @@ impl Harness {
                     agent_id: pending
                         .target_agent_id
                         .clone()
-                        .unwrap_or_else(|| "main".to_owned())
+                        .expect("agent has durable id")
                         .into(),
                     originator: pending.originator,
                     original_input_tokens: pending.original_input_tokens,
@@ -8263,10 +8075,6 @@ impl Harness {
         target_conv.context_input_tokens = None;
         target_conv.context_percent_used = None;
         target_conv.result_dedup = crate::dedup::ResultDedupMap::new();
-
-        if pending.target_cid == self.default_agent_id {
-            self.update_context_usage(None, None);
-        }
 
         let (outcome, message, compacted_input_tokens) = if requested_tool_calls {
             (
@@ -8288,7 +8096,7 @@ impl Harness {
                     agent_id: pending
                         .target_agent_id
                         .clone()
-                        .unwrap_or_else(|| "main".to_owned())
+                        .expect("agent has durable id")
                         .into(),
                     originator: pending.originator.clone(),
                     original_input_tokens: pending.original_input_tokens,
@@ -8320,7 +8128,7 @@ impl Harness {
                 agent_id: pending
                     .target_agent_id
                     .clone()
-                    .unwrap_or_else(|| "main".to_owned())
+                    .expect("agent has durable id")
                     .into(),
                 originator: pending.originator.clone(),
                 original_input_tokens: pending.original_input_tokens,
@@ -8404,11 +8212,6 @@ impl Harness {
             return Ok(());
         }
         let response_cid = self.agent_id_for_prompt(&response.agent_prompt_id);
-        if (input_tokens.is_some() || cached_tokens.is_some())
-            && response_cid.as_ref() == Some(&self.default_agent_id)
-        {
-            self.update_context_usage(input_tokens, cached_tokens);
-        }
         // Per-conversation usage: separate from the global tracker
         // because side agents shouldn't clobber the user's
         // status bar, but the harness still needs their context %
@@ -8420,15 +8223,14 @@ impl Harness {
                 .and_then(|conv| conv.context_input_tokens);
             self.maybe_emit_cache_miss_diagnostic(&response, previous_input_tokens);
             let usage_model = self.prompt_models.get(&response.agent_prompt_id).cloned();
-            self.update_agent_context_usage(cid, usage_model.as_ref(), input_tokens);
+            self.update_agent_context_usage(cid, usage_model.as_ref(), input_tokens, cached_tokens);
             self.emit_delegate_progress(cid);
         }
         // Dedupe: under at-least-once delivery the agent may resend a
         // finished-response after a reconnect. The first delivery
         // removed the entry from `prompt_agents`; later ones
-        // must be ignored rather than fall through to the "default"
-        // session fallback, which would silently misroute the
-        // duplicate.
+        // must be ignored rather than falling back to another
+        // session route, which would silently misroute the duplicate.
         let Some(cid) = response_cid else {
             self.emit_info(&format!(
                 "discarding duplicate agent response for agent_prompt_id={}",
@@ -8438,7 +8240,7 @@ impl Harness {
         };
         response.agent_id = self
             .target_agent_id_for_agent(&cid)
-            .unwrap_or_else(|| "main".to_owned())
+            .expect("agent has durable id")
             .into();
 
         let stale_behind_newer_prompt = self.agents.get(&cid).is_some_and(|conv| {
@@ -8581,7 +8383,7 @@ impl Harness {
         // present the AgentTree fold appends an assistant response as a
         // child of `tree.head`, so an unsnapped publish would land on
         // whichever branch happened to be at `tree.head` (e.g. after
-        // a sibling side conv's teardown ran `snap_to_default`).
+        // a sibling side conv's teardown touched another branch).
         // `publish_for_agent` snaps and updates `c.head`.
         self.publish_for_agent_from(
             &cid,
@@ -8695,10 +8497,6 @@ impl Harness {
                     query_id, name
                 ));
             }
-            // Snap the tree head back to the default agent's
-            // local head so the user's next interactive prompt
-            // continues on the main branch instead of the side branch.
-            self.snap_to_default_agent();
             let completed_agent_id = self.agents.get(&cid).and_then(|conv| conv.agent_id.clone());
             let keep_tool_backed_conversation = self
                 .agents
@@ -8789,14 +8587,14 @@ impl Harness {
     /// Update one agent's `context_input_tokens` /
     /// `context_percent_used` from a finished agent response. Mirrors
     /// `update_context_usage` but scoped to a single conversation —
-    /// the global tracker is intentionally only fed by the user's
-    /// default agent so the status bar stays stable while side
-    /// agents run.
+    /// the global tracker is intentionally only fed by user-agent
+    /// turns so the status bar stays stable while side agents run.
     fn update_agent_context_usage(
         &mut self,
         cid: &AgentId,
         model: Option<&ModelId>,
         input_tokens: Option<u64>,
+        cached_tokens: Option<u64>,
     ) {
         let context_window =
             model.and_then(|m| context_window_for_model(&self.provider_model_info, m));
@@ -8808,35 +8606,20 @@ impl Harness {
             if input_tokens.is_some() {
                 conv.context_input_tokens = input_tokens;
             }
+            if cached_tokens.is_some() {
+                conv.context_cached_tokens = cached_tokens;
+            }
             if percent_used.is_some() {
                 conv.context_percent_used = percent_used;
             }
         }
-    }
-
-    fn update_context_usage(&mut self, input_tokens: Option<u64>, cached_tokens: Option<u64>) {
-        let context_window = self
-            .selected_model
-            .as_ref()
-            .and_then(|m| context_window_for_model(&self.provider_model_info, m));
-        let percent_used = match (context_window, input_tokens) {
-            (Some(w), Some(tokens)) => Some(context_percent_used(tokens, w)),
-            _ => None,
-        };
-        if self.current_session_state.context_input_tokens == input_tokens
-            && self.current_session_state.context_cached_tokens == cached_tokens
-            && self.current_session_state.context_percent_used == percent_used
-        {
-            return;
-        }
-        self.current_session_state.context_input_tokens = input_tokens;
-        self.current_session_state.context_cached_tokens = cached_tokens;
-        self.current_session_state.context_percent_used = percent_used;
         self.publish_event(
             None,
-            Event::HarnessContextUsageChanged(HarnessContextUsageChanged {
+            Event::HarnessAgentContextUsageChanged(HarnessAgentContextUsageChanged {
+                agent_id: cid.clone(),
                 input_tokens,
                 cached_tokens,
+                context_window,
                 percent_used,
             }),
         );
@@ -9284,9 +9067,6 @@ impl Harness {
         {
             return Some(parent_cid.clone());
         }
-        if self.default_agent_id != *cid && self.agents.contains_key(&self.default_agent_id) {
-            return Some(self.default_agent_id.clone());
-        }
         self.agents.iter().find_map(|(candidate_cid, candidate)| {
             (candidate_cid != cid && candidate.session_id == conv.session_id)
                 .then_some(candidate_cid.clone())
@@ -9397,7 +9177,7 @@ impl Harness {
                 .agents
                 .get(cid)
                 .and_then(|conv| conv.agent_id.clone())
-                .unwrap_or_else(|| "main".to_owned());
+                .expect("agent has durable id");
             self.publish_for_agent(
                 cid,
                 Event::AgentPromptSteered(tau_proto::AgentPromptSteered {
@@ -9763,10 +9543,12 @@ impl Harness {
         )?;
         harness.selected_model = Some("test/model".parse().expect("model id"));
 
-        let cid = harness.default_agent_id.clone();
-        let agent_id = harness.ensure_agent_id_for_agent(&cid).ok_or_else(|| {
-            HarnessError::Participant("default agent disappeared while dumping prompt".to_owned())
-        })?;
+        let role = harness.selected_role.clone();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cid = harness.create_durable_user_agent("s1".into(), &role, cwd);
+        let agent_id = harness
+            .target_agent_id_for_agent(&cid)
+            .expect("agent has durable id");
         harness.publish_event_for_agent(
             &cid,
             None,
@@ -10189,4 +9971,4 @@ pub(crate) fn selector_matches_event(selectors: &[EventSelector], event: &Event)
 mod delegate_display_tests;
 
 #[cfg(test)]
-mod session_context_tests;
+mod agent_context_tests;

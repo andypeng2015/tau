@@ -7,11 +7,11 @@
 //! and lets the agent interleave them on its side.
 //!
 //! [`Harness::dispatch_user_prompt`] is the direct entry point for interactive
-//! submission on the default agent; [`Harness::dispatch_prompt_for_agent`] is
-//! the shared per-agent primitive (also used by side queries spawned via
-//! `StartAgentRequest`). [`Harness::try_advance_queue`] is the react-to-state-
-//! change drain that picks the next runnable agent and dispatches one prompt
-//! from its queue.
+//! submissions and creates/reuses the session's durable user agent;
+//! [`Harness::dispatch_prompt_for_agent`] is the shared per-agent primitive
+//! (also used by side queries spawned via `StartAgentRequest`).
+//! [`Harness::try_advance_queue`] is the react-to-state- change drain that
+//! picks the next runnable agent and dispatches one prompt from its queue.
 //!
 //! [`Harness::dispatch_blocked_for`] is the predicate the rest of the harness
 //! uses to decide whether to dispatch immediately or queue.
@@ -28,12 +28,20 @@ impl Harness {
         session_id: SessionId,
         text: String,
     ) -> Result<(), HarnessError> {
-        debug_assert_eq!(
-            self.agents[&self.default_agent_id].session_id, session_id,
-            "dispatch_user_prompt only valid for the default agent",
-        );
-        let agent_id = self.default_agent_id.clone();
-        self.ensure_agent_id_for_agent(&agent_id);
+        let agent_id = self
+            .agents
+            .iter()
+            .find_map(|(cid, conv)| {
+                (conv.session_id == session_id
+                    && conv.originator.is_user()
+                    && conv.agent_id.is_some())
+                .then_some(cid.clone())
+            })
+            .unwrap_or_else(|| {
+                let role = self.selected_role.clone();
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                self.create_durable_user_agent(session_id, &role, cwd)
+            });
         if self.maybe_start_auto_compaction_for_user_prompt(&agent_id, &text) {
             return Ok(());
         }
@@ -90,8 +98,8 @@ impl Harness {
     /// branch), enters `AgentThinking`, and asks the agent for a
     /// completion.
     ///
-    /// Used for both interactive user prompts on the default agent and side-
-    /// query prompts spawned by extensions.
+    /// Used for both interactive user prompts on user agents and side-query
+    /// prompts spawned by extensions.
     pub(crate) fn dispatch_prompt_for_agent(
         &mut self,
         agent_id: &AgentId,

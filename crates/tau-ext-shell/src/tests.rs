@@ -339,7 +339,7 @@ fn startup_registers_shell_cwd_prompt_fragment() {
                         .fragment
                         .template
                         .as_str()
-                        .contains("session_context.cwd")
+                        .contains("agent_context.cwd")
                 );
                 found_fragment = true;
             }
@@ -356,25 +356,26 @@ fn startup_registers_shell_cwd_prompt_fragment() {
 }
 
 #[test]
-fn session_started_publishes_current_directory_context() {
-    // Session context is the structured source used by the shell cwd prompt
-    // fragment rather than interpolating the harness built-in cwd directly.
+fn session_agent_loaded_publishes_current_directory_context_for_agent() {
+    // Agent context is the structured source used by the shell cwd prompt
+    // fragment; it must be keyed by durable agent, not by session.
     let cwd = std::env::current_dir().expect("current dir");
-    let events = build_session_started_events(tau_proto::SessionStarted {
-        session_id: tau_proto::SessionId::new("session-1"),
-        reason: tau_proto::SessionStartReason::Initial,
-    });
+    let (tx, rx) = std::sync::mpsc::channel();
 
-    let publish = events
-        .iter()
-        .find_map(|event| match event {
-            Event::ExtSessionContextPublish(publish) if publish.key.as_ref() == "cwd" => {
-                Some(publish)
-            }
-            _ => None,
-        })
-        .expect("cwd session context publish");
-    assert_eq!(publish.session_id.as_ref(), "session-1");
+    dispatch_session_agent_loaded(
+        tau_proto::SessionAgentLoaded {
+            session_id: tau_proto::SessionId::new("session-1"),
+            agent_id: tau_proto::AgentId::new("agent-1"),
+        },
+        &tx,
+    );
+
+    let Frame::Event(Event::ExtAgentContextPublish(publish)) = rx.recv().expect("cwd publish")
+    else {
+        panic!("expected cwd agent context publish");
+    };
+    assert_eq!(publish.agent_id.as_ref(), "agent-1");
+    assert_eq!(publish.key.as_ref(), "cwd");
     assert_eq!(
         publish.value.0,
         serde_json::Value::String(cwd.display().to_string())

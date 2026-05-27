@@ -289,7 +289,11 @@ mod tests {
         let mut config = config_with_secret(false);
         let mut secrets = BTreeMap::new();
         secrets.insert("../bad".to_owned(), ExtensionSecretEntry::default());
-        config.extensions.get_mut("std-email").unwrap().secrets = secrets;
+        config
+            .extensions
+            .get_mut("std-email")
+            .expect("test config should include std-email extension")
+            .secrets = secrets;
         let td = TempDir::new().expect("tempdir");
 
         let err = resolve_extension_secrets(&config, td.path(), &SecretSources::default())

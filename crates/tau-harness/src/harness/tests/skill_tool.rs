@@ -85,7 +85,7 @@ fn skill_tool_reads_file_content() {
 
     // Directly invoke the skill tool handler.
     append_user_message_via_event(&mut h, "s1", "load skill");
-    let cid_for_state = h.default_agent_id.clone();
+    let cid_for_state = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid_for_state, &[("call-skill", "skill")]);
     let call = AgentToolCall {
         id: "call-skill".into(),
@@ -97,7 +97,7 @@ fn skill_tool_reads_file_content() {
         )]),
         display: None,
     };
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
 
     // Verify the tool result was folded into the item-model transcript.
@@ -119,7 +119,7 @@ fn skill_tool_returns_error_for_missing_query() {
 
     let mut h = echo_harness(&sp).expect("start");
     append_user_message_via_event(&mut h, "s1", "load skill");
-    let cid_for_state = h.default_agent_id.clone();
+    let cid_for_state = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid_for_state, &[("call-missing", "skill")]);
     let call = AgentToolCall {
         id: "call-missing".into(),
@@ -131,7 +131,7 @@ fn skill_tool_returns_error_for_missing_query() {
         )]),
         display: None,
     };
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
 
     let err = latest_tool_error(&h, "s1", "call-missing");
@@ -144,7 +144,7 @@ fn skill_tool_rejects_malformed_search_content() {
     let sp = td.path().join("state");
 
     let mut h = echo_harness(&sp).expect("start");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-bad-bool", "skill")]);
     h.handle_skill_tool_call(
         &cid,
@@ -249,7 +249,7 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
         },
     );
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let call_search = |query: &str, search_content: bool, id: &str| AgentToolCall {
         id: id.into(),
         name: tau_proto::ToolName::new("skill"),
@@ -452,7 +452,7 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_matched_terms() {
         },
     );
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let call_search = |query: &str, id: &str| AgentToolCall {
         id: id.into(),
         name: tau_proto::ToolName::new("skill"),
@@ -604,7 +604,7 @@ fn skill_tool_load_truncates_large_skill_content() {
         },
     );
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-large", "skill")]);
     h.handle_skill_tool_call(&cid, &skill_call("zqx-large", false, "call-large"))
         .expect("skill call");
@@ -643,7 +643,7 @@ fn skill_tool_errors_when_frontmatter_exceeds_read_limit() {
         },
     );
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-frontmatter", "skill")]);
     h.handle_skill_tool_call(
         &cid,
@@ -677,7 +677,7 @@ fn skill_tool_search_caps_match_output() {
         );
     }
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-limit", "skill")]);
     h.handle_skill_tool_call(&cid, &skill_call("zqxlimit", false, "call-limit"))
         .expect("skill call");
@@ -725,7 +725,7 @@ fn skill_tool_loads_exact_single_term_match_even_with_other_hits() {
         );
     }
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-exact", "skill")]);
     h.handle_skill_tool_call(
         &cid,
@@ -768,7 +768,7 @@ fn skill_tool_search_result_includes_guidance_and_matched_fields() {
         );
     }
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-guidance", "skill")]);
     h.handle_skill_tool_call(&cid, &skill_call("zqxguidance", false, "call-guidance"))
         .expect("skill call");
@@ -881,7 +881,7 @@ fn skill_tool_registered_in_tool_list() {
     let sp = td.path().join("state");
 
     let h = echo_harness(&sp).expect("start");
-    let defs = h.gather_tool_definitions();
+    let defs = h.gather_tool_definitions_for_role(&h.selected_role);
     assert!(
         defs.iter().any(|d| d.name == "skill"),
         "skill tool should be registered; got: {:?}",
@@ -924,7 +924,7 @@ fn built_in_tau_self_knowledge_skills_are_available_without_file_paths() {
     assert!(!prompt.contains("<name>tau-self-knowledge-community</name>"));
     assert!(!prompt.contains("<name>tau-self-knowledge-debugging</name>"));
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_assistant_tool_round(&mut h, &cid, &[("call-built-in", "skill")]);
     h.handle_skill_tool_call(
         &cid,
@@ -1164,7 +1164,7 @@ fn gather_tool_definitions_respects_role_tool_lists() {
         state_dir: Some(state_dir.clone()),
     };
     let h = echo_harness_with_dirs("s1", state_dir, dirs).expect("start");
-    let defs = h.gather_tool_definitions();
+    let defs = h.gather_tool_definitions_for_role(&h.selected_role);
 
     assert!(defs.iter().any(|d| d.name == "read"));
     assert!(!defs.iter().any(|d| d.name == "shell"));
@@ -1351,7 +1351,7 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
         },
     );
 
-    let defs = h.gather_tool_definitions();
+    let defs = h.gather_tool_definitions_for_role(&h.selected_role);
     assert!(
         defs.iter().any(|d| {
             d.name == "test_gpt_shell"
@@ -1363,7 +1363,7 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
     );
     assert!(!defs.iter().any(|d| d.name == "shell"));
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.execute_agent_tool_call(
         &cid,
         &AgentToolCall {

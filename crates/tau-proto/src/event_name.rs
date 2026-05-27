@@ -219,8 +219,8 @@ impl EventName {
         Self::from_static(EventCategory::Extension, "agents_md_available");
     pub const EXTENSION_CONTEXT_READY: Self =
         Self::from_static(EventCategory::Extension, "context_ready");
-    pub const EXTENSION_SESSION_CONTEXT_PUBLISH: Self =
-        Self::from_static(EventCategory::Extension, "session_context_publish");
+    pub const EXTENSION_AGENT_CONTEXT_PUBLISH: Self =
+        Self::from_static(EventCategory::Extension, "agent_context_publish");
     pub const EXTENSION_PROMPT_FRAGMENT_PUBLISH: Self =
         Self::from_static(EventCategory::Extension, "prompt_fragment_publish");
     pub const AGENT_START_REQUEST: Self = Self::from_static(EventCategory::Agent, "start_request");
@@ -255,6 +255,8 @@ impl EventName {
         Self::from_static(EventCategory::Harness, "role_selected");
     pub const HARNESS_CONTEXT_USAGE_CHANGED: Self =
         Self::from_static(EventCategory::Harness, "context_usage_changed");
+    pub const HARNESS_AGENT_CONTEXT_USAGE_CHANGED: Self =
+        Self::from_static(EventCategory::Harness, "agent_context_usage_changed");
     pub const HARNESS_EFFORTS_AVAILABLE: Self =
         Self::from_static(EventCategory::Harness, "efforts_available");
     pub const HARNESS_VERBOSITIES_AVAILABLE: Self =
@@ -268,7 +270,7 @@ impl EventName {
     pub const UI_DETACH_REQUEST: Self = Self::from_static(EventCategory::Ui, "detach_request");
     pub const UI_SHELL_COMMAND: Self = Self::from_static(EventCategory::Ui, "shell_command");
     pub const UI_SWITCH_SESSION: Self = Self::from_static(EventCategory::Ui, "switch_session");
-    pub const UI_NEW_AGENT: Self = Self::from_static(EventCategory::Ui, "new_agent");
+    pub const UI_CREATE_AGENT: Self = Self::from_static(EventCategory::Ui, "create_agent");
     pub const UI_TREE_REQUEST: Self = Self::from_static(EventCategory::Ui, "tree_request");
     pub const UI_NAVIGATE_TREE: Self = Self::from_static(EventCategory::Ui, "navigate_tree");
     pub const UI_COMPACT_REQUEST: Self = Self::from_static(EventCategory::Ui, "compact_request");

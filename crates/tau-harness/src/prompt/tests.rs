@@ -40,7 +40,7 @@ fn cwd_prompt_fragment() -> tau_proto::PromptFragment {
     tau_proto::PromptFragment::new(
         "shell.cwd",
         tau_proto::PromptPriority::new(900),
-        "{{#each session_context.cwd}}{{#if @first}}Current working directory: {{value}}{{/if}}{{/each}}",
+        "{{#each agent_context.cwd}}{{#if @first}}Current working directory: {{value}}{{/if}}{{/each}}",
     )
 }
 
@@ -101,7 +101,7 @@ fn build_system_prompt_renders_role_prompt_handlebars_context() {
         tau_proto::PromptFragment::new(
             "engineer.instructions",
             tau_proto::PromptPriority::new(100),
-            "ROLE {{role.name}} is working in {{#each session_context.cwd}}{{#if @first}}{{value}}{{/if}}{{/each}}.",
+            "ROLE {{role.name}} is working in {{#each agent_context.cwd}}{{#if @first}}{{value}}{{/if}}{{/each}}.",
         ),
         tau_proto::PromptFragment::new(
             "engineer.extra",
@@ -226,15 +226,15 @@ alpha middle zeta "
     assert!(!prompt.contains("Current working directory: /tmp/work"));
 }
 
-/// Session context is nested below `session_context`, so extension keys
+/// Agent context is nested below `agent_context`, so extension keys
 /// cannot collide with built-in prompt fields like `cwd` or `role`.
 #[test]
-fn build_system_prompt_exposes_session_context_to_handlebars() {
+fn build_system_prompt_exposes_agent_context_to_handlebars() {
     let skills = std::collections::HashMap::new();
     let fragments = vec![tau_proto::PromptFragment::new(
         "role.engineer.context",
         tau_proto::PromptPriority::new(100),
-        "{{#each session_context.skills}}{{extension_name}}={{value.count}}{{/each}}",
+        "{{#each agent_context.skills}}{{extension_name}}={{value.count}}{{/each}}",
     )];
 
     let prompt = build_system_prompt_with_template_context(
@@ -258,11 +258,11 @@ fn build_system_prompt_exposes_session_context_to_handlebars() {
 /// prompt context as role templates, including extension-published session
 /// context.
 #[test]
-fn prompt_fragment_renders_session_context_variable() {
+fn prompt_fragment_renders_agent_context_variable() {
     let fragments = vec![tau_proto::PromptFragment::new(
         "tool.context",
         tau_proto::PromptPriority::new(10),
-        "fragment={{#each session_context.demo}}{{extension_name}}:{{value.answer}}{{/each}}",
+        "fragment={{#each agent_context.demo}}{{extension_name}}:{{value.answer}}{{/each}}",
     )];
 
     let prompt = build_system_prompt_with_template_context(
@@ -328,7 +328,7 @@ fn big_system_prompt_template_is_builtin_and_renders_context() {
         &[tau_proto::PromptFragment::new(
             "test.fragment",
             tau_proto::PromptPriority::new(10),
-            "FRAGMENT {{#each session_context.cwd}}{{#if @first}}{{value}}{{/if}}{{/each}}",
+            "FRAGMENT {{#each agent_context.cwd}}{{#if @first}}{{value}}{{/if}}{{/each}}",
         )],
         serde_json::json!({
             "cwd": [

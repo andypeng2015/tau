@@ -315,11 +315,11 @@ fn handshaking_tool_register_is_not_active_before_ready() {
 
     assert!(h.registry.providers_for("staged_tool").is_empty());
     assert!(
-        !h.gather_tool_definitions()
+        !h.gather_tool_definitions_for_role(&h.selected_role)
             .iter()
             .any(|tool| tool.name.as_str() == "staged_tool")
     );
-    let system_prompt = h.build_current_system_prompt();
+    let system_prompt = h.build_system_prompt_for_role(&h.selected_role);
     assert!(!system_prompt.contains("STAGED TOOL PROMPT"));
     assert!(!system_prompt.contains("STAGED EXTENSION PROMPT"));
 
@@ -413,7 +413,7 @@ fn queued_tool_call_waits_for_staged_provider_until_ready() {
     )
     .expect("stage tool");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-staged-tools");
     h.prompt_agents
         .insert("sp-staged-tools".into(), cid.clone());
@@ -589,8 +589,8 @@ fn provider_models_are_staged_until_ready_and_queued_prompt_waits() {
 }
 
 #[test]
-fn skill_session_context_and_fragment_are_staged_until_ready() {
-    // Skills, session context, and extension prompt fragments all feed prompt
+fn skill_agent_context_and_fragment_are_staged_until_ready() {
+    // Skills, agent context, and extension prompt fragments all feed prompt
     // assembly. None of them may affect the system prompt until Ready activates
     // the staged batch.
     let td = TempDir::new().expect("tempdir");
@@ -610,19 +610,25 @@ fn skill_session_context_and_fragment_are_staged_until_ready() {
         })),
     )
     .expect("stage skill");
+    let cid = ensure_test_user_agent(&mut h);
+    let agent_id = h.agents[&cid]
+        .agent_id
+        .as_deref()
+        .expect("agent id")
+        .to_owned();
     h.handle_extension_event(
         conn_id,
-        Frame::Event(Event::ExtSessionContextPublish(
-            tau_proto::ExtSessionContextPublish {
-                session_id: "s1".into(),
+        Frame::Event(Event::ExtAgentContextPublish(
+            tau_proto::ExtAgentContextPublish {
+                agent_id: agent_id.clone().into(),
                 key: "demo".into(),
-                value: tau_proto::SessionContextValue(serde_json::json!({
+                value: tau_proto::AgentContextValue(serde_json::json!({
                     "answer": "STAGED CONTEXT VALUE"
                 })),
             },
         )),
     )
-    .expect("stage session context");
+    .expect("stage agent context");
     h.handle_extension_event(
         conn_id,
         Frame::Event(Event::ExtPromptFragmentPublish(
@@ -630,7 +636,7 @@ fn skill_session_context_and_fragment_are_staged_until_ready() {
                 fragment: tau_proto::PromptFragment::new(
                     "staged.context.fragment",
                     tau_proto::PromptPriority::new(20),
-                    "CTX={{#each session_context.demo}}{{value.answer}}{{/each}}",
+                    "CTX={{#each agent_context.demo}}{{value.answer}}{{/each}}",
                 ),
             },
         )),
@@ -638,7 +644,9 @@ fn skill_session_context_and_fragment_are_staged_until_ready() {
     .expect("stage prompt fragment");
 
     assert!(!h.discovered_skills.contains_key("staged-skill"));
-    let before_prompt = h.build_current_system_prompt();
+    let prompt_agent_id = tau_proto::AgentId::from(agent_id.clone());
+    let before_prompt =
+        h.build_system_prompt_for_role_and_agent(&h.selected_role, Some(&prompt_agent_id));
     assert!(!before_prompt.contains("STAGED SKILL DESCRIPTION"));
     assert!(!before_prompt.contains("STAGED CONTEXT VALUE"));
 
@@ -651,9 +659,18 @@ fn skill_session_context_and_fragment_are_staged_until_ready() {
     .expect("ready");
 
     assert!(h.discovered_skills.contains_key("staged-skill"));
-    let after_prompt = h.build_current_system_prompt();
+    let after_prompt =
+        h.build_system_prompt_for_role_and_agent(&h.selected_role, Some(&prompt_agent_id));
     assert!(after_prompt.contains("STAGED SKILL DESCRIPTION"));
     assert!(after_prompt.contains("STAGED CONTEXT VALUE"));
+    assert!(
+        !event_log_events(&h).iter().any(|event| matches!(
+            event,
+            Event::HarnessInfo(info)
+                if info.message.contains("extension.agent_context_publish rejected")
+        )),
+        "agent context publishes update prompt context but must not be persisted as agent transcript events"
+    );
 
     h.shutdown().expect("shutdown");
 }
@@ -901,17 +918,23 @@ fn disconnect_before_ready_drops_all_staged_state() {
         )),
     )
     .expect("stage agents");
+    let cid = ensure_test_user_agent(&mut h);
+    let agent_id = h.agents[&cid]
+        .agent_id
+        .as_deref()
+        .expect("agent id")
+        .to_owned();
     h.handle_extension_event(
         conn_id,
-        Frame::Event(Event::ExtSessionContextPublish(
-            tau_proto::ExtSessionContextPublish {
-                session_id: "s1".into(),
+        Frame::Event(Event::ExtAgentContextPublish(
+            tau_proto::ExtAgentContextPublish {
+                agent_id: agent_id.clone().into(),
                 key: "dropped".into(),
-                value: tau_proto::SessionContextValue(serde_json::json!("DROPPED CONTEXT")),
+                value: tau_proto::AgentContextValue(serde_json::json!("DROPPED CONTEXT")),
             },
         )),
     )
-    .expect("stage session context");
+    .expect("stage agent context");
     h.handle_extension_event(
         conn_id,
         Frame::Event(Event::ExtPromptFragmentPublish(
@@ -956,12 +979,15 @@ fn disconnect_before_ready_drops_all_staged_state() {
     assert!(!h.discovered_skills.contains_key("dropped-skill"));
     assert!(h.discovered_agents_files.is_empty());
     assert!(
-        !h.session_context
-            .template_value(&"s1".into())
+        !h.agent_context
+            .template_value(Some(&agent_id.into()))
             .to_string()
             .contains("DROPPED CONTEXT")
     );
-    assert!(!h.build_current_system_prompt().contains("DROPPED"));
+    assert!(
+        !h.build_system_prompt_for_role(&h.selected_role)
+            .contains("DROPPED")
+    );
     assert!(!event_log_contains_source_event(&h, conn_id, |event| {
         event.name().to_string().contains("dropped")
     }));
@@ -1068,7 +1094,7 @@ fn unregister_queues_unavailable_notice_for_next_user_prompt_only() {
     assert!(h.prompt_snapshots.is_empty());
     assert_eq!(agent_prompt_text_count(&h, &notice), 0);
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("after unregister".to_owned()))
         .expect("dispatch user prompt");
 
@@ -1102,7 +1128,7 @@ fn reregister_before_notice_delivery_dequeues_unavailable_notice() {
     unregister_shell(&mut h);
     reregister_shell(&mut h, spec);
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("after reconnect".to_owned()))
         .expect("dispatch user prompt");
 
@@ -1129,7 +1155,7 @@ fn reregister_after_notice_delivery_queues_available_again_notice() {
     let available = tool_available_again_notice_prompt(&ToolName::new("shell"));
     unregister_shell(&mut h);
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("after unregister".to_owned()))
         .expect("dispatch unavailable prompt");
     let first_prompt = read_prompt_created(&h, &AgentPromptId::from("sp-0"));
@@ -1173,7 +1199,7 @@ fn duplicate_provider_keeps_tool_available_without_notice() {
     unregister_shell(&mut h);
     assert_eq!(h.registry.providers_for("shell").len(), 1);
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.dispatch_prompt_for_agent(
         &cid,
         PendingPrompt::user("after partial unregister".to_owned()),
@@ -1202,7 +1228,7 @@ fn unavailable_tool_is_reported_without_crashing() {
     let removed = h.registry.unregister_connection(&conn_id);
     assert!(removed.iter().any(|t| t == "shell"));
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
     h.publish_for_agent(
@@ -1216,9 +1242,10 @@ fn unavailable_tool_is_reported_without_crashing() {
             ctx_id: None,
         }),
     );
+    let target_agent_id = durable_agent_id_for_conversation(&h, &cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: target_agent_id.clone(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: ToolName::new("shell"),
@@ -1271,7 +1298,7 @@ fn disconnected_tool_completes_pending_call() {
         .to_owned();
     let call_id: ToolCallId = "call-1".into();
     let tool_name = ToolName::new("shell");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");
@@ -1326,7 +1353,7 @@ fn disconnected_tool_completes_pending_call() {
     assert!(matches!(h.turn_state, TurnState::Idle));
     assert!(matches!(
         h.agents
-            .get(&h.default_agent_id)
+            .get(&test_user_agent(&h))
             .expect("default conversation")
             .turn_state,
         AgentTurnState::AgentThinking { .. }
@@ -1407,7 +1434,7 @@ fn disconnected_tool_is_removed_cleanly() {
             .any(|m| m == "extension shell exited")
     );
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
     h.publish_for_agent(
@@ -1590,7 +1617,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
 
     h.selected_model = Some("test/model".into());
     h.selected_role = "engineer".to_owned();
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
     h.publish_for_agent(
@@ -1651,7 +1678,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
 }
 
 #[test]
-fn agents_context_is_injected_at_session_init() {
+fn agents_context_is_injected_when_agent_is_created() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -1674,22 +1701,7 @@ fn agents_context_is_injected_at_session_init() {
         file_path: PathBuf::from("/repo/pkg/AGENTS.md"),
         content: "# Package\n- package rule\n".to_owned(),
     });
-    h.turn_state = TurnState::InitializingSession {
-        session_id: "s1".into(),
-        reason: tau_proto::SessionStartReason::Initial,
-        waiting_on: [tools_connection_id.clone().into()].into_iter().collect(),
-    };
-    h.handle_extension_event(
-        &tools_connection_id,
-        Frame::Event(Event::ExtensionContextReady(
-            tau_proto::ExtensionContextReady {
-                session_id: "s1".into(),
-            },
-        )),
-    )
-    .expect("ready");
-
-    assert!(matches!(h.turn_state, TurnState::Idle));
+    let _cid = ensure_test_user_agent(&mut h);
 
     let events = loaded_agent_events(&h, "s1");
     let injected = events
@@ -1747,7 +1759,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
     };
 
     h.discovered_agents_files.clear();
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");
@@ -1806,7 +1818,7 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
     // Pre-seed as if the agent had just been prompted and is now
     // responding with tool_calls.
     h.selected_model = Some("test/model".into());
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
     h.publish_for_agent(
@@ -1917,7 +1929,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
             background_support: None,
         },
     );
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
     h.publish_for_agent(
@@ -1995,14 +2007,15 @@ fn cancel_after_agent_thinking_terminalizes_tool_calls_before_dispatch() {
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
+    let target_agent_id = durable_agent_id_for_conversation(&h, &cid);
     h.handle_client_event(
         "ui",
         Frame::Event(Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
             session_id: "s1".into(),
-            target_agent_id: None,
+            target_agent_id: Some(target_agent_id.clone()),
             agent_prompt_id: None,
         })),
     )
@@ -2010,7 +2023,7 @@ fn cancel_after_agent_thinking_terminalizes_tool_calls_before_dispatch() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: target_agent_id,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
@@ -2062,12 +2075,13 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
+    let target_agent_id = durable_agent_id_for_conversation(&h, &cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: target_agent_id.clone(),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
@@ -2105,7 +2119,7 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
         "ui",
         Frame::Event(Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
             session_id: "s1".into(),
-            target_agent_id: None,
+            target_agent_id: Some(target_agent_id),
             agent_prompt_id: None,
         })),
     )

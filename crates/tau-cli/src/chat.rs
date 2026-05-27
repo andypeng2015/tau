@@ -11,7 +11,8 @@ use tau_config::settings::CliBindingAction;
 use tau_harness::SessionLaunchStatus;
 use tau_proto::{
     CborValue, ClientKind, Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter,
-    Hello, Message, PROTOCOL_VERSION, Subscribe, UiPromptDraft, UiPromptSubmitted, UnixMicros,
+    Hello, Message, PROTOCOL_VERSION, Subscribe, UiCreateAgent, UiPromptDraft, UiPromptSubmitted,
+    UnixMicros,
 };
 
 use crate::action_commands::ActionCommandState;
@@ -42,15 +43,6 @@ fn send_frame(writer: &WriterHandle, frame: &Frame) -> io::Result<()> {
 /// Convenience wrapper around [`send_frame`] for [`Event`] payloads.
 fn send_event(writer: &WriterHandle, event: &Event) -> io::Result<()> {
     send_frame(writer, &Frame::Event(event.clone()))
-}
-
-fn send_new_agent_request(writer: &WriterHandle, session_id: &str) -> io::Result<()> {
-    send_event(
-        writer,
-        &Event::UiNewAgent(tau_proto::UiNewAgent {
-            session_id: session_id.into(),
-        }),
-    )
 }
 
 fn peel_log_with_timestamp(
@@ -1150,9 +1142,7 @@ impl<'a> TerminalInputSession<'a> {
             .lock()
             .ok()
             .and_then(|agent| agent.clone());
-        selected_agent
-            .filter(|agent| agent != "main")
-            .map(Into::into)
+        selected_agent.map(Into::into)
     }
 
     fn handle_tree_or_compact_command(&self, text: &str) -> bool {
@@ -1322,12 +1312,7 @@ impl<'a> TerminalInputSession<'a> {
             self.output.system_info("/agent new");
             return;
         }
-        self.send_new_agent_request();
         self.clear_selected_agent();
-    }
-
-    fn send_new_agent_request(&self) {
-        let _ = send_new_agent_request(self.writer, self.session_id.as_str());
     }
 
     fn clear_selected_agent(&self) {
@@ -1522,7 +1507,6 @@ impl<'a> TerminalInputSession<'a> {
             .lock()
             .ok()
             .and_then(|agent| agent.clone())
-            .filter(|agent| agent != "main")
             .map(Into::into);
         send_shell_command(
             self.writer,
@@ -1542,9 +1526,7 @@ impl<'a> TerminalInputSession<'a> {
             .lock()
             .ok()
             .and_then(|agent| agent.clone());
-        if let Some(selected_agent) = selected_agent
-            .as_deref()
-            .filter(|selected_agent| *selected_agent != "main")
+        if let Some(selected_agent) = selected_agent.as_deref()
             && !self.agent_is_active(selected_agent)
         {
             self.output.system_info(SUSPENDED_AGENT_PROMPT);
@@ -1553,22 +1535,35 @@ impl<'a> TerminalInputSession<'a> {
         self.ctx
             .agent_in_progress
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let target_agent_id = selected_agent
-            .filter(|agent| agent != "main")
-            .map(Into::into);
-        if send_event(
-            self.writer,
-            &Event::UiPromptSubmitted(UiPromptSubmitted {
+        let event = if let Some(target_agent_id) = selected_agent.map(Into::into) {
+            Event::UiPromptSubmitted(UiPromptSubmitted {
                 session_id: self.session_id.as_str().into(),
                 text: text.to_owned(),
-                target_agent_id,
+                target_agent_id: Some(target_agent_id),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
                 ctx_id: None,
-            }),
-        )
-        .is_err()
-        {
+            })
+        } else {
+            let role = self
+                .ctx
+                .current_role_state
+                .lock()
+                .ok()
+                .and_then(|role| role.clone())
+                .unwrap_or_else(|| "engineer".to_owned());
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            Event::UiCreateAgent(UiCreateAgent {
+                session_id: self.session_id.as_str().into(),
+                role,
+                cwd,
+                initial_prompt: Some(text.to_owned()),
+                message_class: tau_proto::PromptMessageClass::User,
+                originator: tau_proto::PromptOriginator::User,
+                ctx_id: None,
+            })
+        };
+        if send_event(self.writer, &event).is_err() {
             return Some(InputLoopExit::Quit);
         }
 
@@ -1744,9 +1739,6 @@ fn mark_agent_suspended(
     suspended_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
     agent_id: &str,
 ) {
-    if agent_id == "main" {
-        return;
-    }
     if let Ok(mut suspended) = suspended_agents.lock() {
         suspended.insert(agent_id.to_owned());
     }
@@ -1757,9 +1749,6 @@ fn mark_agent_resumed(
     suspended_agents: &Arc<Mutex<std::collections::HashSet<String>>>,
     agent_id: &str,
 ) {
-    if agent_id == "main" {
-        return;
-    }
     if let Ok(mut live) = live_agents.lock() {
         live.insert(agent_id.to_owned());
     }
@@ -1781,7 +1770,7 @@ fn active_side_agent_count_from_handles(
         .map(|agents| agents.clone())
         .unwrap_or_default();
     live.iter()
-        .filter(|agent| agent.as_str() != "main" && !suspended.contains(*agent))
+        .filter(|agent| !suspended.contains(*agent))
         .count()
 }
 
@@ -2192,27 +2181,6 @@ mod role_cycle_tests {
     }
 
     #[test]
-    fn agent_new_sends_new_agent_request_not_session_switch() {
-        // Regression: `/agent new` starts a fresh foreground agent inside the
-        // current session. The CLI must send the dedicated request instead of
-        // reusing `/session new`'s `UiSwitchSession` path.
-        let (server_end, client_end) = UnixStream::pair().expect("socket pair");
-        let writer = Arc::new(Mutex::new(FrameWriter::new(BufWriter::new(client_end))));
-        send_new_agent_request(&writer, "s1").expect("send /agent new request");
-
-        let mut reader = FrameReader::new(BufReader::new(server_end));
-        let frame = reader
-            .read_frame()
-            .expect("read frame")
-            .expect("frame present");
-        assert!(matches!(
-            frame,
-            Frame::Event(Event::UiNewAgent(tau_proto::UiNewAgent { session_id }))
-                if session_id.as_str() == "s1"
-        ));
-    }
-
-    #[test]
     fn agent_new_takes_no_agent_id_completion() {
         // `/agent new` only clears the selected agent; it must not offer or
         // accept an agent-id argument like switch/suspend/resume do.
@@ -2251,20 +2219,6 @@ mod role_cycle_tests {
             &suspended.lock().unwrap(),
             "worker"
         ));
-    }
-
-    #[test]
-    fn agent_suspend_resume_ignores_main_agent_state() {
-        // `main` is the unscoped session target rather than a delegate agent;
-        // suspending/resuming it must not poison the delegate routing sets.
-        let live = Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
-
-        mark_agent_suspended(&suspended, "main");
-        mark_agent_resumed(&live, &suspended, "main");
-
-        assert!(live.lock().unwrap().is_empty());
-        assert!(suspended.lock().unwrap().is_empty());
     }
 
     #[test]

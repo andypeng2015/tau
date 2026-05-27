@@ -241,8 +241,6 @@ pub(crate) struct EventRenderer {
     agent_activity: AgentActivity,
 }
 
-const MAIN_AGENT_ID: &str = "main";
-
 #[derive(Default)]
 struct AgentUiState {
     output: tau_cli_term::OutputSnapshot,
@@ -1186,9 +1184,6 @@ impl EventRenderer {
     }
 
     fn mark_agent_suspended(&mut self, agent_id: &str) {
-        if agent_id == MAIN_AGENT_ID {
-            return;
-        }
         self.remember_agent(agent_id.to_owned());
         if let Ok(mut agents) = self.suspended_agents.lock() {
             agents.insert(agent_id.to_owned());
@@ -2032,7 +2027,7 @@ impl EventRenderer {
             .map(|agents| agents.clone())
             .unwrap_or_default();
         live.iter()
-            .filter(|agent| agent.as_str() != MAIN_AGENT_ID && !suspended.contains(*agent))
+            .filter(|agent| !suspended.contains(*agent))
             .count()
     }
 
@@ -2322,6 +2317,11 @@ impl EventRenderer {
     pub(crate) fn handle_recorded_at(&mut self, event: &Event, recorded_at: UnixMicros) {
         self.learn_agent_metadata(event);
         let target_agent_id = self.agent_id_for_event(event);
+        let Some(target_agent_id) = target_agent_id else {
+            self.handle_recorded_at_for_visible_agent(event, recorded_at);
+            self.update_agent_in_progress();
+            return;
+        };
         if self.current_agent_id.is_none() {
             if self.event_selects_agent_from_empty(event) {
                 if self.displayed_agent_id.as_deref() != Some(target_agent_id.as_str()) {
@@ -2342,24 +2342,29 @@ impl EventRenderer {
                 self.update_agent_in_progress();
                 return;
             }
-            if target_agent_id != MAIN_AGENT_ID {
-                let visible_state = self.take_visible_agent_state();
-                let target_state = self
-                    .agents_ui_state
-                    .remove(&target_agent_id)
-                    .unwrap_or_default();
-                let handle = self.handle.clone();
-                handle.with_redraw_suppressed(|| {
-                    self.restore_hidden_agent_state(target_state);
-                    self.handle_recorded_at_for_visible_agent(event, recorded_at);
-                    let target_state = self.take_visible_agent_state();
-                    self.agents_ui_state.insert(target_agent_id, target_state);
-                    self.restore_hidden_agent_state(visible_state);
-                });
+            if !Self::event_originator_is_extension(event)
+                && !Self::event_has_explicit_ui_target(event)
+                && !self.agents_ui_state.contains_key(&target_agent_id)
+            {
+                self.handle_recorded_at_for_visible_agent(event, recorded_at);
                 self.update_agent_in_progress();
                 return;
             }
-            self.handle_recorded_at_for_visible_agent(event, recorded_at);
+            let visible_state = self.take_visible_agent_state();
+            let target_state = self
+                .agents_ui_state
+                .remove(&target_agent_id)
+                .unwrap_or_default();
+            let handle = self.handle.clone();
+            handle.with_redraw_suppressed(|| {
+                self.restore_hidden_agent_state(target_state);
+                self.displayed_agent_id = Some(target_agent_id.clone());
+                self.handle_recorded_at_for_visible_agent(event, recorded_at);
+                let target_state = self.take_visible_agent_state();
+                self.agents_ui_state.insert(target_agent_id, target_state);
+                self.restore_hidden_agent_state(visible_state);
+            });
+            self.displayed_agent_id = None;
             self.update_agent_in_progress();
             return;
         }
@@ -2372,7 +2377,8 @@ impl EventRenderer {
         let visible_agent_id = self
             .displayed_agent_id
             .clone()
-            .unwrap_or_else(|| MAIN_AGENT_ID.to_owned());
+            .or_else(|| self.current_agent_id.clone())
+            .unwrap_or_else(|| target_agent_id.clone());
         let visible_state = self.take_visible_agent_state();
         self.agents_ui_state
             .insert(visible_agent_id.clone(), visible_state);
@@ -2399,25 +2405,46 @@ impl EventRenderer {
 
     fn event_selects_agent_from_empty(&self, event: &Event) -> bool {
         match event {
-            Event::AgentPromptCreated(prompt) => {
-                prompt.agent_id != MAIN_AGENT_ID && prompt.originator.is_user()
-            }
-            Event::AgentCompactionRequested(request) => {
-                request.prompt.agent_id != MAIN_AGENT_ID && request.prompt.originator.is_user()
-            }
-            Event::AgentPromptQueued(queued) => {
-                queued.agent_id != MAIN_AGENT_ID && !queued.message_class.is_internal()
-            }
+            Event::AgentPromptCreated(prompt) => prompt.originator.is_user(),
+            Event::AgentCompactionRequested(request) => request.prompt.originator.is_user(),
+            Event::AgentPromptQueued(queued) => !queued.message_class.is_internal(),
             Event::AgentPromptSubmitted(prompt) => {
-                prompt.agent_id != MAIN_AGENT_ID
-                    && prompt.originator.is_user()
-                    && !prompt.message_class.is_internal()
+                prompt.originator.is_user() && !prompt.message_class.is_internal()
             }
             Event::UiPromptSubmitted(prompt) => {
-                prompt.target_agent_id.as_deref() != Some(MAIN_AGENT_ID)
-                    && prompt.target_agent_id.is_some()
-                    && prompt.originator.is_user()
+                prompt.target_agent_id.is_some() && prompt.originator.is_user()
             }
+            _ => false,
+        }
+    }
+
+    fn event_originator_is_extension(event: &Event) -> bool {
+        match event {
+            Event::UiPromptSubmitted(prompt) => !prompt.originator.is_user(),
+            Event::AgentPromptSubmitted(prompt) => !prompt.originator.is_user(),
+            Event::AgentPromptCreated(prompt) => !prompt.originator.is_user(),
+            Event::AgentCompactionRequested(request) => !request.prompt.originator.is_user(),
+            Event::AgentPromptTerminated(terminated) => !terminated.originator.is_user(),
+            Event::ProviderPromptSubmitted(submitted) => !submitted.originator.is_user(),
+            Event::ProviderResponseUpdated(update) => !update.originator.is_user(),
+            Event::ProviderResponseFinished(finished) => !finished.originator.is_user(),
+            Event::ToolResult(result) | Event::ProviderToolResult(result) => {
+                !result.originator.is_user()
+            }
+            Event::ToolError(error) | Event::ProviderToolError(error) => {
+                !error.originator.is_user()
+            }
+            _ => false,
+        }
+    }
+
+    fn event_has_explicit_ui_target(event: &Event) -> bool {
+        match event {
+            Event::UiShellCommand(command) => command.target_agent_id.is_some(),
+            Event::ShellCommandProgress(progress) => progress.target_agent_id.is_some(),
+            Event::ShellCommandFinished(finished) => finished.target_agent_id.is_some(),
+            Event::UiCancelPrompt(cancel) => cancel.target_agent_id.is_some(),
+            Event::UiRecallQueuedPrompt(recall) => recall.target_agent_id.is_some(),
             _ => false,
         }
     }
@@ -2463,9 +2490,6 @@ impl EventRenderer {
                     self.remember_agent(agent_id.to_owned());
                     self.shell_agents
                         .insert(command.command_id.to_string(), agent_id.to_owned());
-                } else {
-                    self.shell_agents
-                        .insert(command.command_id.to_string(), MAIN_AGENT_ID.to_owned());
                 }
             }
             Event::ShellCommandProgress(progress) => {
@@ -2535,6 +2559,9 @@ impl EventRenderer {
             Event::AgentCompacted(compacted) => {
                 self.remember_agent(compacted.agent_id.to_string());
             }
+            Event::HarnessAgentContextUsageChanged(changed) => {
+                self.remember_agent(changed.agent_id.to_string());
+            }
             Event::AgentMessageSent(message) => {
                 self.remember_agent(message.sender_id.to_string());
                 if let Some(agent_id) = Self::agent_message_sent_recipient_agent_id(message) {
@@ -2549,113 +2576,85 @@ impl EventRenderer {
         }
     }
 
-    fn agent_id_for_event(&self, event: &Event) -> String {
+    fn agent_id_for_event(&self, event: &Event) -> Option<String> {
         match event {
-            Event::ToolRequest(request) => self
-                .tool_agents
-                .get(request.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::ToolStarted(started) => self
-                .tool_agents
-                .get(started.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::ToolProgress(progress) => self
-                .tool_agents
-                .get(progress.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::ToolDelegateProgress(progress) => self
-                .tool_agents
-                .get(progress.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+            Event::ToolRequest(request) => self.tool_agents.get(request.call_id.as_str()).cloned(),
+            Event::ToolStarted(started) => self.tool_agents.get(started.call_id.as_str()).cloned(),
+            Event::ToolProgress(progress) => {
+                self.tool_agents.get(progress.call_id.as_str()).cloned()
+            }
+            Event::ToolDelegateProgress(progress) => {
+                self.tool_agents.get(progress.call_id.as_str()).cloned()
+            }
             Event::ToolResult(result) | Event::ProviderToolResult(result) => self
                 .tool_agents
                 .get(result.call_id.as_str())
                 .cloned()
-                .unwrap_or_else(|| self.agent_id_for_originator(&result.originator)),
+                .or_else(|| self.agent_id_for_originator(&result.originator)),
             Event::ToolError(error) | Event::ProviderToolError(error) => self
                 .tool_agents
                 .get(error.call_id.as_str())
                 .cloned()
-                .unwrap_or_else(|| self.agent_id_for_originator(&error.originator)),
-            Event::ToolBackgroundResult(result) => self
-                .tool_agents
-                .get(result.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::ToolBackgroundError(error) => self
-                .tool_agents
-                .get(error.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::ToolCancelled(cancelled) => self
-                .tool_agents
-                .get(cancelled.call_id.as_str())
-                .cloned()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::AgentMessageSent(message) => message.sender_id.to_string(),
-            Event::AgentMessageReceived(message) => message.recipient_id.to_string(),
+                .or_else(|| self.agent_id_for_originator(&error.originator)),
+            Event::ToolBackgroundResult(result) => {
+                self.tool_agents.get(result.call_id.as_str()).cloned()
+            }
+            Event::ToolBackgroundError(error) => {
+                self.tool_agents.get(error.call_id.as_str()).cloned()
+            }
+            Event::ToolCancelled(cancelled) => {
+                self.tool_agents.get(cancelled.call_id.as_str()).cloned()
+            }
+            Event::AgentMessageSent(message) => Some(message.sender_id.to_string()),
+            Event::AgentMessageReceived(message) => Some(message.recipient_id.to_string()),
             Event::UiPromptSubmitted(prompt) => prompt
                 .target_agent_id
                 .as_ref()
                 .map(ToString::to_string)
-                .unwrap_or_else(|| self.agent_id_for_originator(&prompt.originator)),
-            Event::AgentPromptSubmitted(prompt) => prompt.agent_id.to_string(),
-            Event::AgentPromptQueued(queued) => queued.agent_id.to_string(),
-            Event::AgentPromptRecalled(recalled) => recalled.agent_id.to_string(),
-            Event::AgentPromptSteered(steered) => steered.agent_id.to_string(),
-            Event::UiCancelPrompt(cancel) => cancel
-                .target_agent_id
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::UiRecallQueuedPrompt(recall) => recall
-                .target_agent_id
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::UiShellCommand(command) => command
-                .target_agent_id
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+                .or_else(|| self.agent_id_for_originator(&prompt.originator)),
+            Event::AgentPromptSubmitted(prompt) => Some(prompt.agent_id.to_string()),
+            Event::AgentPromptQueued(queued) => Some(queued.agent_id.to_string()),
+            Event::AgentPromptRecalled(recalled) => Some(recalled.agent_id.to_string()),
+            Event::AgentPromptSteered(steered) => Some(steered.agent_id.to_string()),
+            Event::HarnessAgentContextUsageChanged(changed) => Some(changed.agent_id.to_string()),
+            Event::UiCancelPrompt(cancel) => {
+                cancel.target_agent_id.as_ref().map(ToString::to_string)
+            }
+            Event::UiRecallQueuedPrompt(recall) => {
+                recall.target_agent_id.as_ref().map(ToString::to_string)
+            }
+            Event::UiShellCommand(command) => {
+                command.target_agent_id.as_ref().map(ToString::to_string)
+            }
             Event::ShellCommandProgress(progress) => progress
                 .target_agent_id
                 .as_ref()
                 .map(ToString::to_string)
-                .or_else(|| self.shell_agents.get(progress.command_id.as_str()).cloned())
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+                .or_else(|| self.shell_agents.get(progress.command_id.as_str()).cloned()),
             Event::ShellCommandFinished(finished) => finished
                 .target_agent_id
                 .as_ref()
                 .map(ToString::to_string)
-                .or_else(|| self.shell_agents.get(finished.command_id.as_str()).cloned())
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
-            Event::AgentPromptCreated(prompt) => prompt.agent_id.to_string(),
-            Event::AgentCompactionRequested(request) => request.prompt.agent_id.to_string(),
+                .or_else(|| self.shell_agents.get(finished.command_id.as_str()).cloned()),
+            Event::AgentPromptCreated(prompt) => Some(prompt.agent_id.to_string()),
+            Event::AgentCompactionRequested(request) => Some(request.prompt.agent_id.to_string()),
             Event::AgentPromptTerminated(terminated) => self
                 .agent_id_for_prompt(terminated.agent_prompt_id.as_str(), &terminated.originator),
             Event::ProviderPromptSubmitted(submitted) => self
                 .prompt_agents
                 .get(submitted.agent_prompt_id.as_str())
                 .cloned()
-                .unwrap_or_else(|| self.agent_id_for_originator(&submitted.originator)),
+                .or_else(|| self.agent_id_for_originator(&submitted.originator)),
             Event::ProviderResponseUpdated(update) => self
                 .prompt_agents
                 .get(update.agent_prompt_id.as_str())
                 .cloned()
-                .unwrap_or_else(|| self.agent_id_for_originator(&update.originator)),
-            Event::ProviderResponseFinished(finished) => finished.agent_id.to_string(),
-            Event::AgentCompactionStarted(started) => started.agent_id.to_string(),
-            Event::AgentCompactionFinished(finished) => finished.agent_id.to_string(),
-            Event::AgentCompacted(compacted) => compacted.agent_id.to_string(),
-            _ => self
-                .current_agent_id
-                .clone()
-                .unwrap_or_else(|| MAIN_AGENT_ID.to_owned()),
+                .or_else(|| self.agent_id_for_originator(&update.originator)),
+            Event::ProviderResponseFinished(finished) => Some(finished.agent_id.to_string()),
+            Event::AgentCompactionStarted(started) => Some(started.agent_id.to_string()),
+            Event::AgentCompactionFinished(finished) => Some(finished.agent_id.to_string()),
+            Event::AgentCompacted(compacted) => Some(compacted.agent_id.to_string()),
+            _ => self.current_agent_id.clone(),
         }
     }
 
@@ -2663,21 +2662,19 @@ impl EventRenderer {
         &self,
         agent_prompt_id: &str,
         originator: &tau_proto::PromptOriginator,
-    ) -> String {
+    ) -> Option<String> {
         self.prompt_agents
             .get(agent_prompt_id)
             .cloned()
-            .unwrap_or_else(|| self.agent_id_for_originator(originator))
+            .or_else(|| self.agent_id_for_originator(originator))
     }
 
-    fn agent_id_for_originator(&self, originator: &tau_proto::PromptOriginator) -> String {
+    fn agent_id_for_originator(&self, originator: &tau_proto::PromptOriginator) -> Option<String> {
         match originator {
-            tau_proto::PromptOriginator::User => MAIN_AGENT_ID.to_owned(),
-            tau_proto::PromptOriginator::Extension { query_id, .. } => self
-                .query_agents
-                .get(query_id)
-                .cloned()
-                .unwrap_or_else(|| query_id.clone()),
+            tau_proto::PromptOriginator::User => self.current_agent_id.clone(),
+            tau_proto::PromptOriginator::Extension { query_id, .. } => {
+                self.query_agents.get(query_id).cloned()
+            }
         }
     }
 
@@ -4178,7 +4175,7 @@ impl EventRenderer {
     fn handle_extension_context_ready(&mut self) {
         self.handle.print_output(
             "extension-context-ready",
-            system_status_block(&self.theme, "session context ", "ready"),
+            system_status_block(&self.theme, "agent context ", "ready"),
         );
     }
 
@@ -4227,6 +4224,14 @@ impl EventRenderer {
             }
             Event::HarnessContextUsageChanged(changed) => {
                 self.current_context_input_tokens = changed.input_tokens;
+                self.current_context_percent = changed.percent_used;
+                self.render_model_status();
+                true
+            }
+            Event::HarnessAgentContextUsageChanged(changed) => {
+                self.current_context_input_tokens = changed.input_tokens;
+                self.current_context_window =
+                    changed.context_window.or(self.current_context_window);
                 self.current_context_percent = changed.percent_used;
                 self.render_model_status();
                 true

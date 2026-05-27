@@ -83,11 +83,12 @@ fn daemon_mode_accepts_later_clients() {
     assert_eq!(r2, "again", "second cycle should echo our submission");
 
     server.join().expect("join").expect("daemon clean exit");
-    let branch = persisted_agent_branch(&sp, "s1");
+    let branches = persisted_agent_branches(&sp, "s1");
     // The sandbox may not have any AGENTS.md to inject, so assert the
     // two user-visible cycles rather than an environment-dependent total.
-    let submitted_user_texts: Vec<&str> = branch
+    let mut submitted_user_texts: Vec<&str> = branches
         .iter()
+        .flat_map(|branch| branch.iter())
         .filter_map(|entry| match entry {
             AgentEntry::UserInput { items } => items.iter().find_map(|item| match item {
                 ContextItem::Message(message) if message.role == ContextRole::User => {
@@ -101,18 +102,20 @@ fn daemon_mode_accepts_later_clients() {
         })
         .filter(|text| *text == "hello" || *text == "again")
         .collect();
+    submitted_user_texts.sort_unstable();
     assert_eq!(
         submitted_user_texts,
-        vec!["hello", "again"],
-        "expected both submitted prompts to persist, got {branch:?}"
+        vec!["again", "hello"],
+        "expected both submitted prompts to persist, got {branches:?}"
     );
     assert_eq!(
-        branch
+        branches
             .iter()
+            .flat_map(|branch| branch.iter())
             .filter(|entry| matches!(entry, AgentEntry::ToolResults { .. }))
             .count(),
         2,
-        "expected both tool result rounds to persist, got {branch:?}"
+        "expected both tool result rounds to persist, got {branches:?}"
     );
 }
 
@@ -144,7 +147,10 @@ fn daemon_mode_renders_system_prompt_for_requested_role() {
     let prompt =
         get_daemon_rendered_system_prompt(&sock, "senior-engineer").expect("render prompt");
     assert!(prompt.contains("expert coding assistant"));
-    assert!(prompt.contains("Current working directory:"));
+    assert!(
+        !prompt.contains("Current working directory:"),
+        "cwd is agent-scoped and rendered-system-prompt requests do not target an agent"
+    );
 
     server.join().expect("join").expect("daemon clean exit");
 }

@@ -388,7 +388,7 @@ populated dynamically by the harness (model list, effort levels, …).
 
 A prompt line starting with `!` runs a shell command from the UI. `!<cmd>`
 renders live stdout/stderr in the transcript and injects the finished output
-back into the session context as a `<user_shell>` block, so the agent can see
+back into the agent context as a `<user_shell>` block, so the agent can see
 what you ran and use the result.
 
 Use `!!<cmd>` for UI-only commands: output is rendered the same way, but is

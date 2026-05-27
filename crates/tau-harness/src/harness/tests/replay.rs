@@ -522,7 +522,7 @@ fn queued_and_recalled_prompt_lifecycle_is_not_durable() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");
@@ -562,7 +562,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     let mut h = echo_harness(&sp).expect("start");
 
     let spid: AgentPromptId = "sp-replay".into();
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");
@@ -687,7 +687,7 @@ fn late_joining_ui_client_replays_only_current_active_queue() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");
@@ -743,7 +743,7 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let agent_id = h
         .ensure_agent_id_for_agent(&cid)
         .expect("default conversation has an agent id");

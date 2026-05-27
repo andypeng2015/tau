@@ -354,7 +354,7 @@ fn deferred_tool_result_persists_after_call_tracking_is_cleared() {
     let mut h = echo_harness(tmp.path()).expect("harness");
     let session_id = h.current_session_id.clone();
     h.initialized_sessions.insert(session_id.clone());
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let call_id: ToolCallId = "call-read".into();
     let tool_name = ToolName::new("read");
 
@@ -585,7 +585,7 @@ fn interception_user_prompt_dispatch_waits_for_commit() {
     )
     .expect("intercept registration");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     let head_before_dispatch = h.agents.get(&cid).and_then(|c| c.head);
     let next_sp_before = h.next_agent_prompt_id;
 
@@ -673,7 +673,7 @@ fn interception_mutating_prompt_reaches_agent() {
     )
     .expect("intercept registration");
 
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
     h.dispatch_prompt_for_agent(&cid, "I love Tao".to_owned())
         .expect("dispatch");
 
@@ -738,7 +738,7 @@ fn publish_for_agent_does_not_emit_navigate_tree() {
     h.initialized_sessions.insert(session_id.clone());
 
     let baseline_seq = h.event_log.next_seq();
-    let cid = h.default_agent_id.clone();
+    let cid = ensure_test_user_agent(&mut h);
 
     // Two prompts in a row on the same conversation. Either would
     // historically have caused `publish_for_agent_from` to

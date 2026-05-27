@@ -34,7 +34,7 @@ Project-scoped skills default to advertised. User-scoped skills default to hidde
 
 Advertised skills appear in `<available_skills>` with only name and description. Tau does not include the skill body until the agent calls `skill`.
 
-This keeps normal session context small while still surfacing project-local instructions that are likely relevant immediately.
+This keeps normal agent context small while still surfacing project-local instructions that are likely relevant immediately.
 
 
 ## The `skill` tool
