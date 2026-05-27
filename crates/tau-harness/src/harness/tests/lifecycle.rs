@@ -709,6 +709,7 @@ fn agents_context_ready_staged_until_ready_and_queue_waits() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s1".into(),
+                agent_id: "agent-1".into(),
             },
         )),
     )
@@ -1790,6 +1791,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s1".into(),
+                agent_id: "agent-1".into(),
             },
         )),
     )

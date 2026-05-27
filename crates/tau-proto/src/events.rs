@@ -1432,10 +1432,13 @@ pub struct ExtAgentsMdAvailable {
     pub content: String,
 }
 
-/// An extension finished broadcasting refreshed prompt context for one session.
+/// An extension finished broadcasting refreshed prompt context for one agent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionContextReady {
+    /// Session containing the loaded agent.
     pub session_id: SessionId,
+    /// Durable agent whose context contributions are complete for now.
+    pub agent_id: AgentId,
 }
 
 /// Arbitrary JSON value published by an extension for one agent context key.

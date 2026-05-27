@@ -971,6 +971,7 @@ fn late_joining_ui_client_does_not_replay_runtime_extension_setup() {
         Some(&tools_conn),
         Event::ExtensionContextReady(tau_proto::ExtensionContextReady {
             session_id: default_session_id().into(),
+            agent_id: "agent-1".into(),
         }),
     );
 

@@ -17,6 +17,26 @@ fn responses_backend() -> tau_proto::ProviderBackend {
     }
 }
 
+fn publish_pending_agent_context_ready(h: &mut Harness, agent_id: &str) {
+    let agent_id = tau_proto::AgentId::from(agent_id);
+    let source_id = h
+        .pending_agent_context_ready
+        .get(&agent_id)
+        .and_then(|waiting_on| waiting_on.iter().next())
+        .cloned()
+        .expect("agent context provider pending");
+    h.handle_extension_event(
+        source_id.as_str(),
+        Frame::Event(Event::ExtensionContextReady(
+            tau_proto::ExtensionContextReady {
+                session_id: h.current_session_id.clone(),
+                agent_id,
+            },
+        )),
+    )
+    .expect("context ready");
+}
+
 #[test]
 fn user_prompt_mints_first_agent_for_empty_startup() {
     // Regression: startup has no implicit `main` agent. The first interactive
@@ -3938,7 +3958,13 @@ fn queued_prompt_extends_completed_first_prompt() {
     let first = h
         .submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    assert_eq!(first, PromptSubmission::Dispatched);
+    assert_eq!(first, PromptSubmission::Queued);
+    let first_agent_id = h
+        .agents
+        .get(&test_user_agent(&h))
+        .and_then(|conv| conv.agent_id.clone())
+        .expect("first prompt agent id");
+    publish_pending_agent_context_ready(&mut h, first_agent_id.as_str());
     let spid1: AgentPromptId = "sp-0".into();
     let prompt1 = read_prompt_created(&h, &spid1);
 
@@ -4439,6 +4465,7 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s2".into(),
+                agent_id: "agent-1".into(),
             },
         )),
     )
@@ -4447,10 +4474,14 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
     let submission = h
         .submit_user_prompt("s2".into(), "hello".to_owned())
         .expect("submit");
-    assert_eq!(submission, PromptSubmission::Dispatched);
+    assert_eq!(submission, PromptSubmission::Queued);
     let new_cid = test_user_agent(&h);
-    assert_eq!(h.agents[&new_cid].session_id.as_str(), "s2");
-    assert!(h.agents[&new_cid].agent_id.is_some());
+    let new_agent_id = h.agents[&new_cid]
+        .agent_id
+        .clone()
+        .expect("new session agent id");
+    publish_pending_agent_context_ready(&mut h, new_agent_id.as_str());
+    assert!(read_prompt_created(&h, &AgentPromptId::from("sp-0")).agent_id == new_agent_id);
 
     h.shutdown().expect("shutdown");
 }
@@ -4900,6 +4931,7 @@ fn manual_compact_forces_compaction_without_followup_turn() {
         }),
     );
 
+    publish_pending_agent_context_ready(&mut h, target_agent_id.as_str());
     h.handle_compact_request("s1".into(), Some(&target_agent_id));
 
     assert_eq!(h.pending_compactions.len(), 1);

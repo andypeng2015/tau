@@ -200,6 +200,7 @@ impl Harness {
         if self.selected_model.is_none()
             || !self.turn_state.is_idle()
             || !self.extensions_all_ready()
+            || !self.agent_context_ready_for(agent_id)
         {
             return true;
         }

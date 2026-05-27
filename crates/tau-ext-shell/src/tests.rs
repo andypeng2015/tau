@@ -653,14 +653,14 @@ fn skill_diagnostics_are_emitted_as_harness_info() {
 }
 
 #[test]
-fn session_started_emits_ready_after_startup() {
+fn session_agent_loaded_emits_ready_after_agent_context_publish() {
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
     writer
-        .write_event(&Event::SessionStarted(SessionStarted {
+        .write_event(&Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
             session_id: "s1".into(),
-            reason: tau_proto::SessionStartReason::Initial,
+            agent_id: "agent-1".into(),
         }))
         .expect("request");
     writer.flush().expect("flush");
@@ -672,6 +672,7 @@ fn session_started_emits_ready_after_startup() {
                 unreachable!("matched on event name");
             };
             assert_eq!(ready.session_id, "s1");
+            assert_eq!(ready.agent_id, "agent-1");
             break;
         }
     }

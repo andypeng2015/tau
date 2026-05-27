@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use tau_proto::{
     Ack, AgentContextKey, AgentContextValue, ConfigError, Event, ExtAgentContextPublish,
-    ExtPromptFragmentPublish, Frame, FrameReader, FrameWriter, LogEventId, Message, PromptContent,
-    PromptFragment, PromptPriority, SessionAgentLoaded, SessionStarted, ToolCancelled,
-    ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
+    ExtPromptFragmentPublish, ExtensionContextReady, Frame, FrameReader, FrameWriter, LogEventId,
+    Message, PromptContent, PromptFragment, PromptPriority, SessionAgentLoaded, SessionStarted,
+    ToolCancelled, ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
 };
 use tracing::{debug, trace};
 
@@ -671,12 +671,18 @@ fn dispatch_session_agent_loaded(loaded: SessionAgentLoaded, tx: &mpsc::Sender<F
     if let Ok(cwd) = std::env::current_dir() {
         let _ = tx.send(Frame::Event(Event::ExtAgentContextPublish(
             ExtAgentContextPublish {
-                agent_id: loaded.agent_id,
+                agent_id: loaded.agent_id.clone(),
                 key: AgentContextKey::new("cwd"),
                 value: AgentContextValue(serde_json::Value::String(cwd.display().to_string())),
             },
         )));
     }
+    let _ = tx.send(Frame::Event(Event::ExtensionContextReady(
+        ExtensionContextReady {
+            session_id: loaded.session_id,
+            agent_id: loaded.agent_id,
+        },
+    )));
 }
 
 fn ack_if_logged(
@@ -719,7 +725,7 @@ fn is_echo_tool(_name: &str) -> bool {
     false
 }
 
-fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
+fn build_session_started_events(_started: SessionStarted) -> Vec<Event> {
     let mut events = Vec::new();
 
     let skill_dirs = session_skill_dirs(std::env::current_dir().ok(), dirs::home_dir());
@@ -745,11 +751,6 @@ fn build_session_started_events(started: SessionStarted) -> Vec<Event> {
         ));
     }
 
-    events.push(Event::ExtensionContextReady(
-        tau_proto::ExtensionContextReady {
-            session_id: started.session_id,
-        },
-    ));
     events
 }
 

@@ -271,6 +271,7 @@ fn representative_events() -> Vec<Event> {
         }),
         Event::ExtensionContextReady(ExtensionContextReady {
             session_id: "s1".into(),
+            agent_id: "agent-1".into(),
         }),
         Event::ExtensionEvent(CustomEvent {
             name: "demo.progress".parse().expect("event name"),

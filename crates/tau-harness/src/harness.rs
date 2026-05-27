@@ -1025,6 +1025,10 @@ pub struct Harness {
     pub(crate) discovered_agents_files: Vec<DiscoveredAgentsFile>,
     /// Session-scoped JSON context contributions published by extensions.
     pub(crate) agent_context: AgentContextStore,
+    /// Per-agent context providers still expected to acknowledge the latest
+    /// `session.agent_loaded` before that agent's first prompt can dispatch.
+    pub(crate) pending_agent_context_ready:
+        HashMap<tau_proto::AgentId, HashSet<tau_proto::ConnectionId>>,
     /// Extension-level prompt fragments keyed by source connection and name.
     pub(crate) extension_prompt_fragments:
         BTreeMap<tau_proto::ConnectionId, BTreeMap<String, PromptFragment>>,
@@ -1491,6 +1495,7 @@ impl Harness {
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
+            pending_agent_context_ready: HashMap::new(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
@@ -1731,6 +1736,7 @@ impl Harness {
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
+            pending_agent_context_ready: HashMap::new(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
@@ -4596,6 +4602,12 @@ impl Harness {
         self.interceptors.remove_connection(connection_id);
         self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
+        let disconnected = tau_proto::ConnectionId::from(connection_id);
+        self.pending_agent_context_ready.retain(|_, waiting_on| {
+            waiting_on.remove(&disconnected);
+            !waiting_on.is_empty()
+        });
+        self.try_advance_queue();
         self.set_extension_state(connection_id, ExtensionState::Disconnected);
 
         let meta = self.bus.connection(connection_id).cloned();
@@ -5437,10 +5449,21 @@ impl Harness {
     }
 
     fn session_init_provider_ids(&self) -> std::collections::HashSet<tau_proto::ConnectionId> {
-        let event = Event::SessionStarted(tau_proto::SessionStarted {
-            session_id: "probe".into(),
-            reason: tau_proto::SessionStartReason::Initial,
+        HashSet::new()
+    }
+
+    fn agent_context_provider_ids(
+        &self,
+        agent_id: tau_proto::AgentId,
+    ) -> HashSet<tau_proto::ConnectionId> {
+        let event = Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
+            session_id: self.current_session_id.clone(),
+            agent_id,
         });
+        self.tool_connections_subscribed_to(&event)
+    }
+
+    fn tool_connections_subscribed_to(&self, event: &Event) -> HashSet<tau_proto::ConnectionId> {
         self.bus
             .connections()
             .into_iter()
@@ -5450,7 +5473,7 @@ impl Harness {
                     && self
                         .bus
                         .subscriptions(connection.id.as_str())
-                        .is_some_and(|selectors| selector_matches_event(selectors, &event))
+                        .is_some_and(|selectors| selector_matches_event(selectors, event))
             })
             .map(|connection| connection.id)
             .collect()
@@ -5458,6 +5481,24 @@ impl Harness {
 
     pub(crate) fn session_initialized(&self, session_id: &SessionId) -> bool {
         self.initialized_sessions.contains(session_id)
+    }
+
+    pub(crate) fn agent_context_ready_for(&self, cid: &AgentId) -> bool {
+        let Some(agent_id) = self
+            .agents
+            .get(cid)
+            .and_then(|agent| agent.agent_id.as_ref())
+            .map(|agent_id| tau_proto::AgentId::from(agent_id.as_str()))
+        else {
+            return true;
+        };
+        self.agent_context_ready_for_loaded_agent(&agent_id)
+    }
+
+    fn agent_context_ready_for_loaded_agent(&self, agent_id: &tau_proto::AgentId) -> bool {
+        self.pending_agent_context_ready
+            .get(agent_id)
+            .is_none_or(HashSet::is_empty)
     }
 
     fn available_delegate_role_names(&self) -> Vec<String> {
@@ -6370,7 +6411,18 @@ impl Harness {
                 self.create_durable_user_agent(session_id.clone(), &role, cwd)
             });
         self.preempt_blocking_ext_side_agents(&session_id);
-        if self.dispatch_blocked_for(&cid) || !self.session_initialized(&session_id) {
+        if !self.session_initialized(&session_id)
+            || self.selected_model.is_none()
+            || !self.turn_state.is_idle()
+            || !self.extensions_all_ready()
+        {
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                conv.pending_prompts.push_back(PendingPrompt::user(text));
+            }
+            self.try_advance_queue();
+            return Ok(PromptSubmission::Queued);
+        }
+        if self.dispatch_blocked_for(&cid) {
             if let Some(conv) = self.agents.get_mut(&cid) {
                 conv.pending_prompts.push_back(PendingPrompt::user(text));
             }
@@ -6403,7 +6455,27 @@ impl Harness {
             });
         };
         self.set_agent_state(agent_id, AgentState::Active);
-        if self.dispatch_blocked_for(&cid) || !self.session_initialized(&session_id) {
+        if !self.session_initialized(&session_id)
+            || self.selected_model.is_none()
+            || !self.turn_state.is_idle()
+            || !self.extensions_all_ready()
+        {
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                conv.pending_prompts
+                    .push_back(PendingPrompt::user(text.clone()));
+            }
+            self.publish_event(
+                None,
+                Event::AgentPromptQueued(AgentPromptQueued {
+                    agent_id: agent_id.to_owned().into(),
+                    text,
+                    message_class: tau_proto::PromptMessageClass::User,
+                }),
+            );
+            self.try_advance_queue();
+            return Ok(PromptSubmission::Queued);
+        }
+        if self.dispatch_blocked_for(&cid) {
             if let Some(conv) = self.agents.get_mut(&cid) {
                 conv.pending_prompts
                     .push_back(PendingPrompt::user(text.clone()));
@@ -7042,6 +7114,13 @@ impl Harness {
             self.queue_restore_notice_for_resumed_session(&session_id);
         }
         let waiting_on = self.session_init_provider_ids();
+        self.publish_event(
+            None,
+            Event::SessionStarted(tau_proto::SessionStarted {
+                session_id: session_id.clone(),
+                reason,
+            }),
+        );
         if waiting_on.is_empty() {
             if matches!(reason, tau_proto::SessionStartReason::Resume) {
                 self.repair_restored_session_tool_state(&session_id);
@@ -7062,13 +7141,6 @@ impl Harness {
             reason,
             waiting_on,
         };
-        self.publish_event(
-            None,
-            Event::SessionStarted(tau_proto::SessionStarted {
-                session_id: session_id.clone(),
-                reason,
-            }),
-        );
         if matches!(reason, tau_proto::SessionStartReason::Resume) {
             self.repair_restored_session_tool_state(&session_id);
         }
@@ -7079,22 +7151,38 @@ impl Harness {
         source_id: &str,
         ready: tau_proto::ExtensionContextReady,
     ) -> Result<(), HarnessError> {
+        if ready.session_id != self.current_session_id {
+            return Ok(());
+        }
+        let source_id = tau_proto::ConnectionId::from(source_id);
         let completed_session = match &mut self.turn_state {
             TurnState::InitializingSession {
                 session_id,
                 reason,
                 waiting_on,
-            } if *session_id == ready.session_id => {
-                waiting_on.remove(source_id);
-                waiting_on.is_empty().then(|| (session_id.clone(), *reason))
+            } => {
+                let removed = waiting_on.remove(&source_id);
+                if removed && waiting_on.is_empty() {
+                    Some((session_id.clone(), *reason))
+                } else {
+                    None
+                }
             }
             _ => None,
         };
-
         if let Some((session_id, reason)) = completed_session {
+            if matches!(reason, tau_proto::SessionStartReason::Resume) {
+                self.repair_restored_session_tool_state(&session_id);
+            }
             self.complete_session_init(session_id, reason)?;
         }
-
+        if let Some(waiting_on) = self.pending_agent_context_ready.get_mut(&ready.agent_id) {
+            waiting_on.remove(&source_id);
+            if waiting_on.is_empty() {
+                self.pending_agent_context_ready.remove(&ready.agent_id);
+                self.try_advance_queue();
+            }
+        }
         Ok(())
     }
 
@@ -7393,13 +7481,6 @@ impl Harness {
         );
         conv.role = Some(role.to_owned());
         conv.agent_id = Some(agent_id.clone());
-        self.agent_context.publish(
-            tau_proto::AgentId::from(agent_id.clone()),
-            tau_proto::AgentContextKey::new("cwd"),
-            tau_proto::ConnectionId::from("tau-harness"),
-            "tau-harness".to_owned(),
-            tau_proto::AgentContextValue(serde_json::Value::String(cwd.display().to_string())),
-        );
         self.agents.insert(cid.clone(), conv);
         self.publish_delegate_roles_context();
         let _ = self.agent_store.record_agent_meta(&agent_id, Some(cwd));
@@ -7447,6 +7528,11 @@ impl Harness {
             .flatten()
             .is_some_and(|membership| membership.contains_agent(&agent_id_proto))
         {
+            let waiting_on = self.agent_context_provider_ids(agent_id_proto.clone());
+            if !waiting_on.is_empty() {
+                self.pending_agent_context_ready
+                    .insert(agent_id_proto.clone(), waiting_on);
+            }
             if let Some(role) = role.as_deref() {
                 let _ = self.agent_store.append_agent_event_at(
                     agent_id,
