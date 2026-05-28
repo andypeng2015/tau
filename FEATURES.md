@@ -282,10 +282,10 @@ mutations through the native Calendar API. Calendar writes are queued for
 use provider conditional requests to avoid stale overwrites. Calendar reads and
 write requests are logged to `logs/calendar.jsonl` and can be reviewed with
 `/calendar log last [number]`. Calendar tool results use the same structured
-`ok`/`command`/`status`/`data` envelope as email, with `format` fields for
-line-oriented rows. Private calendar events default to busy-only model output.
-The legacy `std-email` built-in remains as an alias for existing email-only
-configs.
+`ok`/`command`/`status`/`data` envelope as email, with `format` fields and
+`next_cursor` pagination for line-oriented event rows. Private calendar events
+default to busy-only model output. The legacy `std-email` built-in remains as
+an alias for existing email-only configs.
 
 ### `provider-builtin` — Built-in provider backend
 

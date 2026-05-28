@@ -93,7 +93,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
                 },
                 "args": {
                     "type": "object",
-                    "description": "Command arguments. list_accounts takes no arguments. Other commands generally require account/calendar once more than one target is configured. Mutations for existing events require event_id and etag for stale-write protection.",
+                    "description": "Command arguments. list_accounts takes no arguments. Other commands generally require account/calendar once more than one target is configured. list_events and free_busy can pass cursor from the previous next_cursor. Mutations for existing events require event_id and etag for stale-write protection.",
                     "properties": {
                         "account": {"type": "string", "description": "Configured calendar account id."},
                         "calendar": {"type": "string", "description": "Calendar id within the account."},
@@ -102,7 +102,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
                         "time_min": {"type": "string", "description": "Inclusive lower RFC3339 bound."},
                         "time_max": {"type": "string", "description": "Exclusive upper RFC3339 bound."},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                        "cursor": {"type": "string"},
+                        "cursor": {"type": "string", "description": "Cursor returned as next_cursor by list_events or free_busy; pass it with the same account/calendar/range arguments."},
                         "title": {"type": "string"},
                         "description": {"type": "string"},
                         "location": {"type": "string"},

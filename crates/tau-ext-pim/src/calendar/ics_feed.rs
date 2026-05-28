@@ -11,6 +11,7 @@ use super::config::{ValidatedAccount, ValidatedBackendConfig};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ICS_BYTES: u64 = 2 * 1024 * 1024;
+const ICS_CURSOR_PREFIX: &str = "ics:";
 
 /// Read-only iCalendar feed backend.
 pub struct IcsFeedBackend {
@@ -63,6 +64,16 @@ pub struct IcsEvent {
     pub time_unparsed: bool,
 }
 
+/// One page of iCalendar feed events.
+pub struct IcsEventPage {
+    /// Events in this page.
+    pub events: Vec<IcsEvent>,
+    /// Cursor for the next page, when more matching events remain.
+    pub next_cursor: Option<String>,
+    /// Whether more matching events remain after this page.
+    pub truncated: bool,
+}
+
 /// Time range for event and free-busy queries.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TimeRange {
@@ -108,15 +119,38 @@ impl IcsFeedBackend {
         range: TimeRange,
         limit: usize,
     ) -> Result<Vec<IcsEvent>, String> {
+        Ok(self
+            .list_events_page(account, calendar, range, limit, None)?
+            .events)
+    }
+
+    /// List one cursor page of events from the account's feed.
+    pub fn list_events_page(
+        &self,
+        account: &ValidatedAccount,
+        calendar: &str,
+        range: TimeRange,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<IcsEventPage, String> {
         ensure_calendar_allowed(account, calendar)?;
+        let offset = parse_ics_cursor(cursor)?;
         let text = self.fetch_feed(account)?;
         let mut events = parse_ics_events(&text)?;
         events.retain(|event| event_overlaps(event, range));
         events.sort_by_key(event_sort_key);
-        if limit < events.len() {
-            events.truncate(limit);
-        }
-        Ok(events)
+        let truncated = offset.saturating_add(limit) < events.len();
+        let next_cursor = if truncated {
+            Some(format!("{ICS_CURSOR_PREFIX}{}", offset + limit))
+        } else {
+            None
+        };
+        let events = events.into_iter().skip(offset).take(limit).collect();
+        Ok(IcsEventPage {
+            events,
+            next_cursor,
+            truncated,
+        })
     }
 
     /// Read one event from the account's feed.
@@ -225,6 +259,21 @@ fn normalize_feed_url(url: &str) -> Result<String, String> {
         return Err("iCalendar feed URL must not include credentials".to_owned());
     }
     Ok(candidate.to_owned())
+}
+
+fn parse_ics_cursor(cursor: Option<&str>) -> Result<usize, String> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let Some(offset) = cursor.strip_prefix(ICS_CURSOR_PREFIX) else {
+        return Err("cursor is not an iCalendar feed cursor returned by this tool".to_owned());
+    };
+    if offset.is_empty() || !offset.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("iCalendar feed cursor is invalid".to_owned());
+    }
+    offset
+        .parse::<usize>()
+        .map_err(|_| "iCalendar feed cursor is too large".to_owned())
 }
 
 fn ensure_calendar_allowed(account: &ValidatedAccount, calendar: &str) -> Result<(), String> {
@@ -564,6 +613,53 @@ mod tests {
         handle.join().expect("server exits");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].summary, "UTC");
+    }
+
+    #[test]
+    fn backend_lists_ics_events_with_cursor_pages() {
+        // Cursor paging should let the model continue a bounded calendar read
+        // without asking for an unbounded feed dump.
+        let ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:first\nSUMMARY:First\nDTSTART:20260528T120000Z\nDTEND:20260528T130000Z\nEND:VEVENT\nBEGIN:VEVENT\nUID:second\nSUMMARY:Second\nDTSTART:20260529T120000Z\nDTEND:20260529T130000Z\nEND:VEVENT\nEND:VCALENDAR\n";
+        let (url, handle) = serve_ics_once(ics);
+        let cfg = CalendarExtensionConfig {
+            enable: true,
+            accounts: vec![CalendarAccountConfig {
+                id: "feed".to_owned(),
+                enable: true,
+                backend: Some(CalendarBackendConfig::IcsFeed {
+                    url_secret: None,
+                    url: Some(url),
+                }),
+                calendars: CalendarSelectionConfig {
+                    default: Some("main".to_owned()),
+                    allow: vec!["main".to_owned()],
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let config = cfg.validate().expect("valid config");
+        let account = config.accounts.get("feed").expect("feed account");
+        let backend = IcsFeedBackend::new(BTreeMap::new());
+
+        let page = backend
+            .list_events_page(account, "main", TimeRange::default(), 1, None)
+            .expect("events page");
+
+        handle.join().expect("server exits");
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].summary, "First");
+        assert_eq!(page.next_cursor.as_deref(), Some("ics:1"));
+        assert!(page.truncated);
+    }
+
+    #[test]
+    fn ics_cursor_rejects_other_backend_cursors() {
+        // Cursor values are intentionally backend-prefixed so agents cannot
+        // accidentally replay a Google page token into an ICS feed query.
+        assert_eq!(parse_ics_cursor(None), Ok(0));
+        assert_eq!(parse_ics_cursor(Some("ics:12")), Ok(12));
+        assert!(parse_ics_cursor(Some("google:token")).is_err());
     }
 
     fn serve_ics_once(body: &'static str) -> (String, thread::JoinHandle<()>) {

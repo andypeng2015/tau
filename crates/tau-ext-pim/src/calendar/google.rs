@@ -17,6 +17,8 @@ const GOOGLE_CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 const GOOGLE_SEND_UPDATES: &str = "all";
 const MAX_ERROR_BODY_BYTES: usize = 4096;
 const MAX_JSON_BODY_BYTES: usize = 1024 * 1024;
+const MAX_PAGE_TOKEN_CHARS: usize = 4096;
+const GOOGLE_CURSOR_PREFIX: &str = "google:";
 
 /// Read/write-capable Google Calendar API backend.
 pub struct GoogleBackend {
@@ -69,6 +71,14 @@ pub struct GoogleEvent {
     pub self_response_status: Option<String>,
     /// Whether the event is part of a recurring series.
     pub recurring: bool,
+}
+
+/// One page of Google Calendar events.
+pub struct GoogleEventPage {
+    /// Events in this page.
+    pub events: Vec<GoogleEvent>,
+    /// Cursor for the next page, when Google returns another page token.
+    pub next_cursor: Option<String>,
 }
 
 /// Event fields used by Google create/update requests.
@@ -149,13 +159,31 @@ impl GoogleBackend {
         range: TimeRange,
         limit: usize,
     ) -> Result<Vec<GoogleEvent>, String> {
+        Ok(self
+            .list_events_page(account, calendar_id, range, limit, None)?
+            .events)
+    }
+
+    /// List one cursor page of Google events in a calendar.
+    pub fn list_events_page(
+        &self,
+        account: &ValidatedAccount,
+        calendar_id: &str,
+        range: TimeRange,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<GoogleEventPage, String> {
         ensure_google_calendar_allowed(account, calendar_id)?;
+        let page_token = parse_google_cursor(cursor)?;
         let token = self.access_token(account)?;
         let api_base = api_base(account)?;
         let mut query = form_urlencoded::Serializer::new(String::new());
         query.append_pair("singleEvents", "true");
         query.append_pair("orderBy", "startTime");
         query.append_pair("maxResults", &limit.to_string());
+        if let Some(page_token) = page_token {
+            query.append_pair("pageToken", page_token);
+        }
         if let Some(min) = range.min {
             query.append_pair(
                 "timeMin",
@@ -176,6 +204,7 @@ impl GoogleBackend {
             query.finish()
         );
         let json = self.get_json(&url, &token)?;
+        let next_cursor = google_next_cursor(&json)?;
         let events = json
             .get("items")
             .and_then(Value::as_array)
@@ -183,7 +212,10 @@ impl GoogleBackend {
             .flatten()
             .filter_map(parse_event)
             .collect();
-        Ok(events)
+        Ok(GoogleEventPage {
+            events,
+            next_cursor,
+        })
     }
 
     /// Read one Google event.
@@ -473,6 +505,35 @@ fn ensure_google_calendar_allowed(
         "calendar `{calendar_id}` is not allowed for account `{}`",
         account.id
     ))
+}
+
+fn parse_google_cursor(cursor: Option<&str>) -> Result<Option<&str>, String> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let Some(token) = cursor.strip_prefix(GOOGLE_CURSOR_PREFIX) else {
+        return Err("cursor is not a Google Calendar cursor returned by this tool".to_owned());
+    };
+    if !is_safe_google_page_token(token) {
+        return Err("Google Calendar cursor is invalid".to_owned());
+    }
+    Ok(Some(token))
+}
+
+fn google_next_cursor(json: &Value) -> Result<Option<String>, String> {
+    let Some(token) = json.get("nextPageToken").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !is_safe_google_page_token(token) {
+        return Err("Google Calendar API returned an unsafe nextPageToken".to_owned());
+    }
+    Ok(Some(format!("{GOOGLE_CURSOR_PREFIX}{token}")))
+}
+
+fn is_safe_google_page_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.chars().count() <= MAX_PAGE_TOKEN_CHARS
+        && !token.chars().any(char::is_control)
 }
 
 fn parse_calendar(value: &Value) -> Option<GoogleCalendar> {
@@ -869,6 +930,35 @@ mod tests {
         let calendar = allowed_google_calendar(&account, parse_calendar(&json).expect("calendar"));
 
         assert!(calendar.is_none());
+    }
+
+    #[test]
+    fn google_event_page_cursor_is_backend_prefixed() {
+        // Google page tokens are opaque provider data. Keep the model-visible
+        // cursor namespaced so it cannot be confused with other backends.
+        let json = serde_json::json!({
+            "nextPageToken": "abc-123"
+        });
+
+        assert_eq!(
+            google_next_cursor(&json).expect("next cursor").as_deref(),
+            Some("google:abc-123")
+        );
+        assert_eq!(
+            parse_google_cursor(Some("google:abc-123")).expect("cursor"),
+            Some("abc-123")
+        );
+        assert!(parse_google_cursor(Some("ics:1")).is_err());
+    }
+
+    #[test]
+    fn google_event_page_cursor_rejects_control_characters() {
+        let json = serde_json::json!({
+            "nextPageToken": "abc\n123"
+        });
+
+        assert!(google_next_cursor(&json).is_err());
+        assert!(parse_google_cursor(Some("google:abc\n123")).is_err());
     }
 
     #[test]

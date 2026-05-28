@@ -131,6 +131,12 @@ enum BackendEvent {
     Google(GoogleEvent),
 }
 
+struct BackendEventPage {
+    events: Vec<BackendEvent>,
+    next_cursor: Option<String>,
+    truncated: bool,
+}
+
 enum CalendarMutationResult {
     Event(Box<GoogleEvent>),
     Deleted,
@@ -474,19 +480,19 @@ impl Engine {
     }
 
     fn list_events(&self, args: &CalendarArgs) -> Result<CborValue, String> {
-        reject_cursor(args)?;
         let limit = normalized_limit(args.limit)?;
         let range = parse_range(args)?;
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
-        let events = self.events_for_account(account, calendar, range, limit)?;
+        let page =
+            self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
         let mut rows = Vec::new();
-        for event in events {
+        for event in &page.events {
             rows.push(format_event_line(
                 &self.config.policy,
                 account,
                 calendar,
-                &event,
+                event,
             ));
         }
         Ok(ok_envelope(
@@ -495,6 +501,8 @@ impl Engine {
             cbor_map(vec![
                 ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
                 ("events", line_array(rows)),
+                ("next_cursor", optional_text(page.next_cursor)),
+                ("truncated", CborValue::Bool(page.truncated)),
             ]),
         ))
     }
@@ -538,19 +546,19 @@ impl Engine {
     }
 
     fn free_busy(&self, args: &CalendarArgs) -> Result<CborValue, String> {
-        reject_cursor(args)?;
         let limit = normalized_limit(args.limit)?;
         let range = parse_range(args)?;
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
-        let events = self.events_for_account(account, calendar, range, limit)?;
+        let page =
+            self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
         let mut rows = Vec::new();
-        for event in events {
+        for event in &page.events {
             rows.push(format_free_busy_line(
                 &self.config.policy,
                 account,
                 calendar,
-                &event,
+                event,
             ));
         }
         Ok(ok_envelope(
@@ -559,6 +567,8 @@ impl Engine {
             cbor_map(vec![
                 ("format", CborValue::Text(FREE_BUSY_FORMAT.to_owned())),
                 ("busy", line_array(rows)),
+                ("next_cursor", optional_text(page.next_cursor)),
+                ("truncated", CborValue::Bool(page.truncated)),
             ]),
         ))
     }
@@ -745,20 +755,30 @@ impl Engine {
         calendar: &str,
         range: TimeRange,
         limit: usize,
-    ) -> Result<Vec<BackendEvent>, String> {
+        cursor: Option<&str>,
+    ) -> Result<BackendEventPage, String> {
         match &account.backend {
-            Some(ValidatedBackendConfig::IcsFeed { .. }) => Ok(self
-                .ics_feed
-                .list_events(account, calendar, range, limit)?
-                .into_iter()
-                .map(BackendEvent::Ics)
-                .collect()),
-            Some(ValidatedBackendConfig::Google { .. }) => Ok(self
-                .google
-                .list_events(account, calendar, range, limit)?
-                .into_iter()
-                .map(BackendEvent::Google)
-                .collect()),
+            Some(ValidatedBackendConfig::IcsFeed { .. }) => {
+                let page = self
+                    .ics_feed
+                    .list_events_page(account, calendar, range, limit, cursor)?;
+                Ok(BackendEventPage {
+                    events: page.events.into_iter().map(BackendEvent::Ics).collect(),
+                    next_cursor: page.next_cursor,
+                    truncated: page.truncated,
+                })
+            }
+            Some(ValidatedBackendConfig::Google { .. }) => {
+                let page = self
+                    .google
+                    .list_events_page(account, calendar, range, limit, cursor)?;
+                let truncated = page.next_cursor.is_some();
+                Ok(BackendEventPage {
+                    events: page.events.into_iter().map(BackendEvent::Google).collect(),
+                    next_cursor: page.next_cursor,
+                    truncated,
+                })
+            }
             Some(ValidatedBackendConfig::Caldav { .. }) | None => Err(format!(
                 "calendar account `{}` backend `{}` does not support event reads yet",
                 account.id,
@@ -1840,6 +1860,10 @@ fn invocation_display_args(arguments: &CborValue) -> Option<String> {
 
 fn line_array(rows: Vec<String>) -> CborValue {
     CborValue::Array(rows.into_iter().map(CborValue::Text).collect())
+}
+
+fn optional_text(value: Option<String>) -> CborValue {
+    value.map(CborValue::Text).unwrap_or(CborValue::Null)
 }
 
 fn line_array_stats(data: &CborValue, field: &str) -> ToolDisplayStats {
