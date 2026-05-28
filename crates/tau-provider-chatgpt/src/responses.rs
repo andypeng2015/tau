@@ -17,9 +17,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use tau_proto::{ContentPart, ContextItem, ContextRole, ToolResponseHeader, ToolResultStatus};
 
-use crate::common::{
-    LlmError, PromptPayload, StreamState, cbor_to_json, effort_wire, prompt_cache_key_for,
-};
+use crate::common::{LlmError, PromptPayload, StreamState, cbor_to_json, effort_wire};
 
 pub mod pool;
 pub mod ws;
@@ -107,8 +105,8 @@ pub struct ResponsesConfig {
     /// Whether this provider exposes a standalone compaction endpoint.
     pub supports_compaction: bool,
     /// Whether this provider accepts the `prompt_cache_key` field.
-    /// The wire key is derived per `(base_url, session_id)`, then
-    /// split by extension name for extension-originated turns.
+    /// The wire key is derived per `(base_url, agent lifetime)`, then split by
+    /// the prompt originator's cache bucket.
     pub supports_prompt_cache_key: bool,
 }
 
@@ -752,14 +750,9 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
     } else {
         None
     };
-    let prompt_cache_key = config.supports_prompt_cache_key.then(|| {
-        prompt_cache_key_for(
-            &config.base_url,
-            request.agent_id,
-            request.originator,
-            request.share_user_cache_key,
-        )
-    });
+    let prompt_cache_key = config
+        .supports_prompt_cache_key
+        .then(|| request.prompt_cache_key(&config.base_url));
     let include: Vec<&'static str> = if config.supports_encrypted_reasoning {
         vec!["reasoning.encrypted_content"]
     } else {

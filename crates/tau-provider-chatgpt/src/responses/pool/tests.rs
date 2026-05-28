@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -10,70 +11,65 @@ use crate::common::PromptPayload;
 use crate::responses::ResponsesSurface;
 
 #[test]
-fn keys_distinguish_sessions_under_same_account() {
+fn keys_distinguish_agents_under_same_account() {
     let cfg = make_config("https://chatgpt.com/backend-api", Some("acc"));
-    let a = PoolKey::for_request(&cfg, "session-a", &tau_proto::PromptOriginator::User);
-    let b = PoolKey::for_request(&cfg, "session-b", &tau_proto::PromptOriginator::User);
+    let a = pool_key_for(&cfg, "agent-a", tau_proto::PromptOriginator::User, false);
+    let b = pool_key_for(&cfg, "agent-b", tau_proto::PromptOriginator::User, false);
     assert_ne!(a, b);
 }
 
 #[test]
-fn keys_distinguish_side_conversations_under_same_session() {
-    // Side conversations can share the parent session_id while representing
-    // independent extension query chains. They must not share one mutable
-    // WS cache slot when prompt workers run concurrently.
+fn keys_follow_prompt_cache_originator_buckets() {
+    // Upgrade headers are fixed for the socket lifetime, so the pool must split
+    // exactly where the prompt-cache UUID splits: extension buckets get their
+    // own socket, while share-user side queries reuse the user's bucket.
     let cfg = make_config("https://chatgpt.com/backend-api", Some("acc"));
-    let a = PoolKey::for_request(
-        &cfg,
-        "shared-session",
-        &tau_proto::PromptOriginator::Extension {
-            name: tau_proto::ExtensionName::new("delegate"),
-            query_id: "q1".to_owned(),
-        },
-    );
-    let b = PoolKey::for_request(
-        &cfg,
-        "shared-session",
-        &tau_proto::PromptOriginator::Extension {
-            name: tau_proto::ExtensionName::new("delegate"),
-            query_id: "q2".to_owned(),
-        },
-    );
-    assert_ne!(a, b);
+    let user = pool_key_for(&cfg, "agent", tau_proto::PromptOriginator::User, false);
+    let ext = tau_proto::PromptOriginator::Extension {
+        name: tau_proto::ExtensionName::new("__harness__"),
+        query_id: "delegate-1".into(),
+    };
+    let split_ext = pool_key_for(&cfg, "agent", ext.clone(), false);
+    let shared_ext = pool_key_for(&cfg, "agent", ext, true);
+
+    assert_ne!(user, split_ext);
+    assert_eq!(user, shared_ext);
 }
 
 #[test]
-fn keys_distinguish_accounts_under_same_session() {
-    let a = PoolKey::for_request(
+fn keys_distinguish_accounts_under_same_thread_id() {
+    let a = pool_key_for(
         &make_config("https://chatgpt.com/backend-api", Some("acc-1")),
-        "session",
-        &tau_proto::PromptOriginator::User,
+        "agent",
+        tau_proto::PromptOriginator::User,
+        false,
     );
-    let b = PoolKey::for_request(
+    let b = pool_key_for(
         &make_config("https://chatgpt.com/backend-api", Some("acc-2")),
-        "session",
-        &tau_proto::PromptOriginator::User,
+        "agent",
+        tau_proto::PromptOriginator::User,
+        false,
     );
     assert_ne!(a, b);
 }
 
-/// The headline pool invariant: alternating between two sessions
-/// must NOT cause the second session's turn to flush the first
-/// session's connection. Each `(account, session)` must hold its
-/// own socket so the OpenAI connection-local
-/// `previous_response_id` cache stays warm across context
-/// switches.
+/// The headline pool invariant: alternating between two prompt-cache threads
+/// must NOT cause the second thread's turn to flush the first thread's
+/// connection. Each `(account, thread-id)` must hold its own socket so the
+/// OpenAI connection-local `previous_response_id` cache stays warm across
+/// context switches.
 #[test]
-fn pool_routes_each_session_to_its_own_socket_and_reuses_them() {
+fn pool_routes_each_thread_to_its_own_socket_and_reuses_them() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
     let mut on_update = |_: &str, _: Option<&str>| {};
 
-    // Two turns on session A, interleaved with one on session B.
-    // Expected: 2 upgrades total (one per session), 3 turns.
-    for session in ["session-a", "session-b", "session-a"] {
-        let session_id = tau_proto::SessionId::new(session);
+    // Two turns on cache bucket A, interleaved with one on cache bucket B.
+    // Expected: 2 upgrades total (one per prompt-cache bucket), 3 turns.
+    for agent in ["agent-a", "agent-b", "agent-a"] {
+        let session_id = tau_proto::SessionId::new("session-pool-routing");
+        let agent_id = tau_proto::AgentId::new(agent);
         let request = PromptPayload {
             system_prompt: "sys",
             context_items: &[],
@@ -83,13 +79,13 @@ fn pool_routes_each_session_to_its_own_socket_and_reuses_them() {
             previous_response: None,
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,
-            agent_id: &tau_proto::AgentId::new("test-agent"),
+            agent_id: &agent_id,
             share_user_cache_key: false,
         };
         run_turn_through_pool(
             &mut pool,
             &config,
-            session,
+            "session-pool-routing",
             "sp-test",
             &request,
             &mut on_update,
@@ -100,12 +96,12 @@ fn pool_routes_each_session_to_its_own_socket_and_reuses_them() {
     let state = server.lock().expect("server state lock");
     assert_eq!(
         state.upgrade_count, 2,
-        "expected one upgrade per distinct session_id (alternating A/B/A — reuses A's socket)"
+        "expected one upgrade per distinct prompt-cache thread (alternating A/B/A — reuses A's socket)"
     );
     assert_eq!(
         state.turns_per_connection,
         vec![2, 1],
-        "session-a's socket should have served two turns; session-b's, one"
+        "thread A's socket should have served two turns; thread B's, one"
     );
 }
 
@@ -158,7 +154,12 @@ fn shared_pool_serializes_same_key_turns() {
 #[test]
 fn shared_pool_checkout_wait_aborts_when_canceled() {
     let config = make_config("https://chatgpt.com/backend-api", Some("acc"));
-    let key = PoolKey::for_request(&config, "same-session", &tau_proto::PromptOriginator::User);
+    let key = pool_key_for(
+        &config,
+        "test-agent",
+        tau_proto::PromptOriginator::User,
+        false,
+    );
     let pool = Arc::new(SharedWsPool::new());
     pool.inner
         .lock()
@@ -203,7 +204,12 @@ fn shared_prewarm_skips_busy_same_key_without_waiting() {
         Some("acc"),
     ));
     let pool = Arc::new(SharedWsPool::new());
-    let key = PoolKey::for_request(&config, "same-session", &tau_proto::PromptOriginator::User);
+    let key = pool_key_for(
+        &config,
+        "test-agent",
+        tau_proto::PromptOriginator::User,
+        false,
+    );
     pool.inner
         .lock()
         .expect("pool lock")
@@ -263,8 +269,9 @@ fn shared_prewarm_skips_busy_same_key_without_waiting() {
     );
 }
 
-/// Different pool keys should not be serialized by the same-key guard. The
-/// shared mutex may protect bookkeeping, but it must not cover network I/O.
+/// Different prompt-cache thread keys should not be serialized by the same-key
+/// guard. The shared mutex may protect bookkeeping, but it must not cover
+/// network I/O.
 #[test]
 fn shared_pool_allows_different_keys_to_run_concurrently() {
     let (addr, server) = spawn_fake_codex_server();
@@ -277,13 +284,19 @@ fn shared_pool_allows_different_keys_to_run_concurrently() {
     let barrier = Arc::new(Barrier::new(2));
 
     let mut handles = Vec::new();
-    for (idx, session) in ["session-a", "session-b"].into_iter().enumerate() {
+    for (idx, agent) in ["agent-a", "agent-b"].into_iter().enumerate() {
         let config = config.clone();
         let pool = pool.clone();
         let barrier = barrier.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
-            run_shared_turn(&pool, &config, session, &format!("sp-{idx}"));
+            run_shared_turn_for_agent(
+                &pool,
+                &config,
+                "session-shared-different-keys",
+                agent,
+                &format!("sp-{idx}"),
+            );
         }));
     }
     for handle in handles {
@@ -301,28 +314,29 @@ fn shared_pool_allows_different_keys_to_run_concurrently() {
     );
 }
 
-/// Cap the pool at 2 and exercise three sessions. The
-/// least-recently-used session's socket must get evicted; a
-/// follow-up turn on that session triggers a fresh upgrade.
+/// Cap the pool at 2 and exercise three agents. The least-recently-used
+/// agent's socket must get evicted; a follow-up turn on that agent triggers a
+/// fresh upgrade.
 #[test]
 fn pool_evicts_lru_when_capacity_exceeded() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    pool.max = 2;
+    pool.conns
+        .resize(NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN));
     let mut on_update = |_: &str, _: Option<&str>| {};
 
-    // A → B → C: three different sessions, cap=2.
+    // A → B → C: three different agents/cache buckets, cap=2.
     // After C: A (LRU) is evicted, pool holds {B, C}.
-    for session in ["a", "b", "c"] {
-        run_turn(&mut pool, &config, session, &mut on_update);
+    for agent in ["agent-a", "agent-b", "agent-c"] {
+        run_turn_for_agent(&mut pool, &config, "session-lru", agent, &mut on_update);
     }
     assert_eq!(pool.len(), 2);
     assert_eq!(server.lock().expect("server state lock").upgrade_count, 3);
 
     // Touching A again must re-upgrade (its old socket got
     // evicted on C's release).
-    run_turn(&mut pool, &config, "a", &mut on_update);
+    run_turn_for_agent(&mut pool, &config, "session-lru", "agent-a", &mut on_update);
     assert_eq!(server.lock().expect("server state lock").upgrade_count, 4);
 }
 
@@ -341,7 +355,12 @@ fn pool_reopens_aged_out_connections_on_checkout() {
     assert_eq!(server.lock().expect("server state lock").upgrade_count, 1);
 
     // Forcibly age the cached connection past the threshold.
-    let key = PoolKey::for_request(&config, "session-aged", &tau_proto::PromptOriginator::User);
+    let key = pool_key_for(
+        &config,
+        "test-agent",
+        tau_proto::PromptOriginator::User,
+        false,
+    );
     if let Some(conn) = pool.conns.get_mut(&key) {
         conn.opened_at = std::time::Instant::now() - MAX_CONNECTION_AGE - Duration::from_secs(1);
     } else {
@@ -397,6 +416,57 @@ fn ws_turn_captures_response_id_for_chain_continuation() {
     assert!(
         state.response_id.is_some(),
         "response_id must be captured so the next turn can chain via previous_response_id"
+    );
+}
+
+/// ChatGPT requires the WebSocket upgrade to identify the upstream session and
+/// thread before any `response.create` frame is sent. Those headers must use
+/// the exact same UUID as the request body's `prompt_cache_key`; otherwise a
+/// pooled socket could be bound to one upstream thread while the turn body
+/// targets a different cache bucket.
+#[test]
+fn ws_upgrade_thread_headers_match_prompt_cache_key() {
+    let (addr, server) = spawn_fake_codex_server();
+    let mut config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
+    config.supports_prompt_cache_key = true;
+    let mut pool = WsPool::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+
+    let session_id = tau_proto::SessionId::new("session-headers");
+    let agent_id = tau_proto::AgentId::new("header-agent");
+    let request = PromptPayload {
+        system_prompt: "sys",
+        context_items: &[],
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &session_id,
+        agent_id: &agent_id,
+        share_user_cache_key: false,
+    };
+    let expected = request.prompt_cache_key(&config.base_url);
+
+    run_turn_through_pool(
+        &mut pool,
+        &config,
+        "session-headers",
+        "sp-test",
+        &request,
+        &mut on_update,
+    )
+    .expect("turn ok");
+
+    let s = server.lock().expect("server lock");
+    let headers = s.upgrade_headers.first().expect("captured upgrade headers");
+    assert_eq!(headers.get("session-id"), Some(&expected));
+    assert_eq!(headers.get("thread-id"), Some(&expected));
+    assert_eq!(
+        s.requests[0]
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some(expected.as_str())
     );
 }
 
@@ -760,10 +830,12 @@ fn account_limit_stream_errors_are_not_silent_reconnects() {
 #[derive(Default)]
 struct ServerState {
     /// How many TCP+upgrade pairs we've accepted. Each
-    /// `(account, session)` pair the pool keys against should
+    /// `(account, thread-id)` pair the pool keys against should
     /// produce exactly one upgrade across its lifetime (modulo
     /// age-out / OAuth refresh).
     upgrade_count: usize,
+    /// Upgrade request headers captured for each accepted WebSocket.
+    upgrade_headers: Vec<BTreeMap<String, String>>,
     /// `turns_per_connection[i]` is the number of
     /// `response.create` envelopes connection `i` served before
     /// closing. Lets pool-reuse tests assert that A's two turns
@@ -814,8 +886,28 @@ fn spawn_fake_codex_server() -> (SocketAddr, Arc<Mutex<ServerState>>) {
     (addr, state)
 }
 
+fn capture_headers(headers: &tungstenite::http::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
 fn handle_one_connection(stream: TcpStream, state: Arc<Mutex<ServerState>>) {
-    let mut ws = match tungstenite::accept(stream) {
+    let mut upgrade_headers = BTreeMap::new();
+    let mut ws = match tungstenite::accept_hdr(
+        stream,
+        #[allow(clippy::result_large_err)]
+        |request: &tungstenite::handshake::server::Request, response| {
+            upgrade_headers = capture_headers(request.headers());
+            Ok(response)
+        },
+    ) {
         Ok(ws) => ws,
         Err(_) => return,
     };
@@ -823,6 +915,7 @@ fn handle_one_connection(stream: TcpStream, state: Arc<Mutex<ServerState>>) {
     {
         let mut s = state.lock().expect("server state lock");
         s.upgrade_count += 1;
+        s.upgrade_headers.push(upgrade_headers);
         conn_idx = s.turns_per_connection.len();
         s.turns_per_connection.push(0);
     }
@@ -904,6 +997,29 @@ fn finish_server_turn(state: &Arc<Mutex<ServerState>>) {
     s.active_turns = s.active_turns.saturating_sub(1);
 }
 
+fn pool_key_for(
+    config: &ResponsesConfig,
+    agent: &str,
+    originator: tau_proto::PromptOriginator,
+    share_user_cache_key: bool,
+) -> PoolKey {
+    let session_id = tau_proto::SessionId::new("test-session");
+    let agent_id = tau_proto::AgentId::new(agent);
+    let request = PromptPayload {
+        system_prompt: "sys",
+        context_items: &[],
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        previous_response: None,
+        originator: &originator,
+        session_id: &session_id,
+        agent_id: &agent_id,
+        share_user_cache_key,
+    };
+    PoolKey::for_request(config, &request)
+}
+
 fn user_msg(text: &str) -> tau_proto::ContextItem {
     tau_proto::ContextItem::Message(tau_proto::MessageItem {
         role: tau_proto::ContextRole::User,
@@ -920,7 +1036,18 @@ fn run_turn(
     session: &str,
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) {
+    run_turn_for_agent(pool, config, session, "test-agent", on_update);
+}
+
+fn run_turn_for_agent(
+    pool: &mut WsPool,
+    config: &ResponsesConfig,
+    session: &str,
+    agent: &str,
+    on_update: &mut impl FnMut(&str, Option<&str>),
+) {
     let session_id = tau_proto::SessionId::new(session);
+    let agent_id = tau_proto::AgentId::new(agent);
     let request = PromptPayload {
         system_prompt: "sys",
         context_items: &[],
@@ -930,7 +1057,7 @@ fn run_turn(
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &agent_id,
         share_user_cache_key: false,
     };
     run_turn_through_pool(pool, config, session, "sp-test", &request, on_update).expect("turn ok");
@@ -942,7 +1069,18 @@ fn run_shared_turn(
     session: &str,
     agent_prompt_id: &str,
 ) {
+    run_shared_turn_for_agent(pool, config, session, "test-agent", agent_prompt_id);
+}
+
+fn run_shared_turn_for_agent(
+    pool: &SharedWsPool,
+    config: &ResponsesConfig,
+    session: &str,
+    agent: &str,
+    agent_prompt_id: &str,
+) {
     let session_id = tau_proto::SessionId::new(session);
+    let agent_id = tau_proto::AgentId::new(agent);
     let originator = tau_proto::PromptOriginator::User;
     let request = PromptPayload {
         system_prompt: "sys",
@@ -953,7 +1091,7 @@ fn run_shared_turn(
         previous_response: None,
         originator: &originator,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &agent_id,
         share_user_cache_key: false,
     };
     let mut on_update = |_: &str, _: Option<&str>| {};

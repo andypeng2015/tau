@@ -42,16 +42,32 @@ pub struct PromptPayload<'a> {
     /// When `true`, force the wire `prompt_cache_key` to the user's
     /// user bucket key for this turn even though
     /// [`Self::originator`] is an extension. Lets a single-shot side query
-    /// (idle-summary) reuse the user's already-warm prefix cache. See
+    /// (idle-summary) reuse the user's already-warm prefix cache.
     pub share_user_cache_key: bool,
-    /// Harness session this prompt belongs to. Used by the Responses
-    /// WebSocket pool to key per-conversation connections — same
-    /// session stays on the same socket across turns, so the
-    /// connection-local `previous_response_id` cache stays warm.
-    /// Backends without a connection pool ignore this.
+    /// Harness session this prompt belongs to. Used for debug paths,
+    /// tracing, and transport fallback state; the Responses WebSocket
+    /// pool keys upstream sockets by the prompt-cache UUID instead.
+    /// Backends without session-scoped diagnostics ignore this.
     pub session_id: &'a SessionId,
     /// Durable agent this prompt belongs to.
     pub agent_id: &'a tau_proto::AgentId,
+}
+
+impl PromptPayload<'_> {
+    /// Derive the OpenAI-style prompt-cache UUID for this prompt on `base_url`.
+    ///
+    /// ChatGPT WebSocket upgrades use the same UUID for their upstream
+    /// `session-id` and `thread-id` headers, so callers should derive the value
+    /// through this method rather than duplicating the hashing inputs.
+    #[must_use]
+    pub fn prompt_cache_key(&self, base_url: &str) -> String {
+        prompt_cache_key_for(
+            base_url,
+            self.agent_id,
+            self.originator,
+            self.share_user_cache_key,
+        )
+    }
 }
 
 /// See [`PromptPayload::previous_response`].

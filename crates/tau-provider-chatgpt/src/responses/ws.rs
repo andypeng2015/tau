@@ -1,16 +1,17 @@
 //! Persistent-WebSocket transport for the Codex Responses API.
 //!
-//! The provider owns a small pool of these connections, keyed by
-//! `(base_url, account_id, session_id)`, so the connection-local
-//! `previous_response_id` cache stays warm across turns of the same
-//! conversation. The pool itself lives in [`super::pool`]; this
+//! The provider owns a small pool of these connections, keyed by the
+//! upstream thread UUID derived from the prompt-cache key, so the
+//! connection-local `previous_response_id` cache stays warm across turns of
+//! the same conversation. The pool itself lives in [`super::pool`]; this
 //! module handles a single connection's lifecycle and one-turn
 //! streaming.
 //!
 //! Wire shape:
 //! - Upgrade `wss://{base_url}/codex/responses` (same path as the HTTP+SSE
-//!   endpoint, just `wss://`) with `Authorization`, `chatgpt-account-id`, and
-//!   the dated `OpenAI-Beta: responses_websockets=2026-02-06` header.
+//!   endpoint, just `wss://`) with `Authorization`, `chatgpt-account-id`,
+//!   `session-id`, `thread-id`, and the dated `OpenAI-Beta:
+//!   responses_websockets=2026-02-06` header.
 //! - Send one client text frame per turn: a `{ "type": "response.create", ...
 //!   }` envelope produced by [`super::build_ws_envelope`].
 //! - Read server text frames as one decoded `response.*` event each and hand
@@ -166,14 +167,17 @@ impl WsConn {
     /// already auto-pongs any server-initiated `Ping` even before
     /// the first `run_turn` call.
     ///
+    /// `thread_id` is the prompt-cache UUID for the request bucket; it is sent
+    /// as both `session-id` and `thread-id` on the upgrade.
+    ///
     /// Errors:
     /// - `LlmError::HttpStatus(426, _)` — server rejected the upgrade (sticky
     ///   fallback to HTTP+SSE).
     /// - `LlmError::HttpStatus(0, "stream error: ...")` — transient transport
     ///   hiccup, retryable.
     /// - Other 4xx — surface as-is.
-    pub fn connect(config: &ResponsesConfig) -> Result<Self, LlmError> {
-        let request = build_request(config)?;
+    pub fn connect(config: &ResponsesConfig, thread_id: &str) -> Result<Self, LlmError> {
+        let request = build_request(config, thread_id)?;
         let bearer = config.api_key.clone();
         let runtime = ws_runtime::handle();
         let (ws, _response) = runtime
@@ -342,7 +346,7 @@ impl Drop for WsConn {
 
 /// Build the client `Request` for the WS upgrade — URL + bearer +
 /// Codex-specific headers.
-fn build_request(config: &ResponsesConfig) -> Result<Request, LlmError> {
+fn build_request(config: &ResponsesConfig, thread_id: &str) -> Result<Request, LlmError> {
     let url = build_ws_url(&config.base_url)?;
     let mut request: Request = url
         .as_str()
@@ -354,6 +358,8 @@ fn build_request(config: &ResponsesConfig) -> Result<Request, LlmError> {
         &format!("Bearer {}", config.api_key),
     )?;
     set_header(request.headers_mut(), "OpenAI-Beta", OPENAI_BETA_WS)?;
+    set_header(request.headers_mut(), "session-id", thread_id)?;
+    set_header(request.headers_mut(), "thread-id", thread_id)?;
     if let Some(account_id) = config.account_id.as_deref() {
         set_header(request.headers_mut(), "chatgpt-account-id", account_id)?;
     }

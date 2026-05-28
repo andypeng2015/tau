@@ -845,15 +845,31 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
         error: None,
     }));
 
-    let live = renderer.live_agents().lock().unwrap().clone();
-    let suspended = renderer.suspended_agents().lock().unwrap().clone();
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
     assert!(live.contains("worker-1"));
     assert!(suspended.contains("worker-1"));
     assert!(!agent_is_active_in_sets(&live, &suspended, "worker-1"));
 
     renderer.resume_agent("worker-1".to_owned());
-    let live = renderer.live_agents().lock().unwrap().clone();
-    let suspended = renderer.suspended_agents().lock().unwrap().clone();
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
     assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
 }
 

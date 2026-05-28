@@ -2208,15 +2208,15 @@ mod role_cycle_tests {
 
         mark_agent_suspended(&suspended, "worker");
         assert!(!agent_is_active_in_sets(
-            &live.lock().unwrap(),
-            &suspended.lock().unwrap(),
+            &live.lock().expect("live agents lock poisoned"),
+            &suspended.lock().expect("suspended agents lock poisoned"),
             "worker"
         ));
 
         mark_agent_resumed(&live, &suspended, "worker");
         assert!(agent_is_active_in_sets(
-            &live.lock().unwrap(),
-            &suspended.lock().unwrap(),
+            &live.lock().expect("live agents lock poisoned"),
+            &suspended.lock().expect("suspended agents lock poisoned"),
             "worker"
         ));
     }

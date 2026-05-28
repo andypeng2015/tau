@@ -7,7 +7,7 @@
 //!   the parent). The OpenAI WS endpoint only caches the *most recent*
 //!   `previous_response_id` per socket, so routing A → B → A on one shared
 //!   socket would flush each chain's warmth on every switch. Keep one
-//!   connection per `(account, session, conversation)` so warmth survives
+//!   connection per upstream prompt-cache/thread UUID so warmth survives
 //!   context-switches.
 //! - Connection-in-flight exclusivity is enforced by ownership plus the shared
 //!   wrapper's per-key busy set: checkout removes the connection from the map
@@ -21,22 +21,25 @@
 //! - Bearer-mismatch on checkout means OAuth refreshed; drop the stale socket
 //!   and open a new one.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
+
+use lru::LruCache;
 
 const CHECKOUT_ABORT_POLL: Duration = Duration::from_millis(50);
 
 use super::ResponsesConfig;
 use super::ws::WsConn;
-use crate::common::LlmError;
+use crate::common::{LlmError, PromptPayload};
 
 /// Default soft cap on simultaneously-cached WS connections.
 ///
-/// One per `(account, session, conversation)`. A typical interactive workload
-/// runs 1–3 active sessions/conversations (the user's main + any in-flight
-/// sub-agent delegation). The cap exists to bound pathological growth (a
-/// long-lived agent process where the user reopens many old
+/// One per `(account, prompt-cache/thread UUID)`. A typical interactive
+/// workload runs 1–3 active sessions/conversations (the user's main + any
+/// in-flight sub-agent delegation). The cap exists to bound pathological growth
+/// (a long-lived agent process where the user reopens many old
 /// sessions), not because the normal path needs many slots.
 pub const DEFAULT_POOL_MAX: usize = 10;
 
@@ -58,64 +61,55 @@ pub const MAX_CONNECTION_AGE: Duration = Duration::from_secs(55 * 60);
 ///
 /// - `base_url` + `account_id` form a "socket realm" — same bearer, same
 ///   server-side state. Cross-realm reuse is impossible.
-/// - `session_id` scopes the harness session. Side conversations may share a
-///   session id with their parent, so `conversation_id` further separates the
-///   user turn from extension-originated query chains.
+/// - `thread_id` is the upstream session/thread UUID sent on the WebSocket
+///   upgrade. It is the same UUID as the request body's `prompt_cache_key`, so
+///   a socket is never reused for a different cache bucket.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PoolKey {
+    /// WS endpoint realm. Cross-realm reuse is impossible.
     pub base_url: String,
+    /// Account realm for the socket's bearer and server-side state.
     pub account_id: Option<String>,
-    pub session_id: String,
-    pub conversation_id: String,
+    /// Upstream ChatGPT/Codex session/thread UUID for this socket.
+    ///
+    /// This is derived from the same value as the request body's
+    /// `prompt_cache_key` and is sent as both `session-id` and `thread-id` on
+    /// the WebSocket upgrade.
+    pub thread_id: String,
 }
 
 impl PoolKey {
-    pub fn for_request(
-        config: &ResponsesConfig,
-        session_id: &str,
-        originator: &tau_proto::PromptOriginator,
-    ) -> Self {
+    /// Build the socket key for a prompt request.
+    ///
+    /// The request's prompt-cache UUID becomes the upstream `thread-id` and
+    /// `session-id` headers, so it is part of the pool key rather than a
+    /// per-turn detail.
+    pub fn for_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Self {
         Self {
             base_url: config.base_url.clone(),
             account_id: config.account_id.clone(),
-            session_id: session_id.to_owned(),
-            conversation_id: conversation_id(originator),
-        }
-    }
-}
-
-fn conversation_id(originator: &tau_proto::PromptOriginator) -> String {
-    match originator {
-        tau_proto::PromptOriginator::User => "user".to_owned(),
-        tau_proto::PromptOriginator::Extension { name, query_id } => {
-            format!("extension/{name}/{query_id}")
+            thread_id: request.prompt_cache_key(&config.base_url),
         }
     }
 }
 
 /// Single-threaded pool of WS connections.
 ///
-/// Hot path (turn N+1 on a known session): `checkout` returns the
+/// Hot path (turn N+1 on a known thread): `checkout` returns the
 /// existing `WsConn` (removed from the map); the caller runs the
 /// turn; on success it calls `release` to put the conn back at the
 /// head of the LRU queue. On error (mid-stream close, IO break),
 /// the caller drops the connection — the entry is already removed
 /// from the map and the LRU list resyncs lazily.
 pub struct WsPool {
-    conns: HashMap<PoolKey, WsConn>,
-    /// Front = most recent. Pruned of stale keys on `release` /
-    /// `checkout` rather than eagerly — a key in the queue without
-    /// a matching map entry just means that connection died and was
-    /// dropped, so we skip it next time we walk the queue.
-    lru: VecDeque<PoolKey>,
-    max: usize,
+    conns: LruCache<PoolKey, WsConn>,
     stats: WsPoolStats,
 }
 
 /// Lifetime counters for the WS pool. Bumped on each interesting
 /// path so an operator can grep provider tracing output and see
 /// how often the silent-reconnect machinery kicked in (or, more
-/// importantly, *kept* kicking in for a session — a runaway count
+/// importantly, *kept* kicking in for a thread — a runaway count
 /// is the signature of an upstream regression).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WsPoolStats {
@@ -139,9 +133,7 @@ impl WsPool {
             .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_POOL_MAX);
         Self {
-            conns: HashMap::new(),
-            lru: VecDeque::new(),
-            max,
+            conns: LruCache::new(NonZeroUsize::new(max).unwrap_or(NonZeroUsize::MIN)),
             stats: WsPoolStats::default(),
         }
     }
@@ -163,23 +155,18 @@ impl WsPool {
     /// Drops the entry if its bearer has rotated (OAuth refresh) or
     /// the connection is approaching the server-side age limit.
     pub fn checkout(&mut self, key: &PoolKey, current_bearer: &str) -> Option<WsConn> {
-        let conn = self.conns.remove(key)?;
+        let conn = self.conns.pop(key)?;
         // Bearer rotation: refreshed access token means upstream
         // would reject the existing socket on the next message
         // anyway. Drop and let caller reopen with the new token.
         if conn.bearer != current_bearer {
-            self.purge_key(key);
             return None;
         }
         // Age-out: a 59-minute-old socket would die mid-stream.
         // Reopen here instead, before sending anything.
         if MAX_CONNECTION_AGE <= conn.opened_at.elapsed() {
-            self.purge_key(key);
             return None;
         }
-        // LRU bookkeeping: take the key out — caller will put it
-        // back at the front on `release`.
-        self.lru.retain(|k| k != key);
         Some(conn)
     }
 
@@ -187,15 +174,7 @@ impl WsPool {
     /// pool. Inserts at the LRU front. Evicts the LRU tail when the
     /// pool was already at capacity.
     pub fn release(&mut self, key: PoolKey, conn: WsConn) {
-        if self.conns.len() >= self.max && !self.conns.contains_key(&key) {
-            self.evict_lru();
-        }
-        // Lazy-prune: if a stale copy of this key is somewhere in
-        // the queue (e.g. it was age-purged earlier), drop it so we
-        // don't double-count.
-        self.lru.retain(|k| k != &key);
-        self.lru.push_front(key.clone());
-        self.conns.insert(key, conn);
+        self.conns.put(key, conn);
     }
 
     /// Number of cached connections currently retained by the pool.
@@ -204,20 +183,10 @@ impl WsPool {
         self.conns.len()
     }
 
-    fn purge_key(&mut self, key: &PoolKey) {
-        self.conns.remove(key);
-        self.lru.retain(|k| k != key);
-    }
-
-    fn evict_lru(&mut self) {
-        // Walk the LRU tail forward until we find a key still
-        // backed by the map. Stale keys (entry removed earlier
-        // without queue update) are silently skipped.
-        while let Some(stale) = self.lru.pop_back() {
-            if self.conns.remove(&stale).is_some() {
-                return;
-            }
-        }
+    /// Whether the pool currently has no cached connections.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.conns.is_empty()
     }
 }
 
@@ -396,7 +365,7 @@ pub fn run_turn_through_pool(
     request: &crate::common::PromptPayload<'_>,
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<crate::common::StreamState, WsTurnError> {
-    let key = PoolKey::for_request(config, session_id, request.originator);
+    let key = PoolKey::for_request(config, request);
 
     // First attempt: prefer a warm cached connection so the
     // connection-local chain cache stays useful.
@@ -431,7 +400,7 @@ pub fn run_turn_through_pool(
     // Fresh socket path. The chain cache here is empty by definition, so strip
     // any prior `previous_response_id` and pay one cold full replay on WS. That
     // is cheaper over the next turns than switching to HTTP and staying cold.
-    let mut conn = WsConn::connect(config).map_err(WsTurnError::Other)?;
+    let mut conn = WsConn::connect(config, &key.thread_id).map_err(WsTurnError::Other)?;
     pool.stats.upgrades += 1;
     let fresh_request = without_previous_response(request);
     if request.previous_response.is_some() {
@@ -470,7 +439,7 @@ pub fn run_turn_through_shared_pool(
     on_update: &mut impl FnMut(&str, Option<&str>),
 ) -> Result<crate::common::StreamState, WsTurnError> {
     let session_id = request.session_id.as_str();
-    let key = PoolKey::for_request(config, session_id, request.originator);
+    let key = PoolKey::for_request(config, request);
 
     if let Some(mut conn) = pool.checkout_until(&key, &config.api_key, should_abort)? {
         if should_abort() {
@@ -505,7 +474,7 @@ pub fn run_turn_through_shared_pool(
         pool.abandon(&key)?;
         return Err(WsTurnError::Canceled);
     }
-    let mut conn = match WsConn::connect(config) {
+    let mut conn = match WsConn::connect(config, &key.thread_id) {
         Ok(conn) => conn,
         Err(error) => {
             pool.abandon(&key)?;
@@ -542,7 +511,7 @@ pub fn run_turn_through_shared_pool(
 }
 
 /// Send a best-effort non-generating prewarm over the same pooled WS
-/// connection a later real turn for this session will use. Unlike
+/// connection a later real turn for this prompt-cache thread will use. Unlike
 /// real turns, a failed cached socket is simply dropped and retried
 /// once on a fresh socket; no stateful chain id exists on prewarm.
 #[cfg(test)]
@@ -552,7 +521,7 @@ pub fn run_prewarm_through_pool(
     session_id: &str,
     request: &crate::common::PromptPayload<'_>,
 ) -> Result<crate::common::StreamState, LlmError> {
-    let key = PoolKey::for_request(config, session_id, request.originator);
+    let key = PoolKey::for_request(config, request);
 
     if let Some(mut conn) = pool.checkout(&key, &config.api_key) {
         match conn.run_prewarm(config, request) {
@@ -577,7 +546,7 @@ pub fn run_prewarm_through_pool(
         }
     }
 
-    let mut conn = WsConn::connect(config)?;
+    let mut conn = WsConn::connect(config, &key.thread_id)?;
     pool.stats.upgrades += 1;
     match conn.run_prewarm(config, request) {
         Ok(state) => {
@@ -601,7 +570,7 @@ pub fn run_prewarm_through_shared_pool(
     session_id: &str,
     request: &crate::common::PromptPayload<'_>,
 ) -> Result<crate::common::StreamState, LlmError> {
-    let key = PoolKey::for_request(config, session_id, request.originator);
+    let key = PoolKey::for_request(config, request);
 
     if let TryCheckout::Reserved(cached) = pool
         .try_checkout(&key, &config.api_key)
@@ -641,7 +610,7 @@ pub fn run_prewarm_through_shared_pool(
         return Ok(crate::common::StreamState::new());
     }
 
-    let mut conn = match WsConn::connect(config) {
+    let mut conn = match WsConn::connect(config, &key.thread_id) {
         Ok(conn) => conn,
         Err(error) => {
             pool.abandon(&key).map_err(WsTurnError::into_llm_error)?;
