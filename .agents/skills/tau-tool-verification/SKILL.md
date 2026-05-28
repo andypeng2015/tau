@@ -222,7 +222,7 @@ Do not count cancellation of `write` or `edit` as required unless the harness ex
 
 #### Phase 7: agent lifecycle cleanup
 
-Start a delegate that calls `dir_lock update root/a`, reports that it acquired the lock, and then exits without unlocking. After the delegate completes and the agent unloads, a different agent should be able to lock or mutate `root/a` without waiting forever. If the lock remains stuck after the owning agent is gone, record it as a lifecycle cleanup bug.
+Start a delegate that calls `dir_lock update root/a`, reports that it acquired the lock, and then exits without unlocking. After the delegate returns its final answer, a different agent should be able to lock or mutate `root/a` without waiting forever, even if Tau keeps the delegate's session agent loaded for history. If the lock remains stuck after the delegate start result, record it as a lifecycle cleanup bug. If a later `SessionAgentUnloaded` event is visible, it should also release any remaining manual locks for that agent.
 
 Also test session shutdown if practical: locks from the old session must not affect a fresh session.
 
@@ -239,7 +239,7 @@ Report concise but complete findings:
 * Whether `/shell-dir-force-unlock DIRECTORY` was available, released overlapping manual locks, reported owner details, and left automatic locks alone.
 * Whether FIFO prevented later independent waiters from jumping ahead of a blocked front waiter.
 * Whether cancellation removed a waiting lock request and prevented the delayed mutation.
-* Whether agent unload/session shutdown released manual locks.
+* Whether delegate final-answer, agent unload, and session shutdown released manual locks.
 * Any advisory-shell caveat observed, especially commands writing outside their locked `cwd` or into a locked directory from another `cwd`.
 
 

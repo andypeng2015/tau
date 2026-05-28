@@ -444,6 +444,8 @@ where
         tau_proto::EventName::SESSION_AGENT_LOADED,
         tau_proto::EventName::SESSION_AGENT_UNLOADED,
         tau_proto::EventName::SESSION_SHUTDOWN,
+        tau_proto::EventName::AGENT_START_ACCEPTED,
+        tau_proto::EventName::AGENT_START_RESULT,
         tau_proto::EventName::UI_SHELL_COMMAND,
     ]);
     for tool in tools {
@@ -465,6 +467,7 @@ where
         HashMap::<tau_proto::ToolCallId, mpsc::Sender<()>>::new(),
     ));
     let lock_manager = DirLockManager::default();
+    let mut start_agent_owners = HashMap::<String, tau_proto::AgentId>::new();
 
     // Writer thread: drains response frames and writes them to the wire.
     let writer_handle = std::thread::spawn(move || -> Result<(), Box<dyn Error + Send>> {
@@ -558,9 +561,19 @@ where
             }
             Frame::Event(Event::SessionAgentUnloaded(unloaded)) => {
                 lock_manager.release_agent(&unloaded.agent_id);
+                start_agent_owners.retain(|_, agent_id| agent_id != &unloaded.agent_id);
             }
             Frame::Event(Event::SessionShutdown(_)) => {
                 lock_manager.release_all_manual();
+                start_agent_owners.clear();
+            }
+            Frame::Event(Event::StartAgentAccepted(accepted)) => {
+                start_agent_owners.insert(accepted.query_id, accepted.agent_id);
+            }
+            Frame::Event(Event::StartAgentResult(result)) => {
+                if let Some(agent_id) = start_agent_owners.remove(&result.query_id) {
+                    lock_manager.release_agent(&agent_id);
+                }
             }
             Frame::Event(Event::ActionInvoke(invoke)) => {
                 tx.send(Frame::Event(dispatch_action_invoke(invoke, &lock_manager)))?;

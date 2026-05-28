@@ -667,6 +667,87 @@ fn dir_lock_blocks_conflicting_write_until_unlock() {
 }
 
 #[test]
+fn dir_lock_releases_delegate_locks_on_start_agent_result() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+            query_id: "delegate-locker".to_owned(),
+            agent_id: "agent-locker".into(),
+        }))
+        .expect("start accepted");
+    writer
+        .write_event(&tool_started(
+            "lock-by-delegate",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-locker",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush delegate lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-by-delegate" => {
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before delegate lock result"),
+        }
+    }
+
+    // Delegates can finish without issuing an explicit unlock. Tau keeps their
+    // session agent loaded for history, so ext-shell must release manual locks
+    // on the start-result lifecycle event rather than waiting only for a later
+    // SessionAgentUnloaded event.
+    writer
+        .write_event(&Event::StartAgentResult(tau_proto::StartAgentResult {
+            query_id: "delegate-locker".to_owned(),
+            text: "done".to_owned(),
+            error: None,
+        }))
+        .expect("start result");
+    writer
+        .write_event(&tool_started(
+            "lock-after-delegate-result",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-b",
+        ))
+        .expect("dir_lock update after result");
+    writer.flush().expect("flush after result lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result))
+                if result.call_id.as_str() == "lock-after-delegate-result" =>
+            {
+                break;
+            }
+            Some(Event::ToolProgress(progress))
+                if progress.call_id.as_str() == "lock-after-delegate-result" =>
+            {
+                panic!("lock waited after delegate lifecycle release: {progress:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before second lock result"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
 fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();

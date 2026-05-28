@@ -27,7 +27,7 @@ Conflicts are based on path ancestry: a lock conflicts when either directory con
 
 The wait queue is FIFO. If the front waiter is blocked, later waiters do not jump ahead. Same-owner automatic reentry is allowed so an agent holding a manual lock can keep using mutating tools under that lock without deadlocking itself. A repeated manual `dir_lock update` still errors.
 
-Manual locks are released when ext-shell observes `SessionAgentUnloaded` for the owning agent, and all manual locks are released on `SessionShutdown`. The extension also publishes a UI action `/shell-dir-force-unlock DIRECTORY` that canonicalizes an existing directory and force-releases all overlapping manual locks, regardless of owner. It does not cancel or release automatic locks held by currently running tools.
+Manual locks are released when ext-shell observes `agent.start_result` for a tracked delegate/side-agent, `SessionAgentUnloaded` for the owning agent, or `SessionShutdown` for the whole session. The extension also publishes a UI action `/shell-dir-force-unlock DIRECTORY` that canonicalizes an existing directory and force-releases all overlapping manual locks, regardless of owner. It does not cancel or release automatic locks held by currently running tools.
 
 
 ## Automatic locking for ext-shell tools
