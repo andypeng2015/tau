@@ -18,14 +18,17 @@ Arguments:
 
 - `command`: `update` or `unlock`
 - `directory`: an existing directory
+- `owner_agent_id`: optional owner to unlock; only meaningful with `command: unlock`
 
 All `directory` values are canonicalized before use. Missing paths or non-directories are errors.
 
-`update` acquires a manual update lock for the canonical directory and the owning `agent_id`. `unlock` releases one matching manual lock held by that same agent. A second `update` by the same agent for the same directory, an ancestor, or a child is an error; manual double-locking is treated as a likely forgotten unlock.
+`update` acquires a manual update lock for the canonical directory and the owning `agent_id`. `unlock` releases one matching manual lock held by the calling agent, or by `owner_agent_id` when that optional argument is present. A second `update` by the same agent for the same directory, an ancestor, or a child is an error; manual double-locking is treated as a likely forgotten unlock.
 
 Conflicts are based on path ancestry: a lock conflicts when either directory contains the other. Reads do not participate.
 
 The wait queue is FIFO. If the front waiter is blocked, later waiters do not jump ahead. Same-owner automatic reentry is allowed so an agent holding a manual lock can keep using mutating tools under that lock without deadlocking itself. A repeated manual `dir_lock update` still errors.
+
+Manual locks track acquisition time, last-use time, and active automatic tools running under the lock. A front FIFO waiter performs a liveness check every 60 seconds. If the blocking manual lock has been idle for 120 seconds and has no active automatic tools inside it, the waiter returns an abandoned-lock error naming the blocking directory and owner. The error tells the caller to message the owner or force-unlock with `dir_lock unlock` plus `owner_agent_id`.
 
 Manual locks are released when ext-shell observes `agent.start_result` for a tracked delegate/side-agent, `SessionAgentUnloaded` for the owning agent, or `SessionShutdown` for the whole session. The extension also publishes a UI action `/shell-dir-force-unlock DIRECTORY` that canonicalizes an existing directory and force-releases all overlapping manual locks, regardless of owner. It does not cancel or release automatic locks held by currently running tools.
 

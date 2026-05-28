@@ -8,13 +8,14 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use tau_proto::{
     AgentId, CborValue, Event, Frame, ToolCallId, ToolCancelled, ToolDisplay, ToolDisplayPayload,
     ToolDisplayStatus, ToolError, ToolProgress, ToolResult, ToolResultKind, ToolStarted, ToolType,
 };
 
-use crate::argument::argument_text;
+use crate::argument::{argument_text, optional_argument_text};
 use crate::display::{ToolFailure, ok_display};
 use crate::tools::{
     APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, GPT_SHELL_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME,
@@ -22,6 +23,57 @@ use crate::tools::{
 
 /// Agent-facing name of the directory locking tool.
 pub(crate) const DIR_LOCK_TOOL_NAME: &str = "dir_lock";
+
+const DEFAULT_LOCK_WAIT_LIVENESS_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_LOCK_ABANDONED_AFTER: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug)]
+struct LockWaitPolicy {
+    liveness_interval: Duration,
+    abandoned_after: Duration,
+}
+
+impl Default for LockWaitPolicy {
+    fn default() -> Self {
+        Self {
+            liveness_interval: DEFAULT_LOCK_WAIT_LIVENESS_INTERVAL,
+            abandoned_after: DEFAULT_LOCK_ABANDONED_AFTER,
+        }
+    }
+}
+
+/// Manual lock state that appears stale to a waiting lock request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AbandonedLock {
+    /// Agent that owns the blocking manual lock.
+    pub(crate) owner: AgentId,
+    /// Canonical manual lock directory blocking the request.
+    pub(crate) dir: PathBuf,
+    /// How long the lock has existed.
+    pub(crate) held_for: Duration,
+    /// How long it has been since the lock was acquired or used by an automatic
+    /// tool.
+    pub(crate) idle_for: Duration,
+}
+
+impl AbandonedLock {
+    fn message(&self) -> String {
+        format!(
+            "directory lock cannot be acquired because {} is held by agent `{}` and appears abandoned (idle for {}s, held for {}s). Ask `{}` to unlock it, or force-unlock it with `dir_lock` using command `unlock`, directory `{}`, and owner_agent_id `{}`.",
+            self.dir.display(),
+            self.owner,
+            self.idle_for.as_secs(),
+            self.held_for.as_secs(),
+            self.owner,
+            self.dir.display(),
+            self.owner
+        )
+    }
+
+    pub(crate) fn tool_failure(&self) -> ToolFailure {
+        ToolFailure::from(self.message()).with_args(self.dir.display().to_string())
+    }
+}
 
 /// Shared state used by all ext-shell workers that participate in directory
 /// update locking.
@@ -49,6 +101,9 @@ struct LockState {
 struct ManualLock {
     owner: AgentId,
     dir: PathBuf,
+    acquired_at: Instant,
+    last_used_at: Instant,
+    active_auto_ids: Vec<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,12 +140,14 @@ enum WaitKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LockAcquireError {
     Cancelled,
+    Abandoned(AbandonedLock),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ManualLockAcquireError {
     Cancelled,
     AlreadyHeld { dir: PathBuf },
+    Abandoned(AbandonedLock),
 }
 
 /// RAII guard for an automatic writer lock. Dropping it releases the active
@@ -119,6 +176,20 @@ impl DirLockManager {
     where
         F: FnOnce(),
     {
+        self.acquire_auto_with_policy(call_id, owner, dirs, on_wait, LockWaitPolicy::default())
+    }
+
+    fn acquire_auto_with_policy<F>(
+        &self,
+        call_id: ToolCallId,
+        owner: AgentId,
+        dirs: Vec<PathBuf>,
+        on_wait: F,
+        policy: LockWaitPolicy,
+    ) -> Result<AutoDirLockGuard, LockAcquireError>
+    where
+        F: FnOnce(),
+    {
         let dirs = normalize_lock_dirs(dirs);
         let mut on_wait = Some(on_wait);
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
@@ -135,6 +206,7 @@ impl DirLockManager {
         if let Some(on_wait) = on_wait.take() {
             on_wait();
         }
+        let mut next_liveness_check = Instant::now() + policy.liveness_interval;
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
         loop {
             let Some(pos) = state.waiters.iter().position(|queued| queued.id == waiter) else {
@@ -150,12 +222,33 @@ impl DirLockManager {
                         id,
                     });
                 }
+                let now = Instant::now();
+                if next_liveness_check <= now {
+                    if let Some(blocker) = state.abandoned_blocker(
+                        &queued.owner,
+                        &queued.dirs,
+                        queued.kind,
+                        now,
+                        policy.abandoned_after,
+                    ) {
+                        state.waiters.pop_front().expect("front exists");
+                        self.inner.changed.notify_all();
+                        return Err(LockAcquireError::Abandoned(blocker));
+                    }
+                    next_liveness_check = now + policy.liveness_interval;
+                }
             }
-            state = self
+            let now = Instant::now();
+            if next_liveness_check <= now {
+                next_liveness_check = now + policy.liveness_interval;
+            }
+            let wait_for = next_liveness_check.saturating_duration_since(now);
+            let (new_state, _) = self
                 .inner
                 .changed
-                .wait(state)
+                .wait_timeout(state, wait_for)
                 .expect("dir lock state poisoned");
+            state = new_state;
         }
     }
 
@@ -170,6 +263,20 @@ impl DirLockManager {
     where
         F: FnOnce(),
     {
+        self.acquire_manual_with_policy(call_id, owner, dir, on_wait, LockWaitPolicy::default())
+    }
+
+    fn acquire_manual_with_policy<F>(
+        &self,
+        call_id: ToolCallId,
+        owner: AgentId,
+        dir: PathBuf,
+        on_wait: F,
+        policy: LockWaitPolicy,
+    ) -> Result<(), ManualLockAcquireError>
+    where
+        F: FnOnce(),
+    {
         let dirs = vec![dir];
         let mut on_wait = Some(on_wait);
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
@@ -177,7 +284,7 @@ impl DirLockManager {
             return Err(ManualLockAcquireError::AlreadyHeld { dir: held_dir });
         }
         if state.can_grant_now(&owner, &dirs, WaitKind::Manual) {
-            state.add_manual(owner, dirs);
+            state.add_manual(owner, dirs, Instant::now());
             self.inner.changed.notify_all();
             return Ok(());
         }
@@ -187,6 +294,7 @@ impl DirLockManager {
         if let Some(on_wait) = on_wait.take() {
             on_wait();
         }
+        let mut next_liveness_check = Instant::now() + policy.liveness_interval;
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
         loop {
             let Some(pos) = state.waiters.iter().position(|queued| queued.id == waiter) else {
@@ -203,16 +311,37 @@ impl DirLockManager {
                 }
                 if !state.has_conflict(&queued.owner, &queued.dirs, queued.kind) {
                     let queued = state.waiters.pop_front().expect("front exists");
-                    state.add_manual(queued.owner, queued.dirs);
+                    state.add_manual(queued.owner, queued.dirs, Instant::now());
                     self.inner.changed.notify_all();
                     return Ok(());
                 }
+                let now = Instant::now();
+                if next_liveness_check <= now {
+                    if let Some(blocker) = state.abandoned_blocker(
+                        &queued.owner,
+                        &queued.dirs,
+                        queued.kind,
+                        now,
+                        policy.abandoned_after,
+                    ) {
+                        state.waiters.pop_front().expect("front exists");
+                        self.inner.changed.notify_all();
+                        return Err(ManualLockAcquireError::Abandoned(blocker));
+                    }
+                    next_liveness_check = now + policy.liveness_interval;
+                }
             }
-            state = self
+            let now = Instant::now();
+            if next_liveness_check <= now {
+                next_liveness_check = now + policy.liveness_interval;
+            }
+            let wait_for = next_liveness_check.saturating_duration_since(now);
+            let (new_state, _) = self
                 .inner
                 .changed
-                .wait(state)
+                .wait_timeout(state, wait_for)
                 .expect("dir lock state poisoned");
+            state = new_state;
         }
     }
 
@@ -295,8 +424,12 @@ impl DirLockManager {
 
     fn release_auto(&self, id: u64) {
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
+        let before = state.automatic.len();
         state.automatic.retain(|lock| lock.id != id);
-        self.inner.changed.notify_all();
+        if state.automatic.len() != before {
+            state.mark_auto_released(id, Instant::now());
+            self.inner.changed.notify_all();
+        }
     }
 }
 
@@ -373,7 +506,37 @@ impl LockState {
         })
     }
 
-    fn add_manual(&mut self, owner: AgentId, dirs: Vec<PathBuf>) {
+    fn abandoned_blocker(
+        &self,
+        owner: &AgentId,
+        dirs: &[PathBuf],
+        kind: WaitKind,
+        now: Instant,
+        abandoned_after: Duration,
+    ) -> Option<AbandonedLock> {
+        match kind {
+            WaitKind::Manual | WaitKind::Automatic => self.manual.iter().find_map(|lock| {
+                if &lock.owner == owner || !dirs.iter().any(|dir| paths_overlap(&lock.dir, dir)) {
+                    return None;
+                }
+                if !lock.active_auto_ids.is_empty() {
+                    return None;
+                }
+                let idle_for = now.saturating_duration_since(lock.last_used_at);
+                if idle_for < abandoned_after {
+                    return None;
+                }
+                Some(AbandonedLock {
+                    owner: lock.owner.clone(),
+                    dir: lock.dir.clone(),
+                    held_for: now.saturating_duration_since(lock.acquired_at),
+                    idle_for,
+                })
+            }),
+        }
+    }
+
+    fn add_manual(&mut self, owner: AgentId, dirs: Vec<PathBuf>, now: Instant) {
         for dir in dirs {
             debug_assert!(
                 self.manual
@@ -383,6 +546,9 @@ impl LockState {
             self.manual.push(ManualLock {
                 owner: owner.clone(),
                 dir,
+                acquired_at: now,
+                last_used_at: now,
+                active_auto_ids: Vec::new(),
             });
         }
     }
@@ -391,7 +557,33 @@ impl LockState {
         let id = self.next_auto_id;
         self.next_auto_id += 1;
         self.automatic.push(AutomaticLock { id, owner, dirs });
+        self.mark_auto_acquired(id, Instant::now());
         id
+    }
+
+    fn mark_auto_acquired(&mut self, id: u64, now: Instant) {
+        let Some(lock) = self.automatic.iter().find(|lock| lock.id == id) else {
+            return;
+        };
+        for manual in &mut self.manual {
+            if manual.owner == lock.owner
+                && lock.dirs.iter().any(|dir| dir.starts_with(&manual.dir))
+                && !manual.active_auto_ids.contains(&id)
+            {
+                manual.last_used_at = now;
+                manual.active_auto_ids.push(id);
+            }
+        }
+    }
+
+    fn mark_auto_released(&mut self, id: u64, now: Instant) {
+        for manual in &mut self.manual {
+            let before = manual.active_auto_ids.len();
+            manual.active_auto_ids.retain(|active_id| *active_id != id);
+            if manual.active_auto_ids.len() != before {
+                manual.last_used_at = now;
+            }
+        }
     }
 }
 
@@ -499,27 +691,43 @@ pub(crate) fn dispatch_dir_lock_tool(
                         Some(dir.display().to_string()),
                     ),
                 ),
+                Err(ManualLockAcquireError::Abandoned(lock)) => send_event(
+                    tx,
+                    tool_error_with_args(
+                        &invoke,
+                        lock.message(),
+                        Some(invoke.arguments.clone()),
+                        Some(lock.dir.display().to_string()),
+                    ),
+                ),
             }
         }
-        "unlock" => match manager.unlock_manual(&invoke.agent_id, &dir) {
-            Ok(()) => send_event(
-                tx,
-                tool_result(
-                    &invoke,
-                    dir_lock_result_value("unlock", &dir, Some(false)),
-                    dir_lock_display(&dir),
+        "unlock" => {
+            let owner_arg = optional_argument_text(&invoke.arguments, "owner_agent_id");
+            let owner = owner_arg
+                .as_deref()
+                .map(AgentId::new)
+                .unwrap_or_else(|| invoke.agent_id.clone());
+            match manager.unlock_manual(&owner, &dir) {
+                Ok(()) => send_event(
+                    tx,
+                    tool_result(
+                        &invoke,
+                        dir_lock_result_value("unlock", &dir, Some(false)),
+                        dir_lock_display(&dir),
+                    ),
                 ),
-            ),
-            Err(message) => send_event(
-                tx,
-                tool_error_with_args(
-                    &invoke,
-                    message,
-                    Some(invoke.arguments.clone()),
-                    Some(dir.display().to_string()),
+                Err(message) => send_event(
+                    tx,
+                    tool_error_with_args(
+                        &invoke,
+                        message,
+                        Some(invoke.arguments.clone()),
+                        Some(dir.display().to_string()),
+                    ),
                 ),
-            ),
-        },
+            }
+        }
         _ => send_event(
             tx,
             tool_error_with_args(
@@ -993,6 +1201,109 @@ mod tests {
         drop(guard);
         let second_guard = second.join().expect("second").expect("second acquired");
         drop(second_guard);
+    }
+
+    #[test]
+    fn abandoned_manual_lock_errors_after_liveness_check() {
+        let manager = DirLockManager::default();
+        manager
+            .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+            .expect("manual lock");
+        make_manual_lock_stale(&manager, "/repo/a");
+
+        // A waiter should eventually stop waiting on an idle manual lock and
+        // report the exact abandoned owner and directory instead of hanging
+        // forever behind a forgotten unlock.
+        let err = manager
+            .acquire_auto_with_policy(
+                "auto-b".into(),
+                "agent-b".into(),
+                vec![path("/repo/a/child")],
+                || {},
+                fast_liveness_policy(),
+            )
+            .expect_err("stale manual lock should error");
+        let LockAcquireError::Abandoned(lock) = err else {
+            panic!("expected abandoned lock error");
+        };
+        assert_eq!(lock.owner, "agent-a");
+        assert_eq!(lock.dir, path("/repo/a"));
+        assert!(Duration::from_secs(1) < lock.idle_for);
+        assert!(
+            manager
+                .inner
+                .state
+                .lock()
+                .expect("state")
+                .waiters
+                .is_empty(),
+            "abandoned waiter should be removed from the FIFO queue"
+        );
+    }
+
+    #[test]
+    fn active_same_owner_auto_prevents_abandoned_lock_error() {
+        let manager = DirLockManager::default();
+        manager
+            .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+            .expect("manual lock");
+        make_manual_lock_stale(&manager, "/repo/a");
+        let guard = manager
+            .acquire_auto(
+                "auto-a".into(),
+                "agent-a".into(),
+                vec![path("/repo/a/child")],
+                || {},
+            )
+            .expect("same-owner active automatic lock");
+
+        // The manual lock is old, but it is not abandoned while the owner has a
+        // mutating tool running inside it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn({
+            let manager = manager.clone();
+            move || {
+                let result = manager.acquire_auto_with_policy(
+                    "auto-b".into(),
+                    "agent-b".into(),
+                    vec![path("/repo/a/child")],
+                    || {},
+                    fast_liveness_policy(),
+                );
+                let _ = tx.send(());
+                result
+            }
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(30)).is_err(),
+            "waiter should stay blocked while owner has an active automatic tool"
+        );
+
+        drop(guard);
+        manager
+            .unlock_manual(&"agent-a".into(), Path::new("/repo/a"))
+            .expect("unlock");
+        let acquired = waiter.join().expect("waiter").expect("lock acquired");
+        drop(acquired);
+    }
+
+    fn fast_liveness_policy() -> LockWaitPolicy {
+        LockWaitPolicy {
+            liveness_interval: Duration::from_millis(5),
+            abandoned_after: Duration::from_millis(5),
+        }
+    }
+
+    fn make_manual_lock_stale(manager: &DirLockManager, dir: &str) {
+        let mut state = manager.inner.state.lock().expect("state");
+        let lock = state
+            .manual
+            .iter_mut()
+            .find(|lock| lock.dir == path(dir))
+            .expect("manual lock");
+        let old = Instant::now() - Duration::from_secs(5);
+        lock.acquired_at = old;
+        lock.last_used_at = old;
     }
 
     fn wait_until(mut predicate: impl FnMut() -> bool) {

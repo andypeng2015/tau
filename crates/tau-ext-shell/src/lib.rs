@@ -628,7 +628,7 @@ fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {
         name: tau_proto::ToolName::new(DIR_LOCK_TOOL_NAME),
         model_visible_name: None,
         description: Some(
-            "Acquire or release an ext-shell directory update lock. Enabled by default; set ext-shell config `dir_lock.enable` to false to opt out. Commands are `update` and `unlock`, and `directory` must be an existing directory."
+            "Acquire or release an ext-shell directory update lock. Enabled by default; set ext-shell config `dir_lock.enable` to false to opt out. Commands are `update` and `unlock`, and `directory` must be an existing directory. `unlock` normally releases the caller's lock; pass `owner_agent_id` to release an abandoned lock held by another agent."
                 .to_owned(),
         ),
         tool_type: tau_proto::ToolType::Function,
@@ -643,6 +643,10 @@ fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {
                 "directory": {
                     "type": "string",
                     "description": "Existing directory to canonicalize before locking"
+                },
+                "owner_agent_id": {
+                    "type": "string",
+                    "description": "Optional owner agent id for force-unlocking a manual lock held by another agent"
                 }
             },
             "required": ["command", "directory"],
@@ -764,6 +768,10 @@ fn dispatch_locked_tool_invoke(
                 tool_name: invoke.tool_name,
                 tool_type: tau_proto::ToolType::Function,
             })));
+            return;
+        }
+        Err(crate::dir_lock::LockAcquireError::Abandoned(lock)) => {
+            send_tool_failure(invoke, lock.tool_failure(), tx);
             return;
         }
     };

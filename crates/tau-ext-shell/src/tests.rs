@@ -748,6 +748,94 @@ fn dir_lock_releases_delegate_locks_on_start_agent_result() {
 }
 
 #[test]
+fn dir_lock_unlock_can_target_another_owner() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "lock-owner",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-owner" => break,
+            Some(_) => continue,
+            None => panic!("extension closed before lock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "force-unlock-owner",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "unlock"),
+                ("directory", &lock_dir.display().to_string()),
+                ("owner_agent_id", "agent-a"),
+            ]),
+            "agent-b",
+        ))
+        .expect("dir_lock force unlock");
+    writer.flush().expect("flush force unlock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "force-unlock-owner" => {
+                break;
+            }
+            Some(Event::ToolError(error)) if error.call_id.as_str() == "force-unlock-owner" => {
+                panic!("force unlock failed: {error:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before force unlock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "lock-after-force-unlock",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-c",
+        ))
+        .expect("dir_lock after force unlock");
+    writer.flush().expect("flush second lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result))
+                if result.call_id.as_str() == "lock-after-force-unlock" =>
+            {
+                break;
+            }
+            Some(Event::ToolProgress(progress))
+                if progress.call_id.as_str() == "lock-after-force-unlock" =>
+            {
+                panic!("second lock waited after force unlock: {progress:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before second lock result"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
 fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();
