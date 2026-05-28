@@ -7,7 +7,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use tau_proto::{
     AgentPromptSubmitted, ConfigError, Emit, Event, EventSelector, Frame, FrameReader, FrameWriter,
     HarnessInfo, HarnessInfoLevel, InterceptAction, InterceptReply, InterceptionPriority, Message,
-    ToolError, ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
+    ToolError, ToolResult, ToolResultKind, ToolSpec,
 };
 
 pub const RESTART_TEST_DUMMY_TOOL_NAME: &str = "restart_test_dummy";
@@ -127,7 +127,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         })
         .ready_message("test dummy tools ready")

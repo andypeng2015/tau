@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use tau_proto::{
     Ack, CborValue, ConfigError, Event, EventLogSeq, Frame, FrameReader, FrameWriter, Message,
-    ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolResult,
-    ToolSpec, ToolStarted,
+    ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolResult, ToolSpec, ToolStarted,
 };
 
 /// `tracing` target for events emitted from this extension.
@@ -256,7 +255,6 @@ fn exa_tool_spec() -> ToolSpec {
         })),
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }
@@ -282,7 +280,6 @@ fn parallel_search_tool_spec() -> ToolSpec {
         })),
         format: None,
         enabled_by_default: false,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }
@@ -308,7 +305,6 @@ fn parallel_fetch_tool_spec() -> ToolSpec {
         })),
         format: None,
         enabled_by_default: false,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }

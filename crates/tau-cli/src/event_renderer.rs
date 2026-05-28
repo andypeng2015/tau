@@ -3647,15 +3647,10 @@ impl EventRenderer {
                 return;
             };
             let mut display = match &progress.display {
-                Some(descriptor) => render_delegate_display(
-                    descriptor,
-                    progress.role.as_deref(),
-                    progress.execution_mode,
-                ),
+                Some(descriptor) => render_delegate_display(descriptor, progress.role.as_deref()),
                 None => render_delegate_display(
                     &synthesize_fallback_display("delegate", None),
                     progress.role.as_deref(),
-                    progress.execution_mode,
                 ),
             };
             if let Some(duration) = Self::live_tool_duration(state) {
@@ -3783,13 +3778,12 @@ impl EventRenderer {
     ) -> ToolCallDisplay {
         if result.tool_name.as_str() == "delegate" {
             let role = last_progress.and_then(|p| p.role.as_deref());
-            let execution_mode = last_progress.and_then(|p| p.execution_mode);
             let descriptor = build_delegate_completion_display(
                 last_progress.and_then(|p| p.display.as_ref()),
                 &result.result,
                 None,
             );
-            render_delegate_display(&descriptor, role, execution_mode)
+            render_delegate_display(&descriptor, role)
         } else if let Some(descriptor) = &result.display {
             render_tool_display(&result.tool_name, descriptor)
         } else {
@@ -3894,13 +3888,12 @@ impl EventRenderer {
         let cbor = error.details.as_ref();
         if error.tool_name.as_str() == "delegate" {
             let role = last_progress.and_then(|p| p.role.as_deref());
-            let execution_mode = last_progress.and_then(|p| p.execution_mode);
             let descriptor = build_delegate_completion_display(
                 last_progress.and_then(|p| p.display.as_ref()),
                 cbor.unwrap_or(&CborValue::Null),
                 Some(&error.message),
             );
-            render_delegate_display(&descriptor, role, execution_mode)
+            render_delegate_display(&descriptor, role)
         } else if let Some(descriptor) = &error.display {
             render_tool_display(&error.tool_name, descriptor)
         } else {

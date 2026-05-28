@@ -9,7 +9,7 @@ This note documents the move of filesystem update coordination out of `delegate`
 - The tool name is `dir_lock`; Tau tool names do not allow hyphens.
 - `dir_lock` is registered enabled by default. Setting ext-shell config `dir_lock.enable = false` disables the handler, re-registers the tool as disabled by default, and opts mutating ext-shell tools out of locking.
 - `delegate` sub-agents are independent agents. A parent agent lock does not automatically cover a delegate.
-- The harness no longer enforces tool or start-agent update/exclusive scheduling. Protocol `execution_mode` fields remain as legacy metadata for compatibility.
+- The harness no longer enforces tool or start-agent update/exclusive scheduling, and the protocol no longer carries scheduling metadata for tool specs, delegate progress, or start-agent requests.
 
 
 ## `dir_lock` semantics

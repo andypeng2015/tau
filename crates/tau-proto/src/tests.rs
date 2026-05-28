@@ -46,7 +46,6 @@ fn representative_events() -> Vec<Event> {
                 parameters: None,
                 format: None,
                 enabled_by_default: true,
-                execution_mode: ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: None,
@@ -937,61 +936,26 @@ fn prompt_message_class_defaults_to_user_when_omitted() {
     assert_eq!(internal["message_class"], serde_json::json!("internal"));
 }
 
-/// Tool specs serialize the current execution-mode field while still accepting
-/// the former field name and enum values from older extensions.
+/// Tool specs default to enabled and omit default-valued fields for compact
+/// extension registration payloads.
 #[test]
-fn tool_spec_defaults_and_execution_mode_compatibility() {
+fn tool_spec_defaults_and_background_support() {
     let parsed: ToolSpec = serde_json::from_value(serde_json::json!({
         "name": "echo",
         "description": "Echo a payload",
-        "tool_type": "function",
-        "execution_mode": "shared"
+        "tool_type": "function"
     }))
     .expect("deserialize tool spec");
     assert!(parsed.enabled_by_default);
-    assert_eq!(parsed.execution_mode, ToolExecutionMode::Shared);
-
-    let update: ToolSpec = serde_json::from_value(serde_json::json!({
-        "name": "shell",
-        "tool_type": "function",
-        "execution_mode": "update"
-    }))
-    .expect("deserialize update tool spec");
-    assert_eq!(update.execution_mode, ToolExecutionMode::Update);
-
-    let legacy_shared: ToolSpec = serde_json::from_value(serde_json::json!({
-        "name": "legacy_shared",
-        "tool_type": "function",
-        "side_effects": "pure"
-    }))
-    .expect("deserialize legacy shared tool spec");
-    assert_eq!(legacy_shared.execution_mode, ToolExecutionMode::Shared);
-
-    let legacy_exclusive: ToolSpec = serde_json::from_value(serde_json::json!({
-        "name": "legacy_exclusive",
-        "tool_type": "function",
-        "side_effects": "mutating"
-    }))
-    .expect("deserialize legacy exclusive tool spec");
-    assert_eq!(
-        legacy_exclusive.execution_mode,
-        ToolExecutionMode::Exclusive
-    );
 
     let serialized = serde_json::to_value(&parsed).expect("serialize tool spec");
     assert!(serialized.get("enabled_by_default").is_none());
-    assert_eq!(
-        serialized["execution_mode"],
-        serde_json::Value::String("shared".to_owned())
-    );
-    assert!(serialized.get("side_effects").is_none());
     assert!(serialized.get("background_support").is_none());
     assert_eq!(parsed.background_support, None);
 
     let backgrounded: ToolSpec = serde_json::from_value(serde_json::json!({
         "name": "delegate",
         "tool_type": "function",
-        "execution_mode": "shared",
         "background_support": "instant"
     }))
     .expect("deserialize background support");
@@ -1008,7 +972,6 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
         parameters: None,
         format: None,
         enabled_by_default: false,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     };
     let serialized = serde_json::to_value(&disabled).expect("serialize disabled tool spec");
@@ -1016,23 +979,6 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
         serialized["enabled_by_default"],
         serde_json::Value::Bool(false)
     );
-}
-
-#[test]
-fn tool_execution_mode_legacy_overlap_helpers_keep_compatibility() {
-    use ToolExecutionMode::{Exclusive, Shared, Update};
-
-    assert!(Shared.can_overlap_with(Shared));
-    assert!(Shared.can_overlap_with(Update));
-    assert!(Update.can_overlap_with(Shared));
-    assert!(!Update.can_overlap_with(Update));
-    assert!(!Update.can_overlap_with(Exclusive));
-    assert!(!Exclusive.can_overlap_with(Shared));
-    assert!(!Exclusive.can_overlap_with(Update));
-    assert!(!Exclusive.can_overlap_with(Exclusive));
-    assert!(!Shared.blocks_fifo_when_waiting());
-    assert!(Update.blocks_fifo_when_waiting());
-    assert!(Exclusive.blocks_fifo_when_waiting());
 }
 
 /// Prompt fragment primitives are transparent on the wire so config and
@@ -1066,7 +1012,6 @@ fn echo_tool_spec() -> ToolSpec {
         parameters: None,
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }
@@ -1079,8 +1024,7 @@ fn tool_register_prompt_is_optional_and_round_trips_when_present() {
         "tool": {
             "name": "echo",
             "description": "Echo a payload",
-            "tool_type": "function",
-            "execution_mode": "shared"
+            "tool_type": "function"
         }
     }))
     .expect("deserialize tool register without prompt");
@@ -1104,63 +1048,39 @@ fn tool_register_prompt_is_optional_and_round_trips_when_present() {
     assert_eq!(decoded, with_prompt);
 }
 
-/// `StartAgentRequest` defaults execution mode to Shared and leaves role
-/// selection to the harness when omitted.
+/// `StartAgentRequest` leaves role selection to the harness when omitted.
 #[test]
-fn start_agent_request_execution_mode_defaults_to_shared() {
+fn start_agent_request_role_is_optional() {
     let parsed: StartAgentRequest = serde_json::from_value(serde_json::json!({
         "query_id": "q1",
         "instruction": "summarize"
     }))
     .expect("deserialize start-agent request");
-    assert_eq!(parsed.execution_mode, ToolExecutionMode::Shared);
     assert_eq!(parsed.role, None);
-
-    let exclusive: StartAgentRequest = serde_json::from_value(serde_json::json!({
-        "query_id": "q2",
-        "instruction": "mutate carefully",
-        "execution_mode": "exclusive"
-    }))
-    .expect("deserialize exclusive start-agent request");
-    assert_eq!(exclusive.execution_mode, ToolExecutionMode::Exclusive);
-
-    let update: StartAgentRequest = serde_json::from_value(serde_json::json!({
-        "query_id": "q3",
-        "instruction": "edit carefully",
-        "execution_mode": "update"
-    }))
-    .expect("deserialize update start-agent request");
-    assert_eq!(update.execution_mode, ToolExecutionMode::Update);
 }
 
-/// `DelegateProgress` UI metadata is additive. Omitting role and execution mode
-/// must keep older serialized progress events readable by newer clients.
+/// `DelegateProgress` UI metadata is additive. Omitting role must stay
+/// readable.
 #[test]
-fn delegate_progress_role_and_mode_are_backward_compatible() {
+fn delegate_progress_role_is_optional() {
     let parsed: DelegateProgress = serde_json::from_value(serde_json::json!({
         "call_id": "call-1",
         "task_name": "audit",
         "tools_in_flight": 0,
         "tools_total": 0
     }))
-    .expect("deserialize progress without role or mode");
+    .expect("deserialize progress without role");
     assert_eq!(parsed.role, None);
-    assert_eq!(parsed.execution_mode, None);
 
     let with_metadata: DelegateProgress = serde_json::from_value(serde_json::json!({
         "call_id": "call-1",
         "task_name": "audit",
         "role": "rush",
-        "execution_mode": "update",
         "tools_in_flight": 0,
         "tools_total": 0
     }))
-    .expect("deserialize progress with role and mode");
+    .expect("deserialize progress with role");
     assert_eq!(with_metadata.role.as_deref(), Some("rush"));
-    assert_eq!(
-        with_metadata.execution_mode,
-        Some(ToolExecutionMode::Update)
-    );
 }
 
 /// `Verbosity::next_in` mirrors `Effort::next_in`. Even though the CLI

@@ -602,7 +602,6 @@ where
                                 query_id: query_id.clone(),
                                 instruction: SUMMARY_INSTRUCTION.to_owned(),
                                 role: None,
-                                execution_mode: tau_proto::ToolExecutionMode::Shared,
                                 input_stats: tau_proto::ToolDisplayStats::default(),
                                 // Notifications doesn't implement a tool —
                                 // these fields are only meaningful for the

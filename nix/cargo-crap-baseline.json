@@ -6619,15 +6619,6 @@
     },
     {
       "file": "/build/source/crates/tau-harness/src/harness.rs",
-      "function": "Harness::resolve_tool_execution_mode_for_call",
-      "line": 5653,
-      "cyclomatic": 3.0,
-      "coverage": 100.0,
-      "crap": 3.0,
-      "crate": "tau-harness"
-    },
-    {
-      "file": "/build/source/crates/tau-harness/src/harness.rs",
       "function": "format_requested_edit_ranges",
       "line": 6312,
       "cyclomatic": 3.0,
@@ -13864,15 +13855,6 @@
     },
     {
       "file": "/build/source/crates/tau-proto/src/events.rs",
-      "function": "default_start_agent_request_execution_mode",
-      "line": 1701,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0,
-      "crate": "tau-proto"
-    },
-    {
-      "file": "/build/source/crates/tau-proto/src/events.rs",
       "function": "PromptOriginator::is_user",
       "line": 2124,
       "cyclomatic": 1.0,
@@ -14739,15 +14721,6 @@
       "file": "/build/source/crates/tau-harness/src/harness.rs",
       "function": "Harness::extensions_all_ready",
       "line": 5615,
-      "cyclomatic": 1.0,
-      "coverage": 100.0,
-      "crap": 1.0,
-      "crate": "tau-harness"
-    },
-    {
-      "file": "/build/source/crates/tau-harness/src/harness.rs",
-      "function": "Harness::resolve_tool_execution_mode",
-      "line": 5636,
       "cyclomatic": 1.0,
       "coverage": 100.0,
       "crap": 1.0,

@@ -48,8 +48,7 @@ use tau_proto::{
     ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionCommand, ActionError, ActionInvoke,
     ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event, EventLogSeq, Frame,
     FrameReader, FrameWriter, Message, PromptFragment, PromptPriority, ToolDisplay,
-    ToolDisplayStats, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolResult, ToolSpec,
-    ToolStarted,
+    ToolDisplayStats, ToolDisplayStatus, ToolError, ToolResult, ToolSpec, ToolStarted,
 };
 
 /// `tracing` target for events emitted from this extension.
@@ -4502,7 +4501,6 @@ fn email_tool_spec() -> ToolSpec {
         })),
         format: None,
         enabled_by_default: false,
-        execution_mode: ToolExecutionMode::Exclusive,
         background_support: None,
     }
 }

@@ -99,7 +99,6 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
                 parameters: None,
                 format: None,
                 enabled_by_default: true,
-                execution_mode: tau_proto::ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: None,

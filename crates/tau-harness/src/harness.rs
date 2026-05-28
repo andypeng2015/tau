@@ -5840,7 +5840,6 @@ impl Harness {
             call_id,
             task_name,
             role,
-            execution_mode: None,
             ctx_percent: conv.context_percent_used,
             ctx_input_tokens: conv.context_input_tokens,
             ctx_window,

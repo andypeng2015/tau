@@ -774,13 +774,6 @@ pub struct ToolSpec {
     /// no explicit `tools` allow-list and `disableTools` does not remove it.
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
     pub enabled_by_default: bool,
-    /// Legacy execution-mode declaration. Current in-tree harness dispatch does
-    /// not enforce this; extensions that need update coordination should own it
-    /// themselves. Unknown / unset declarations still default to
-    /// [`ToolExecutionMode::Exclusive`] for wire compatibility with older
-    /// extensions and clients.
-    #[serde(default, alias = "side_effects")]
-    pub execution_mode: ToolExecutionMode,
     /// Whether the harness may close the model-visible foreground turn before
     /// the real tool process has returned. `None` means the harness applies its
     /// default policy, currently
@@ -796,48 +789,6 @@ const fn tool_enabled_by_default() -> bool {
 const fn is_true(value: &bool) -> bool {
     *value
 }
-
-/// Legacy tool update classification.
-///
-/// Current in-tree harness dispatch does not enforce this mode. It remains in
-/// the protocol so older extensions and UIs can decode historical events.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolExecutionMode {
-    /// Historically meant that calls could overlap with shared and update calls
-    /// in the same conversation.
-    #[serde(alias = "pure")]
-    Shared,
-    /// Historically meant that calls could overlap with shared calls, but not
-    /// with update or exclusive calls in the same conversation.
-    Update,
-    /// Historically meant that calls ran alone within their conversation.
-    /// Default so omitted legacy declarations still decode conservatively.
-    #[default]
-    #[serde(alias = "mutating")]
-    Exclusive,
-}
-
-impl ToolExecutionMode {
-    /// Legacy compatibility helper for older schedulers.
-    #[must_use]
-    pub const fn can_overlap_with(self, active: Self) -> bool {
-        matches!(
-            (self, active),
-            (Self::Shared, Self::Shared | Self::Update) | (Self::Update, Self::Shared)
-        )
-    }
-
-    /// Legacy compatibility helper for older FIFO schedulers.
-    #[must_use]
-    pub const fn blocks_fifo_when_waiting(self) -> bool {
-        matches!(self, Self::Update | Self::Exclusive)
-    }
-}
-
-/// Backward-compatible name for [`ToolExecutionMode`].
-#[deprecated(note = "use ToolExecutionMode")]
-pub type ToolSideEffects = ToolExecutionMode;
 
 /// Foreground/background policy for a tool call after dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1333,11 +1284,6 @@ pub struct DelegateProgress {
     /// Role used by the delegated sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Legacy scheduling marker from older delegate implementations. Newer
-    /// delegate progress omits this; clients should hide the mode marker when
-    /// it is absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_mode: Option<ToolExecutionMode>,
     /// Most recent percent-of-context-window the sub-agent reported,
     /// when its model's window size is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1575,12 +1521,6 @@ pub struct StartAgentRequest {
     /// keep using the currently selected interactive role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Legacy sub-agent scheduling mode. Current in-tree harness dispatch
-    /// ignores this field; filesystem/update coordination is expected to live
-    /// in the relevant tool extension. Defaults to Shared for compatibility
-    /// with older extensions that omitted the field.
-    #[serde(default = "default_start_agent_request_execution_mode")]
-    pub execution_mode: ToolExecutionMode,
     /// Input stats for the extension-provided instruction, excluding
     /// any private prefix the extension may have added.
     #[serde(default, skip_serializing_if = "ToolDisplayStats::is_empty")]
@@ -1598,10 +1538,6 @@ pub struct StartAgentRequest {
     /// `tool_call_id` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_name: Option<String>,
-}
-
-const fn default_start_agent_request_execution_mode() -> ToolExecutionMode {
-    ToolExecutionMode::Shared
 }
 
 /// A [`StartAgentRequest`] was accepted for side-agent startup.

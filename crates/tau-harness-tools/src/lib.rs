@@ -19,8 +19,8 @@ use tau_harness::internal_tools::{InternalSkill, InternalSkillSource};
 use tau_harness::{AgentId, AgentToolCall, HarnessError, InternalToolHandler, InternalToolHost};
 use tau_proto::{
     BackgroundSupport, CborValue, Event, PromptOriginator, StartAgentRequest, ToolCallId,
-    ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolName,
-    ToolResult, ToolResultKind, ToolSpec, ToolStarted, ToolType,
+    ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolName, ToolResult,
+    ToolResultKind, ToolSpec, ToolStarted, ToolType,
 };
 
 const SKILL_TOOL_NAME: &str = "skill";
@@ -168,7 +168,6 @@ impl BuiltinTools {
             query_id: query_id.clone(),
             instruction: delegate_instruction(&self_agent_id, &parsed.prompt),
             role: parsed.role,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: ToolDisplayStats::for_text(&parsed.prompt),
             tool_call_id: Some(call_id.clone()),
             task_name: Some(parsed.task_name),
@@ -898,12 +897,6 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
                 CborValue::Text(text) => role = Some(text.clone()),
                 _ => return Err("`role` must be a string".to_owned()),
             },
-            "execution_mode" => {
-                return Err(
-                    "`execution_mode` is no longer supported; use `dir_lock` for filesystem update coordination"
-                        .to_owned(),
-                );
-            }
             _ => {}
         }
     }
@@ -1042,47 +1035,29 @@ fn skill_tool_spec() -> ToolSpec {
         parameters: Some(serde_json::json!({"type":"object","properties":{"query":{"type":"string","description":"Keywords matched case-insensitively against skill names and descriptions. Punctuation separates terms except hyphens inside skill names; terms are lowercased and deduplicated. Use only an exact skill name to load a specific ambiguous result."},"search_content":{"type":"boolean","description":"When true, also search the first 64 KiB of the skill file after stripping frontmatter from that prefix. Default false."}},"required":["query"],"additionalProperties":false})),
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }
 
 fn delegate_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(DELEGATE_TOOL_NAME), model_visible_name: None, description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(DELEGATE_TOOL_NAME), model_visible_name: None, description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn message_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Send an async message to another live or pending agent, or to the user. Use recipient_id `user`, or a `sub_agent_id` returned by `delegate`; UI display depends on `/set show-messages`. A non-user recipient also receives a hidden prompt. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient agent_id, or the special value `user`."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Send an async message to another live or pending agent, or to the user. Use recipient_id `user`, or a `sub_agent_id` returned by `delegate`; UI display depends on `/set show-messages`. A non-user recipient also receives a hidden prompt. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient agent_id, or the special value `user`."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn cancel_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(CANCEL_TOOL_NAME), model_visible_name: None, description: Some("Cancel a running supported background tool call. Requires `tool_call_id`; currently delegate and shell tool calls can be canceled. Duplicate cancellation requests for the same tool call fail when tracked.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"tool_call_id":{"type":"string","description":"Required id of the running supported background tool call to cancel."}},"required":["tool_call_id"],"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(CANCEL_TOOL_NAME), model_visible_name: None, description: Some("Cancel a running supported background tool call. Requires `tool_call_id`; currently delegate and shell tool calls can be canceled. Duplicate cancellation requests for the same tool call fail when tracked.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"tool_call_id":{"type":"string","description":"Required id of the running supported background tool call to cancel."}},"required":["tool_call_id"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn wait_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(WAIT_TOOL_NAME), model_visible_name: None, description: Some("Wait for background tool calls. With `tool_call_id`, wait for that specific background call. Without `tool_call_id`, wait for the first background call in this conversation to finish and return its `original_tool_call_id`. Already-finished matching results return immediately. Tau will notify you via marked internal messages about background calls completing; `wait({})` consumes one completion and suppresses that completion notice.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"tool_call_id":{"type":"string","description":"Optional. When set, wait for this specific background tool call. When omitted, wait for the first background tool call in this conversation to finish."}},"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(WAIT_TOOL_NAME), model_visible_name: None, description: Some("Wait for background tool calls. With `tool_call_id`, wait for that specific background call. Without `tool_call_id`, wait for the first background call in this conversation to finish and return its `original_tool_call_id`. Already-finished matching results return immediately. Tau will notify you via marked internal messages about background calls completing; `wait({})` consumes one completion and suppresses that completion notice.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"tool_call_id":{"type":"string","description":"Optional. When set, wait for this specific background tool call. When omitted, wait for the first background tool call in this conversation to finish."}},"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn delegate_args_with_execution_mode(mode: &str) -> CborValue {
-        CborValue::Map(vec![
-            (
-                CborValue::Text("task_name".to_owned()),
-                CborValue::Text("task".to_owned()),
-            ),
-            (
-                CborValue::Text("prompt".to_owned()),
-                CborValue::Text("do the task".to_owned()),
-            ),
-            (
-                CborValue::Text("execution_mode".to_owned()),
-                CborValue::Text(mode.to_owned()),
-            ),
-        ])
-    }
 
     fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
         let CborValue::Map(entries) = value else {
@@ -1112,13 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn delegate_tool_schema_omits_execution_mode() {
-        let spec = delegate_tool_spec();
-        let parameters = spec.parameters.expect("parameters");
-        assert!(parameters["properties"].get("execution_mode").is_none());
-    }
-
-    #[test]
     fn delegate_result_includes_only_caller_and_sub_agent_ids() {
         let value = delegate_result_value(
             "done".to_owned(),
@@ -1137,17 +1105,5 @@ mod tests {
         );
         assert_eq!(cbor_map_text(&value, "agent_id"), None);
         assert_eq!(cbor_map_text(&value, "output"), Some("done"));
-    }
-
-    /// Delegate no longer owns filesystem update coordination. Explicit old
-    /// `execution_mode` arguments fail loudly and point callers to `dir_lock`.
-    #[test]
-    fn delegate_args_reject_execution_mode() {
-        let error =
-            parse_delegate_args(&delegate_args_with_execution_mode("update")).expect_err("error");
-        assert_eq!(
-            error,
-            "`execution_mode` is no longer supported; use `dir_lock` for filesystem update coordination"
-        );
     }
 }

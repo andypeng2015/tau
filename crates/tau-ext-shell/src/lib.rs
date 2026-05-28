@@ -16,8 +16,8 @@ use tau_proto::{
     Ack, ActionError, ActionInvoke, ActionOutput, ActionResult, AgentContextKey, AgentContextValue,
     ConfigError, Event, EventLogSeq, ExtAgentContextPublish, ExtPromptFragmentPublish,
     ExtensionContextReady, Frame, FrameReader, FrameWriter, Message, PromptContent, PromptFragment,
-    PromptPriority, SessionAgentLoaded, SessionStarted, ToolCancelled, ToolExecutionMode,
-    ToolResult, ToolResultKind, ToolSpec,
+    PromptPriority, SessionAgentLoaded, SessionStarted, ToolCancelled, ToolResult, ToolResultKind,
+    ToolSpec,
 };
 use tracing::{debug, trace};
 
@@ -82,7 +82,6 @@ where
         parameters: None,
         format: None,
         enabled_by_default: false,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     });
     #[cfg(not(any(test, feature = "echo-agent")))]
@@ -128,7 +127,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -160,7 +158,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -223,7 +220,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -240,7 +236,6 @@ where
                 definition: crate::tools::apply_patch::APPLY_PATCH_LARK_GRAMMAR.to_owned(),
             }),
             enabled_by_default: false,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         dir_lock_tool_spec(config.dir_lock.enable),
@@ -292,7 +287,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -327,7 +321,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -355,7 +348,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -397,7 +389,6 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -438,7 +429,6 @@ where
             })),
             format: None,
             enabled_by_default: false,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     ]);
@@ -647,7 +637,6 @@ fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {
         })),
         format: None,
         enabled_by_default,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }

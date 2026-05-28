@@ -27,7 +27,7 @@ fn pop_id(machine: &mut ToolTurnMachine) -> Option<String> {
 }
 
 #[test]
-fn queued_calls_dispatch_in_provider_order_without_execution_mode_locking() {
+fn queued_calls_dispatch_in_provider_order_without_global_locking() {
     let mut machine = ToolTurnMachine::default();
     let conv = cid("conv");
     push(&mut machine, &conv, "first");

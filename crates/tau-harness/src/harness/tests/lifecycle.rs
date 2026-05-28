@@ -117,7 +117,6 @@ fn staged_tool_spec(name: &str) -> ToolSpec {
         tool_type: tau_proto::ToolType::Function,
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Exclusive,
         background_support: Some(tau_proto::BackgroundSupport::Never),
     }
 }
@@ -829,7 +828,6 @@ fn extension_emit_and_start_agent_request_are_staged_until_ready() {
             query_id: "q-staged".to_owned(),
             instruction: "STAGED START AGENT REQUEST".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: None,
             task_name: None,
@@ -1924,7 +1922,6 @@ fn empty_tool_call_id_rejects_response_before_commit() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );

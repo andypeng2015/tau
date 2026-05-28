@@ -346,10 +346,6 @@ fn startup_registers_dir_lock_enabled_by_default() {
         };
         if register.tool.name == DIR_LOCK_TOOL_NAME {
             assert!(register.tool.enabled_by_default);
-            assert_eq!(
-                register.tool.execution_mode,
-                tau_proto::ToolExecutionMode::Shared
-            );
             found_dir_lock = true;
         }
     }
@@ -689,10 +685,6 @@ fn startup_registers_shell_schemas_with_shared_mode_cwd_and_timeout_minimum() {
             continue;
         };
         if register.tool.name == SHELL_TOOL_NAME || register.tool.name == GPT_SHELL_TOOL_NAME {
-            assert_eq!(
-                register.tool.execution_mode,
-                tau_proto::ToolExecutionMode::Shared
-            );
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let properties = &parameters["properties"];
             assert_eq!(properties["cwd"]["type"], serde_json::json!("string"));

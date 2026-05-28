@@ -252,7 +252,6 @@ fn resume_rehydrates_delegated_agent_role_from_agent_log() {
                 query_id: "q-role".to_owned(),
                 instruction: "side task".to_owned(),
                 role: Some("staff-engineer".to_owned()),
-                execution_mode: ToolExecutionMode::Shared,
                 input_stats: tau_proto::ToolDisplayStats::default(),
                 tool_call_id: Some("delegate-call".into()),
                 task_name: None,
@@ -736,25 +735,21 @@ fn shared_test_tool_spec(name: &str) -> ToolSpec {
         tool_type: tau_proto::ToolType::Function,
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
 }
 
 fn exclusive_test_tool_spec(name: &str) -> ToolSpec {
     ToolSpec {
-        execution_mode: ToolExecutionMode::Exclusive,
         ..shared_test_tool_spec(name)
     }
 }
 
 fn scheduled_test_tool_spec(
     name: &str,
-    execution_mode: ToolExecutionMode,
     background_support: tau_proto::BackgroundSupport,
 ) -> ToolSpec {
     ToolSpec {
-        execution_mode,
         background_support: Some(background_support),
         ..shared_test_tool_spec(name)
     }
@@ -1041,12 +1036,11 @@ fn tool_progress(call_id: &str, tool_name: &str, message: &str) -> tau_proto::To
     }
 }
 
-fn ext_query(query_id: &str, execution_mode: ToolExecutionMode) -> StartAgentRequest {
+fn ext_query(query_id: &str) -> StartAgentRequest {
     StartAgentRequest {
         query_id: query_id.to_owned(),
         instruction: format!("instruction {query_id}"),
         role: None,
-        execution_mode,
         input_stats: tau_proto::ToolDisplayStats::default(),
         tool_call_id: None,
         task_name: None,
@@ -1107,19 +1101,11 @@ fn background_result_clears_actual_running_call_without_blocking_later_tool() {
     let tool_events = connect_test_tool(&mut h, "conn-bg-result-drain");
     h.registry.register(
         "conn-bg-result-drain",
-        scheduled_test_tool_spec(
-            "bg_update",
-            ToolExecutionMode::Update,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("bg_update", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-result-drain",
-        scheduled_test_tool_spec(
-            "queued_update",
-            ToolExecutionMode::Update,
-            tau_proto::BackgroundSupport::Never,
-        ),
+        scheduled_test_tool_spec("queued_update", tau_proto::BackgroundSupport::Never),
     );
 
     let cid = ensure_test_user_agent(&mut h);
@@ -1196,17 +1182,12 @@ fn background_error_clears_actual_running_call() {
     let tool_events = connect_test_tool(&mut h, "conn-bg-error-drain");
     h.registry.register(
         "conn-bg-error-drain",
-        scheduled_test_tool_spec(
-            "bg_exclusive",
-            ToolExecutionMode::Exclusive,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("bg_exclusive", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-error-drain",
         scheduled_test_tool_spec(
             "queued_update_after_error",
-            ToolExecutionMode::Update,
             tau_proto::BackgroundSupport::Never,
         ),
     );
@@ -1296,17 +1277,12 @@ fn background_cancel_clears_actual_running_call() {
     let tool_events = connect_test_tool(&mut h, "conn-bg-cancel-drain");
     h.registry.register(
         "conn-bg-cancel-drain",
-        scheduled_test_tool_spec(
-            "bg_exclusive_cancel",
-            ToolExecutionMode::Exclusive,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("bg_exclusive_cancel", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-cancel-drain",
         scheduled_test_tool_spec(
             "queued_update_after_cancel",
-            ToolExecutionMode::Update,
             tau_proto::BackgroundSupport::Never,
         ),
     );
@@ -1416,27 +1392,15 @@ fn disconnect_background_errors_do_not_affect_other_inflight_tools() {
     let live_events = connect_test_tool(&mut h, "conn-bg-disconnect-live");
     h.registry.register(
         "conn-bg-disconnect-batch",
-        scheduled_test_tool_spec(
-            "dead_bg_shared",
-            ToolExecutionMode::Shared,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("dead_bg_shared", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-disconnect-batch",
-        scheduled_test_tool_spec(
-            "dead_bg_update",
-            ToolExecutionMode::Update,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("dead_bg_update", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-disconnect-live",
-        scheduled_test_tool_spec(
-            "live_queued_update",
-            ToolExecutionMode::Update,
-            tau_proto::BackgroundSupport::Never,
-        ),
+        scheduled_test_tool_spec("live_queued_update", tau_proto::BackgroundSupport::Never),
     );
 
     let cid = ensure_test_user_agent(&mut h);
@@ -1530,19 +1494,11 @@ fn disconnect_idle_multi_background_errors_dispatch_prompt_after_batch() {
     let _dead_events = connect_test_tool(&mut h, "conn-bg-idle-disconnect");
     h.registry.register(
         "conn-bg-idle-disconnect",
-        scheduled_test_tool_spec(
-            "dead_bg_one",
-            ToolExecutionMode::Shared,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("dead_bg_one", tau_proto::BackgroundSupport::Instant),
     );
     h.registry.register(
         "conn-bg-idle-disconnect",
-        scheduled_test_tool_spec(
-            "dead_bg_two",
-            ToolExecutionMode::Shared,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("dead_bg_two", tau_proto::BackgroundSupport::Instant),
     );
 
     let cid = ensure_test_user_agent(&mut h);
@@ -1636,19 +1592,11 @@ fn disconnect_mixed_foreground_and_background_errors_dispatch_prompt_after_batch
     let dead_events = connect_test_tool(&mut h, "conn-mixed-disconnect");
     h.registry.register(
         "conn-mixed-disconnect",
-        scheduled_test_tool_spec(
-            "dead_foreground",
-            ToolExecutionMode::Shared,
-            tau_proto::BackgroundSupport::Never,
-        ),
+        scheduled_test_tool_spec("dead_foreground", tau_proto::BackgroundSupport::Never),
     );
     h.registry.register(
         "conn-mixed-disconnect",
-        scheduled_test_tool_spec(
-            "dead_background",
-            ToolExecutionMode::Shared,
-            tau_proto::BackgroundSupport::Instant,
-        ),
+        scheduled_test_tool_spec("dead_background", tau_proto::BackgroundSupport::Instant),
     );
 
     let cid = ensure_test_user_agent(&mut h);
@@ -2576,7 +2524,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
 }
 
 #[test]
-fn tool_turn_dispatches_provider_calls_without_execution_mode_locking() {
+fn tool_turn_dispatches_provider_calls_without_global_locking() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -3732,7 +3680,6 @@ fn tools_drift_invalidates_chain_anchor() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -5013,7 +4960,6 @@ fn instant_background_test_tool_spec(name: &str) -> ToolSpec {
         tool_type: tau_proto::ToolType::Function,
         format: None,
         enabled_by_default: true,
-        execution_mode: ToolExecutionMode::Shared,
         background_support: Some(tau_proto::BackgroundSupport::Instant),
     }
 }
@@ -5750,7 +5696,6 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -5811,7 +5756,6 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -5946,7 +5890,6 @@ fn delegated_agent_user_interaction_prevents_auto_suspend() {
             query_id: "q-user".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -6030,7 +5973,6 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
             query_id: "q-message".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -6175,7 +6117,6 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -6229,7 +6170,6 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -6374,7 +6314,6 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: None,
             task_name: None,
@@ -6519,7 +6458,6 @@ fn non_tool_start_agent_request_preserves_tool_choice_without_parent_chain_ancho
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: None,
             task_name: None,
@@ -6577,7 +6515,6 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -6631,7 +6568,6 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -6681,7 +6617,6 @@ fn user_prompt_preempts_in_flight_non_tool_ext_side_conversation() {
             query_id: "idle-0".to_owned(),
             instruction: "Summarize in one sentence.".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: None,
             task_name: None,
@@ -6764,7 +6699,6 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -6779,7 +6713,6 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -6837,7 +6770,6 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: None,
@@ -6932,7 +6864,6 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -6947,7 +6878,6 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
@@ -6986,7 +6916,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
     })
     .expect("main delegate call");
 
-    let mut query = ext_query("q-bg", ToolExecutionMode::Shared);
+    let mut query = ext_query("q-bg");
     query.tool_call_id = Some("delegate-call".into());
     h.handle_start_agent_request("conn-delegate", query)
         .expect("side query");
@@ -7123,17 +7053,13 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
 
     let parent_cid = ensure_test_user_agent(&mut h);
-    h.handle_start_agent_request(
-        "conn-agent",
-        ext_query("q-removed-bg", ToolExecutionMode::Shared),
-    )
-    .expect("side query");
+    h.handle_start_agent_request("conn-agent", ext_query("q-removed-bg"))
+        .expect("side query");
     let side_cid = ext_query_cid(&h, "q-removed-bg").expect("side conversation");
     let call_id: ToolCallId = "removed-slow-call".into();
 
@@ -7185,7 +7111,6 @@ fn canceled_side_conversation_drops_inner_background_completion() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -7200,7 +7125,6 @@ fn canceled_side_conversation_drops_inner_background_completion() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
@@ -7240,7 +7164,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
     })
     .expect("main delegate call");
 
-    let mut query = ext_query("q-bg-cancel", ToolExecutionMode::Shared);
+    let mut query = ext_query("q-bg-cancel");
     query.tool_call_id = Some("delegate-call-cancel".into());
     h.handle_start_agent_request("conn-delegate", query)
         .expect("side query");
@@ -7324,7 +7248,6 @@ fn background_notification_suppression_keeps_error_event_but_skips_prompt() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
@@ -7543,7 +7466,6 @@ fn backgrounded_tool_progress_is_not_published() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
@@ -7649,9 +7571,9 @@ fn shared_start_agent_requests_start_concurrently() {
     let _ = connect_test_tool(&mut h, "conn-a");
     let _ = connect_test_tool(&mut h, "conn-b");
 
-    h.handle_start_agent_request("conn-a", ext_query("q-a", ToolExecutionMode::Shared))
+    h.handle_start_agent_request("conn-a", ext_query("q-a"))
         .expect("query a");
-    h.handle_start_agent_request("conn-b", ext_query("q-b", ToolExecutionMode::Shared))
+    h.handle_start_agent_request("conn-b", ext_query("q-b"))
         .expect("query b");
 
     assert!(ext_query_cid(&h, "q-a").is_some());
@@ -7661,11 +7583,10 @@ fn shared_start_agent_requests_start_concurrently() {
     h.shutdown().expect("shutdown");
 }
 
-/// Start-agent `execution_mode` is now legacy metadata. The harness no longer
-/// uses it as a global update/exclusive scheduler; filesystem coordination is
-/// handled by ext-shell directory locks.
+/// Start-agent requests do not use harness-level scheduling; filesystem
+/// coordination is handled by ext-shell directory locks.
 #[test]
-fn start_agent_execution_mode_does_not_block_independent_queries() {
+fn start_agent_requests_do_not_block_independent_queries() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -7675,17 +7596,14 @@ fn start_agent_execution_mode_does_not_block_independent_queries() {
     let _ = connect_test_tool(&mut h, "conn-c");
     let _ = connect_test_tool(&mut h, "conn-d");
 
-    h.handle_start_agent_request("conn-a", ext_query("q-update-a", ToolExecutionMode::Update))
+    h.handle_start_agent_request("conn-a", ext_query("q-update-a"))
         .expect("update query a");
-    h.handle_start_agent_request("conn-b", ext_query("q-shared", ToolExecutionMode::Shared))
+    h.handle_start_agent_request("conn-b", ext_query("q-shared"))
         .expect("shared query");
-    h.handle_start_agent_request("conn-c", ext_query("q-update-b", ToolExecutionMode::Update))
+    h.handle_start_agent_request("conn-c", ext_query("q-update-b"))
         .expect("update query b");
-    h.handle_start_agent_request(
-        "conn-d",
-        ext_query("q-exclusive", ToolExecutionMode::Exclusive),
-    )
-    .expect("exclusive query");
+    h.handle_start_agent_request("conn-d", ext_query("q-exclusive"))
+        .expect("exclusive query");
 
     for query_id in ["q-update-a", "q-shared", "q-update-b", "q-exclusive"] {
         assert!(
@@ -7698,26 +7616,23 @@ fn start_agent_execution_mode_does_not_block_independent_queries() {
     h.shutdown().expect("shutdown");
 }
 
-/// Tool-backed nested start-agent requests are independent agents. They do not
-/// inherit or wait on a parent's legacy `execution_mode`.
+/// Tool-backed nested start-agent requests are independent agents and do not
+/// wait on their parent at harness level.
 #[test]
-fn nested_start_agent_request_under_active_update_starts_independently() {
+fn nested_start_agent_request_starts_independently() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
     let _ = connect_test_tool(&mut h, "conn-delegate");
 
-    h.handle_start_agent_request(
-        "conn-delegate",
-        ext_query("q-outer", ToolExecutionMode::Update),
-    )
-    .expect("outer query");
+    h.handle_start_agent_request("conn-delegate", ext_query("q-outer"))
+        .expect("outer query");
     let outer_cid = ext_query_cid(&h, "q-outer").expect("outer started");
 
     h.tool_agents
         .insert("nested-call".into(), outer_cid.clone());
-    let mut nested = ext_query("q-nested", ToolExecutionMode::Update);
+    let mut nested = ext_query("q-nested");
     nested.tool_call_id = Some("nested-call".into());
     nested.task_name = Some("nested".to_owned());
     h.handle_start_agent_request("conn-delegate", nested)
@@ -7886,7 +7801,6 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -7901,7 +7815,6 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -7968,7 +7881,6 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -7983,7 +7895,6 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -8039,7 +7950,6 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             query_id: "q-A".to_owned(),
             instruction: "side task A".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-A".into()),
             task_name: Some("A".to_owned()),
@@ -8052,7 +7962,6 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
             query_id: "q-B".to_owned(),
             instruction: "side task B".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-B".into()),
             task_name: Some("B".to_owned()),
@@ -8184,7 +8093,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -8199,7 +8107,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     );
@@ -8255,7 +8162,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             query_id: "q1".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Update,
             input_stats,
             tool_call_id: Some("delegate-call".into()),
             task_name: Some("look it up".to_owned()),
@@ -8269,7 +8175,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("initial DelegateProgress on side conv spawn");
     assert_eq!(initial.task_name, "look it up");
     assert_eq!(initial.role.as_deref(), Some("senior-engineer"));
-    assert_eq!(initial.execution_mode, None);
     assert_eq!(initial.tools_in_flight, 0);
     assert_eq!(initial.tools_total, 0);
     assert_delegate_tools_counter(&initial, Some(0), Some(0));
@@ -8322,7 +8227,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("at least one DelegateProgress after side response");
     assert_eq!(latest.task_name, "look it up");
     assert_eq!(latest.role.as_deref(), Some("senior-engineer"));
-    assert_eq!(latest.execution_mode, None);
     assert_eq!(latest.tools_in_flight, 1, "websearch is in flight");
     assert_eq!(latest.tools_total, 1, "websearch counts toward total");
     assert_delegate_tools_counter(&latest, Some(0), Some(1));
@@ -8351,7 +8255,6 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     let after_complete = drain_delegate_progress(&sink, "delegate-call")
         .pop()
         .expect("DelegateProgress after sub-tool completion");
-    assert_eq!(after_complete.execution_mode, None);
     assert_eq!(after_complete.tools_in_flight, 0);
     assert_eq!(after_complete.tools_total, 1);
     assert_delegate_tools_counter(&after_complete, Some(1), Some(1));
@@ -8381,7 +8284,6 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -8396,7 +8298,6 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
             background_support: Some(tau_proto::BackgroundSupport::Instant),
         },
     );
@@ -8442,7 +8343,6 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
             query_id: "q-disconnect".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: Some("look it up".to_owned()),
@@ -8617,7 +8517,6 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 tool_type: tau_proto::ToolType::Function,
                 format: None,
                 enabled_by_default: false,
-                execution_mode: ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: Some(tau_proto::PromptFragment::new(
@@ -8638,7 +8537,6 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 tool_type: tau_proto::ToolType::Function,
                 format: None,
                 enabled_by_default: false,
-                execution_mode: ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: Some(tau_proto::PromptFragment::new(
@@ -8659,7 +8557,6 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 tool_type: tau_proto::ToolType::Function,
                 format: None,
                 enabled_by_default: true,
-                execution_mode: ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: Some(tau_proto::PromptFragment::new(
@@ -8680,7 +8577,6 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 tool_type: tau_proto::ToolType::Function,
                 format: None,
                 enabled_by_default: true,
-                execution_mode: ToolExecutionMode::Shared,
                 background_support: None,
             },
             prompt_fragment: Some(tau_proto::PromptFragment::new(
@@ -8699,7 +8595,6 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
             query_id: "q-worker".to_owned(),
             instruction: "side task".to_owned(),
             role: Some("worker".to_owned()),
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: Some("use worker".to_owned()),
@@ -8833,7 +8728,6 @@ fn delegate_invalid_or_unavailable_role_errors_with_sorted_available_roles() {
                 query_id: query_id.to_owned(),
                 instruction: "side task".to_owned(),
                 role: Some(role.to_owned()),
-                execution_mode: ToolExecutionMode::Shared,
                 input_stats: tau_proto::ToolDisplayStats::default(),
                 tool_call_id: Some(format!("delegate-{query_id}").into()),
                 task_name: Some(query_id.to_owned()),
@@ -8872,7 +8766,6 @@ fn delegate_missing_default_senior_engineer_errors_when_unavailable() {
             query_id: "q-default".to_owned(),
             instruction: "side task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("delegate-call".into()),
             task_name: Some("default".to_owned()),
@@ -8922,7 +8815,6 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -8978,7 +8870,6 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
@@ -9032,7 +8923,6 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             query_id: "q-nested".to_owned(),
             instruction: "nested task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("nested-call".into()),
             task_name: Some("nested".to_owned()),
@@ -9170,7 +9060,6 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -9225,7 +9114,6 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
@@ -9275,7 +9163,6 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
             query_id: "q-nested".to_owned(),
             instruction: "nested task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("nested-call".into()),
             task_name: Some("nested".to_owned()),
@@ -9329,7 +9216,6 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -9384,7 +9270,6 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             query_id: "q-outer".to_owned(),
             instruction: "outer task".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("outer-call".into()),
             task_name: Some("outer".to_owned()),
@@ -9486,7 +9371,6 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             tool_type: tau_proto::ToolType::Function,
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
             background_support: None,
         },
     );
@@ -9541,7 +9425,6 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             query_id: "q-top".to_owned(),
             instruction: "TOP: delegate exactly two more subtasks".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("top-call".into()),
             task_name: Some("top".to_owned()),
@@ -9591,7 +9474,6 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
             query_id: "q-leaf".to_owned(),
             instruction: "LEAF: do one terminal search only".to_owned(),
             role: None,
-            execution_mode: ToolExecutionMode::Shared,
             input_stats: tau_proto::ToolDisplayStats::default(),
             tool_call_id: Some("leaf-call".into()),
             task_name: Some("leaf".to_owned()),
