@@ -5658,10 +5658,6 @@ impl Harness {
         self.publish_event(None, Event::ToolDelegateProgress(progress));
     }
 
-    fn maybe_start_auto_compaction_for_user_prompt(&mut self, _cid: &AgentId, _text: &str) -> bool {
-        false
-    }
-
     fn handle_compact_request(&mut self, session_id: SessionId, target_agent_id: Option<&str>) {
         if session_id != self.current_session_id {
             self.emit_info(&format!(
@@ -5698,10 +5694,6 @@ impl Harness {
             }),
         );
         self.dispatch_prompt_after_publish_idle(&cid);
-    }
-
-    fn maybe_start_auto_compaction_for_followup(&mut self, _cid: &AgentId) -> bool {
-        false
     }
 
     fn compaction_threshold_for_agent(&self, cid: &AgentId) -> Option<u64> {
@@ -7996,9 +7988,7 @@ impl Harness {
         {
             if self.has_pending_message_received_prompt(&cid) {
                 self.fold_pending_prompts_as_steered(&cid);
-                if !self.maybe_start_auto_compaction_for_followup(&cid) {
-                    self.dispatch_prompt_after_publish_idle(&cid);
-                }
+                self.dispatch_prompt_after_publish_idle(&cid);
                 return Ok(());
             }
 
@@ -8668,9 +8658,6 @@ impl Harness {
         };
         if should_send {
             self.fold_pending_prompts_as_steered(cid);
-            if self.maybe_start_auto_compaction_for_followup(cid) {
-                return;
-            }
             // If folding the steered prompts parked any of them in
             // interception (e.g. an extension intercepting
             // `agent.prompt_steered`), defer the agent dispatch

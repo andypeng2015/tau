@@ -42,9 +42,6 @@ impl Harness {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 self.create_durable_user_agent(session_id, &role, cwd)
             });
-        if self.maybe_start_auto_compaction_for_user_prompt(&agent_id, &text) {
-            return Ok(());
-        }
         self.dispatch_prompt_for_agent(&agent_id, PendingPrompt::user(text))
     }
 
