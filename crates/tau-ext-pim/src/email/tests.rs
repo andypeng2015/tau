@@ -2700,7 +2700,7 @@ fn runtime_action_invoke_returns_action_error_for_bad_id() {
     let event = runtime.dispatch_action(ActionInvoke {
         invocation_id: tau_proto::ActionInvocationId::new("invoke-1"),
         session_id: tau_proto::SessionId::new("session-1"),
-        extension_name: tau_proto::ExtensionName::new("tau-ext-email"),
+        extension_name: tau_proto::ExtensionName::new("tau-ext-pim"),
         instance_id: tau_proto::ExtensionInstanceId::from(1),
         action_id: "email.in.list".to_owned(),
         raw_line: "/email in list".to_owned(),

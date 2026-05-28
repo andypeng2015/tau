@@ -1,5 +1,5 @@
 [package]
-name = "tau-ext-email"
+name = "tau-ext-pim"
 version.workspace = true
 edition.workspace = true
 description.workspace = true

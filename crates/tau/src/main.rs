@@ -17,7 +17,12 @@ fn main() -> std::process::ExitCode {
         },
         tau_cli::Component {
             name: "ext-email",
-            runner: tau_ext_email::run_stdio,
+            runner: tau_ext_pim::run_stdio,
+            logging: tau_cli::ComponentLogging::RunnerManaged,
+        },
+        tau_cli::Component {
+            name: "ext-pim",
+            runner: tau_ext_pim::run_stdio,
             logging: tau_cli::ComponentLogging::RunnerManaged,
         },
         tau_cli::Component {

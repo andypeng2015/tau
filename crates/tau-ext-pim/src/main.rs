@@ -1,3 +1,3 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tau_ext_email::run_stdio()
+    tau_ext_pim::run_stdio()
 }

@@ -1,6 +1,6 @@
-# tau-ext-email
+# tau-ext-pim
 
-`tau-ext-email` is Tau's standard email extension. It exposes a single model-visible `email` tool for controlled IMAP reads and SMTP sends through configured accounts, plus `/email` slash actions for user review and approvals.
+`tau-ext-pim` is Tau's standard personal information management extension. It currently exposes the model-visible `email` tool for controlled IMAP reads and SMTP sends through configured accounts, plus `/email` slash actions for user review and approvals.
 
 The built-in extension name is `std-email`. It is disabled by default and must be explicitly enabled in `harness.yaml`.
 

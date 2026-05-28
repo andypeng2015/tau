@@ -214,7 +214,7 @@ fn configure_includes_extension_state_dir_and_creates_it() {
         "std-email",
         Frame::Message(Message::Hello(tau_proto::Hello {
             protocol_version: tau_proto::PROTOCOL_VERSION,
-            client_name: "tau-ext-email".into(),
+            client_name: "tau-ext-pim".into(),
             client_kind: tau_proto::ClientKind::Tool,
         })),
     )
@@ -255,7 +255,7 @@ fn configure_includes_only_resolved_extension_secrets() {
         "std-email",
         Frame::Message(Message::Hello(tau_proto::Hello {
             protocol_version: tau_proto::PROTOCOL_VERSION,
-            client_name: "tau-ext-email".into(),
+            client_name: "tau-ext-pim".into(),
             client_kind: tau_proto::ClientKind::Tool,
         })),
     )

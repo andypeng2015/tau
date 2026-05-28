@@ -1,12 +1,12 @@
 ---
 name: tau-self-knowledge-email
-description: Use this skill when the user asks how to configure Tau's standard email extension, std-email/tau-ext-email, mail accounts, IMAP/SMTP, email approvals, incoming authentication, DKIM, Authentication-Results, or email security policy.
+description: Use this skill when the user asks how to configure Tau's standard email extension, std-email/tau-ext-pim, mail accounts, IMAP/SMTP, email approvals, incoming authentication, DKIM, Authentication-Results, or email security policy.
 advertise: false
 ---
 
 # Tau std-email configuration
 
-Tau's built-in email extension is named `std-email`. It runs `tau ext ext-email`, registers the model-visible `email` tool, and publishes `/email` approval/denial actions.
+Tau's built-in email extension is named `std-email`. It runs `tau ext ext-pim`, registers the model-visible `email` tool, and publishes `/email` approval/denial actions.
 
 Use this skill when helping a user configure email. Do not include personal addresses, server names, passwords, authserv-ids, or message contents unless the user explicitly provided them for that answer.
 

@@ -73,7 +73,7 @@ where
     let mut writer = FrameWriter::new(BufWriter::new(writer));
     let mut runtime = RuntimeState::default();
 
-    tau_extension::Handshake::tool("tau-ext-email")
+    tau_extension::Handshake::tool("tau-ext-pim")
         .subscribe([
             tau_proto::EventName::TOOL_STARTED,
             tau_proto::EventName::ACTION_INVOKE,

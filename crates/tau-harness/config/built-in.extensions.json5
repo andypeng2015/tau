@@ -40,7 +40,7 @@
     },
     {
         name: "std-email",
-        suffix: ["ext", "ext-email"],
+        suffix: ["ext", "ext-pim"],
         role: "tool",
         enable: false,
         config: {},

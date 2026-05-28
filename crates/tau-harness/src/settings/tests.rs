@@ -59,13 +59,7 @@ fn builtins() -> Vec<BuiltinExtension> {
             true,
             serde_json::json!({}),
         ),
-        builtin(
-            "std-email",
-            "ext-email",
-            "tool",
-            false,
-            serde_json::json!({}),
-        ),
+        builtin("std-email", "ext-pim", "tool", false, serde_json::json!({})),
     ]
 }
 
@@ -110,7 +104,7 @@ fn resolve_extensions_enables_disabled_std_email_builtin() {
         .find(|e| e.name == "std-email")
         .expect("std-email enabled");
     assert_eq!(email.command, "tau");
-    assert_eq!(email.args, vec!["ext", "ext-email"]);
+    assert_eq!(email.args, vec!["ext", "ext-pim"]);
     assert_eq!(email.role.as_deref(), Some("tool"));
 }
 
@@ -388,7 +382,7 @@ fn built_in_extensions_json5_contains_disabled_std_email() {
     assert!(!email.enable);
     assert_eq!(
         email.suffix.as_deref(),
-        Some(["ext".to_owned(), "ext-email".to_owned()].as_slice())
+        Some(["ext".to_owned(), "ext-pim".to_owned()].as_slice())
     );
     assert_eq!(email.role.as_deref(), Some("tool"));
 }
