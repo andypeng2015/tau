@@ -442,7 +442,12 @@ pub(crate) fn dispatch_dir_lock_tool(
         Err(message) => {
             send_event(
                 tx,
-                tool_error(&invoke, message, Some(invoke.arguments.clone())),
+                tool_error_with_args(
+                    &invoke,
+                    message,
+                    Some(invoke.arguments.clone()),
+                    Some(dir_arg.clone()),
+                ),
             );
             return;
         }
@@ -464,7 +469,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tool_result(
                         &invoke,
                         dir_lock_result_value("update", &dir, Some(true)),
-                        locked_display("locked", &dir),
+                        dir_lock_display(&dir),
                     ),
                 ),
                 Err(ManualLockAcquireError::Cancelled) => {
@@ -472,7 +477,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                 }
                 Err(ManualLockAcquireError::AlreadyHeld { dir: held_dir }) => send_event(
                     tx,
-                    tool_error(
+                    tool_error_with_args(
                         &invoke,
                         format!(
                             "agent `{}` already holds a directory lock for {}; unlock it before locking {}",
@@ -481,6 +486,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                             dir.display()
                         ),
                         Some(invoke.arguments.clone()),
+                        Some(dir.display().to_string()),
                     ),
                 ),
             }
@@ -491,20 +497,26 @@ pub(crate) fn dispatch_dir_lock_tool(
                 tool_result(
                     &invoke,
                     dir_lock_result_value("unlock", &dir, Some(false)),
-                    locked_display("unlocked", &dir),
+                    dir_lock_display(&dir),
                 ),
             ),
             Err(message) => send_event(
                 tx,
-                tool_error(&invoke, message, Some(invoke.arguments.clone())),
+                tool_error_with_args(
+                    &invoke,
+                    message,
+                    Some(invoke.arguments.clone()),
+                    Some(dir.display().to_string()),
+                ),
             ),
         },
         _ => send_event(
             tx,
-            tool_error(
+            tool_error_with_args(
                 &invoke,
                 "argument `command` must be `update` or `unlock`".to_owned(),
                 Some(invoke.arguments.clone()),
+                Some(dir.display().to_string()),
             ),
         ),
     }
@@ -759,9 +771,8 @@ fn dir_lock_result_value(command: &str, dir: &Path, locked: Option<bool>) -> Cbo
     CborValue::Map(entries)
 }
 
-fn locked_display(status_text: &str, dir: &Path) -> ToolDisplay {
+fn dir_lock_display(dir: &Path) -> ToolDisplay {
     let mut display = ok_display(dir.display().to_string());
-    display.status_text = status_text.to_owned();
     display.payload = Some(ToolDisplayPayload::Text {
         text: dir.display().to_string(),
     });
@@ -781,6 +792,15 @@ fn tool_result(invoke: &ToolStarted, result: CborValue, display: ToolDisplay) ->
 }
 
 fn tool_error(invoke: &ToolStarted, message: String, details: Option<CborValue>) -> Event {
+    tool_error_with_args(invoke, message, details, None)
+}
+
+fn tool_error_with_args(
+    invoke: &ToolStarted,
+    message: String,
+    details: Option<CborValue>,
+    args: Option<String>,
+) -> Event {
     Event::ToolError(ToolError {
         call_id: invoke.call_id.clone(),
         tool_name: invoke.tool_name.clone(),
@@ -788,6 +808,7 @@ fn tool_error(invoke: &ToolStarted, message: String, details: Option<CborValue>)
         message,
         details,
         display: Some(ToolDisplay {
+            args: args.unwrap_or_default(),
             status: ToolDisplayStatus::Error,
             status_text: "dir_lock failed".to_owned(),
             ..Default::default()

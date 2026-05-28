@@ -46,7 +46,7 @@ Automatic locks are held only for the tool invocation duration. They serialize w
 
 ## UI behavior
 
-Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` update that shows the directory or directories being waited on. Those displayed directories are valid inputs to `/shell-dir-force-unlock`; the action releases overlapping manual locks, so either an ancestor or child lock can be cleared from the waiting path. Normal foreground and auto-background behavior still applies because the harness sees the call as running until the extension sends a terminal event.
+Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` update that shows the directory or directories being waited on. `dir_lock` terminal success and failure displays also include the relevant directory when it is known. Those displayed directories are valid inputs to `/shell-dir-force-unlock`; the action releases overlapping manual locks, so either an ancestor or child lock can be cleared from the waiting path. Normal foreground and auto-background behavior still applies because the harness sees the call as running until the extension sends a terminal event.
 
 
 ## Caveats

@@ -167,7 +167,7 @@ When locking is enabled, verify all of these behaviors:
 * Reads stay free: `read`, `grep`, `find`, and `ls` complete while an update lock is held.
 * Mutating tools participate when enabled: `write`, `edit`, `apply_patch`, `shell`, and `gpt_shell` wait on conflicting locks.
 * Lock waiters do not consume the ext-shell worker semaphore before their lock is available. A large number of blocked lock waiters should not prevent unrelated reads from running.
-* Waiting tool UI/status includes the directory or directories being waited on, and normal auto-background behavior still applies.
+* Waiting tool UI/status includes the directory or directories being waited on. `dir_lock` success and failure UI/status should also include the relevant directory when known, and successful lock/unlock status should use the normal `ok` chip.
 * The `/shell-dir-force-unlock DIRECTORY` UI action is published by ext-shell and force-releases manual locks overlapping that canonical directory, regardless of owner.
 * `delegate` agents are independent owners. A parent lock does not automatically cover a delegate, and a delegate lock does not belong to the parent.
 * User `!` shell commands are excluded from this lock path.
@@ -235,7 +235,7 @@ Report concise but complete findings:
 * Whether same-agent automatic writer reentry still worked while manual double updates errored.
 * Whether reads stayed unblocked.
 * For each mutating tool, whether it waited on the expected directory and completed only after unlock.
-* Whether waiting UI/status showed the blocked directory and whether auto-background plus `wait` behaved normally.
+* Whether waiting UI/status showed the blocked directory, whether `dir_lock` failures showed the target directory, and whether auto-background plus `wait` behaved normally.
 * Whether `/shell-dir-force-unlock DIRECTORY` was available, released overlapping manual locks, reported owner details, and left automatic locks alone.
 * Whether FIFO prevented later independent waiters from jumping ahead of a blocked front waiter.
 * Whether cancellation removed a waiting lock request and prevented the delayed mutation.

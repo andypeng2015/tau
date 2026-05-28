@@ -689,7 +689,12 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
     writer.flush().expect("flush first lock");
     loop {
         match reader.read_event().expect("read") {
-            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => break,
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => {
+                let display = result.display.as_ref().expect("lock display");
+                assert_eq!(display.args, lock_dir.display().to_string());
+                assert_eq!(display.status_text, "ok");
+                break;
+            }
             Some(_) => continue,
             None => panic!("extension closed before first lock result"),
         }
@@ -716,6 +721,9 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
                         .message
                         .contains(lock_dir.to_str().expect("utf8 path"))
                 );
+                let display = error.display.as_ref().expect("error display");
+                assert_eq!(display.args, child_dir.display().to_string());
+                assert_eq!(display.status_text, "dir_lock failed");
                 break;
             }
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-child-again" => {
