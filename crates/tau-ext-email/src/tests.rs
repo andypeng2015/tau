@@ -1028,7 +1028,7 @@ fn unapproved_email_preview_is_stripped_and_sanitized() {
     assert!(!preview.truncated);
     assert!(preview.text.contains("Hello Team"));
     assert!(preview.text.contains("LINK click here"));
-    assert!(preview.text.contains("Token x 1 rm rf"));
+    assert!(preview.text.contains("Token x 1 rm -rf"));
     assert!(!preview.text.contains("https://evil.test"));
     assert!(!preview.text.contains("ignore_previous"));
     assert!(!preview.text.contains('!'));
@@ -1036,7 +1036,7 @@ fn unapproved_email_preview_is_stripped_and_sanitized() {
         preview
             .text
             .chars()
-            .all(|ch| { ch.is_ascii_alphanumeric() || matches!(ch, ' ' | ',' | '.') })
+            .all(|ch| { ch.is_ascii_alphanumeric() || matches!(ch, ' ' | ',' | '.' | '-') })
     );
 }
 
@@ -1544,7 +1544,7 @@ fn unapproved_read_returns_sanitized_preview_without_raw_body_text() {
     assert!(
         inner
             .chars()
-            .all(|ch| { ch.is_ascii_alphanumeric() || matches!(ch, ' ' | ',' | '.') })
+            .all(|ch| { ch.is_ascii_alphanumeric() || matches!(ch, ' ' | ',' | '.' | '-') })
     );
     let headers = text_field(data, "headers").expect("headers");
     assert!(headers.contains("source=html"));

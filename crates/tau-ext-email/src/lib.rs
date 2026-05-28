@@ -2623,7 +2623,7 @@ fn sanitize_unapproved_email_preview(raw: &str) -> (String, bool) {
             truncated = true;
             break;
         }
-        let mapped = if ch.is_ascii_alphanumeric() || matches!(ch, ',' | '.') {
+        let mapped = if ch.is_ascii_alphanumeric() || matches!(ch, ',' | '.' | '-') {
             ch
         } else {
             ' '
