@@ -147,6 +147,102 @@ When asked to verify the `delegate` tool, also verify delayed `message` delivery
 
 A completed background result is consumed by the first successful `wait`. Later waits for the same id should fail with an already-consumed error. Parallel duplicate waits on the same id race; at most one should receive the result, and the rest should fail. Parallel duplicate no-arg waits in the same conversation should also fail clearly because only one waiter can consume the next completion. The exact error depends on timing: an in-progress duplicate-wait error, an already-consumed error, or another clear race-related error can be acceptable if only one wait receives the result.
 
+
+### Directory locking verification plan
+
+Use this plan when asked to verify ext-shell directory locking, `dir_lock`, or the interaction between locking, mutating shell tools, backgrounding, `cancel`, and `wait`. Directory locking is optional and advisory. It is owned by `tau-ext-shell`, not the harness or `delegate`.
+
+Create a fresh scratch tree in `/tmp`, such as `/tmp/tau-dir-lock-verification.*`, with at least these directories: `root/a`, `root/a/child`, `root/b`, and `other`. Put small files in `root/a/file.txt` and `root/b/file.txt`. Use unique nonces in file contents and messages. Never run destructive shell commands outside the scratch tree.
+
+Run the first check with default ext-shell config and confirm `dir_lock` is disabled or unavailable by default. Then start a fresh Tau session with ext-shell config like:
+
+```json5
+"core-shell": {
+  config: {
+    dir_lock: { enable: true },
+  },
+},
+```
+
+When the config is enabled, verify all of these behaviors:
+
+* `dir_lock` accepts only `command: update` and `command: unlock` with an existing directory.
+* Directories are canonicalized before locking. Relative paths, `.` components, and symlinked directories should report or behave as the canonical absolute directory.
+* Missing directories and regular files are rejected before any lock is acquired.
+* Manual locks are owner-scoped by `agent_id`; a different agent cannot unlock them.
+* Repeated `update` by the same agent on the same canonical directory is reference-counted. One `unlock` should leave the lock held; the final `unlock` should release it.
+* Ancestor and child directories conflict both ways. Sibling directories do not conflict unless a blocked FIFO waiter is ahead of them.
+* Reads stay free: `read`, `grep`, `find`, and `ls` complete while an update lock is held.
+* Mutating tools participate when enabled: `write`, `edit`, `apply_patch`, `shell`, and `gpt_shell` wait on conflicting locks.
+* Lock waiters do not consume the ext-shell worker semaphore before their lock is available. A large number of blocked lock waiters should not prevent unrelated reads from running.
+* Waiting tool UI/status includes the directory or directories being waited on, and normal auto-background behavior still applies.
+* `delegate` agents are independent owners. A parent lock does not automatically cover a delegate, and a delegate lock does not belong to the parent.
+* User `!` shell commands are excluded from this lock path.
+
+#### Phase 1: basic manual lock behavior
+
+With `dir_lock.enable` true, call `dir_lock update` on a relative path like `root/a/../a`. Expect success and a canonical absolute directory in the result/display. Call `dir_lock unlock` for the same path. Expect success.
+
+Call `dir_lock update` on a missing directory and on `root/a/file.txt`. Expect tool errors. Then call `dir_lock update` twice on `root/a`. Start a delegate that tries to `write` `root/a/child/blocked.txt` and reports to `user` after it succeeds. The delegate should wait. Call `dir_lock unlock` once from the original agent; the delegate should still wait. Call `dir_lock unlock` a second time; the delegate should complete. A third `unlock` should error.
+
+Also verify same-owner reentry: while the original agent holds `root/a`, run a same-agent `write` or `edit` inside `root/a`. It should complete instead of deadlocking on its own manual lock.
+
+#### Phase 2: reads remain unblocked
+
+Hold a manual lock on `root/a`. While it is held, run `read root/a/file.txt`, `grep` against `root/a`, `find` under `root/a`, and `ls root/a`. These should complete promptly and should not wait for unlock. Then start a conflicting `shell` with `cwd: root/a` and command `python3 -c 'open("shell-waited.txt", "w").write("locked")'`. It should wait. Unlock `root/a`; the shell should run and create the file.
+
+If the `shell` waits long enough to background, call `wait` after unlocking and confirm the real shell result is returned normally.
+
+#### Phase 3: automatic lock scopes
+
+For each mutating tool, hold the relevant manual lock from one agent and run the tool from a different delegate. Confirm it waits until the lock is released:
+
+* `write`: lock the target file parent. Also test a missing-parent write like `root/a/new/dir/file.txt`; it should wait on the deepest existing ancestor and then create parents after unlock.
+* `edit`: lock the canonical parent of the existing file. If the edited path is a symlink to a file elsewhere in the scratch tree, the lock should follow the final symlink to the real edited file.
+* `apply_patch`: use a patch that touches one file under `root/a` and one under `root/b`. If `root/a` is locked, neither change should be applied before the lock is granted. After unlock, both changes should appear together from the patch invocation.
+* `shell` and `gpt_shell`: lock the canonical `cwd`. A command with `cwd: root/a` should wait on a `root/a` lock.
+
+For `shell`, also verify the advisory limitation: a command with `cwd: other` that writes to an absolute path under `root/a` is not expected to wait on the `root/a` lock. Report this as expected advisory behavior, not a lock failure.
+
+#### Phase 4: ancestor, child, and sibling conflict matrix
+
+Use separate agents so owner reentry does not hide conflicts. Verify these cases:
+
+* Agent A holds `root/a`; Agent B tries `dir_lock update root/a/child`. B waits until A unlocks.
+* Agent A holds `root/a/child`; Agent B tries `dir_lock update root/a`. B waits until A unlocks.
+* Agent A holds `root/a`; Agent B mutates `root/b`. B should not wait when no earlier FIFO waiter blocks the queue.
+* Agent A holds `root/a`; Agent B tries `dir_lock update root`; Agent C then tries `dir_lock update other`. C should not acquire before B, even though `other` is independent. After A unlocks, B should acquire first; C may acquire immediately after B is dequeued if it does not conflict.
+
+The FIFO check is the starvation guard. If C completes before B while B is already queued at the front, record it as a bug.
+
+#### Phase 5: cancellation and background behavior
+
+Hold `root/a` from one agent. Start a delegate or shell call whose mutating `shell` invocation uses `cwd: root/a` and would create a sentinel file. Let it wait long enough to show the waiting directory in the UI; if it backgrounds, record the placeholder ID. Call `cancel` on the waiting shell tool call ID. Expected: cancel is accepted, the waiting lock request is removed, `wait` returns a canceled result if the call backgrounded, and the sentinel file is still absent after the lock is later released.
+
+Do not count cancellation of `write` or `edit` as required unless the harness exposes those call IDs as cancellable in that run. The important lock-specific behavior is that a waiting lock request can be canceled and does not run later after unlock.
+
+#### Phase 6: agent lifecycle cleanup
+
+Start a delegate that calls `dir_lock update root/a`, reports that it acquired the lock, and then exits without unlocking. After the delegate completes and the agent unloads, a different agent should be able to lock or mutate `root/a` without waiting forever. If the lock remains stuck after the owning agent is gone, record it as a lifecycle cleanup bug.
+
+Also test session shutdown if practical: locks from the old session must not affect a fresh session.
+
+#### Reporting format for directory locking verification
+
+Report concise but complete findings:
+
+* Whether `dir_lock` was disabled by default and enabled by config.
+* Exact outputs or errors for canonicalization, missing directory, non-directory, double unlock, and wrong-owner unlock.
+* Whether reference counting required the matching number of unlocks.
+* Whether reads stayed unblocked.
+* For each mutating tool, whether it waited on the expected directory and completed only after unlock.
+* Whether waiting UI/status showed the blocked directory and whether auto-background plus `wait` behaved normally.
+* Whether FIFO prevented later independent waiters from jumping ahead of a blocked front waiter.
+* Whether cancellation removed a waiting lock request and prevented the delayed mutation.
+* Whether agent unload/session shutdown released manual locks.
+* Any advisory-shell caveat observed, especially commands writing outside their locked `cwd` or into a locked directory from another `cwd`.
+
+
 ### Background tool `cancel`
 
 `cancel` requires `tool_call_id` and never backgrounds. It supports running `delegate` calls and should support running `shell` calls. A successful cancel request returns `Tool cancellation requested`, emits a harness info event containing `tool call cancellation request`, and targets only the requested tool call. Cancellation is async and best effort: the success result only means Tau accepted the request, not that the child process or agent has already stopped. A canceled delegate should complete as a background error so `wait` can observe the cancellation instead of hanging. A canceled shell call should also complete through `wait`, include timing headers if it ran longer than about 5 seconds, and must not keep running to normal `status: 0` completion.
