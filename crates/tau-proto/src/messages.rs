@@ -132,16 +132,32 @@ pub struct ConfigError {
 // Wire transport — at-least-once delivery for event-log entries
 // ---------------------------------------------------------------------------
 
-/// Monotonic id assigned by the harness when an event is appended to its
-/// event log. Receivers acknowledge processing by returning the same id
-/// in [`Ack::up_to`].
+/// Monotonic sequence assigned by the harness event log.
+///
+/// This sequence is relative to the harness runtime event log as a whole. Every
+/// `LogEvent` envelope emitted by the running harness gets the next value in
+/// this single stream, regardless of whether the inner event is transient,
+/// persisted in an agent log, persisted in a session log, or replayed from
+/// history. It is not comparable to persisted agent/session event sequences.
+/// Receivers acknowledge processing by returning the same sequence in
+/// [`Ack::up_to`].
 #[derive(
-    Clone, Copy, Debug, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(transparent)]
-pub struct LogEventId(u64);
+pub struct EventLogSeq(u64);
 
-impl LogEventId {
+impl EventLogSeq {
     #[must_use]
     pub fn new(v: u64) -> Self {
         Self(v)
@@ -151,9 +167,14 @@ impl LogEventId {
     pub fn get(self) -> u64 {
         self.0
     }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
-impl std::fmt::Display for LogEventId {
+impl std::fmt::Display for EventLogSeq {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -218,7 +239,7 @@ impl std::fmt::Display for UnixMicros {
 
 /// A bus event delivered through the harness's event log. Receivers
 /// must process the inner event and then send an [`Ack`] referencing
-/// `id` (or any later id, since acks are cumulative).
+/// `seq` (or any later sequence, since acks are cumulative).
 ///
 /// `event` is boxed because the inner value is the (potentially
 /// large) bus fact. It is never another `LogEvent` or `Ack` — only
@@ -231,9 +252,13 @@ impl std::fmt::Display for UnixMicros {
 /// records without the field; they deserialize as `UnixMicros(0)`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogEvent {
-    pub id: LogEventId,
+    /// Sequence assigned by the harness runtime event log.
+    pub seq: EventLogSeq,
+    /// Runtime append timestamp shared with durable records when the event is
+    /// persisted.
     #[serde(default)]
     pub recorded_at: UnixMicros,
+    /// Inner bus fact carried by this event-log envelope.
     pub event: Box<Event>,
 }
 
@@ -356,12 +381,12 @@ pub struct RenderedToolDefinitionsResult {
     pub error: Option<String>,
 }
 
-/// Receiver → sender acknowledgement that all log events with id
+/// Receiver → sender acknowledgement that all log events with sequence
 /// `<= up_to` have been processed. Cumulative — newer acks supersede
 /// older ones.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Ack {
-    pub up_to: LogEventId,
+    pub up_to: EventLogSeq,
 }
 
 // ---------------------------------------------------------------------------

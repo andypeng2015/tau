@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use tau_proto::{
-    Ack, CborValue, ConfigError, Event, Frame, FrameReader, FrameWriter, LogEventId, Message,
+    Ack, CborValue, ConfigError, Event, EventLogSeq, Frame, FrameReader, FrameWriter, Message,
     ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolResult,
     ToolSpec, ToolStarted,
 };
@@ -202,7 +202,7 @@ where
 }
 
 fn ack_if_logged(
-    id: Option<LogEventId>,
+    id: Option<EventLogSeq>,
     tx: &mpsc::Sender<Frame>,
 ) -> Result<(), Box<mpsc::SendError<Frame>>> {
     if let Some(id) = id {
@@ -212,7 +212,7 @@ fn ack_if_logged(
     Ok(())
 }
 
-fn ack_log_event(id: LogEventId, tx: &mpsc::Sender<Frame>) {
+fn ack_log_event(id: EventLogSeq, tx: &mpsc::Sender<Frame>) {
     let _ = tx.send(Frame::Message(Message::Ack(Ack { up_to: id })));
 }
 

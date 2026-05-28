@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tau_proto::{
     AgentHeadMoved, AgentId, AgentMessageId, AgentMessageReceived, AgentMessageRecipient,
-    AgentMessageSent, ConnectionId, ContentPart, ContextItem, ContextRole, Event, LogEventId,
-    MessageItem, PromptOriginator, ProviderBackend, ProviderTokenUsage, ToolBackgroundError,
+    AgentMessageSent, ConnectionId, ContentPart, ContextItem, ContextRole, Event, MessageItem,
+    PromptOriginator, ProviderBackend, ProviderTokenUsage, ToolBackgroundError,
     ToolBackgroundResult, ToolCallId, ToolCallItem, ToolName, ToolResultItem, ToolResultKind,
     ToolResultStatus, ToolType, UnixMicros,
 };
@@ -41,8 +41,43 @@ impl std::fmt::Display for AgentEventValidationError {
 
 impl std::error::Error for AgentEventValidationError {}
 
-/// Default starting `LogEventId` for a tree with no events.
-const FIRST_EVENT_ID: u64 = 0;
+/// Monotonic sequence number in one persisted agent event log.
+///
+/// This sequence is relative only to one agent's `events.cbor` stream: the
+/// first record in that file has sequence 0, the second has sequence 1, and so
+/// on. It is not comparable to [`tau_proto::EventLogSeq`] or to
+/// [`crate::PersistedSessionEventSeq`]. The value is persisted as corruption
+/// detection metadata; replay semantics are still defined by file order, so
+/// load code verifies that stored values match their implied position.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PersistedAgentEventSeq(u64);
+
+impl PersistedAgentEventSeq {
+    /// Creates a sequence value from its raw integer representation.
+    #[must_use]
+    pub fn new(v: u64) -> Self {
+        Self(v)
+    }
+
+    /// Returns the raw integer representation.
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the next sequence in the same agent event log.
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl std::fmt::Display for PersistedAgentEventSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Direction of a cross-agent message projection in one agent transcript.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -195,13 +230,13 @@ pub struct AgentTree {
     pub(crate) agent_id: AgentId,
     pub(crate) nodes: Vec<AgentNode>,
     pub(crate) head: Option<NodeId>,
-    /// Id the next durable event appended to this agent's log
+    /// Sequence the next durable event appended to this agent's log
     /// should receive. Cached here so that
     /// [`AgentStore::append_agent_event_at`] doesn't have to
     /// re-decode the entire on-disk log on every write to look at
-    /// the last id (the previous behaviour was O(N) per append,
+    /// the last sequence (the previous behaviour was O(N) per append,
     /// quadratic over a long agent).
-    pub(crate) next_event_id: LogEventId,
+    pub(crate) next_event_seq: PersistedAgentEventSeq,
     pending_tool_rounds: HashMap<NodeId, PendingToolRound>,
     tool_call_rounds: HashMap<ToolCallId, NodeId>,
 }
@@ -484,30 +519,30 @@ impl AgentTree {
             agent_id,
             nodes: Vec::new(),
             head: None,
-            next_event_id: LogEventId::new(FIRST_EVENT_ID),
+            next_event_seq: PersistedAgentEventSeq::new(0),
             pending_tool_rounds: HashMap::new(),
             tool_call_rounds: HashMap::new(),
         };
         for entry in events {
             tree.apply_event_at(entry.parent, &entry.event);
-            tree.next_event_id = LogEventId::new(entry.id.get() + 1);
+            tree.next_event_seq = entry.seq.next();
         }
         tree
     }
 
-    /// Returns the id the next durable event appended to this
+    /// Returns the sequence the next durable event appended to this
     /// agent's log should receive. Maintained incrementally by
     /// `AgentStore::append_agent_event_at`; on replay,
-    /// initialised from the highest persisted event id.
+    /// initialised from the highest persisted event sequence.
     #[must_use]
-    pub fn next_event_id(&self) -> LogEventId {
-        self.next_event_id
+    pub fn next_event_seq(&self) -> PersistedAgentEventSeq {
+        self.next_event_seq
     }
 
-    /// Bumps the cached next-event-id after a successful append.
+    /// Bumps the cached next-event-seq after a successful append.
     /// Crate-internal — only the agent store mutates this.
-    pub(crate) fn advance_next_event_id(&mut self) {
-        self.next_event_id = LogEventId::new(self.next_event_id.get() + 1);
+    pub(crate) fn advance_next_event_seq(&mut self) {
+        self.next_event_seq = self.next_event_seq.next();
     }
 
     /// Incrementally apply one durable event to the tree. Mirrors the
@@ -895,9 +930,19 @@ impl AgentTree {
 /// `UiNavigateTree` head-bouncing dance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PersistedAgentEvent {
-    pub id: LogEventId,
+    /// Sequence within this agent's durable `events.cbor` stream.
+    ///
+    /// This is persisted to catch reordered, duplicated, or spliced logs during
+    /// load. The implied sequence from file order is still authoritative for
+    /// replay; load rejects records where this stored value disagrees with the
+    /// record's zero-based position.
+    pub seq: PersistedAgentEventSeq,
+    /// Connection that published the fact, when known.
     pub source: Option<ConnectionId>,
+    /// Agent-scoped protocol event.
     pub event: Event,
+    /// Explicit fold parent used when replaying this record into the agent
+    /// tree.
     pub parent: AgentEventParent,
     /// Wall-clock micros since UNIX epoch when the event was
     /// appended, matching the value carried on the wire `LogEvent`

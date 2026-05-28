@@ -52,9 +52,9 @@ fn event_log_contains_source_event(
     source: &str,
     mut predicate: impl FnMut(&Event) -> bool,
 ) -> bool {
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if entry.source.as_deref() == Some(source) && predicate(&entry.event) {
             return true;
         }
@@ -169,7 +169,7 @@ fn connect_handshaking_extension(
             secrets: BTreeMap::new(),
             restart_attempt: 0,
             state: ExtensionState::Handshaking,
-            last_acked: tau_proto::LogEventId::default(),
+            last_acked: tau_proto::EventLogSeq::default(),
         },
     );
     h.extension_order.push(connection_id);
@@ -1541,7 +1541,7 @@ fn extension_connect_command_installs_state_before_reader_ack() {
             secrets: BTreeMap::new(),
             restart_attempt: 0,
             state: ExtensionState::Spawning,
-            last_acked: tau_proto::LogEventId::default(),
+            last_acked: tau_proto::EventLogSeq::default(),
         },
         origin: ConnectionOrigin::Supervised,
         writer_tx: spawned.writer_tx,
@@ -2162,13 +2162,13 @@ fn extension_ack_advances_cursor() {
     h.handle_extension_event(
         &tools_id,
         Frame::Message(Message::Ack(tau_proto::Ack {
-            up_to: tau_proto::LogEventId::new(7),
+            up_to: tau_proto::EventLogSeq::new(7),
         })),
     )
     .expect("ack");
 
     let tools = h.extensions.get(tools_id.as_str()).expect("entry");
-    assert_eq!(tools.last_acked, tau_proto::LogEventId::new(7));
+    assert_eq!(tools.last_acked, tau_proto::EventLogSeq::new(7));
     h.shutdown().expect("shutdown");
 }
 
@@ -2192,7 +2192,7 @@ fn duplicate_ack_is_ignored() {
     h.handle_extension_event(
         &tools_id,
         Frame::Message(Message::Ack(tau_proto::Ack {
-            up_to: tau_proto::LogEventId::new(0),
+            up_to: tau_proto::EventLogSeq::new(0),
         })),
     )
     .expect("ack");

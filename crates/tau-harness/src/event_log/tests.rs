@@ -11,15 +11,17 @@ fn info(message: &str) -> Event {
 fn append_and_get() {
     let log = EventLog::new();
     let (seq, recorded_at) = log.append(Some("conn-1".into()), info("hello"));
-    assert_eq!(seq, 0);
+    assert_eq!(seq.get(), 0);
     assert!(recorded_at.get() > 0, "append should stamp wall-clock time");
 
-    let entry = log.get_next_from(0).expect("entry should exist");
-    assert_eq!(entry.seq, 0);
+    let entry = log
+        .get_next_from(tau_proto::EventLogSeq::new(0))
+        .expect("entry should exist");
+    assert_eq!(entry.seq.get(), 0);
     assert_eq!(entry.recorded_at, recorded_at);
     assert_eq!(entry.source, Some("conn-1".into()));
 
-    assert!(log.get_next_from(1).is_none());
+    assert!(log.get_next_from(tau_proto::EventLogSeq::new(1)).is_none());
 }
 
 #[test]
@@ -29,8 +31,10 @@ fn get_next_from_skips_earlier() {
     log.append(None, info("b"));
     log.append(None, info("c"));
 
-    let entry = log.get_next_from(1).expect("entry should exist");
-    assert_eq!(entry.seq, 1);
+    let entry = log
+        .get_next_from(tau_proto::EventLogSeq::new(1))
+        .expect("entry should exist");
+    assert_eq!(entry.seq.get(), 1);
     let Event::HarnessInfo(info) = &entry.event else {
         panic!("expected HarnessInfo");
     };

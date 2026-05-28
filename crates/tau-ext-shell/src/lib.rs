@@ -12,10 +12,10 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::{Arc, Mutex, mpsc};
 
 use tau_proto::{
-    Ack, AgentContextKey, AgentContextValue, ConfigError, Event, ExtAgentContextPublish,
-    ExtPromptFragmentPublish, ExtensionContextReady, Frame, FrameReader, FrameWriter, LogEventId,
-    Message, PromptContent, PromptFragment, PromptPriority, SessionAgentLoaded, SessionStarted,
-    ToolCancelled, ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
+    Ack, AgentContextKey, AgentContextValue, ConfigError, Event, EventLogSeq,
+    ExtAgentContextPublish, ExtPromptFragmentPublish, ExtensionContextReady, Frame, FrameReader,
+    FrameWriter, Message, PromptContent, PromptFragment, PromptPriority, SessionAgentLoaded,
+    SessionStarted, ToolCancelled, ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
 };
 use tracing::{debug, trace};
 
@@ -686,7 +686,7 @@ fn dispatch_session_agent_loaded(loaded: SessionAgentLoaded, tx: &mpsc::Sender<F
 }
 
 fn ack_if_logged(
-    id: Option<LogEventId>,
+    id: Option<EventLogSeq>,
     tx: &mpsc::Sender<Frame>,
 ) -> Result<(), Box<mpsc::SendError<Frame>>> {
     if let Some(id) = id {
@@ -696,7 +696,7 @@ fn ack_if_logged(
     Ok(())
 }
 
-fn ack_log_event(id: LogEventId, tx: &mpsc::Sender<Frame>) {
+fn ack_log_event(id: EventLogSeq, tx: &mpsc::Sender<Frame>) {
     let _ = tx.send(Frame::Message(Message::Ack(Ack { up_to: id })));
 }
 

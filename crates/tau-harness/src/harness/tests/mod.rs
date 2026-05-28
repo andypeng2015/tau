@@ -210,9 +210,9 @@ fn default_agent_node(h: &Harness, id: NodeId) -> &tau_core::AgentNode {
 
 fn event_log_events(h: &Harness) -> Vec<Event> {
     let mut events = Vec::new();
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         events.push(entry.event);
     }
     events
@@ -632,13 +632,13 @@ fn drain_delegate_progress(
 }
 
 fn read_raw_prompt_created(h: &Harness, spid: &AgentPromptId) -> AgentPromptCreated {
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     loop {
         let entry = h
             .event_log
             .get_next_from(cursor)
             .expect("prompt event in log");
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match entry.event {
             Event::AgentPromptCreated(prompt) if &prompt.agent_prompt_id == spid => {
                 return prompt;
@@ -649,13 +649,13 @@ fn read_raw_prompt_created(h: &Harness, spid: &AgentPromptId) -> AgentPromptCrea
 }
 
 fn read_raw_compaction_requested(h: &Harness, spid: &AgentPromptId) -> AgentCompactionRequested {
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     loop {
         let entry = h
             .event_log
             .get_next_from(cursor)
             .expect("compaction request event in log");
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match entry.event {
             Event::AgentCompactionRequested(request) if &request.prompt.agent_prompt_id == spid => {
                 return request;

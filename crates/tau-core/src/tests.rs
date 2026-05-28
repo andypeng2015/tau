@@ -6,7 +6,8 @@ use tau_proto::{
 };
 
 use crate::{
-    AgentEntry, AgentEventParent, AgentStore, AgentStoreError, NodeId, SessionStore,
+    AgentEntry, AgentEventParent, AgentStore, AgentStoreError, NodeId, PersistedAgentEvent,
+    PersistedAgentEventSeq, PersistedSessionEvent, PersistedSessionEventSeq, SessionStore,
     SessionStoreError,
 };
 
@@ -21,6 +22,21 @@ fn temp_dir(name: &str) -> PathBuf {
             .as_nanos()
     ));
     path
+}
+
+fn append_raw_cbor<T: serde::Serialize>(path: &std::path::Path, record: &T) {
+    let mut encoded = Vec::new();
+    ciborium::into_writer(record, &mut encoded).expect("encode test record");
+    std::fs::create_dir_all(path.parent().expect("record parent")).expect("create parent");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open record stream");
+    use std::io::Write;
+    file.write_all(&(encoded.len() as u64).to_le_bytes())
+        .expect("write record length");
+    file.write_all(&encoded).expect("write record body");
 }
 
 fn agent_prompt(agent_id: &str, text: &str) -> Event {
@@ -42,7 +58,7 @@ fn agent_store_persists_transcript_under_agent_directory() {
         .append_agent_event("agent-1", None, agent_prompt("agent-1", "hello"))
         .expect("append agent event");
 
-    assert_eq!(outcome.id.get(), 0);
+    assert_eq!(outcome.seq.get(), 0);
     assert_eq!(outcome.folded_node_id.map(|id| id.get()), Some(0));
     assert!(agents_dir.join("agent-1").join("events.cbor").exists());
 
@@ -58,6 +74,31 @@ fn agent_store_persists_transcript_under_agent_directory() {
     let events = reopened.agent_events("agent-1").expect("agent events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event, agent_prompt("agent-1", "hello"));
+
+    let _ = std::fs::remove_dir_all(agents_dir);
+}
+
+#[test]
+fn agent_store_rejects_non_sequential_persisted_sequence_on_load() {
+    let agents_dir = temp_dir("agents-bad-seq");
+    let events_path = agents_dir.join("agent-1").join("events.cbor");
+
+    // Persisted sequence is deliberately redundant with file order. Loading must
+    // reject a mismatch so a reordered or spliced event stream is caught before
+    // it is folded into the agent tree.
+    append_raw_cbor(
+        &events_path,
+        &PersistedAgentEvent {
+            seq: PersistedAgentEventSeq::new(1),
+            source: None,
+            event: agent_prompt("agent-1", "hello"),
+            parent: AgentEventParent::InheritHead,
+            recorded_at: tau_proto::UnixMicros::now(),
+        },
+    );
+
+    let error = AgentStore::open(&agents_dir).expect_err("bad sequence must fail load");
+    assert!(matches!(error, AgentStoreError::InvalidSequence { .. }));
 
     let _ = std::fs::remove_dir_all(agents_dir);
 }
@@ -181,7 +222,7 @@ fn session_store_persists_only_membership_facts() {
         .append_session_event("session-1", None, loaded.clone())
         .expect("append loaded");
 
-    assert_eq!(outcome.id.get(), 0);
+    assert_eq!(outcome.seq.get(), 0);
     assert_eq!(outcome.folded_node_id, None);
     assert!(sessions_dir.join("session-1").join("events.cbor").exists());
     assert!(
@@ -209,6 +250,33 @@ fn session_store_persists_only_membership_facts() {
     let events = reopened.session_events("session-1").expect("events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].event, loaded);
+
+    let _ = std::fs::remove_dir_all(sessions_dir);
+}
+
+#[test]
+fn session_store_rejects_non_sequential_persisted_sequence_on_load() {
+    let sessions_dir = temp_dir("sessions-bad-seq");
+    let events_path = sessions_dir.join("session-1").join("events.cbor");
+
+    // Persisted sequence is deliberately redundant with file order. Loading must
+    // reject a mismatch so a reordered or spliced membership stream is caught
+    // before it is folded into the session view.
+    append_raw_cbor(
+        &events_path,
+        &PersistedSessionEvent {
+            seq: PersistedSessionEventSeq::new(1),
+            source: None,
+            event: Event::SessionAgentLoaded(SessionAgentLoaded {
+                session_id: SessionId::from("session-1"),
+                agent_id: AgentId::from("agent-1"),
+            }),
+            recorded_at: tau_proto::UnixMicros::now(),
+        },
+    );
+
+    let error = SessionStore::open(&sessions_dir).expect_err("bad sequence must fail load");
+    assert!(matches!(error, SessionStoreError::InvalidSequence { .. }));
 
     let _ = std::fs::remove_dir_all(sessions_dir);
 }

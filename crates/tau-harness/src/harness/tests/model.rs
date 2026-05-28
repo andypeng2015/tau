@@ -12,9 +12,9 @@ use crate::model::LoadedRoles;
 /// the test inspects the log every check_*_parses event is already
 /// committed — no need to pump the bus.
 fn find_important_info(h: &Harness, needle: &str) -> Option<String> {
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if let Event::HarnessInfo(info) = &entry.event
             && info.level == HarnessInfoLevel::Important
             && info.message.contains(needle)
@@ -127,9 +127,9 @@ fn provider_models_snapshot_updates_available_models() {
     let mut saw_provider_snapshot = false;
     let mut saw_harness_models = false;
     let mut saw_harness_roles = false;
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         match entry.event {
             Event::ProviderModelsUpdated(update)
                 if entry.source.as_deref() == Some("provider-ext") =>
@@ -172,9 +172,9 @@ fn provider_models_snapshot_from_non_provider_is_ignored() {
     assert!(!h.available_models.contains(&model_id));
     assert!(!h.provider_model_info.contains_key(&model_id));
     assert!(!h.provider_model_routes.contains_key(&model_id));
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         assert!(
             !matches!(entry.event, Event::ProviderModelsUpdated(_))
                 || entry.source.as_deref() != Some("tool-ext"),
@@ -205,9 +205,9 @@ fn provider_models_snapshot_from_ui_client_is_ignored() {
     assert!(!h.available_models.contains(&model_id));
     assert!(!h.provider_model_info.contains_key(&model_id));
     assert!(!h.provider_model_routes.contains_key(&model_id));
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         assert!(
             !matches!(entry.event, Event::ProviderModelsUpdated(_))
                 || entry.source.as_deref() != Some("ui-client"),
@@ -304,10 +304,10 @@ fn provider_model_metadata_drives_selection_state() {
         ThinkingSummary::Auto
     );
 
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     let mut selected = None;
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if let Event::HarnessRoleSelected(event) = entry.event
             && event.model.as_ref() == Some(&model_id)
         {
@@ -341,10 +341,10 @@ fn provider_model_metadata_drives_selection_state() {
         ThinkingSummary::Off
     );
 
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     let mut selected = None;
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if let Event::HarnessRoleSelected(event) = entry.event
             && event.model.as_ref() == Some(&model_id)
         {

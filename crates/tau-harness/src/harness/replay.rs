@@ -39,7 +39,14 @@ impl Harness {
         let loaded_agents: Vec<tau_proto::AgentId> = {
             match self.store.load_session(self.current_session_id.as_str()) {
                 Ok(Some(membership)) => membership.loaded_agents().into_iter().cloned().collect(),
-                _ => Vec::new(),
+                Ok(None) => Vec::new(),
+                Err(error) => {
+                    self.send_replay_error(
+                        client_id,
+                        &format!("failed to load session events for replay: {error}"),
+                    );
+                    Vec::new()
+                }
             }
         };
 
@@ -54,15 +61,22 @@ impl Harness {
         }
 
         for agent_id in loaded_agents {
-            let Ok(events) = self.agent_store.agent_events(agent_id.as_str()) else {
-                continue;
+            let events = match self.agent_store.agent_events(agent_id.as_str()) {
+                Ok(events) => events,
+                Err(error) => {
+                    self.send_replay_error(
+                        client_id,
+                        &format!("failed to load agent `{agent_id}` events for replay: {error}"),
+                    );
+                    continue;
+                }
             };
             for entry in events {
                 if selector_matches_event(selectors, &entry.event)
                     && should_replay_agent_event_to_late_subscriber(&entry.event)
                 {
                     let frame = Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-                        id: entry.id,
+                        seq: self.event_log.reserve_seq(),
                         recorded_at: entry.recorded_at,
                         event: Box::new(entry.event),
                     }));
@@ -71,6 +85,17 @@ impl Harness {
             }
         }
         self.replay_active_queued_prompts(client_id, selectors);
+    }
+
+    fn send_replay_error(&mut self, client_id: &str, message: &str) {
+        let _ = self.bus.send_to(
+            client_id,
+            None,
+            Frame::Event(Event::HarnessInfo(tau_proto::HarnessInfo {
+                message: message.to_owned(),
+                level: tau_proto::HarnessInfoLevel::Important,
+            })),
+        );
     }
 
     fn replay_active_queued_prompts(&mut self, client_id: &str, selectors: &[EventSelector]) {
@@ -107,9 +132,9 @@ impl Harness {
     /// The transcript catch-up path above comes from durable agent logs, while
     /// this method only reconstructs current harness status snapshots.
     pub(crate) fn replay_harness_info(&mut self, client_id: &str, selectors: &[EventSelector]) {
-        let mut cursor = 0;
+        let mut cursor = tau_proto::EventLogSeq::new(0);
         while let Some(entry) = self.event_log.get_next_from(cursor) {
-            cursor = entry.seq + 1;
+            cursor = entry.seq.next();
             let dominated = matches!(
                 entry.event,
                 Event::HarnessInfo(_)

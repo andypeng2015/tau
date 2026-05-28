@@ -47,10 +47,10 @@ fn send_event(writer: &WriterHandle, event: &Event) -> io::Result<()> {
 
 fn peel_log_with_timestamp(
     frame: Frame,
-) -> (Option<tau_proto::LogEventId>, Option<UnixMicros>, Frame) {
+) -> (Option<tau_proto::EventLogSeq>, Option<UnixMicros>, Frame) {
     match frame {
         Frame::Message(Message::LogEvent(env)) => (
-            Some(env.id),
+            Some(env.seq),
             Some(env.recorded_at),
             Frame::Event(*env.event),
         ),

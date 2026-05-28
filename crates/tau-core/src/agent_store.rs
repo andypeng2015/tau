@@ -17,10 +17,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tau_proto::{AgentId, ConnectionId, Event, LogEventId, NodeId, UnixMicros};
+use tau_proto::{AgentId, ConnectionId, Event, NodeId, UnixMicros};
 
 use crate::session::{
     AgentEventParent, AgentEventValidationError, AgentMeta, AgentTree, PersistedAgentEvent,
+    PersistedAgentEventSeq,
 };
 
 /// Errors returned by the append-only agent store.
@@ -60,6 +61,11 @@ pub enum AgentStoreError {
     },
     InvalidEvent {
         source: AgentEventValidationError,
+    },
+    InvalidSequence {
+        path: PathBuf,
+        expected: PersistedAgentEventSeq,
+        actual: PersistedAgentEventSeq,
     },
 }
 
@@ -106,6 +112,15 @@ impl fmt::Display for AgentStoreError {
                 path.display()
             ),
             Self::InvalidEvent { source } => write!(f, "invalid agent event: {source}"),
+            Self::InvalidSequence {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "invalid agent event sequence in {}: expected {expected}, got {actual}",
+                path.display()
+            ),
         }
     }
 }
@@ -120,8 +135,9 @@ impl Error for AgentStoreError {
             Self::Decode { source, .. } => Some(source),
             Self::Encode { source, .. } => Some(source),
             Self::InvalidEvent { source } => Some(source),
-            Self::Locked { .. } => None,
-            Self::InvalidAgentDir { .. } => None,
+            Self::Locked { .. } | Self::InvalidAgentDir { .. } | Self::InvalidSequence { .. } => {
+                None
+            }
         }
     }
 }
@@ -146,7 +162,7 @@ impl Error for AgentStoreError {
 /// consumers (e.g. inspection commands) don't contend with a running
 /// daemon.
 /// Result of one [`AgentStore::append_agent_event_at`] call:
-/// the durable event id and, when the event produced a tree node,
+/// the durable agent-event sequence and, when the event produced a tree node,
 /// that node's id. Callers maintaining a per-conversation branch
 /// cursor advance it from `folded_node_id` rather than from the
 /// global `tree.head()` so non-folding events (e.g. an
@@ -154,7 +170,9 @@ impl Error for AgentStoreError {
 /// the cursor onto a sibling conversation's last fold.
 #[derive(Clone, Debug)]
 pub struct AgentAppendOutcome {
-    pub id: LogEventId,
+    /// Sequence assigned to the record in this agent's durable event log.
+    pub seq: PersistedAgentEventSeq,
+    /// Folded tree node produced by this event, if any.
     pub folded_node_id: Option<NodeId>,
 }
 
@@ -379,25 +397,28 @@ impl AgentStore {
         tree.validate_event_parent(parent)
             .map_err(|source| AgentStoreError::InvalidEvent { source })?;
         // Cached: `from_events` populated this from the highest
-        // persisted id at load time; we keep it advanced below.
+        // persisted sequence at load time; we keep it advanced below.
         // Avoids re-reading and re-decoding the entire on-disk log
         // on every write.
-        let next_id = tree.next_event_id();
+        let next_seq = tree.next_event_seq();
         let record = PersistedAgentEvent {
-            id: next_id,
+            seq: next_seq,
             source,
             event: event.clone(),
             parent,
             recorded_at,
         };
         append_cbor_record(&events_path, &record)?;
-        touch_meta_for_event(&agent_dir.join("meta.json"), &event)?;
 
         let folded_node_id = tree.apply_event_at(parent, &event);
-        tree.advance_next_event_id();
+        tree.advance_next_event_seq();
+        // Sidecar metadata is derived from the durable event stream. Do not let
+        // a sidecar write failure make the caller retry this already-persisted
+        // sequence and create a duplicate record.
+        let _ = touch_meta_for_event(&agent_dir.join("meta.json"), &event);
 
         Ok(AgentAppendOutcome {
-            id: next_id,
+            seq: next_seq,
             folded_node_id,
         })
     }
@@ -622,6 +643,16 @@ fn load_agent_events(path: &Path) -> Result<Vec<PersistedAgentEvent>, AgentStore
     read_cbor_records(path, |record: PersistedAgentEvent| {
         events.push(record);
     })?;
+    for (idx, record) in events.iter().enumerate() {
+        let expected = PersistedAgentEventSeq::new(idx as u64);
+        if record.seq != expected {
+            return Err(AgentStoreError::InvalidSequence {
+                path: path.to_path_buf(),
+                expected,
+                actual: record.seq,
+            });
+        }
+    }
     Ok(events)
 }
 

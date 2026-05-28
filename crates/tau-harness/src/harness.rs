@@ -1382,7 +1382,7 @@ impl Harness {
                 secrets: BTreeMap::new(),
                 restart_attempt: 0,
                 state: ExtensionState::Spawning,
-                last_acked: tau_proto::LogEventId::default(),
+                last_acked: tau_proto::EventLogSeq::default(),
             },
             origin: ConnectionOrigin::Supervised,
             writer_tx: provider_spawn.writer_tx,
@@ -1406,7 +1406,7 @@ impl Harness {
                     secrets: BTreeMap::new(),
                     restart_attempt: 0,
                     state: ExtensionState::Spawning,
-                    last_acked: tau_proto::LogEventId::default(),
+                    last_acked: tau_proto::EventLogSeq::default(),
                 },
                 origin: ConnectionOrigin::Supervised,
                 writer_tx: tool_spawn.writer_tx,
@@ -1645,7 +1645,7 @@ impl Harness {
                         .unwrap_or_default(),
                     restart_attempt: 0,
                     state: ExtensionState::Spawning,
-                    last_acked: tau_proto::LogEventId::default(),
+                    last_acked: tau_proto::EventLogSeq::default(),
                 },
                 origin: ConnectionOrigin::Supervised,
                 writer_tx: spawned.writer_tx,
@@ -2329,10 +2329,10 @@ impl Harness {
             }
         }
         // Wrap in a `LogEvent` message envelope so subscribers get the
-        // id and can ack after processing. Receivers that don't care
-        // (UIs) call `Frame::peel_log()` and discard the id.
+        // runtime event-log sequence and can ack after processing. Receivers
+        // that don't care (UIs) call `Frame::peel_log()` and discard it.
         let log_frame = Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-            id: tau_proto::LogEventId::new(seq),
+            seq,
             recorded_at,
             event: Box::new(event.clone()),
         }));
@@ -5103,7 +5103,7 @@ impl Harness {
                 secrets,
                 restart_attempt: attempt,
                 state: ExtensionState::Spawning,
-                last_acked: tau_proto::LogEventId::default(),
+                last_acked: tau_proto::EventLogSeq::default(),
             },
             origin: ConnectionOrigin::Supervised,
             writer_tx: spawned.writer_tx,
@@ -6786,7 +6786,13 @@ impl Harness {
     ) -> bool {
         self.loaded_agent_ids_for_session(session_id)
             .into_iter()
-            .filter_map(|agent_id| self.agent_store.agent_events(agent_id.as_str()).ok())
+            .filter_map(|agent_id| match self.agent_store.agent_events(agent_id.as_str()) {
+                Ok(events) => Some(events),
+                Err(error) => {
+                    tracing::warn!(target: "tau_harness", %agent_id, %error, "failed to load agent events while checking restored prompts");
+                    None
+                }
+            })
             .flatten()
             .any(|entry| matches_event(&entry.event))
     }
@@ -6807,7 +6813,13 @@ impl Harness {
     ) -> Option<tau_proto::UnixMicros> {
         self.loaded_agent_ids_for_session(session_id)
             .into_iter()
-            .filter_map(|agent_id| self.agent_store.agent_events(agent_id.as_str()).ok())
+            .filter_map(|agent_id| match self.agent_store.agent_events(agent_id.as_str()) {
+                Ok(events) => Some(events),
+                Err(error) => {
+                    tracing::warn!(target: "tau_harness", %agent_id, %error, "failed to load agent events while checking restored timestamps");
+                    None
+                }
+            })
             .flatten()
             .filter_map(|entry| (entry.recorded_at.get() != 0).then_some(entry.recorded_at))
             .max_by_key(|recorded_at| recorded_at.get())
@@ -7018,6 +7030,7 @@ impl Harness {
             return Vec::new();
         };
         let Ok(events) = self.agent_store.agent_events(agent_id) else {
+            tracing::warn!(target: "tau_harness", %agent_id, "failed to load restored agent events");
             return Vec::new();
         };
         self.agent_store
@@ -7073,6 +7086,7 @@ impl Harness {
                 continue;
             };
             let Ok(events) = self.agent_store.agent_events(agent_id) else {
+                tracing::warn!(target: "tau_harness", %agent_id, "failed to load restored agent events");
                 continue;
             };
             let calls = self
@@ -7340,12 +7354,16 @@ impl Harness {
             return;
         }
         let agent_id_proto: tau_proto::AgentId = agent_id.to_owned().into();
-        let already_loaded = self
-            .store
-            .load_session(session_id.as_str())
-            .ok()
-            .flatten()
-            .is_some_and(|membership| membership.contains_agent(&agent_id_proto));
+        let already_loaded = match self.store.load_session(session_id.as_str()) {
+            Ok(Some(membership)) => membership.contains_agent(&agent_id_proto),
+            Ok(None) => false,
+            Err(error) => {
+                self.emit_info(&format!(
+                    "failed to load session while unloading agent `{agent_id}`: {error}"
+                ));
+                false
+            }
+        };
         if already_loaded {
             self.publish_event(
                 None,
@@ -7361,11 +7379,20 @@ impl Harness {
         let loaded_agents: Vec<tau_proto::AgentId> =
             match self.store.load_session(self.current_session_id.as_str()) {
                 Ok(Some(membership)) => membership.loaded_agents().into_iter().cloned().collect(),
-                _ => return,
+                Ok(None) => return,
+                Err(error) => {
+                    self.emit_info(&format!("failed to load session during restore: {error}"));
+                    return;
+                }
             };
         for agent_id in loaded_agents {
             let agent_id_string = agent_id.to_string();
-            let _ = self.agent_store.load_agent(agent_id.as_str());
+            if let Err(error) = self.agent_store.load_agent(agent_id.as_str()) {
+                self.emit_info(&format!(
+                    "failed to load restored agent `{agent_id}`: {error}"
+                ));
+                continue;
+            }
             let head = self
                 .agent_head_moved_from_log(agent_id.as_str())
                 .or_else(|| {
@@ -7405,6 +7432,9 @@ impl Harness {
     fn agent_head_moved_from_log(&self, agent_id: &str) -> Option<NodeId> {
         self.agent_store
             .agent_events(agent_id)
+            .inspect_err(|error| {
+                tracing::warn!(target: "tau_harness", %agent_id, %error, "failed to load agent events for head restore");
+            })
             .ok()?
             .into_iter()
             .filter_map(|record| match record.event {
@@ -7417,6 +7447,9 @@ impl Harness {
     fn agent_originator_from_log(&self, agent_id: &str) -> tau_proto::PromptOriginator {
         self.agent_store
             .agent_events(agent_id)
+            .inspect_err(|error| {
+                tracing::warn!(target: "tau_harness", %agent_id, %error, "failed to load agent events for originator restore");
+            })
             .ok()
             .and_then(|events| {
                 events.into_iter().find_map(|record| match record.event {
@@ -7437,6 +7470,9 @@ impl Harness {
     fn agent_role_from_log(&self, agent_id: &str) -> Option<String> {
         self.agent_store
             .agent_events(agent_id)
+            .inspect_err(|error| {
+                tracing::warn!(target: "tau_harness", %agent_id, %error, "failed to load agent events for role restore");
+            })
             .ok()?
             .into_iter()
             .find_map(|record| match record.event {
@@ -7521,13 +7557,17 @@ impl Harness {
             .agent_store
             .record_agent_meta(agent_id, std::env::current_dir().ok());
         let agent_id_proto: tau_proto::AgentId = agent_id.to_owned().into();
-        if !self
-            .store
-            .load_session(self.current_session_id.as_str())
-            .ok()
-            .flatten()
-            .is_some_and(|membership| membership.contains_agent(&agent_id_proto))
-        {
+        let already_loaded = match self.store.load_session(self.current_session_id.as_str()) {
+            Ok(Some(membership)) => membership.contains_agent(&agent_id_proto),
+            Ok(None) => false,
+            Err(error) => {
+                self.emit_info(&format!(
+                    "failed to load session while ensuring agent `{agent_id}`: {error}"
+                ));
+                false
+            }
+        };
+        if !already_loaded {
             let waiting_on = self.agent_context_provider_ids(agent_id_proto.clone());
             if !waiting_on.is_empty() {
                 self.pending_agent_context_ready
@@ -9710,13 +9750,13 @@ impl Harness {
         session_id: &SessionId,
         prompt_id: &AgentPromptId,
     ) -> Result<AgentPromptCreated, HarnessError> {
-        let mut cursor = 0;
+        let mut cursor = tau_proto::EventLogSeq::new(0);
         let mut snapshots = self.prompt_snapshots.clone();
         loop {
             let entry = self.event_log.get_next_from(cursor).ok_or_else(|| {
                 HarnessError::Participant("prompt event missing from log".to_owned())
             })?;
-            cursor = entry.seq + 1;
+            cursor = entry.seq.next();
             if let Event::AgentPromptCreated(prompt) = entry.event {
                 let mut materialized = prompt.clone();
                 if let Some(tools_ref) = &prompt.tools_ref {

@@ -36,11 +36,11 @@ pub use policy::{
 pub use session::{
     AgentEntry, AgentEventParent, AgentEventValidationError, AgentMessageDirection, AgentMeta,
     AgentNode, AgentTree, BackgroundToolCallState, BackgroundToolCompletion,
-    BackgroundToolPlaceholder, NodeId, PersistedAgentEvent, SessionMeta,
+    BackgroundToolPlaceholder, NodeId, PersistedAgentEvent, PersistedAgentEventSeq, SessionMeta,
 };
 pub use session_store::{
-    AppendOutcome, PersistedSessionEvent, SessionMembership, SessionStore, SessionStoreError,
-    list_session_metas, session_is_locked,
+    AppendOutcome, PersistedSessionEvent, PersistedSessionEventSeq, SessionMembership,
+    SessionStore, SessionStoreError, list_session_metas, session_is_locked,
 };
 pub use tool_registry::{
     RegisterToolReport, ToolArgumentValidationError, ToolProvider, ToolProviderKind, ToolRegistry,

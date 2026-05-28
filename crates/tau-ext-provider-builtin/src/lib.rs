@@ -666,7 +666,7 @@ where
 type PromptExecutor = Arc<dyn Fn(PromptExecution) + Send + Sync + 'static>;
 
 struct PromptJob {
-    log_id: Option<tau_proto::LogEventId>,
+    log_id: Option<tau_proto::EventLogSeq>,
     agent_prompt_id: tau_proto::AgentPromptId,
     prompt: tau_proto::AgentPromptCreated,
     backend: PromptBackend,
@@ -704,7 +704,7 @@ impl PromptExecution {
 enum WorkerMessage {
     Output(Vec<u8>),
     PromptDone {
-        log_id: Option<tau_proto::LogEventId>,
+        log_id: Option<tau_proto::EventLogSeq>,
     },
 }
 
@@ -747,11 +747,11 @@ struct AckTracker {
 }
 
 impl AckTracker {
-    fn register(&mut self, id: tau_proto::LogEventId) {
+    fn register(&mut self, id: tau_proto::EventLogSeq) {
         self.pending.insert(id.get());
     }
 
-    fn complete(&mut self, id: tau_proto::LogEventId) {
+    fn complete(&mut self, id: tau_proto::EventLogSeq) {
         let raw = id.get();
         self.pending.remove(&raw);
         if self.acked_up_to.is_none_or(|acked| acked < raw) {
@@ -759,7 +759,7 @@ impl AckTracker {
         }
     }
 
-    fn next_ack(&mut self) -> Option<tau_proto::LogEventId> {
+    fn next_ack(&mut self) -> Option<tau_proto::EventLogSeq> {
         let limit = self.pending.first().copied();
         let raw = match limit {
             Some(first_pending) => self.completed.range(..first_pending).next_back().copied()?,
@@ -770,7 +770,7 @@ impl AckTracker {
         }
         self.completed.retain(|completed| raw < *completed);
         self.acked_up_to = Some(raw);
-        Some(tau_proto::LogEventId::new(raw))
+        Some(tau_proto::EventLogSeq::new(raw))
     }
 }
 

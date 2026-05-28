@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Event;
-use crate::messages::{LogEventId, Message};
+use crate::messages::{EventLogSeq, Message};
 
 /// Top-level wire envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,15 +28,15 @@ pub enum Frame {
 
 impl Frame {
     /// If this frame is a [`Message::LogEvent`], peel it: return the
-    /// log id and a fresh [`Frame::Event`] carrying the inner bus
+    /// event-log sequence and a fresh [`Frame::Event`] carrying the inner bus
     /// fact. Otherwise return `(None, self)` unchanged.
     ///
     /// Receivers that want at-least-once semantics ack the returned
-    /// id after processing the inner event.
+    /// sequence after processing the inner event.
     #[must_use]
-    pub fn peel_log(self) -> (Option<LogEventId>, Self) {
+    pub fn peel_log(self) -> (Option<EventLogSeq>, Self) {
         match self {
-            Self::Message(Message::LogEvent(env)) => (Some(env.id), Self::Event(*env.event)),
+            Self::Message(Message::LogEvent(env)) => (Some(env.seq), Self::Event(*env.event)),
             other => (None, other),
         }
     }

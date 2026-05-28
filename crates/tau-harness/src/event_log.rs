@@ -8,10 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tau_proto::{ConnectionId, Event, UnixMicros};
-
-/// Monotonically increasing sequence number for log entries.
-pub(crate) type EventSeq = u64;
+use tau_proto::{ConnectionId, Event, EventLogSeq, UnixMicros};
 
 /// One entry in the event log.
 ///
@@ -23,7 +20,7 @@ pub(crate) type EventSeq = u64;
 /// consistent with what live subscribers saw.
 #[derive(Clone, Debug)]
 pub(crate) struct LogEntry {
-    pub seq: EventSeq,
+    pub seq: EventLogSeq,
     // Read by tests; live readers consult the wire envelope or the
     // durable record instead. Kept on the in-memory entry so future
     // replay paths that want to surface original timestamps don't
@@ -35,8 +32,8 @@ pub(crate) struct LogEntry {
 }
 
 struct EventLogInner {
-    entries: BTreeMap<EventSeq, LogEntry>,
-    next_seq: EventSeq,
+    entries: BTreeMap<EventLogSeq, LogEntry>,
+    next_seq: EventLogSeq,
 }
 
 /// Thread-safe append-only event log.
@@ -54,9 +51,24 @@ impl EventLog {
         Arc::new(Self {
             inner: Mutex::new(EventLogInner {
                 entries: BTreeMap::new(),
-                next_seq: 0,
+                next_seq: EventLogSeq::new(0),
             }),
         })
+    }
+
+    /// Reserves the next harness runtime event-log sequence.
+    ///
+    /// Most live events use [`EventLog::append`], which reserves a sequence and
+    /// stores a replayable in-memory entry. Durable-history replay uses this
+    /// lighter path: replayed transcript facts are already stored in agent
+    /// logs, but their `LogEvent` envelopes still need fresh globally
+    /// monotonic [`EventLogSeq`] values rather than reusing persisted
+    /// per-agent/per-session sequences.
+    pub(crate) fn reserve_seq(&self) -> EventLogSeq {
+        let mut inner = self.inner.lock().expect("event log mutex poisoned");
+        let seq = inner.next_seq;
+        inner.next_seq = inner.next_seq.next();
+        seq
     }
 
     /// Appends an event and returns its sequence number alongside the
@@ -71,11 +83,11 @@ impl EventLog {
         &self,
         source: Option<ConnectionId>,
         event: Event,
-    ) -> (EventSeq, UnixMicros) {
+    ) -> (EventLogSeq, UnixMicros) {
         let recorded_at = UnixMicros::now();
         let mut inner = self.inner.lock().expect("event log mutex poisoned");
         let seq = inner.next_seq;
-        inner.next_seq += 1;
+        inner.next_seq = inner.next_seq.next();
         inner.entries.insert(
             seq,
             LogEntry {
@@ -90,7 +102,7 @@ impl EventLog {
 
     /// Returns the first entry with seq >= `from`, or `None` if no such
     /// entry exists yet.
-    pub(crate) fn get_next_from(&self, from: EventSeq) -> Option<LogEntry> {
+    pub(crate) fn get_next_from(&self, from: EventLogSeq) -> Option<LogEntry> {
         let inner = self.inner.lock().expect("event log mutex poisoned");
         inner
             .entries
@@ -99,11 +111,12 @@ impl EventLog {
             .map(|(_, entry)| entry.clone())
     }
 
-    /// Returns the sequence number that the next appended entry will
-    /// receive. Used by tests to assert that no event was logged
-    /// across a section of code.
+    /// Returns the next runtime event-log sequence, which may be assigned to an
+    /// appended entry or reserved for a durable-history replay envelope. Used
+    /// by tests to assert that no event-log sequence was consumed across a
+    /// section of code.
     #[cfg(test)]
-    pub(crate) fn next_seq(&self) -> EventSeq {
+    pub(crate) fn next_seq(&self) -> EventLogSeq {
         self.inner
             .lock()
             .expect("event log mutex poisoned")

@@ -680,9 +680,9 @@ fn background_placeholder_count(h: &Harness, call_id: &str) -> usize {
 }
 
 fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) -> bool) -> bool {
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if entry.source.as_deref() == Some(source) && matches_event(&entry.event) {
             return true;
         }
@@ -691,11 +691,11 @@ fn event_log_contains(h: &Harness, source: &str, matches_event: impl Fn(&Event) 
 }
 
 fn event_log_position(h: &Harness, matches_event: impl Fn(&Event) -> bool) -> Option<u64> {
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if matches_event(&entry.event) {
-            return Some(entry.seq);
+            return Some(entry.seq.get());
         }
     }
     None
@@ -706,20 +706,20 @@ fn event_log_position_after(
     after_seq: u64,
     matches_event: impl Fn(&Event) -> bool,
 ) -> Option<u64> {
-    let mut seq = after_seq + 1;
+    let mut seq = tau_proto::EventLogSeq::new(after_seq + 1);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if matches_event(&entry.event) {
-            return Some(entry.seq);
+            return Some(entry.seq.get());
         }
     }
     None
 }
 
 fn event_log_contains_any_source(h: &Harness, matches_event: impl Fn(&Event) -> bool) -> bool {
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         if matches_event(&entry.event) {
             return true;
         }
@@ -872,9 +872,9 @@ fn invalid_tool_arguments_are_rejected_before_logical_dispatch() {
 
     let mut provider_error = None;
     let mut logical_events = Vec::new();
-    let mut seq = 0;
+    let mut seq = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(seq) {
-        seq = entry.seq + 1;
+        seq = entry.seq.next();
         match &entry.event {
             Event::ProviderToolError(error) if error.call_id.as_str() == "bad-args" => {
                 provider_error = Some(error.message.clone());
@@ -3037,11 +3037,11 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
     // latter's `context_items` includes the steered text alongside the
     // original user prompt.
     let next_round_spid: AgentPromptId = "sp-0".into();
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     let mut saw_steered = false;
     let mut saw_next_round = false;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match &entry.event {
             Event::AgentPromptSteered(steered) => {
                 assert_eq!(steered.text, "redirect");
@@ -3433,10 +3433,10 @@ fn chained_low_corrected_cache_hit_emits_diagnostic() {
     })
     .expect("finish second");
 
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     let mut diagnostic = None;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         if let Event::ProviderCacheMissDiagnostic(event) = entry.event {
             diagnostic = Some(event);
         }
@@ -3533,9 +3533,9 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     })
     .expect("finish second");
 
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         assert!(
             !matches!(entry.event, Event::ProviderCacheMissDiagnostic(_)),
             "sub-cache-chunk turn must not emit cache miss diagnostic"
@@ -4433,9 +4433,9 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
         .expect("switch");
 
     let mut saw_session_dir = false;
-    let mut cursor = 0;
+    let mut cursor = tau_proto::EventLogSeq::new(0);
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         if let Event::HarnessSessionDir(session_dir) = &entry.event
             && session_dir.session_id == "s2"
             && session_dir.path.ends_with("s2")
@@ -4619,7 +4619,7 @@ fn user_prompt_auto_compacts_before_submission() {
     let mut compacted_tokens = None;
     let mut finished_tokens = None;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match entry.event {
             Event::AgentCompactionStarted(started) => {
                 started_original_tokens = Some(started.original_input_tokens);
@@ -4711,7 +4711,7 @@ fn compaction_without_provider_usage_estimates_compacted_tokens_from_replacement
     let mut finished_tokens = None;
     let mut cursor = baseline_seq;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match entry.event {
             Event::AgentCompacted(compacted) => {
                 compacted_tokens = compacted.compacted_input_tokens;
@@ -4793,7 +4793,7 @@ fn failed_compaction_does_not_report_compacted_tokens_from_provider_usage() {
     let mut finished_outcome = None;
     let mut cursor = baseline_seq;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         match entry.event {
             Event::AgentCompacted(_) => saw_compacted = true,
             Event::AgentCompactionFinished(finished) => {
@@ -5666,7 +5666,7 @@ fn delegate_followup_auto_compacts_from_own_context_signal() {
     let mut cursor = baseline_seq;
     let mut started = None;
     while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq + 1;
+        cursor = entry.seq.next();
         if let Event::AgentCompactionStarted(event) = entry.event {
             started = Some((event.originator, event.original_input_tokens));
             break;

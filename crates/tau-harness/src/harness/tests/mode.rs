@@ -416,10 +416,10 @@ fn resumed_startup_publishes_resume_session_started() {
     let mut h = echo_harness_with_start_reason("s1", &sp, tau_proto::SessionStartReason::Resume)
         .expect("start");
 
-    let mut next_seq = 0;
+    let mut next_seq = tau_proto::EventLogSeq::new(0);
     let mut session_started_reason = None;
     while let Some(entry) = h.event_log.get_next_from(next_seq) {
-        next_seq = entry.seq + 1;
+        next_seq = entry.seq.next();
         if let Event::SessionStarted(started) = entry.event
             && started.session_id.as_str() == "s1"
         {

@@ -180,14 +180,14 @@ fn ack_tracker_waits_for_contiguous_completed_log_events() {
     // is cumulative. Do not ack a later prompt until earlier received log
     // events have completed, or a crash could lose accepted work.
     let mut tracker = AckTracker::default();
-    tracker.register(tau_proto::LogEventId::new(7));
-    tracker.register(tau_proto::LogEventId::new(8));
+    tracker.register(tau_proto::EventLogSeq::new(7));
+    tracker.register(tau_proto::EventLogSeq::new(8));
 
-    tracker.complete(tau_proto::LogEventId::new(8));
+    tracker.complete(tau_proto::EventLogSeq::new(8));
     assert_eq!(tracker.next_ack(), None);
 
-    tracker.complete(tau_proto::LogEventId::new(7));
-    assert_eq!(tracker.next_ack(), Some(tau_proto::LogEventId::new(8)));
+    tracker.complete(tau_proto::EventLogSeq::new(7));
+    assert_eq!(tracker.next_ack(), Some(tau_proto::EventLogSeq::new(8)));
     assert_eq!(tracker.next_ack(), None);
 }
 
@@ -203,12 +203,12 @@ fn prompt_workers_start_concurrently() {
     second.agent_prompt_id = "sp-par-2".into();
     let input = encode_frames(&[
         Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-            id: tau_proto::LogEventId::new(7),
+            seq: tau_proto::EventLogSeq::new(7),
             recorded_at: tau_proto::UnixMicros::new(11),
             event: Box::new(Event::AgentPromptCreated(first)),
         })),
         Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-            id: tau_proto::LogEventId::new(8),
+            seq: tau_proto::EventLogSeq::new(8),
             recorded_at: tau_proto::UnixMicros::new(12),
             event: Box::new(Event::AgentPromptCreated(second)),
         })),
@@ -326,7 +326,7 @@ fn direct_prompt_request_with_missing_backend_is_acknowledged_and_closed() {
     // even if a prompt reaches this extension without usable credentials.
     let input = encode_frames(&[
         Frame::Message(Message::LogEvent(tau_proto::LogEvent {
-            id: tau_proto::LogEventId::new(7),
+            seq: tau_proto::EventLogSeq::new(7),
             recorded_at: tau_proto::UnixMicros::new(11),
             event: Box::new(Event::AgentPromptCreated(prompt())),
         })),

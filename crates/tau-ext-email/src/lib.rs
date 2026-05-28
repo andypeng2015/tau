@@ -46,8 +46,8 @@ const ACCESS_NONE: &str = "none";
 
 use tau_proto::{
     ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionCommand, ActionError, ActionInvoke,
-    ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event, Frame, FrameReader,
-    FrameWriter, LogEventId, Message, PromptFragment, PromptPriority, ToolDisplay,
+    ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event, EventLogSeq, Frame,
+    FrameReader, FrameWriter, Message, PromptFragment, PromptPriority, ToolDisplay,
     ToolDisplayStats, ToolDisplayStatus, ToolError, ToolExecutionMode, ToolResult, ToolSpec,
     ToolStarted,
 };
@@ -4454,7 +4454,7 @@ impl RuntimeState {
 }
 
 fn ack_log_event<W: Write>(
-    id: LogEventId,
+    id: EventLogSeq,
     writer: &mut FrameWriter<W>,
 ) -> Result<(), tau_proto::EncodeError> {
     writer.write_frame(&Frame::Message(Message::Ack(Ack { up_to: id })))?;

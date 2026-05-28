@@ -80,10 +80,10 @@ ack cumulatively — newer acks supersede older ones — and the harness
 re-delivers from the last known position on reconnect.
 
 - **`log_event`** — The harness's log-delivery envelope around a real
-  bus event, carrying a monotonic `LogEventId`. Receivers peel the
-  inner event, process it, then send an `ack` referencing the id (or
-  any later id, since acks are cumulative).
+  bus event, carrying a monotonic `EventLogSeq`. Receivers peel the
+  inner event, process it, then send an `ack` referencing the sequence
+  (or any later sequence, since acks are cumulative).
 - **`ack`** — Cumulative acknowledgement that the receiver has
-  processed all log events with id `<= up_to`. Newer acks supersede
+  processed all log events with sequence `<= up_to`. Newer acks supersede
   older ones; duplicate or out-of-order acks are ignored by the
   harness.

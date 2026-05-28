@@ -13,9 +13,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tau_proto::{AgentId, ConnectionId, Event, LogEventId, SessionId, UnixMicros};
+use tau_proto::{AgentId, ConnectionId, Event, SessionId, UnixMicros};
 
 use crate::session::SessionMeta;
+
+/// Monotonic sequence number in one persisted session membership log.
+///
+/// This sequence is relative only to one session's `events.cbor` stream: the
+/// first membership record in that file has sequence 0, the second has sequence
+/// 1, and so on. It is not comparable to [`tau_proto::EventLogSeq`] or to
+/// [`crate::PersistedAgentEventSeq`]. The value is persisted as corruption
+/// detection metadata; replay semantics are still defined by file order, so
+/// load code verifies that stored values match their implied position.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PersistedSessionEventSeq(u64);
+
+impl PersistedSessionEventSeq {
+    /// Creates a sequence value from its raw integer representation.
+    #[must_use]
+    pub fn new(v: u64) -> Self {
+        Self(v)
+    }
+
+    /// Returns the raw integer representation.
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the next sequence in the same session membership log.
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl std::fmt::Display for PersistedSessionEventSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Errors returned by append-only durable stores.
 #[derive(Debug)]
@@ -44,6 +82,12 @@ pub enum SessionStoreError {
     InvalidSessionDir { path: PathBuf },
     /// The event is not a session membership fact for this session.
     InvalidEvent { message: String },
+    /// A persisted record sequence does not match its position in the log.
+    InvalidSequence {
+        path: PathBuf,
+        expected: PersistedSessionEventSeq,
+        actual: PersistedSessionEventSeq,
+    },
 }
 
 impl fmt::Display for SessionStoreError {
@@ -93,6 +137,15 @@ impl fmt::Display for SessionStoreError {
             Self::InvalidEvent { message } => {
                 write!(f, "invalid session membership event: {message}")
             }
+            Self::InvalidSequence {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "invalid session event sequence in {}: expected {expected}, got {actual}",
+                path.display()
+            ),
         }
     }
 }
@@ -106,9 +159,10 @@ impl Error for SessionStoreError {
             | Self::Write { source, .. } => Some(source),
             Self::Decode { source, .. } => Some(source),
             Self::Encode { source, .. } => Some(source),
-            Self::Locked { .. } | Self::InvalidSessionDir { .. } | Self::InvalidEvent { .. } => {
-                None
-            }
+            Self::Locked { .. }
+            | Self::InvalidSessionDir { .. }
+            | Self::InvalidEvent { .. }
+            | Self::InvalidSequence { .. } => None,
         }
     }
 }
@@ -116,8 +170,9 @@ impl Error for SessionStoreError {
 /// Result of one session membership append.
 #[derive(Clone, Debug)]
 pub struct AppendOutcome {
-    /// Durable event id assigned to the appended membership fact.
-    pub id: LogEventId,
+    /// Sequence assigned to the appended membership fact within this session
+    /// log.
+    pub seq: PersistedSessionEventSeq,
     /// Session membership events never fold transcript nodes.
     pub folded_node_id: Option<tau_proto::NodeId>,
 }
@@ -125,8 +180,13 @@ pub struct AppendOutcome {
 /// One durable session-owned membership fact.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PersistedSessionEvent {
-    /// Monotonic id within this session membership log.
-    pub id: LogEventId,
+    /// Sequence within this session's durable `events.cbor` membership stream.
+    ///
+    /// This is persisted to catch reordered, duplicated, or spliced logs during
+    /// load. The implied sequence from file order is still authoritative for
+    /// replay; load rejects records where this stored value disagrees with the
+    /// record's zero-based position.
+    pub seq: PersistedSessionEventSeq,
     /// Connection that published the fact, when known.
     pub source: Option<ConnectionId>,
     /// Membership protocol event (`session.agent_loaded` or
@@ -142,7 +202,7 @@ pub struct PersistedSessionEvent {
 pub struct SessionMembership {
     session_id: SessionId,
     loaded_agents: HashSet<AgentId>,
-    next_event_id: LogEventId,
+    next_event_seq: PersistedSessionEventSeq,
 }
 
 impl SessionMembership {
@@ -152,11 +212,11 @@ impl SessionMembership {
         let mut tree = Self {
             session_id,
             loaded_agents: HashSet::new(),
-            next_event_id: LogEventId::new(0),
+            next_event_seq: PersistedSessionEventSeq::new(0),
         };
         for record in events {
             tree.apply_event(&record.event);
-            tree.next_event_id = LogEventId::new(record.id.get() + 1);
+            tree.next_event_seq = record.seq.next();
         }
         tree
     }
@@ -181,12 +241,12 @@ impl SessionMembership {
         agents
     }
 
-    fn next_event_id(&self) -> LogEventId {
-        self.next_event_id
+    fn next_event_seq(&self) -> PersistedSessionEventSeq {
+        self.next_event_seq
     }
 
-    fn advance_next_event_id(&mut self) {
-        self.next_event_id = LogEventId::new(self.next_event_id.get() + 1);
+    fn advance_next_event_seq(&mut self) {
+        self.next_event_seq = self.next_event_seq.next();
     }
 
     fn apply_event(&mut self, event: &Event) {
@@ -354,19 +414,22 @@ impl SessionStore {
             .sessions
             .entry(sid.clone())
             .or_insert_with(|| SessionMembership::from_events(sid, &[]));
-        let id = tree.next_event_id();
+        let seq = tree.next_event_seq();
         let record = PersistedSessionEvent {
-            id,
+            seq,
             source,
             event: event.clone(),
             recorded_at,
         };
         append_cbor_record(&session_dir.join("events.cbor"), &record)?;
-        touch_meta(&session_dir.join("meta.json"))?;
         tree.apply_event(&event);
-        tree.advance_next_event_id();
+        tree.advance_next_event_seq();
+        // Sidecar metadata is derived from the durable event stream. Do not let
+        // a sidecar write failure make the caller retry this already-persisted
+        // sequence and create a duplicate record.
+        let _ = touch_meta(&session_dir.join("meta.json"));
         Ok(AppendOutcome {
-            id,
+            seq,
             folded_node_id: None,
         })
     }
@@ -554,6 +617,16 @@ fn load_session_events(path: &Path) -> Result<Vec<PersistedSessionEvent>, Sessio
     }
     let mut events = Vec::new();
     read_cbor_records(path, |record: PersistedSessionEvent| events.push(record))?;
+    for (idx, record) in events.iter().enumerate() {
+        let expected = PersistedSessionEventSeq::new(idx as u64);
+        if record.seq != expected {
+            return Err(SessionStoreError::InvalidSequence {
+                path: path.to_path_buf(),
+                expected,
+                actual: record.seq,
+            });
+        }
+    }
     Ok(events)
 }
 

@@ -409,7 +409,7 @@ fn representative_messages() -> Vec<Message> {
             error: None,
         })),
         Message::LogEvent(LogEvent {
-            id: LogEventId::new(42),
+            seq: EventLogSeq::new(42),
             recorded_at: UnixMicros::new(1_700_000_000_000_000),
             event: Box::new(Event::SessionStarted(SessionStarted {
                 session_id: "s1".into(),
@@ -417,7 +417,7 @@ fn representative_messages() -> Vec<Message> {
             })),
         }),
         Message::Ack(Ack {
-            up_to: LogEventId::new(42),
+            up_to: EventLogSeq::new(42),
         }),
     ]
 }
@@ -722,19 +722,19 @@ fn tool_name_rejects_overlong_input() {
 }
 
 #[test]
-fn frame_peel_log_extracts_log_event_id_and_inner_event() {
+fn frame_peel_log_extracts_event_log_seq_and_inner_event() {
     let inner = Event::SessionStarted(SessionStarted {
         session_id: "s1".into(),
         reason: SessionStartReason::Initial,
     });
     let frame = Frame::Message(Message::LogEvent(LogEvent {
-        id: LogEventId::new(7),
+        seq: EventLogSeq::new(7),
         recorded_at: UnixMicros::new(1_700_000_000_000_000),
         event: Box::new(inner.clone()),
     }));
 
     let (peeled_id, rest) = frame.peel_log();
-    assert_eq!(peeled_id, Some(LogEventId::new(7)));
+    assert_eq!(peeled_id, Some(EventLogSeq::new(7)));
     assert_eq!(rest, Frame::Event(inner));
 }
 

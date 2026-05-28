@@ -27,7 +27,7 @@ fn interception_exact_selector_intercepts_before_log() {
         "UiPromptDraft default transient flag is preserved"
     );
     assert_eq!(h.event_log.next_seq(), after_registration_seq);
-    assert!(after_registration_seq < start_seq + 2);
+    assert!(after_registration_seq.get() < start_seq.get() + 2);
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn interception_defers_subsequent_publishes_until_reply() {
     assert_eq!(first.event, draft_event("held"));
     let second = h
         .event_log
-        .get_next_from(first.seq + 1)
+        .get_next_from(first.seq.next())
         .expect("second event committed");
     assert!(matches!(
         &second.event,
@@ -757,7 +757,7 @@ fn publish_for_agent_does_not_emit_navigate_tree() {
             Event::AgentPromptSubmitted(_) => user_msgs += 1,
             _ => {}
         }
-        id = entry.seq + 1;
+        id = entry.seq.next();
     }
     assert_eq!(
         navigates, 0,
