@@ -941,8 +941,8 @@ fn harness_role_prompt_fragments_parse_as_plain_strings() {
 #[test]
 fn harness_built_in_roles_load_from_json_with_manager_prompt() {
     // Built-in role defaults live in built-in.harness.yaml. Manager has a
-    // visible orchestration prompt there. Engineer roles have a lightweight
-    // follow-up prompt for delegated tasks.
+    // visible orchestration prompt there. Engineer roles share a lightweight
+    // instruction prompt.
     let s = HarnessSettings::built_in();
     assert_eq!(s.default_role.as_deref(), Some("senior-engineer"));
     assert_eq!(
@@ -954,8 +954,8 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
             (
                 "engineer".to_owned(),
                 vec![
-                    "senior-engineer".to_owned(),
                     "junior-engineer".to_owned(),
+                    "senior-engineer".to_owned(),
                     "staff-engineer".to_owned(),
                 ],
             ),
@@ -967,7 +967,7 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
     let senior_engineer = &s.roles["senior-engineer"];
     assert_eq!(
         senior_engineer.prompt_fragments[0].priority,
-        PromptPriority::new(5)
+        PromptPriority::new(15)
     );
     assert!(
         senior_engineer.prompt_fragments[0]

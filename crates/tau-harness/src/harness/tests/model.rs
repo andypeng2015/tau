@@ -794,11 +794,11 @@ fn missing_default_role_emits_important_info_and_falls_back() {
     .expect("write harness config");
 
     let h = echo_harness_with_dirs("s1", state_dir, dirs).expect("harness");
-    assert_eq!(h.selected_role, "senior-engineer");
+    assert_eq!(h.selected_role, "junior-engineer");
     let message = find_important_info(&h, "defaultRole `ghost`")
         .expect("expected Important HarnessInfo about missing defaultRole");
     assert!(
-        message.contains("selected `senior-engineer` instead"),
+        message.contains("selected `junior-engineer` instead"),
         "message should name the fallback role, got: {message}"
     );
 }

@@ -10,21 +10,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
-use tau_proto::{AgentId, BackgroundSupport, ToolCallId, ToolExecutionMode, ToolName, ToolType};
+use tau_proto::{AgentId, BackgroundSupport, ToolCallId, ToolName, ToolType};
 
 use crate::harness::AgentToolCall;
-
-/// Which scheduler lane a tool invocation participates in.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ToolTurnLockScope {
-    /// Normal tool calls use execution-mode compatibility within their owning
-    /// conversation until their real result arrives.
-    Normal,
-    /// A `delegate` parent tool call only launches and tracks a side agent.
-    /// Delegate execution-mode locking happens in the start-agent scheduler, so
-    /// the parent launcher must not block normal tools or other launchers here.
-    DelegateLauncher,
-}
 
 /// A tool call emitted by an agent response but not yet completed.
 #[derive(Clone, Debug)]
@@ -33,11 +21,8 @@ pub(crate) struct PendingToolInvocation {
     pub(crate) conversation_id: AgentId,
     /// Tool call payload to route when selected.
     pub(crate) invocation: AgentToolCall,
-    /// Execution mode resolved at enqueue time.
-    pub(crate) execution_mode: ToolExecutionMode,
     /// Foreground/background support resolved at enqueue time.
     pub(crate) background_support: BackgroundSupport,
-    pub(crate) lock_scope: ToolTurnLockScope,
 }
 
 /// Pure queue and in-flight state for tool dispatch during agent turns.
@@ -46,7 +31,7 @@ pub(crate) struct ToolTurnMachine {
     /// Tool invocations waiting for dispatch.
     pending_tool_invocations: VecDeque<PendingToolInvocation>,
     /// Tool calls selected for dispatch and still actually running.
-    in_flight_tool_execution_modes: HashMap<ToolCallId, InFlightToolInvocation>,
+    in_flight_tool_invocations: HashMap<ToolCallId, InFlightToolInvocation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,11 +45,9 @@ pub(crate) enum ForegroundAction {
 #[derive(Clone, Debug)]
 struct InFlightToolInvocation {
     conversation_id: AgentId,
-    execution_mode: ToolExecutionMode,
     foreground_pending: bool,
     backgrounded: bool,
     foreground_deadline: Option<Instant>,
-    lock_scope: ToolTurnLockScope,
 }
 
 impl ToolTurnMachine {
@@ -73,17 +56,13 @@ impl ToolTurnMachine {
         &mut self,
         conversation_id: AgentId,
         invocation: AgentToolCall,
-        execution_mode: ToolExecutionMode,
         background_support: BackgroundSupport,
-        lock_scope: ToolTurnLockScope,
     ) {
         self.pending_tool_invocations
             .push_back(PendingToolInvocation {
                 conversation_id,
                 invocation,
-                execution_mode,
                 background_support,
-                lock_scope,
             });
     }
 
@@ -114,37 +93,32 @@ impl ToolTurnMachine {
         &mut self,
         conversation_id: AgentId,
         call_id: ToolCallId,
-        execution_mode: ToolExecutionMode,
     ) {
-        self.in_flight_tool_execution_modes.insert(
+        self.in_flight_tool_invocations.insert(
             call_id,
             InFlightToolInvocation {
                 conversation_id,
-                execution_mode,
                 foreground_pending: true,
                 backgrounded: false,
                 foreground_deadline: None,
-                lock_scope: ToolTurnLockScope::Normal,
             },
         );
     }
 
     /// Remove a call from the in-flight set after its real result arrives.
-    pub(crate) fn mark_complete(&mut self, call_id: &ToolCallId) -> Option<ToolExecutionMode> {
-        self.in_flight_tool_execution_modes
-            .remove(call_id)
-            .map(|in_flight| in_flight.execution_mode)
+    pub(crate) fn mark_complete(&mut self, call_id: &ToolCallId) -> bool {
+        self.in_flight_tool_invocations.remove(call_id).is_some()
     }
 
     /// Roll back an in-flight mark after synchronous dispatch failure.
-    pub(crate) fn rollback_dispatch(&mut self, call_id: &ToolCallId) -> Option<ToolExecutionMode> {
+    pub(crate) fn rollback_dispatch(&mut self, call_id: &ToolCallId) -> bool {
         self.mark_complete(call_id)
     }
 
     /// Mark one running call as completed in the foreground by the synthetic
     /// background placeholder. The real call remains actual-running.
     pub(crate) fn mark_backgrounded(&mut self, call_id: &ToolCallId) -> bool {
-        let Some(in_flight) = self.in_flight_tool_execution_modes.get_mut(call_id) else {
+        let Some(in_flight) = self.in_flight_tool_invocations.get_mut(call_id) else {
             return false;
         };
         if !in_flight.foreground_pending {
@@ -159,14 +133,14 @@ impl ToolTurnMachine {
     /// True when this call has already been completed in the foreground but is
     /// still actually running.
     pub(crate) fn is_backgrounded(&self, call_id: &ToolCallId) -> bool {
-        self.in_flight_tool_execution_modes
+        self.in_flight_tool_invocations
             .get(call_id)
             .is_some_and(|in_flight| in_flight.backgrounded)
     }
 
     /// Backgrounded calls still actually running for `conversation_id`.
     pub(crate) fn backgrounded_calls_for(&self, conversation_id: &AgentId) -> Vec<ToolCallId> {
-        self.in_flight_tool_execution_modes
+        self.in_flight_tool_invocations
             .iter()
             .filter_map(|(call_id, in_flight)| {
                 (&in_flight.conversation_id == conversation_id && in_flight.backgrounded)
@@ -178,7 +152,7 @@ impl ToolTurnMachine {
     /// Return and mark any calls whose foreground deadline has expired.
     pub(crate) fn background_due(&mut self, now: Instant) -> Vec<ToolCallId> {
         let due: Vec<_> = self
-            .in_flight_tool_execution_modes
+            .in_flight_tool_invocations
             .iter()
             .filter_map(|(call_id, in_flight)| {
                 (in_flight.foreground_pending
@@ -196,7 +170,7 @@ impl ToolTurnMachine {
 
     /// Earliest foreground background deadline that still needs a wakeup.
     pub(crate) fn next_background_deadline(&self) -> Option<Instant> {
-        self.in_flight_tool_execution_modes
+        self.in_flight_tool_invocations
             .values()
             .filter(|in_flight| in_flight.foreground_pending)
             .filter_map(|in_flight| in_flight.foreground_deadline)
@@ -229,13 +203,13 @@ impl ToolTurnMachine {
     /// Remove all queued and in-flight scheduler state.
     pub(crate) fn clear(&mut self) {
         self.pending_tool_invocations.clear();
-        self.in_flight_tool_execution_modes.clear();
+        self.in_flight_tool_invocations.clear();
     }
 
     /// True when no queued or in-flight tool calls remain.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.pending_tool_invocations.is_empty() && self.in_flight_tool_execution_modes.is_empty()
+        self.pending_tool_invocations.is_empty() && self.in_flight_tool_invocations.is_empty()
     }
 
     /// Number of queued invocations.
@@ -247,21 +221,13 @@ impl ToolTurnMachine {
     /// Number of in-flight invocations.
     #[cfg(test)]
     pub(crate) fn in_flight_len(&self) -> usize {
-        self.in_flight_tool_execution_modes.len()
+        self.in_flight_tool_invocations.len()
     }
 
-    /// Execution mode for an in-flight call.
+    /// Whether a call is tracked as in-flight.
     #[cfg(test)]
-    pub(crate) fn in_flight_mode(&self, call_id: &ToolCallId) -> Option<&ToolExecutionMode> {
-        self.in_flight_tool_execution_modes
-            .get(call_id)
-            .map(|in_flight| &in_flight.execution_mode)
-    }
-
-    /// Queued invocation by index.
-    #[cfg(test)]
-    pub(crate) fn pending(&self, idx: usize) -> Option<&PendingToolInvocation> {
-        self.pending_tool_invocations.get(idx)
+    pub(crate) fn is_in_flight(&self, call_id: &ToolCallId) -> bool {
+        self.in_flight_tool_invocations.contains_key(call_id)
     }
 
     /// Whether `conversation_id` has queued work.
@@ -274,11 +240,9 @@ impl ToolTurnMachine {
 
     /// Whether `conversation_id` has foreground in-flight work.
     pub(crate) fn any_in_flight_for(&self, conversation_id: &AgentId) -> bool {
-        self.in_flight_tool_execution_modes
-            .values()
-            .any(|in_flight| {
-                &in_flight.conversation_id == conversation_id && in_flight.foreground_pending
-            })
+        self.in_flight_tool_invocations.values().any(|in_flight| {
+            &in_flight.conversation_id == conversation_id && in_flight.foreground_pending
+        })
     }
 
     fn record_in_flight(
@@ -304,63 +268,21 @@ impl ToolTurnMachine {
                 ),
                 BackgroundSupport::Never => (true, false, None, ForegroundAction::None),
             };
-        self.in_flight_tool_execution_modes.insert(
+        self.in_flight_tool_invocations.insert(
             pending.invocation.id.clone(),
             InFlightToolInvocation {
                 conversation_id: pending.conversation_id.clone(),
-                execution_mode: pending.execution_mode,
                 foreground_pending,
                 backgrounded,
                 foreground_deadline,
-                lock_scope: pending.lock_scope,
             },
         );
         action
     }
 
     fn next_dispatchable_index(&self) -> Option<usize> {
-        let mut blocked_scopes: HashSet<(&AgentId, ToolTurnLockScope)> = HashSet::new();
-        for (idx, pending) in self.pending_tool_invocations.iter().enumerate() {
-            if blocked_scopes.iter().any(|(conversation_id, scope)| {
-                *conversation_id == &pending.conversation_id
-                    && pending_scope_conflicts(pending.lock_scope, *scope)
-            }) {
-                continue;
-            }
-            let compatible = !self.has_incompatible_in_flight_for(
-                &pending.conversation_id,
-                pending.execution_mode,
-                pending.lock_scope,
-            );
-            if compatible {
-                return Some(idx);
-            }
-            blocked_scopes.insert((&pending.conversation_id, pending.lock_scope));
-        }
-        None
+        (!self.pending_tool_invocations.is_empty()).then_some(0)
     }
-
-    fn has_incompatible_in_flight_for(
-        &self,
-        conversation_id: &AgentId,
-        execution_mode: ToolExecutionMode,
-        lock_scope: ToolTurnLockScope,
-    ) -> bool {
-        self.in_flight_tool_execution_modes
-            .values()
-            .any(|in_flight| {
-                &in_flight.conversation_id == conversation_id
-                    && pending_scope_conflicts(lock_scope, in_flight.lock_scope)
-                    && !execution_mode.can_overlap_with(in_flight.execution_mode)
-            })
-    }
-}
-
-const fn pending_scope_conflicts(pending: ToolTurnLockScope, active: ToolTurnLockScope) -> bool {
-    matches!(
-        (pending, active),
-        (ToolTurnLockScope::Normal, ToolTurnLockScope::Normal)
-    )
 }
 
 #[cfg(test)]

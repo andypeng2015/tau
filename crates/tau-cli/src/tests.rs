@@ -616,6 +616,7 @@ fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue) -> Event {
         call_id: call_id.into(),
         tool_name: tau_proto::ToolName::new(tool_name),
         arguments,
+        agent_id: Default::default(),
         originator: tau_proto::PromptOriginator::User,
     })
 }

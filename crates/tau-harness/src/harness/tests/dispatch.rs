@@ -905,10 +905,10 @@ fn invalid_tool_arguments_are_rejected_before_logical_dispatch() {
 }
 
 #[test]
-fn disconnect_with_inflight_and_queued_tool_does_not_invoke_queued_on_dead_connection() {
-    // Regression: disconnect cleanup must unregister the provider before a
-    // failed foreground call releases the scheduler. Otherwise the queued call
-    // can be routed as `ToolStarted` to the already-dead connection.
+fn disconnect_with_multiple_inflight_tools_cleans_up_all_calls() {
+    // Regression: disconnect cleanup must unregister the provider before it
+    // synthesizes terminal errors, and every in-flight call for that provider
+    // must be closed exactly once.
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -962,35 +962,36 @@ fn disconnect_with_inflight_and_queued_tool_does_not_invoke_queued_on_dead_conne
 
     assert_eq!(
         tool_invoke_call_ids(&tool_events),
-        vec!["running-call".to_owned()]
+        vec!["running-call".to_owned(), "queued-call".to_owned()]
     );
-    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert_eq!(h.tool_turn.pending_len(), 0);
 
     h.handle_disconnect("conn-dead-tool");
 
     assert_eq!(
         tool_invoke_call_ids(&tool_events),
-        vec!["running-call".to_owned()]
+        vec!["running-call".to_owned(), "queued-call".to_owned()]
     );
     assert!(h.registry.providers_for("dead_slow").is_empty());
     assert!(h.tool_turn.is_empty());
     assert!(!h.pending_tool_providers.contains_key("running-call"));
     assert!(!h.pending_tool_providers.contains_key("queued-call"));
 
-    let interrupted: ToolCallId = "running-call".into();
-    let interrupted_message = extension_disconnected_tool_call_error_message(&interrupted);
-    let unavailable_message = unavailable_tool_error_message(&ToolName::new("dead_slow"));
+    let running: ToolCallId = "running-call".into();
+    let queued: ToolCallId = "queued-call".into();
+    let running_message = extension_disconnected_tool_call_error_message(&running);
+    let queued_message = extension_disconnected_tool_call_error_message(&queued);
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolError(error)
             if error.call_id.as_str() == "running-call"
-                && error.message == interrupted_message
+                && error.message == running_message
     )));
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolError(error)
             if error.call_id.as_str() == "queued-call"
-                && error.message == unavailable_message
+                && error.message == queued_message
     )));
 
     h.shutdown().expect("shutdown");
@@ -1036,6 +1037,7 @@ fn tool_progress(call_id: &str, tool_name: &str, message: &str) -> tau_proto::To
         tool_name: ToolName::new(tool_name),
         message: Some(message.to_owned()),
         progress: None,
+        display: None,
     }
 }
 
@@ -1092,41 +1094,11 @@ fn ext_query_cid(h: &Harness, query_id: &str) -> Option<AgentId> {
     })
 }
 
-fn finish_ext_query(h: &mut Harness, cid: &AgentId, query_id: &str) {
-    let spid = h
-        .prompt_agents
-        .iter()
-        .find_map(|(spid, prompt_cid)| (prompt_cid == cid).then_some(spid.clone()))
-        .expect("side prompt id");
-    h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: spid,
-        agent_id: "main".into(),
-        output_items: vec![ContextItem::Message(MessageItem {
-            role: ContextRole::Assistant,
-            content: vec![ContentPart::Text {
-                text: format!("answer {query_id}"),
-            }],
-            phase: None,
-        })],
-        stop_reason: tau_proto::ProviderStopReason::EndTurn,
-        usage: None,
-        originator: tau_proto::PromptOriginator::Extension {
-            name: "test-ext".into(),
-            query_id: query_id.to_owned(),
-        },
-        backend: None,
-        provider_response_id: None,
-        ws_pool_delta: None,
-    })
-    .expect("finish start-agent request");
-}
-
-/// Regression: a backgrounded update call still owns the serialized lane after
-/// the synthetic placeholder closes its foreground. When the real background
-/// result arrives, the harness must drain the queued tool scheduler so the next
-/// update from the same model response can start.
+/// Regression: a backgrounded call remains tracked after its synthetic
+/// placeholder closes the foreground, while later tool calls dispatch normally.
+/// The real background result must clear only the actual-running state.
 #[test]
-fn background_result_drains_queued_update_tool_call() {
+fn background_result_clears_actual_running_call_without_blocking_later_tool() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -1182,11 +1154,11 @@ fn background_result_drains_queued_update_tool_call() {
 
     assert_eq!(
         tool_invoke_call_ids(&tool_events),
-        vec!["bg-update-running".to_owned()]
+        vec!["bg-update-running".to_owned(), "queued-update".to_owned()]
     );
     assert_eq!(background_placeholder_count(&h, "bg-update-running"), 1);
     assert!(h.tool_turn.is_backgrounded(&"bg-update-running".into()));
-    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert_eq!(h.tool_turn.pending_len(), 0);
 
     h.handle_extension_event_inner(
         "conn-bg-result-drain",
@@ -1211,11 +1183,11 @@ fn background_result_drains_queued_update_tool_call() {
     h.shutdown().expect("shutdown");
 }
 
-/// Regression: background errors free the same actual-running scheduler lane as
-/// background results. This covers an exclusive call blocking a queued update
-/// so both serialized modes use the background-error drain path.
+/// Regression: background errors clear the same actual-running state as
+/// background results, without affecting unrelated tool calls that already
+/// dispatched.
 #[test]
-fn background_error_drains_update_queued_behind_exclusive() {
+fn background_error_clears_actual_running_call() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -1271,11 +1243,14 @@ fn background_error_drains_update_queued_behind_exclusive() {
 
     assert_eq!(
         tool_invoke_call_ids(&tool_events),
-        vec!["bg-exclusive-running".to_owned()]
+        vec![
+            "bg-exclusive-running".to_owned(),
+            "queued-update-after-error".to_owned(),
+        ]
     );
     assert_eq!(background_placeholder_count(&h, "bg-exclusive-running"), 1);
     assert!(h.tool_turn.is_backgrounded(&"bg-exclusive-running".into()));
-    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert_eq!(h.tool_turn.pending_len(), 0);
 
     h.handle_extension_event_inner(
         "conn-bg-error-drain",
@@ -1309,12 +1284,10 @@ fn background_error_drains_update_queued_behind_exclusive() {
     h.shutdown().expect("shutdown");
 }
 
-/// Regression: a cancelled backgrounded exclusive call frees its scheduler lane
-/// without publishing a terminal background result. The cancellation path must
-/// still drain queued calls so incompatible work behind it is not stuck until
-/// an unrelated event arrives.
+/// Regression: a cancelled backgrounded call clears actual-running state
+/// without publishing a terminal background result.
 #[test]
-fn background_cancel_drains_update_queued_behind_exclusive() {
+fn background_cancel_clears_actual_running_call() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -1370,7 +1343,10 @@ fn background_cancel_drains_update_queued_behind_exclusive() {
 
     assert_eq!(
         tool_invoke_call_ids(&tool_events),
-        vec!["bg-exclusive-cancel-running".to_owned()]
+        vec![
+            "bg-exclusive-cancel-running".to_owned(),
+            "queued-update-after-cancel".to_owned(),
+        ]
     );
     assert_eq!(
         background_placeholder_count(&h, "bg-exclusive-cancel-running"),
@@ -1380,7 +1356,7 @@ fn background_cancel_drains_update_queued_behind_exclusive() {
         h.tool_turn
             .is_backgrounded(&"bg-exclusive-cancel-running".into())
     );
-    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert_eq!(h.tool_turn.pending_len(), 0);
 
     h.handle_extension_event_inner(
         "conn-bg-cancel-drain",
@@ -1427,17 +1403,16 @@ fn background_cancel_drains_update_queued_behind_exclusive() {
 }
 
 /// Regression: disconnect cleanup can synthesize errors for more than one
-/// backgrounded call from the same dead provider. The queued scheduler must not
-/// drain between those errors, or a newly-unblocked call can start before the
-/// whole disconnect batch is visible to the conversation.
+/// backgrounded call from the same dead provider without touching unrelated
+/// calls that have already dispatched to another provider.
 #[test]
-fn disconnect_background_errors_drain_queued_tools_after_batch() {
+fn disconnect_background_errors_do_not_affect_other_inflight_tools() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
 
-    let dead_events = connect_test_tool(&mut h, "conn-bg-disconnect-batch");
+    let _dead_events = connect_test_tool(&mut h, "conn-bg-disconnect-batch");
     let live_events = connect_test_tool(&mut h, "conn-bg-disconnect-live");
     h.registry.register(
         "conn-bg-disconnect-batch",
@@ -1501,11 +1476,22 @@ fn disconnect_background_errors_drain_queued_tools_after_batch() {
     .expect("tool response");
 
     assert_eq!(
-        tool_invoke_call_ids(&dead_events),
-        vec!["b-bg-shared".to_owned(), "a-bg-update".to_owned()]
+        h.pending_tool_providers
+            .get("b-bg-shared")
+            .map(|provider_id| provider_id.as_str()),
+        Some("conn-bg-disconnect-batch")
     );
-    assert!(tool_invoke_call_ids(&live_events).is_empty());
-    assert_eq!(h.tool_turn.pending_len(), 1);
+    assert_eq!(
+        h.pending_tool_providers
+            .get("a-bg-update")
+            .map(|provider_id| provider_id.as_str()),
+        Some("conn-bg-disconnect-batch")
+    );
+    assert_eq!(
+        tool_invoke_call_ids(&live_events),
+        vec!["z-queued-update".to_owned()]
+    );
+    assert_eq!(h.tool_turn.pending_len(), 0);
     assert!(h.tool_turn.is_backgrounded(&"a-bg-update".into()));
     assert!(h.tool_turn.is_backgrounded(&"b-bg-shared".into()));
 
@@ -1525,30 +1511,6 @@ fn disconnect_background_errors_drain_queued_tools_after_batch() {
             .map(|provider_id| provider_id.as_str()),
         Some("conn-bg-disconnect-live")
     );
-
-    let update_error_seq = event_log_position(&h, |event| {
-        matches!(
-            event,
-            Event::ToolBackgroundError(error) if error.call_id.as_str() == "a-bg-update"
-        )
-    })
-    .expect("update background error");
-    let shared_error_seq = event_log_position(&h, |event| {
-        matches!(
-            event,
-            Event::ToolBackgroundError(error) if error.call_id.as_str() == "b-bg-shared"
-        )
-    })
-    .expect("shared background error");
-    let queued_request_seq = event_log_position(&h, |event| {
-        matches!(
-            event,
-            Event::ToolRequest(request) if request.call_id.as_str() == "z-queued-update"
-        )
-    })
-    .expect("queued request");
-    assert!(update_error_seq < queued_request_seq);
-    assert!(shared_error_seq < queued_request_seq);
 
     h.shutdown().expect("shutdown");
 }
@@ -2614,9 +2576,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
 }
 
 #[test]
-fn shared_exclusive_shared_serializes_through_dispatch_state_machine() {
-    use tau_proto::ToolExecutionMode::{Exclusive, Shared};
-
+fn tool_turn_dispatches_provider_calls_without_execution_mode_locking() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -2628,10 +2588,9 @@ fn shared_exclusive_shared_serializes_through_dispatch_state_machine() {
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid);
 
-    // A `read` of a nonexistent path returns a ToolError (Shared);
-    // `write` of a valid path creates the file and returns
-    // ToolResult (Exclusive). Either kind of response path is
-    // handled identically by the state machine.
+    // A `read` of a nonexistent path returns a ToolError; `write` of a valid
+    // path creates the file and returns ToolResult. Harness dispatch no longer
+    // serializes them by execution mode; ext-shell owns update coordination.
     let read_args = CborValue::Map(vec![(
         CborValue::Text("path".to_owned()),
         CborValue::Text("/nonexistent/tau-test-path".to_owned()),
@@ -2690,55 +2649,16 @@ fn shared_exclusive_shared_serializes_through_dispatch_state_machine() {
     h.handle_provider_response_finished(response)
         .expect("finished");
 
-    // Right after dispatch, only c1 (Shared) should be in-flight;
-    // c2 (Exclusive) and c3 (Shared behind the Exclusive) must wait.
-    let c1_id: ToolCallId = "c1".to_owned().into();
-    let c2_id: ToolCallId = "c2".to_owned().into();
-    let c3_id: ToolCallId = "c3".to_owned().into();
-    assert_eq!(h.tool_turn.in_flight_len(), 1);
-    assert_eq!(h.tool_turn.in_flight_mode(&c1_id), Some(&Shared));
-    assert_eq!(h.tool_turn.pending_len(), 2);
-    assert_eq!(
-        h.tool_turn
-            .pending(0)
-            .expect("c2 should be queued")
-            .invocation
-            .id,
-        "c2"
-    );
-    assert_eq!(
-        h.tool_turn
-            .pending(1)
-            .expect("c3 should be queued")
-            .invocation
-            .id,
-        "c3"
-    );
-
-    drive_harness_until_call_completes(&mut h, "c1");
-
-    // After c1 completes the Exclusive gate opens and c2 dispatches.
-    // c3 must stay queued behind it.
-    assert_eq!(h.tool_turn.in_flight_len(), 1);
-    assert_eq!(h.tool_turn.in_flight_mode(&c2_id), Some(&Exclusive));
-    assert_eq!(h.tool_turn.pending_len(), 1);
-    assert_eq!(
-        h.tool_turn
-            .pending(0)
-            .expect("c3 should stay queued")
-            .invocation
-            .id,
-        "c3"
-    );
-
-    drive_harness_until_call_completes(&mut h, "c2");
-
-    // With the Exclusive cleared, c3 finally dispatches.
-    assert_eq!(h.tool_turn.in_flight_len(), 1);
-    assert_eq!(h.tool_turn.in_flight_mode(&c3_id), Some(&Shared));
+    for call_id in ["c1", "c2", "c3"] {
+        assert!(
+            h.tool_turn.is_in_flight(&ToolCallId::from(call_id)),
+            "{call_id} should dispatch immediately"
+        );
+    }
     assert_eq!(h.tool_turn.pending_len(), 0);
+    assert_eq!(h.tool_turn.in_flight_len(), 3);
 
-    drive_harness_until_call_completes(&mut h, "c3");
+    drive_harness_until_tool_turn_empty(&mut h);
     assert!(h.tool_turn.is_empty());
 
     h.shutdown().expect("shutdown");
@@ -2820,7 +2740,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
     h.handle_provider_response_finished(response)
         .expect("finished");
 
-    drive_harness_until_call_completes(&mut h, "c1");
+    drive_harness_until_tool_turn_empty(&mut h);
     assert!(event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolResult(result)
@@ -2833,8 +2753,6 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
             if result.call_id.as_str() == "c1"
                 && result.kind == tau_proto::ToolResultKind::Final
     )));
-    drive_harness_until_call_completes(&mut h, "c2");
-    drive_harness_until_call_completes(&mut h, "c3");
 
     // After all three tools complete, the harness has auto-dispatched
     // a follow-up prompt. Read its context items and check that every
@@ -5968,9 +5886,7 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
 
     assert!(matches!(h.turn_state, TurnState::Idle));
     assert!(
-        h.tool_turn
-            .in_flight_mode(&ToolCallId::from("delegate-call"))
-            .is_some(),
+        h.tool_turn.is_in_flight(&ToolCallId::from("delegate-call")),
         "parent delegate tool must remain in flight until its ToolResult arrives"
     );
     let events = delegate_events.lock().expect("delegate events");
@@ -6227,157 +6143,6 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
         })
         .expect("query result routed");
     assert_eq!(result.text, "final answer");
-    h.shutdown().expect("shutdown");
-}
-
-/// Regression for a delegated agent that backgrounds a long exclusive tool,
-/// then asks for another exclusive tool before the long background result
-/// returns. A later `agent.message_received` must not sit behind that
-/// not-yet-started tool forever; the harness cancels the queued tool call and
-/// dispatches the hidden message prompt immediately.
-#[test]
-fn agent_message_preempts_queued_tool_behind_backgrounded_exclusive_call() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    h.selected_model = Some("test/model".into());
-    let _delegate_events = connect_test_tool(&mut h, "conn-delegate");
-    let tool_events = connect_test_tool(&mut h, "conn-tool");
-    h.registry.register(
-        "conn-tool",
-        scheduled_test_tool_spec(
-            "exclusive_tool",
-            ToolExecutionMode::Exclusive,
-            tau_proto::BackgroundSupport::Instant,
-        ),
-    );
-
-    h.handle_start_agent_request(
-        "conn-delegate",
-        StartAgentRequest {
-            query_id: "q-preempt".to_owned(),
-            instruction: "side task".to_owned(),
-            role: None,
-            execution_mode: ToolExecutionMode::Shared,
-            input_stats: tau_proto::ToolDisplayStats::default(),
-            tool_call_id: Some("delegate-call".into()),
-            task_name: None,
-        },
-    )
-    .expect("query");
-
-    let (initial_spid, side_cid) = h
-        .prompt_agents
-        .iter()
-        .find_map(|(spid, prompt_cid)| {
-            (prompt_cid.as_str() != "default").then(|| (spid.clone(), prompt_cid.clone()))
-        })
-        .expect("side prompt id");
-    let recipient_id = h
-        .agents
-        .get(&side_cid)
-        .and_then(|conv| conv.agent_id.clone())
-        .expect("side agent id");
-
-    h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: initial_spid.clone(),
-        agent_id: "main".into(),
-        output_items: vec![ContextItem::ToolCall(ToolCallItem {
-            call_id: "long-background".into(),
-            name: ToolName::new("exclusive_tool"),
-            tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(Vec::new()),
-        })],
-        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
-        usage: None,
-        originator: tau_proto::PromptOriginator::Extension {
-            name: "conn-delegate".into(),
-            query_id: "q-preempt".to_owned(),
-        },
-        backend: None,
-        provider_response_id: None,
-        ws_pool_delta: None,
-    })
-    .expect("background tool response");
-    assert!(h.tool_turn.is_backgrounded(&"long-background".into()));
-
-    let followup_spid = h
-        .prompt_agents
-        .iter()
-        .find_map(|(spid, prompt_cid)| {
-            (prompt_cid == &side_cid && spid != &initial_spid).then_some(spid.clone())
-        })
-        .expect("follow-up prompt after background placeholder");
-    h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: followup_spid.clone(),
-        agent_id: "main".into(),
-        output_items: vec![ContextItem::ToolCall(ToolCallItem {
-            call_id: "queued-wait".into(),
-            name: ToolName::new("exclusive_tool"),
-            tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(Vec::new()),
-        })],
-        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
-        usage: None,
-        originator: tau_proto::PromptOriginator::Extension {
-            name: "conn-delegate".into(),
-            query_id: "q-preempt".to_owned(),
-        },
-        backend: None,
-        provider_response_id: None,
-        ws_pool_delta: None,
-    })
-    .expect("queued wait response");
-    assert_eq!(h.tool_turn.pending_len(), 1);
-    assert!(
-        tool_events
-            .lock()
-            .expect("tool events")
-            .iter()
-            .all(|routed| !matches!(
-                &routed.frame,
-                Frame::Event(Event::ToolRequest(request))
-                    if request.call_id.as_str() == "queued-wait"
-            )),
-        "the second exclusive tool is queued behind the long background tool"
-    );
-
-    h.publish_event(
-        Some(HARNESS_CONNECTION_ID),
-        Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
-            message_id: "test-message".into(),
-            sender_id: "manager".to_owned().into(),
-            recipient_id: recipient_id.into(),
-            message: "status please".to_owned(),
-        }),
-    );
-
-    assert!(
-        event_log_contains_any_source(&h, |event| matches!(
-            event,
-            Event::ToolCancelled(cancelled) if cancelled.call_id.as_str() == "queued-wait"
-        )),
-        "queued tool call must be closed before the message prompt is sent"
-    );
-    let message_spid = h
-        .prompt_agents
-        .iter()
-        .find_map(|(spid, prompt_cid)| {
-            (prompt_cid == &side_cid && spid != &initial_spid && spid != &followup_spid)
-                .then_some(spid.clone())
-        })
-        .expect("agent message prompt dispatched");
-    let prompt = read_prompt_created(&h, &message_spid);
-    let serialized = serde_json::to_string(&prompt.context_items).expect("json");
-    assert!(serialized.contains("status please"));
-    assert!(matches!(
-        h.agents
-            .get(&side_cid)
-            .expect("side conversation")
-            .turn_state,
-        AgentTurnState::AgentThinking { .. }
-    ));
-
     h.shutdown().expect("shutdown");
 }
 
@@ -7375,11 +7140,8 @@ fn background_completion_from_removed_side_conversation_queues_on_parent() {
     h.tool_agents.insert(call_id.clone(), side_cid.clone());
     h.background_completion_targets
         .insert(call_id.clone(), side_cid.clone());
-    h.tool_turn.record_in_flight_for_test(
-        side_cid.clone(),
-        call_id.clone(),
-        ToolExecutionMode::Shared,
-    );
+    h.tool_turn
+        .record_in_flight_for_test(side_cid.clone(), call_id.clone());
     assert!(h.tool_turn.mark_backgrounded(&call_id));
     h.queue_background_completion_prompt(&side_cid, &call_id);
 
@@ -7826,6 +7588,7 @@ fn backgrounded_tool_progress_is_not_published() {
             tool_name: ToolName::new("slow"),
             message: Some("running shell command".to_owned()),
             progress: None,
+            display: None,
         }),
     )
     .expect("late progress");
@@ -7894,16 +7657,15 @@ fn shared_start_agent_requests_start_concurrently() {
     assert!(ext_query_cid(&h, "q-a").is_some());
     assert!(ext_query_cid(&h, "q-b").is_some());
     assert!(h.pending_start_agent_requests.is_empty());
-    assert_eq!(h.active_start_agent_requests.len(), 2);
 
     h.shutdown().expect("shutdown");
 }
 
-/// Update sub-agent queries may overlap with shared research, but only one
-/// update lane runs at a time. A blocked update also acts as a FIFO barrier so
-/// later independent shared work cannot jump ahead and starve updates.
+/// Start-agent `execution_mode` is now legacy metadata. The harness no longer
+/// uses it as a global update/exclusive scheduler; filesystem coordination is
+/// handled by ext-shell directory locks.
 #[test]
-fn update_start_agent_request_overlaps_with_shared_and_blocks_later_fifo_jump() {
+fn start_agent_execution_mode_does_not_block_independent_queries() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -7913,168 +7675,33 @@ fn update_start_agent_request_overlaps_with_shared_and_blocks_later_fifo_jump() 
     let _ = connect_test_tool(&mut h, "conn-c");
     let _ = connect_test_tool(&mut h, "conn-d");
 
-    h.handle_start_agent_request(
-        "conn-a",
-        ext_query("q-update-active", ToolExecutionMode::Update),
-    )
-    .expect("active update query");
-    let active_update_cid = ext_query_cid(&h, "q-update-active").expect("active update started");
-    h.handle_start_agent_request(
-        "conn-b",
-        ext_query("q-shared-active", ToolExecutionMode::Shared),
-    )
-    .expect("active shared query");
-    h.handle_start_agent_request(
-        "conn-c",
-        ext_query("q-update-blocked", ToolExecutionMode::Update),
-    )
-    .expect("blocked update query");
+    h.handle_start_agent_request("conn-a", ext_query("q-update-a", ToolExecutionMode::Update))
+        .expect("update query a");
+    h.handle_start_agent_request("conn-b", ext_query("q-shared", ToolExecutionMode::Shared))
+        .expect("shared query");
+    h.handle_start_agent_request("conn-c", ext_query("q-update-b", ToolExecutionMode::Update))
+        .expect("update query b");
     h.handle_start_agent_request(
         "conn-d",
-        ext_query("q-later-shared", ToolExecutionMode::Shared),
-    )
-    .expect("later shared query");
-
-    assert!(ext_query_cid(&h, "q-shared-active").is_some());
-    assert!(ext_query_cid(&h, "q-update-blocked").is_none());
-    assert!(ext_query_cid(&h, "q-later-shared").is_none());
-    assert_eq!(h.pending_start_agent_requests.len(), 2);
-
-    finish_ext_query(&mut h, &active_update_cid, "q-update-active");
-
-    assert!(ext_query_cid(&h, "q-update-blocked").is_some());
-    assert!(ext_query_cid(&h, "q-later-shared").is_some());
-    assert!(h.pending_start_agent_requests.is_empty());
-
-    h.shutdown().expect("shutdown");
-}
-
-/// An Exclusive sub-agent is process-global for independent sub-agent work: it
-/// waits for all incompatible side agents and then blocks later shared
-/// or exclusive `StartAgentRequest`s until its result is routed back.
-#[test]
-fn exclusive_start_agent_request_blocks_independent_queries_globally() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    h.selected_model = Some("test/model".into());
-    let _ = connect_test_tool(&mut h, "conn-a");
-    let _ = connect_test_tool(&mut h, "conn-b");
-    let _ = connect_test_tool(&mut h, "conn-c");
-
-    h.handle_start_agent_request(
-        "conn-a",
         ext_query("q-exclusive", ToolExecutionMode::Exclusive),
     )
     .expect("exclusive query");
-    let exclusive_cid = ext_query_cid(&h, "q-exclusive").expect("exclusive started");
-    h.handle_start_agent_request("conn-b", ext_query("q-shared", ToolExecutionMode::Shared))
-        .expect("shared query");
-    h.handle_start_agent_request(
-        "conn-c",
-        ext_query("q-exclusive-2", ToolExecutionMode::Exclusive),
-    )
-    .expect("second exclusive query");
 
-    assert!(ext_query_cid(&h, "q-shared").is_none());
-    assert!(ext_query_cid(&h, "q-exclusive-2").is_none());
-    assert_eq!(h.pending_start_agent_requests.len(), 2);
-
-    finish_ext_query(&mut h, &exclusive_cid, "q-exclusive");
-
-    assert!(ext_query_cid(&h, "q-exclusive").is_none());
-    assert!(ext_query_cid(&h, "q-shared").is_some());
-    assert!(
-        ext_query_cid(&h, "q-exclusive-2").is_none(),
-        "second exclusive must wait for the shared query that was ahead of it"
-    );
-    assert_eq!(h.pending_start_agent_requests.len(), 1);
-
-    h.shutdown().expect("shutdown");
-}
-
-/// FIFO matters for global sub-agent scheduling: once an Exclusive is queued
-/// behind active work, later independent Shared queries must not jump it and
-/// starve exclusive work forever.
-#[test]
-fn queued_exclusive_prevents_later_shared_from_jumping_fifo() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    h.selected_model = Some("test/model".into());
-    let _ = connect_test_tool(&mut h, "conn-a");
-    let _ = connect_test_tool(&mut h, "conn-b");
-    let _ = connect_test_tool(&mut h, "conn-c");
-
-    h.handle_start_agent_request("conn-a", ext_query("q-active", ToolExecutionMode::Shared))
-        .expect("active shared query");
-    let active_cid = ext_query_cid(&h, "q-active").expect("active shared started");
-    h.handle_start_agent_request(
-        "conn-b",
-        ext_query("q-exclusive", ToolExecutionMode::Exclusive),
-    )
-    .expect("queued exclusive query");
-    h.handle_start_agent_request(
-        "conn-c",
-        ext_query("q-later-shared", ToolExecutionMode::Shared),
-    )
-    .expect("later shared query");
-
-    assert!(ext_query_cid(&h, "q-exclusive").is_none());
-    assert!(ext_query_cid(&h, "q-later-shared").is_none());
-    assert_eq!(h.pending_start_agent_requests.len(), 2);
-
-    finish_ext_query(&mut h, &active_cid, "q-active");
-
-    assert!(ext_query_cid(&h, "q-exclusive").is_some());
-    assert!(
-        ext_query_cid(&h, "q-later-shared").is_none(),
-        "later shared query must remain queued behind the exclusive"
-    );
-    assert_eq!(h.pending_start_agent_requests.len(), 1);
-
-    h.shutdown().expect("shutdown");
-}
-
-/// Nested delegates inside an active Exclusive sub-agent are reentrant: the
-/// harness treats them as part of the exclusive subtree instead of making the
-/// parent wait on itself forever.
-#[test]
-fn nested_start_agent_request_under_active_exclusive_is_allowed() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    h.selected_model = Some("test/model".into());
-    let _ = connect_test_tool(&mut h, "conn-delegate");
-
-    h.handle_start_agent_request(
-        "conn-delegate",
-        ext_query("q-outer", ToolExecutionMode::Exclusive),
-    )
-    .expect("outer query");
-    let outer_cid = ext_query_cid(&h, "q-outer").expect("outer started");
-
-    h.tool_agents
-        .insert("nested-call".into(), outer_cid.clone());
-    let mut nested = ext_query("q-nested", ToolExecutionMode::Shared);
-    nested.tool_call_id = Some("nested-call".into());
-    nested.task_name = Some("nested".to_owned());
-    h.handle_start_agent_request("conn-delegate", nested)
-        .expect("nested query");
-
-    let nested_cid = ext_query_cid(&h, "q-nested").expect("nested started");
-    assert_ne!(outer_cid, nested_cid);
+    for query_id in ["q-update-a", "q-shared", "q-update-b", "q-exclusive"] {
+        assert!(
+            ext_query_cid(&h, query_id).is_some(),
+            "{query_id} should start immediately"
+        );
+    }
     assert!(h.pending_start_agent_requests.is_empty());
-    assert_eq!(h.active_start_agent_requests.len(), 2);
 
     h.shutdown().expect("shutdown");
 }
 
-/// Unlike exclusive sub-agent work, update sub-agents only overlap with shared
-/// descendants. A nested update must wait for the parent update to finish so
-/// two update lanes are never active together.
+/// Tool-backed nested start-agent requests are independent agents. They do not
+/// inherit or wait on a parent's legacy `execution_mode`.
 #[test]
-fn nested_update_start_agent_request_under_active_update_waits() {
+fn nested_start_agent_request_under_active_update_starts_independently() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -8096,11 +7723,8 @@ fn nested_update_start_agent_request_under_active_update_waits() {
     h.handle_start_agent_request("conn-delegate", nested)
         .expect("nested query");
 
-    assert!(ext_query_cid(&h, "q-nested").is_none());
-    assert_eq!(h.pending_start_agent_requests.len(), 1);
-
-    finish_ext_query(&mut h, &outer_cid, "q-outer");
-    assert!(ext_query_cid(&h, "q-nested").is_some());
+    let nested_cid = ext_query_cid(&h, "q-nested").expect("nested started");
+    assert_ne!(outer_cid, nested_cid);
     assert!(h.pending_start_agent_requests.is_empty());
 
     h.shutdown().expect("shutdown");
@@ -8240,52 +7864,10 @@ fn wait_tool_reply_is_folded_into_followup_prompt() {
     h.shutdown().expect("shutdown");
 }
 
-/// Regression: the delegate tool's advertised `execution_mode` argument
-/// controls sub-agent scheduling, not parent-conversation tool scheduling.
-#[test]
-fn delegate_parent_tool_scheduling_ignores_delegate_execution_mode_argument() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-
-    h.registry.register(
-        "conn-delegate",
-        ToolSpec {
-            name: ToolName::new("delegate"),
-            model_visible_name: None,
-            description: None,
-            parameters: None,
-            tool_type: tau_proto::ToolType::Function,
-            format: None,
-            enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Shared,
-            background_support: None,
-        },
-    );
-
-    let explicit_call = AgentToolCall {
-        id: "explicit".to_owned().into(),
-        name: ToolName::new("delegate"),
-        tool_type: tau_proto::ToolType::Function,
-        arguments: CborValue::Map(vec![(
-            CborValue::Text("execution_mode".to_owned()),
-            CborValue::Text("exclusive".to_owned()),
-        )]),
-        display: None,
-    };
-    assert_eq!(
-        h.resolve_tool_execution_mode_for_call(&explicit_call),
-        ToolExecutionMode::Shared,
-        "delegate execution_mode affects the emitted StartAgentRequest, not the parent tool invocation"
-    );
-
-    h.shutdown().expect("shutdown");
-}
-
 /// Regression for `tau-agent-ral6kd`: a parent `delegate` call is only a
-/// side-agent launcher. It must not keep an exclusive normal tool from the same
-/// agent turn queued behind it; delegate execution-mode locking happens in the
-/// start-agent scheduler after the launcher reaches the built-in handler.
+/// side-agent launcher. It must not keep a normal tool from the same agent turn
+/// queued behind it; filesystem locking is handled by ext-shell, not the
+/// harness tool-turn queue.
 #[test]
 fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     let td = TempDir::new().expect("tempdir");
@@ -8354,11 +7936,7 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     })
     .expect("main response");
 
-    assert_eq!(
-        h.tool_turn
-            .in_flight_mode(&ToolCallId::from("delegate-call")),
-        Some(&ToolExecutionMode::Shared),
-    );
+    assert!(h.tool_turn.is_in_flight(&ToolCallId::from("delegate-call")),);
     assert_eq!(
         h.tool_turn.pending_len(),
         0,
@@ -8368,13 +7946,10 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     h.shutdown().expect("shutdown");
 }
 
-/// Exclusive tool serialization is scoped to the owning conversation,
-/// not process-global. Two independent sub-agents may both need to run
-/// exclusive work; making them wait on each other would unnecessarily
-/// serialize otherwise unrelated side tasks and can deadlock nested
-/// delegate workflows that depend on sub-agent progress.
+/// Mutating tool calls in distinct side conversations dispatch independently.
+/// Any real filesystem coordination must happen inside the tool extension.
 #[test]
-fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
+fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
     use tau_proto::CborValue;
 
     let td = TempDir::new().expect("tempdir");
@@ -8413,9 +7988,8 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
         },
     );
 
-    // The parent uses shared delegates only to create two realistic
-    // side agents concurrently. The assertion below is about
-    // the exclusive tools owned by those distinct side agents.
+    // The parent creates two realistic side agents concurrently. The assertion
+    // below is about mutating tools owned by those distinct side agents.
     let parent_cid = ensure_test_user_agent(&mut h);
     let main_spid: AgentPromptId = "sp-main".into();
     seed_agent_thinking(&mut h, &parent_cid, "sp-main");
@@ -8432,10 +8006,7 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
             ctx_id: None,
         }),
     );
-    let shared_args = CborValue::Map(vec![(
-        CborValue::Text("execution_mode".to_owned()),
-        CborValue::Text("shared".to_owned()),
-    )]);
+    let delegate_args = CborValue::Map(Vec::new());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
         agent_id: "main".into(),
@@ -8444,13 +8015,13 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
                 call_id: "delegate-A".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: shared_args.clone(),
+                arguments: delegate_args.clone(),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-B".into(),
                 name: ToolName::new("delegate"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: shared_args,
+                arguments: delegate_args,
             }),
         ],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
@@ -8567,27 +8138,25 @@ fn exclusive_tools_in_distinct_side_conversations_dispatch_concurrently() {
 
     let mut_a_id: ToolCallId = "mut-A".to_owned().into();
     let mut_b_id: ToolCallId = "mut-B".to_owned().into();
-    assert_eq!(
-        h.tool_turn.in_flight_mode(&mut_a_id),
-        Some(&ToolExecutionMode::Exclusive),
-        "conversation A's exclusive call should be in flight",
+    assert!(
+        h.tool_turn.is_in_flight(&mut_a_id),
+        "conversation A's mutating call should be in flight",
     );
-    assert_eq!(
-        h.tool_turn.in_flight_mode(&mut_b_id),
-        Some(&ToolExecutionMode::Exclusive),
-        "conversation B's exclusive call should be in flight too",
+    assert!(
+        h.tool_turn.is_in_flight(&mut_b_id),
+        "conversation B's mutating call should be in flight too",
     );
     assert_eq!(h.tool_agents.get("mut-A"), Some(&cid_a));
     assert_eq!(h.tool_agents.get("mut-B"), Some(&cid_b));
     assert_ne!(
         h.tool_agents.get("mut-A"),
         h.tool_agents.get("mut-B"),
-        "exclusive calls must be attributed to different dispatch scopes",
+        "mutating calls must be attributed to different agents",
     );
     assert_eq!(
         h.tool_turn.pending_len(),
         0,
-        "cross-conversation Exclusive calls should not queue behind each other",
+        "cross-conversation mutating calls should not queue behind each other",
     );
 
     h.shutdown().expect("shutdown");
@@ -8700,7 +8269,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("initial DelegateProgress on side conv spawn");
     assert_eq!(initial.task_name, "look it up");
     assert_eq!(initial.role.as_deref(), Some("senior-engineer"));
-    assert_eq!(initial.execution_mode, Some(ToolExecutionMode::Update));
+    assert_eq!(initial.execution_mode, None);
     assert_eq!(initial.tools_in_flight, 0);
     assert_eq!(initial.tools_total, 0);
     assert_delegate_tools_counter(&initial, Some(0), Some(0));
@@ -8753,7 +8322,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("at least one DelegateProgress after side response");
     assert_eq!(latest.task_name, "look it up");
     assert_eq!(latest.role.as_deref(), Some("senior-engineer"));
-    assert_eq!(latest.execution_mode, Some(ToolExecutionMode::Update));
+    assert_eq!(latest.execution_mode, None);
     assert_eq!(latest.tools_in_flight, 1, "websearch is in flight");
     assert_eq!(latest.tools_total, 1, "websearch counts toward total");
     assert_delegate_tools_counter(&latest, Some(0), Some(1));
@@ -8782,10 +8351,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     let after_complete = drain_delegate_progress(&sink, "delegate-call")
         .pop()
         .expect("DelegateProgress after sub-tool completion");
-    assert_eq!(
-        after_complete.execution_mode,
-        Some(ToolExecutionMode::Update)
-    );
+    assert_eq!(after_complete.execution_mode, None);
     assert_eq!(after_complete.tools_in_flight, 0);
     assert_eq!(after_complete.tools_total, 1);
     assert_delegate_tools_counter(&after_complete, Some(1), Some(1));

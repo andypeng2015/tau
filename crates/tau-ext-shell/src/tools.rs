@@ -42,7 +42,7 @@ pub(crate) fn execute_tool(
             result: invoke.arguments,
             kind: ToolResultKind::Final,
             display: None,
-            originator: tau_proto::PromptOriginator::User,
+            originator: invoke.originator.clone(),
         })];
     }
 
@@ -74,6 +74,7 @@ pub(crate) fn execute_tool(
             tool_name: invoke.tool_name.clone(),
             message: Some("running shell command".to_owned()),
             progress: None,
+            display: None,
         })];
         match shell::run_command(&invoke.arguments, shell_config) {
             Ok(ToolOutput { result, display }) => events.push(Event::ToolResult(ToolResult {
@@ -83,7 +84,7 @@ pub(crate) fn execute_tool(
                 result,
                 kind: ToolResultKind::Final,
                 display: Some(display),
-                originator: tau_proto::PromptOriginator::User,
+                originator: invoke.originator.clone(),
             })),
             Err(ToolFailure {
                 message,
@@ -96,7 +97,7 @@ pub(crate) fn execute_tool(
                 message,
                 details: details.map(|details| *details),
                 display: Some(*display),
-                originator: tau_proto::PromptOriginator::User,
+                originator: invoke.originator.clone(),
             })),
         }
         return events;
@@ -109,7 +110,7 @@ pub(crate) fn execute_tool(
         message: "unknown tool".to_owned(),
         details: None,
         display: None,
-        originator: tau_proto::PromptOriginator::User,
+        originator: invoke.originator.clone(),
     })]
 }
 
@@ -131,7 +132,7 @@ fn wrap_pure(
             result,
             kind: ToolResultKind::Final,
             display: Some(display),
-            originator: tau_proto::PromptOriginator::User,
+            originator: invoke.originator.clone(),
         })],
         Err(ToolFailure {
             message,
@@ -144,7 +145,7 @@ fn wrap_pure(
             message,
             details: details.map(|details| *details).or(fallback_details),
             display: Some(*display),
-            originator: tau_proto::PromptOriginator::User,
+            originator: invoke.originator.clone(),
         })],
     }
 }

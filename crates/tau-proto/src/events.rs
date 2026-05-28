@@ -774,12 +774,11 @@ pub struct ToolSpec {
     /// no explicit `tools` allow-list and `disableTools` does not remove it.
     #[serde(default = "tool_enabled_by_default", skip_serializing_if = "is_true")]
     pub enabled_by_default: bool,
-    /// Execution mode used by the harness dispatch state machine.
-    /// Shared calls may overlap with shared/update calls; update calls may
-    /// overlap only with shared calls; exclusive calls run alone within their
-    /// conversation. Unknown / unset declarations default to
-    /// [`ToolExecutionMode::Exclusive`] so extensions that haven't been updated
-    /// don't silently lose ordering.
+    /// Legacy execution-mode declaration. Current in-tree harness dispatch does
+    /// not enforce this; extensions that need update coordination should own it
+    /// themselves. Unknown / unset declarations still default to
+    /// [`ToolExecutionMode::Exclusive`] for wire compatibility with older
+    /// extensions and clients.
     #[serde(default, alias = "side_effects")]
     pub execution_mode: ToolExecutionMode,
     /// Whether the harness may close the model-visible foreground turn before
@@ -798,31 +797,29 @@ const fn is_true(value: &bool) -> bool {
     *value
 }
 
-/// How the harness may schedule a tool call relative to other tool calls.
+/// Legacy tool update classification.
 ///
-/// This is informational for the agent and enforced by the harness's tool
-/// dispatch queue.
+/// Current in-tree harness dispatch does not enforce this mode. It remains in
+/// the protocol so older extensions and UIs can decode historical events.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionMode {
-    /// May run concurrently with shared and update calls in the same
-    /// conversation.
+    /// Historically meant that calls could overlap with shared and update calls
+    /// in the same conversation.
     #[serde(alias = "pure")]
     Shared,
-    /// May run concurrently with shared calls, but not with update or exclusive
-    /// calls in the same conversation.
+    /// Historically meant that calls could overlap with shared calls, but not
+    /// with update or exclusive calls in the same conversation.
     Update,
-    /// Must run alone within its conversation. Independent conversations can
-    /// run their own exclusive calls in parallel. Default so tools that do not
-    /// explicitly opt in to shared scheduling are treated conservatively.
+    /// Historically meant that calls ran alone within their conversation.
+    /// Default so omitted legacy declarations still decode conservatively.
     #[default]
     #[serde(alias = "mutating")]
     Exclusive,
 }
 
 impl ToolExecutionMode {
-    /// Return whether a queued call in `self` may overlap with an already
-    /// running call in `active`.
+    /// Legacy compatibility helper for older schedulers.
     #[must_use]
     pub const fn can_overlap_with(self, active: Self) -> bool {
         matches!(
@@ -831,8 +828,7 @@ impl ToolExecutionMode {
         )
     }
 
-    /// Return whether this mode, once blocked at the front of a queue, should
-    /// stop later otherwise-compatible work from jumping ahead.
+    /// Legacy compatibility helper for older FIFO schedulers.
     #[must_use]
     pub const fn blocks_fifo_when_waiting(self) -> bool {
         matches!(self, Self::Update | Self::Exclusive)
@@ -1014,6 +1010,10 @@ pub struct ToolRequest {
     /// Raw CBOR arguments supplied by the requester. These are not trusted
     /// until the harness validates and routes the request.
     pub arguments: CborValue,
+    /// Durable agent that owns this tool call. Older events may omit this;
+    /// consumers that require an owner should reject empty/default ids.
+    #[serde(default, skip_serializing_if = "AgentId::is_empty")]
+    pub agent_id: AgentId,
     /// Who started the prompt that produced this tool call. The
     /// harness stamps this from the call's owning conversation so
     /// subscribers can tell main-agent tool activity from sub-agent
@@ -1040,6 +1040,9 @@ pub struct ToolStarted {
     /// Arguments to pass to the selected tool provider. These are copied from
     /// the accepted request after harness validation/routing.
     pub arguments: CborValue,
+    /// Durable agent that owns this tool call.
+    #[serde(default, skip_serializing_if = "AgentId::is_empty")]
+    pub agent_id: AgentId,
     /// Echo of [`ToolRequest::originator`]. Tools usually don't
     /// branch on it, but it's available for logging / progress
     /// tagging / policy decisions that depend on whether the call
@@ -1299,7 +1302,7 @@ pub struct ProgressUpdate {
     pub total: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolProgress {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
@@ -1307,6 +1310,9 @@ pub struct ToolProgress {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressUpdate>,
+    /// Optional live display replacement for the running tool block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ToolDisplay>,
 }
 
 /// Live snapshot of a sub-agent spawned by the `delegate` tool.
@@ -1327,8 +1333,9 @@ pub struct DelegateProgress {
     /// Role used by the delegated sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Scheduling mode requested for the delegated sub-agent. Older progress
-    /// events omit this; clients should hide the mode marker when it is absent.
+    /// Legacy scheduling marker from older delegate implementations. Newer
+    /// delegate progress omits this; clients should hide the mode marker when
+    /// it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<ToolExecutionMode>,
     /// Most recent percent-of-context-window the sub-agent reported,
@@ -1568,14 +1575,10 @@ pub struct StartAgentRequest {
     /// keep using the currently selected interactive role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Global sub-agent scheduling mode enforced by the harness.
-    ///
-    /// Shared queries may overlap with shared/update sub-agent queries. Update
-    /// queries may overlap only with shared sub-agent queries. Exclusive
-    /// queries wait until no incompatible sub-agent query is active, then
-    /// block later independent sub-agent queries until they finish.
-    /// Defaults to Shared for compatibility with older extensions that did
-    /// not declare global scheduling needs.
+    /// Legacy sub-agent scheduling mode. Current in-tree harness dispatch
+    /// ignores this field; filesystem/update coordination is expected to live
+    /// in the relevant tool extension. Defaults to Shared for compatibility
+    /// with older extensions that omitted the field.
     #[serde(default = "default_start_agent_request_execution_mode")]
     pub execution_mode: ToolExecutionMode,
     /// Input stats for the extension-provided instruction, excluding
@@ -1601,8 +1604,7 @@ const fn default_start_agent_request_execution_mode() -> ToolExecutionMode {
     ToolExecutionMode::Shared
 }
 
-/// A [`StartAgentRequest`] was accepted and queued for the side-agent
-/// scheduler.
+/// A [`StartAgentRequest`] was accepted for side-agent startup.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StartAgentAccepted {
     /// Request correlation id copied from [`StartAgentRequest::query_id`].

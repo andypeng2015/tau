@@ -532,6 +532,34 @@ fn drive_harness_until_call_completes(h: &mut Harness, target_call_id: &str) {
     }
 }
 
+fn drive_harness_until_tool_turn_empty(h: &mut Harness) {
+    let started = Instant::now();
+    loop {
+        if h.tool_turn.is_empty() {
+            return;
+        }
+        if started.elapsed() >= Duration::from_secs(3) {
+            panic!("timed out waiting for tool turn to empty");
+        }
+        let event =
+            h.rx.recv_timeout(Duration::from_secs(1))
+                .expect("tool result should arrive");
+        match event {
+            HarnessEvent::FromConnection {
+                connection_id,
+                frame,
+            } => h
+                .handle_extension_event(&connection_id, *frame)
+                .expect("handle"),
+            HarnessEvent::Disconnected { connection_id } => {
+                h.handle_disconnect(&connection_id);
+            }
+            HarnessEvent::NewClient(_) => {}
+            HarnessEvent::Command(command) => h.handle_harness_command(command).expect("handle"),
+        }
+    }
+}
+
 fn wait_for_session_unlock(state_dir: &Path, session_id: &str) {
     let sessions_dir = tau_config::settings::sessions_dir_of(state_dir);
     let started = Instant::now();

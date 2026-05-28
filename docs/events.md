@@ -116,14 +116,15 @@ the agent requests calls, and the harness orchestrates dispatch.
 
 - **`tool.register`** *(extension)* — A tool provider advertises a tool
   spec (name, description, JSON-schema parameters, `enabled_by_default`,
-  execution mode).
+  and legacy execution-mode metadata).
 - **`tool.unregister`** *(extension)* — A previously registered tool is
   withdrawn.
 - **`tool.request`** *(provider/extension)* — A runtime request to run a
-  tool call by id, model-produced name, and CBOR arguments. It may come from
-  an agent response or another extension, and can still be rejected before any
-  tool provider receives it. Transcript tool-call truth comes from the provider
-  response's `ContextItem::ToolCall`, not this routing event.
+  tool call by id, owner agent id, model-produced name, and CBOR arguments. It
+  may come from an agent response or another extension, and can still be
+  rejected before any tool provider receives it. Transcript tool-call truth
+  comes from the provider response's `ContextItem::ToolCall`, not this routing
+  event.
 - **`tool.started`** *(harness)* — The harness accepted and routed a
   tool request. This runtime broadcast is the signal that the selected tool
   provider should start the call, and that UIs can show the tool as running.

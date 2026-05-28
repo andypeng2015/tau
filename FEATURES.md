@@ -205,8 +205,8 @@ extensions: {
 ### `core-shell` — shell and filesystem tools
 
 Registers the everyday tools the agent uses to inspect and edit a project:
-`shell`, `read`, `write`, `edit`, `grep`, `find`, `ls`, plus an `echo` tool
-for testing. The shell command and any wrapper prefix are configurable:
+`shell`, `read`, `write`, `edit`, `apply_patch`, `grep`, `find`, `ls`, plus
+an `echo` tool for testing. The shell command and any wrapper prefix are configurable:
 
 ```json5
 "core-shell": {
@@ -226,9 +226,16 @@ for testing. The shell command and any wrapper prefix are configurable:
         PAGER: "cat",
       },
     },
+    // Optional advisory directory update locks for mutating ext-shell tools.
+    dir_lock: { enable: true },
   },
 },
 ```
+
+When `dir_lock.enable` is true, the optional `dir_lock` tool can manually lock
+an existing directory for updates, and `write`, `edit`, `apply_patch`, `shell`,
+and `gpt_shell` acquire matching automatic locks before mutating. Reads remain
+unblocked; user `!` commands are outside this agent-tool lock path.
 
 Tau also discovers project and user agent context from conventional paths. It
 loads `AGENTS.md` from `$HOME/.agents/`, from each current-working-directory

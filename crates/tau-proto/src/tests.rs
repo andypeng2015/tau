@@ -56,12 +56,14 @@ fn representative_events() -> Vec<Event> {
             tool_name: ToolName::new("echo"),
             tool_type: ToolType::Function,
             arguments: CborValue::Text("hello".to_owned()),
+            agent_id: Default::default(),
             originator: PromptOriginator::User,
         }),
         Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: ToolName::new("echo"),
             arguments: CborValue::Text("hello".to_owned()),
+            agent_id: Default::default(),
             originator: PromptOriginator::User,
         }),
         Event::ToolResult(ToolResult {
@@ -90,6 +92,7 @@ fn representative_events() -> Vec<Event> {
                 current: Some(1),
                 total: Some(10),
             }),
+            display: None,
         }),
         Event::ActionSchemaPublished(ActionSchemaPublished {
             extension_name: "std-email".into(),
@@ -578,6 +581,7 @@ fn event_wire_form_uses_dotted_event_tag() {
         call_id: "call-1".into(),
         tool_name: ToolName::new("echo"),
         arguments: CborValue::Text("hi".to_owned()),
+        agent_id: Default::default(),
         originator: PromptOriginator::User,
     });
     let json = serde_json::to_value(&event).expect("serialize");
@@ -780,6 +784,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             tool_name: ToolName::new("shell"),
             message: Some("running".to_owned()),
             progress: None,
+            display: None,
         }),
         Event::ActionSchemaPublished(ActionSchemaPublished {
             extension_name: "std-email".into(),
@@ -1014,7 +1019,7 @@ fn tool_spec_defaults_and_execution_mode_compatibility() {
 }
 
 #[test]
-fn tool_execution_mode_overlap_matrix_matches_scheduler_contract() {
+fn tool_execution_mode_legacy_overlap_helpers_keep_compatibility() {
     use ToolExecutionMode::{Exclusive, Shared, Update};
 
     assert!(Shared.can_overlap_with(Shared));

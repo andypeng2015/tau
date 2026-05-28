@@ -1333,11 +1333,8 @@ fn disconnected_tool_completes_pending_call() {
     );
     h.pending_tool_providers
         .insert(call_id.clone(), conn_id.clone().into());
-    h.tool_turn.record_in_flight_for_test(
-        cid.clone(),
-        call_id.clone(),
-        tau_proto::ToolExecutionMode::Exclusive,
-    );
+    h.tool_turn
+        .record_in_flight_for_test(cid.clone(), call_id.clone());
     if let Some(conv) = h.agents.get_mut(&cid) {
         conv.turn_state = AgentTurnState::ToolsRunning {
             remaining_calls: vec![call_id.clone()],
@@ -2069,13 +2066,16 @@ fn cancel_after_agent_thinking_terminalizes_tool_calls_before_dispatch() {
 }
 
 #[test]
-fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
-    use tau_proto::ToolExecutionMode::{Exclusive, Shared};
-
+fn cancel_during_tools_terminalizes_inflight_calls() {
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     h.selected_model = Some("test/model".into());
+    let _tool_events = connect_test_tool(&mut h, "conn-cancel-tools");
+    h.registry
+        .register("conn-cancel-tools", staged_tool_spec("slow_a"));
+    h.registry
+        .register("conn-cancel-tools", staged_tool_spec("slow_b"));
 
     let cid = ensure_test_user_agent(&mut h);
     seed_agent_thinking(&mut h, &cid, "sp-x");
@@ -2087,16 +2087,13 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
-                name: ToolName::new("read"),
+                name: ToolName::new("slow_a"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Map(vec![(
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text("/nonexistent/tau-cancel-test".to_owned()),
-                )]),
+                arguments: CborValue::Map(Vec::new()),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c2".into(),
-                name: ToolName::new("write"),
+                name: ToolName::new("slow_b"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             }),
@@ -2109,13 +2106,9 @@ fn cancel_during_tools_terminalizes_inflight_and_queued_calls() {
         ws_pool_delta: None,
     })
     .expect("response");
-    assert_eq!(
-        h.tool_turn.in_flight_mode(&ToolCallId::from("c1")),
-        Some(&Shared)
-    );
-    let pending = h.tool_turn.pending(0).expect("c2 should be queued");
-    assert_eq!(pending.invocation.id, "c2");
-    assert_eq!(pending.execution_mode, Exclusive);
+    assert!(h.tool_turn.is_in_flight(&ToolCallId::from("c1")));
+    assert!(h.tool_turn.is_in_flight(&ToolCallId::from("c2")));
+    assert_eq!(h.tool_turn.pending_len(), 0);
 
     h.handle_client_event(
         "ui",

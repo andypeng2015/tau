@@ -13,14 +13,7 @@ const SUMMARY_HEADER: &str = "Success. Updated the following files:";
 pub(crate) const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("apply_patch.lark");
 
 pub(crate) fn apply_patch(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
-    let patch = match arguments {
-        CborValue::Text(text) => text,
-        _ => {
-            return Err(ToolFailure::new(
-                "apply_patch expects freeform patch text, not a structured payload",
-            ));
-        }
-    };
+    let patch = patch_text(arguments)?;
 
     let hunks = parse_patch(patch).map_err(ToolFailure::new)?;
     let changes = match apply_hunks(&hunks) {
@@ -38,6 +31,49 @@ pub(crate) fn apply_patch(arguments: &CborValue) -> Result<ToolOutput, ToolFailu
     let mut display = crate::display::ok_display("apply_patch");
     display.payload = payload;
     Ok(ToolOutput { result, display })
+}
+
+pub(crate) fn lock_directories(arguments: &CborValue) -> Result<Vec<PathBuf>, ToolFailure> {
+    let patch = patch_text(arguments)?;
+    let hunks = parse_patch(patch).map_err(ToolFailure::new)?;
+    let cwd = std::env::current_dir().map_err(|error| ToolFailure::from(error.to_string()))?;
+    let mut dirs = Vec::new();
+
+    for hunk in &hunks {
+        match hunk {
+            Hunk::Add { path, .. } => {
+                let abs = resolve_path(&cwd, path);
+                dirs.push(crate::dir_lock::canonical_write_lock_dir(&abs)?);
+            }
+            Hunk::Delete { path } => {
+                let abs = resolve_path(&cwd, path);
+                dirs.push(crate::dir_lock::canonical_path_parent(&abs)?);
+            }
+            Hunk::Update {
+                path, move_path, ..
+            } => {
+                let abs = resolve_path(&cwd, path);
+                if let Some(move_path) = move_path {
+                    dirs.push(crate::dir_lock::canonical_path_parent(&abs)?);
+                    let dest_abs = resolve_path(&cwd, move_path);
+                    dirs.push(crate::dir_lock::canonical_write_lock_dir(&dest_abs)?);
+                } else {
+                    dirs.push(crate::dir_lock::canonical_existing_file_parent(&abs)?);
+                }
+            }
+        }
+    }
+
+    Ok(dirs)
+}
+
+fn patch_text(arguments: &CborValue) -> Result<&str, ToolFailure> {
+    match arguments {
+        CborValue::Text(text) => Ok(text),
+        _ => Err(ToolFailure::new(
+            "apply_patch expects freeform patch text, not a structured payload",
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

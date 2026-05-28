@@ -30,7 +30,7 @@ fn socket_transport_supports_later_attached_end_to_end_clients() {
     let agent_store = runtime
         .open_agent_store()
         .expect("agent store should reopen");
-    // Optional AGENTS.md preamble + 2 × (user, tool.req, tool.res, agent).
+    // Optional AGENTS.md preambles + 2 × (user, tool.req, tool.res, agent).
     let entry_count: usize = session
         .loaded_agents()
         .into_iter()
@@ -38,7 +38,7 @@ fn socket_transport_supports_later_attached_end_to_end_clients() {
         .map(|agent| agent.current_branch().len())
         .sum();
     assert!(
-        (8..=9).contains(&entry_count),
+        (8..=10).contains(&entry_count),
         "expected two persisted prompt/tool cycles, got {entry_count} entries"
     );
 }

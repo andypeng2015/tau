@@ -17,7 +17,7 @@ use tau_core::NodeId;
 use tau_proto::{
     AgentId, AgentPromptId, ConnectionId, ModelId, ModelParams, PromptMessageClass,
     PromptOriginator, ProviderBackend, SessionId, ToolCallId, ToolChoice, ToolDefinition,
-    ToolDisplayStats, ToolExecutionMode,
+    ToolDisplayStats,
 };
 
 use crate::dedup::ResultDedupMap;
@@ -199,9 +199,6 @@ pub(crate) struct Agent {
     pub(crate) role: Option<String>,
     /// Stable id assigned when this conversation first starts an agent turn.
     pub(crate) agent_id: Option<String>,
-    /// Scheduling mode requested for this delegate side agent. `None`
-    /// for user agents and non-tool side agents.
-    pub(crate) delegate_execution_mode: Option<ToolExecutionMode>,
     /// Number of tool calls currently in flight on this conversation.
     pub(crate) tools_in_flight: u32,
     /// Cumulative tool calls this conversation has started (in-flight
@@ -380,7 +377,6 @@ impl Agent {
             delegate_input_stats: ToolDisplayStats::default(),
             role: None,
             agent_id: None,
-            delegate_execution_mode: None,
             tools_in_flight: 0,
             tools_total: 0,
             context_input_tokens: None,

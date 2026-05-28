@@ -1,7 +1,7 @@
 //! Filesystem and shell tool extension.
 //!
-//! Provides `read`, `write`, `edit`, `apply_patch`, `grep`, `find`,
-//! `ls`, `shell`, and `gpt_shell` tools.
+//! Provides `read`, `write`, `edit`, `apply_patch`, `dir_lock`, `grep`,
+//! `find`, `ls`, `shell`, and `gpt_shell` tools.
 //!
 //! The `echo` tool is available under `cfg(test)` or the
 //! `echo-agent` cargo feature for harness-side echo-agent tests.
@@ -23,6 +23,7 @@ mod agents;
 mod argument;
 mod config;
 mod diff;
+mod dir_lock;
 mod display;
 mod isolation;
 mod semaphore;
@@ -34,6 +35,7 @@ mod tests;
 
 use crate::agents::{ancestor_dirs, discover_session_agents_files};
 use crate::config::{ExtConfig, ShellConfig};
+use crate::dir_lock::{DIR_LOCK_TOOL_NAME, DirLockManager};
 use crate::semaphore::Semaphore;
 #[cfg(any(test, feature = "echo-agent"))]
 use crate::tools::ECHO_TOOL_NAME;
@@ -153,7 +155,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -216,7 +218,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -233,9 +235,10 @@ where
                 definition: crate::tools::apply_patch::APPLY_PATCH_LARK_GRAMMAR.to_owned(),
             }),
             enabled_by_default: false,
-            execution_mode: ToolExecutionMode::Exclusive,
+            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
+        dir_lock_tool_spec(false),
         ToolSpec {
             name: tau_proto::ToolName::new(GREP_TOOL_NAME),
             model_visible_name: None,
@@ -389,7 +392,7 @@ where
             })),
             format: None,
             enabled_by_default: true,
-            execution_mode: ToolExecutionMode::Update,
+            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
         ToolSpec {
@@ -430,7 +433,7 @@ where
             })),
             format: None,
             enabled_by_default: false,
-            execution_mode: ToolExecutionMode::Update,
+            execution_mode: ToolExecutionMode::Shared,
             background_support: None,
         },
     ]);
@@ -443,6 +446,8 @@ where
         tau_proto::EventName::TOOL_CANCEL_REQUEST,
         tau_proto::EventName::SESSION_STARTED,
         tau_proto::EventName::SESSION_AGENT_LOADED,
+        tau_proto::EventName::SESSION_AGENT_UNLOADED,
+        tau_proto::EventName::SESSION_SHUTDOWN,
         tau_proto::EventName::UI_SHELL_COMMAND,
     ]);
     for tool in tools {
@@ -462,6 +467,7 @@ where
     let running_shells = Arc::new(Mutex::new(
         HashMap::<tau_proto::ToolCallId, mpsc::Sender<()>>::new(),
     ));
+    let lock_manager = DirLockManager::default();
 
     // Writer thread: drains response frames and writes them to the wire.
     let writer_handle = std::thread::spawn(move || -> Result<(), Box<dyn Error + Send>> {
@@ -486,7 +492,16 @@ where
         match inner {
             Frame::Message(Message::Configure(msg)) => {
                 match tau_extension::parse_config::<ExtConfig>(&msg.config) {
-                    Ok(cfg) => config = cfg,
+                    Ok(cfg) => {
+                        let dir_lock_changed = config.dir_lock.enable != cfg.dir_lock.enable;
+                        config = cfg;
+                        if dir_lock_changed {
+                            tx.send(Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
+                                tool: dir_lock_tool_spec(config.dir_lock.enable),
+                                prompt_fragment: None,
+                            })))?;
+                        }
+                    }
                     Err(message) => {
                         tx.send(Frame::Message(Message::ConfigError(ConfigError {
                             message,
@@ -499,24 +514,58 @@ where
                     ack_if_logged(log_id, &tx)?;
                     continue;
                 }
-                // Block here until a permit is free. This bounds the
-                // total number of in-flight worker threads — without
-                // it, a burst of ToolStarted events would spawn unbounded
-                // native threads that then serialize on the semaphore.
-                let permit = sem.acquire();
                 let tx = tx.clone();
                 let shell_config = config.shell.clone();
                 let running_shells = Arc::clone(&running_shells);
-                std::thread::spawn(move || {
-                    let _permit = permit;
-                    dispatch_tool_invoke(invoke, shell_config, &tx, &running_shells);
-                });
+                if invoke.tool_name == DIR_LOCK_TOOL_NAME {
+                    let lock_manager = lock_manager.clone();
+                    let enabled = config.dir_lock.enable;
+                    std::thread::spawn(move || {
+                        crate::dir_lock::dispatch_dir_lock_tool(
+                            invoke,
+                            &lock_manager,
+                            enabled,
+                            &tx,
+                        );
+                    });
+                } else if config.dir_lock.enable
+                    && is_dir_lock_update_tool(invoke.tool_name.as_str())
+                {
+                    let lock_manager = lock_manager.clone();
+                    let sem = Arc::clone(&sem);
+                    std::thread::spawn(move || {
+                        dispatch_locked_tool_invoke(
+                            invoke,
+                            shell_config,
+                            &tx,
+                            &running_shells,
+                            &lock_manager,
+                            &sem,
+                        );
+                    });
+                } else {
+                    // Block here until a permit is free. This bounds the
+                    // total number of in-flight worker threads — without
+                    // it, a burst of ToolStarted events would spawn unbounded
+                    // native threads that then serialize on the semaphore.
+                    let permit = sem.acquire();
+                    std::thread::spawn(move || {
+                        let _permit = permit;
+                        dispatch_tool_invoke(invoke, shell_config, &tx, &running_shells);
+                    });
+                }
             }
             Frame::Event(Event::SessionStarted(started)) => {
                 dispatch_session_started(started, &tx);
             }
             Frame::Event(Event::SessionAgentLoaded(loaded)) => {
                 dispatch_session_agent_loaded(loaded, &tx);
+            }
+            Frame::Event(Event::SessionAgentUnloaded(unloaded)) => {
+                lock_manager.release_agent(&unloaded.agent_id);
+            }
+            Frame::Event(Event::SessionShutdown(_)) => {
+                lock_manager.release_all_manual();
             }
             Frame::Event(Event::ToolCancelRequest(request)) => {
                 let cancel_tx = running_shells
@@ -529,6 +578,8 @@ where
                     if cancel_tx.send(()).is_err() {
                         debug!(call_id = %request.target_call_id, "shell cancellation receiver already gone");
                     }
+                } else if lock_manager.cancel_waiting_call(&request.target_call_id) {
+                    debug!(call_id = %request.target_call_id, "cancellation requested for waiting dir-lock call");
                 } else {
                     debug!(call_id = %request.target_call_id, "shell cancellation requested for unknown call");
                 }
@@ -559,6 +610,113 @@ where
         .map_err(|_| "writer thread panicked")?
         .map_err(|e| -> Box<dyn Error> { e })?;
     Ok(())
+}
+
+fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {
+    ToolSpec {
+        name: tau_proto::ToolName::new(DIR_LOCK_TOOL_NAME),
+        model_visible_name: None,
+        description: Some(
+            "Optionally acquire or release an ext-shell directory update lock. Disabled by default; enable ext-shell config `dir_lock.enable` before use. Commands are `update` and `unlock`, and `directory` must be an existing directory."
+                .to_owned(),
+        ),
+        tool_type: tau_proto::ToolType::Function,
+        parameters: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "enum": ["update", "unlock"],
+                    "description": "Lock or unlock the directory for updates"
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Existing directory to canonicalize before locking"
+                }
+            },
+            "required": ["command", "directory"],
+            "additionalProperties": false
+        })),
+        format: None,
+        enabled_by_default,
+        execution_mode: ToolExecutionMode::Shared,
+        background_support: None,
+    }
+}
+
+fn dispatch_locked_tool_invoke(
+    invoke: tau_proto::ToolStarted,
+    shell_config: ShellConfig,
+    tx: &mpsc::Sender<Frame>,
+    running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
+    lock_manager: &DirLockManager,
+    sem: &Arc<Semaphore>,
+) {
+    let dirs = match crate::dir_lock::automatic_lock_dirs_for_tool(
+        invoke.tool_name.as_str(),
+        &invoke.arguments,
+    ) {
+        Ok(Some(dirs)) => crate::dir_lock::normalize_lock_dirs(dirs),
+        Ok(None) => {
+            let _permit = sem.acquire();
+            dispatch_tool_invoke(invoke, shell_config, tx, running_shells);
+            return;
+        }
+        Err(error) => {
+            send_tool_failure(invoke, error, tx);
+            return;
+        }
+    };
+
+    let wait_invoke = invoke.clone();
+    let wait_dirs = dirs.clone();
+    let wait_tx = tx.clone();
+    let guard = match lock_manager.acquire_auto(
+        invoke.call_id.clone(),
+        invoke.agent_id.clone(),
+        dirs,
+        move || {
+            let _ = wait_tx.send(Frame::Event(crate::dir_lock::waiting_progress_event(
+                &wait_invoke,
+                &wait_dirs,
+            )));
+        },
+    ) {
+        Ok(guard) => guard,
+        Err(crate::dir_lock::LockAcquireError::Cancelled) => {
+            let _ = tx.send(Frame::Event(Event::ToolCancelled(ToolCancelled {
+                call_id: invoke.call_id,
+                tool_name: invoke.tool_name,
+                tool_type: tau_proto::ToolType::Function,
+            })));
+            return;
+        }
+    };
+
+    let _permit = sem.acquire();
+    dispatch_tool_invoke(invoke, shell_config, tx, running_shells);
+    drop(guard);
+}
+
+fn send_tool_failure(
+    invoke: tau_proto::ToolStarted,
+    failure: crate::display::ToolFailure,
+    tx: &mpsc::Sender<Frame>,
+) {
+    let crate::display::ToolFailure {
+        message,
+        details,
+        display,
+    } = failure;
+    let _ = tx.send(Frame::Event(Event::ToolError(tau_proto::ToolError {
+        call_id: invoke.call_id,
+        tool_name: invoke.tool_name,
+        tool_type: tau_proto::ToolType::Function,
+        message,
+        details: details.map(|details| *details),
+        display: Some(*display),
+        originator: invoke.originator,
+    })));
 }
 
 /// Execute a single tool invocation and send the response event(s).
@@ -601,6 +759,7 @@ fn dispatch_cancellable_shell_tool(
         tool_name: invoke.tool_name.clone(),
         message: Some("running shell command".to_owned()),
         progress: None,
+        display: None,
     })));
 
     let event = match crate::tools::shell::run_command_cancellable(
@@ -617,7 +776,7 @@ fn dispatch_cancellable_shell_tool(
                 result: output.result,
                 kind: ToolResultKind::Final,
                 display: Some(output.display),
-                originator: tau_proto::PromptOriginator::User,
+                originator: invoke.originator.clone(),
             })
         }
         Ok(crate::tools::shell::CommandOutcome::Cancelled) => {
@@ -646,7 +805,7 @@ fn dispatch_cancellable_shell_tool(
                 message,
                 details: details.map(|details| *details),
                 display: Some(*display),
-                originator: tau_proto::PromptOriginator::User,
+                originator: invoke.originator.clone(),
             })
         }
     };
@@ -712,7 +871,19 @@ fn is_shell_tool(name: &str) -> bool {
             | LS_TOOL_NAME
             | SHELL_TOOL_NAME
             | GPT_SHELL_TOOL_NAME
+            | DIR_LOCK_TOOL_NAME
     ) || is_echo_tool(name)
+}
+
+fn is_dir_lock_update_tool(name: &str) -> bool {
+    matches!(
+        name,
+        WRITE_TOOL_NAME
+            | EDIT_TOOL_NAME
+            | APPLY_PATCH_TOOL_NAME
+            | SHELL_TOOL_NAME
+            | GPT_SHELL_TOOL_NAME
+    )
 }
 
 #[cfg(any(test, feature = "echo-agent"))]

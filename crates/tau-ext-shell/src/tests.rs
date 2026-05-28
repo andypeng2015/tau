@@ -16,6 +16,7 @@ use crate::agents::{discover_agents_files_from, discover_agents_files_from_roots
 use crate::argument::{
     cbor_map_int, cbor_map_text, optional_argument_bool, optional_argument_text,
 };
+use crate::dir_lock::DIR_LOCK_TOOL_NAME;
 use crate::tools::edit::edit_file;
 use crate::tools::find::run_find;
 use crate::tools::grep::{RipgrepError, classify_ripgrep_stderr, grep_result_map, run_grep};
@@ -158,6 +159,48 @@ fn spawn_extension() -> (
     )
 }
 
+fn cbor_map(entries: Vec<(&str, CborValue)>) -> CborValue {
+    CborValue::Map(
+        entries
+            .into_iter()
+            .map(|(key, value)| (CborValue::Text(key.to_owned()), value))
+            .collect(),
+    )
+}
+
+fn cbor_text_map(entries: Vec<(&str, &str)>) -> CborValue {
+    cbor_map(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key, CborValue::Text(value.to_owned())))
+            .collect(),
+    )
+}
+
+fn send_dir_lock_config(writer: &mut EventWriter<BufWriter<UnixStream>>, enable: bool) {
+    writer
+        .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
+            config: cbor_map(vec![(
+                "dir_lock",
+                cbor_map(vec![("enable", CborValue::Bool(enable))]),
+            )]),
+            state_dir: None,
+            secrets: Default::default(),
+        })))
+        .expect("configure dir_lock");
+    writer.flush().expect("flush config");
+}
+
+fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue, agent_id: &str) -> Event {
+    Event::ToolStarted(ToolStarted {
+        call_id: tau_proto::ToolCallId::new(call_id),
+        tool_name: tau_proto::ToolName::new(tool_name),
+        arguments,
+        agent_id: tau_proto::AgentId::new(agent_id),
+        originator: tau_proto::PromptOriginator::User,
+    })
+}
+
 /// Consumes startup events (tool registers). The hello/subscribe/ready
 /// messages are filtered out by the test-side `EventReader` wrapper.
 fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
@@ -167,6 +210,7 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
         EventName::TOOL_REGISTER,                     // write
         EventName::TOOL_REGISTER,                     // edit
         EventName::TOOL_REGISTER,                     // apply_patch
+        EventName::TOOL_REGISTER,                     // dir_lock
         EventName::TOOL_REGISTER,                     // grep
         EventName::TOOL_REGISTER,                     // find
         EventName::TOOL_REGISTER,                     // ls
@@ -188,7 +232,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
 
     let mut found_echo_disabled = false;
     let mut found_gpt_shell_visible_name = false;
-    for _ in 0..10 {
+    for _ in 0..11 {
         let event = reader
             .read_event()
             .expect("read")
@@ -234,6 +278,7 @@ fn shell_tool_cancel_request_stops_running_command_quickly() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("sleep 30".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke shell");
@@ -273,15 +318,208 @@ fn shell_tool_cancel_request_stops_running_command_quickly() {
 }
 
 #[test]
-fn startup_registers_shell_schemas_with_update_mode_cwd_and_timeout_minimum() {
+fn startup_registers_dir_lock_disabled_by_default() {
+    let (mut reader, mut writer) = spawn_extension();
+
+    let mut found_dir_lock = false;
+    for _ in 0..11 {
+        let event = reader
+            .read_event()
+            .expect("read")
+            .expect("startup event should arrive");
+        let Event::ToolRegister(register) = event else {
+            continue;
+        };
+        if register.tool.name == DIR_LOCK_TOOL_NAME {
+            assert!(!register.tool.enabled_by_default);
+            assert_eq!(
+                register.tool.execution_mode,
+                tau_proto::ToolExecutionMode::Shared
+            );
+            found_dir_lock = true;
+        }
+    }
+    assert!(found_dir_lock, "expected dir_lock registration");
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn dir_lock_config_re_registers_tool_enabled_by_default() {
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+    send_dir_lock_config(&mut writer, true);
+
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolRegister(register)) if register.tool.name == DIR_LOCK_TOOL_NAME => {
+                assert!(register.tool.enabled_by_default);
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before dir_lock re-registration"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn dir_lock_tool_is_disabled_without_config() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "lock-disabled",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &tempdir.path().display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush invoke");
+
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolError(error)) if error.call_id.as_str() == "lock-disabled" => {
+                assert!(error.message.contains("dir_lock is disabled"));
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before dir_lock error"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn dir_lock_blocks_conflicting_write_until_unlock() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let write_path = lock_dir.join("file.txt");
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+    send_dir_lock_config(&mut writer, true);
+
+    writer
+        .write_event(&tool_started(
+            "lock-root",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => break,
+            Some(_) => continue,
+            None => panic!("extension closed before lock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "blocked-write",
+            WRITE_TOOL_NAME,
+            cbor_text_map(vec![
+                ("path", &write_path.display().to_string()),
+                ("content", "hello"),
+            ]),
+            "agent-b",
+        ))
+        .expect("write");
+    writer.flush().expect("flush write");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolProgress(progress)) if progress.call_id.as_str() == "blocked-write" => {
+                assert!(
+                    progress
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains(lock_dir.to_str().unwrap()))
+                );
+                break;
+            }
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-write" => {
+                panic!("write completed before conflicting lock was released: {result:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before write progress"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "unlock-root",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "unlock"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock unlock");
+    writer.flush().expect("flush unlock");
+
+    let mut saw_unlock = false;
+    let mut saw_write = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !(saw_unlock && saw_write) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for unlock/write"
+        );
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "unlock-root" => {
+                saw_unlock = true;
+            }
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-write" => {
+                saw_write = true;
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before write result"),
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(&write_path).expect("written file"),
+        "hello"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn startup_registers_shell_schemas_with_shared_mode_cwd_and_timeout_minimum() {
     // The model-visible schema must advertise the implemented working-directory
-    // argument, update-mode scheduling, and reject negative timeouts before
-    // invocation.
+    // argument and reject negative timeouts before invocation. Directory update
+    // coordination is handled inside ext-shell when dir_lock is enabled, not by
+    // harness execution modes.
     let (mut reader, mut writer) = spawn_extension();
 
     let mut found_shell = false;
     let mut found_gpt_shell = false;
-    for _ in 0..10 {
+    for _ in 0..11 {
         let event = reader
             .read_event()
             .expect("read")
@@ -292,7 +530,7 @@ fn startup_registers_shell_schemas_with_update_mode_cwd_and_timeout_minimum() {
         if register.tool.name == SHELL_TOOL_NAME || register.tool.name == GPT_SHELL_TOOL_NAME {
             assert_eq!(
                 register.tool.execution_mode,
-                tau_proto::ToolExecutionMode::Update
+                tau_proto::ToolExecutionMode::Shared
             );
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let properties = &parameters["properties"];
@@ -319,7 +557,7 @@ fn startup_registers_shell_cwd_prompt_fragment() {
 
     let mut found_fragment = false;
     let mut saw_tool_fragment = false;
-    for _ in 0..11 {
+    for _ in 0..12 {
         let event = reader
             .read_event()
             .expect("read")
@@ -700,6 +938,7 @@ fn extension_reads_file() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(file_path.display().to_string()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -734,6 +973,7 @@ fn extension_read_missing_file_reports_error() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text("/definitely/missing/file.txt".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1128,6 +1368,7 @@ fn extension_writes_file() {
                     CborValue::Text("written content".to_owned()),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1173,6 +1414,7 @@ fn extension_write_missing_parent_reports_short_error() {
                     CborValue::Text("x".to_owned()),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1212,6 +1454,7 @@ fn extension_write_directory_reports_short_error() {
                     CborValue::Text("x".to_owned()),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1253,6 +1496,7 @@ fn extension_writes_file_creates_directories() {
                     CborValue::Text("deep content".to_owned()),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1289,6 +1533,7 @@ fn extension_apply_patch_updates_file() {
             call_id: "call-patch-1".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1335,6 +1580,7 @@ fn extension_apply_patch_reports_context_mismatch_without_writing() {
             call_id: "call-patch-2".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1381,6 +1627,7 @@ fn extension_apply_patch_move_renames_file() {
             call_id: "call-patch-3".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1420,6 +1667,7 @@ fn extension_apply_patch_applies_multiple_operations() {
             call_id: "call-patch-4".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1473,6 +1721,7 @@ fn extension_apply_patch_applies_multiple_chunks() {
             call_id: "call-patch-5".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1510,6 +1759,7 @@ fn extension_apply_patch_failure_after_partial_success_leaves_changes() {
             call_id: "call-patch-5b".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1564,6 +1814,7 @@ fn extension_apply_patch_requires_existing_file_for_update() {
             call_id: "call-patch-6".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1610,6 +1861,7 @@ fn extension_apply_patch_add_overwrites_existing_file() {
             call_id: "call-patch-7".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1646,6 +1898,7 @@ fn extension_apply_patch_update_appends_trailing_newline() {
             call_id: "call-patch-8".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1691,6 +1944,7 @@ fn edit_read_failure_reports_short_reason() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1742,6 +1996,7 @@ fn edit_rejects_empty_old_text() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1796,6 +2051,7 @@ fn edit_rejects_negative_max_matches_with_path_args() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1892,6 +2148,7 @@ fn edit_can_replace_up_to_max_matches() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1945,6 +2202,7 @@ fn edit_defaults_to_replacing_first_match() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -1995,6 +2253,7 @@ fn edit_errors_for_no_matches() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2057,6 +2316,7 @@ fn edit_restricts_matches_to_line_range() {
                     ])]),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2112,6 +2372,7 @@ fn extension_finds_files() {
                     CborValue::Text(tempdir.path().display().to_string()),
                 ),
             ]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2152,6 +2413,7 @@ fn extension_lists_directory_contents() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(tempdir.path().display().to_string()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2187,6 +2449,7 @@ fn shell_tool_reports_progress_and_success() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf hello".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2224,6 +2487,7 @@ fn gpt_shell_tool_reports_progress_and_success() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf hello".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2286,6 +2550,7 @@ fn shell_tool_applies_configured_prefix_and_command() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf %s \"$TAU_SHELL_PREFIX_TEST\"".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");
@@ -2823,6 +3088,7 @@ fn shell_tool_reports_failures_with_details() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("exit 7".to_owned()),
             )]),
+            agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("invoke");

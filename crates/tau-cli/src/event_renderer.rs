@@ -3519,6 +3519,33 @@ impl EventRenderer {
         if state.is_some_and(|s| s.is_sub_agent) {
             return;
         }
+
+        if let Some(progress_display) = progress.display.as_ref() {
+            let mut update = None;
+            if let Some(state) = self.tool_calls.get_mut(progress.call_id.as_str())
+                && let Some(block_id) = state.block_id
+            {
+                let mut display =
+                    format_tool_call(progress.tool_name.as_str(), Some(progress_display));
+                if let Some(duration) = Self::live_tool_duration(state) {
+                    Self::upsert_tool_duration_suffix(&mut display, duration);
+                }
+                state.live_display = Some(display.clone());
+                update = Some((block_id, display));
+            }
+            if let Some((block_id, display)) = update {
+                let block = self.render_tool_history_block(&display);
+                self.handle.set_block(block_id, block);
+                if self.model_status_block.is_some() {
+                    self.render_model_status();
+                } else {
+                    self.handle.redraw();
+                }
+                return;
+            }
+        }
+
+        let state = self.tool_calls.get(progress.call_id.as_str());
         if state.is_none_or(|s| s.block_id.is_none()) {
             let text = tau_harness::format_tool_progress(progress);
             self.handle.print_output(

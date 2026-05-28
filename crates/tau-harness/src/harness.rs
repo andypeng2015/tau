@@ -67,9 +67,7 @@ use crate::prompt::{
 };
 use crate::secrets::{load_secret_sources, resolve_extension_secrets};
 use crate::settings::{Config, load_harness_settings_or_warn};
-use crate::tool_turn::{
-    ForegroundAction, PendingToolInvocation, ToolTurnLockScope, ToolTurnMachine,
-};
+use crate::tool_turn::{ForegroundAction, PendingToolInvocation, ToolTurnMachine};
 use crate::turn::{PromptSubmission, TurnState};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -748,11 +746,6 @@ struct PendingStartAgentRequest {
     pending_agent_messages: VecDeque<PendingPrompt>,
 }
 
-#[derive(Debug)]
-struct ActiveStartAgentRequest {
-    execution_mode: tau_proto::ToolExecutionMode,
-}
-
 #[derive(Clone, Debug)]
 struct PendingActionInvocation {
     provider_connection_id: tau_proto::ConnectionId,
@@ -1074,15 +1067,8 @@ pub struct Harness {
     /// In-flight auto-compaction summaries keyed by the temporary
     /// side-conversation that is generating them.
     pending_compactions: std::collections::HashMap<AgentId, PendingCompaction>,
-    /// Extension-started side-agent agents waiting for the harness-owned
-    /// global execution-mode scheduler. This queue is independent from normal
-    /// per-agent tool scheduling and applies to every
-    /// `StartAgentRequest`, whether it came from delegate, notifications,
-    /// or a future extension.
+    /// Extension-started side-agent agents waiting for dispatch.
     pending_start_agent_requests: VecDeque<PendingStartAgentRequest>,
-    /// Active extension-started side-agent agents participating in the
-    /// global sub-agent scheduler.
-    active_start_agent_requests: std::collections::HashMap<AgentId, ActiveStartAgentRequest>,
     /// State for harness-owned delegate/wait tools.
     pub(crate) subagents: SubagentToolState,
     /// Directory layout (config + state) the harness reads and writes.
@@ -1512,7 +1498,6 @@ impl Harness {
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             pending_start_agent_requests: VecDeque::new(),
-            active_start_agent_requests: std::collections::HashMap::new(),
             subagents: SubagentToolState::default(),
             dirs,
         };
@@ -1753,7 +1738,6 @@ impl Harness {
             canceled_prompts: std::collections::HashSet::new(),
             pending_compactions: std::collections::HashMap::new(),
             pending_start_agent_requests: VecDeque::new(),
-            active_start_agent_requests: std::collections::HashMap::new(),
             subagents: SubagentToolState::default(),
             dirs,
         };
@@ -5573,13 +5557,7 @@ impl Harness {
         }
     }
 
-    /// Queue an extension-started sub-agent request onto the harness-owned
-    /// global execution-mode scheduler.
-    ///
-    /// Normal tool calls still use the per-agent scheduler in
-    /// `drain_pending_tool_invocations`. This queue is only for
-    /// `StartAgentRequest` side agents, so delegate, notifications, and
-    /// future extension-owned sub-agents all share one global lane.
+    /// Queue and dispatch an extension-started sub-agent request.
     fn handle_start_agent_request(
         &mut self,
         source_id: &str,
@@ -5685,25 +5663,9 @@ impl Harness {
         }))
     }
 
-    /// Dispatch queued `StartAgentRequest`s while the global sub-agent
-    /// scheduler allows them through.
-    ///
-    /// Rules:
-    /// - Shared may start when no incompatible active Exclusive sub-agent
-    ///   exists.
-    /// - Update may start when no incompatible active Update or Exclusive
-    ///   sub-agent exists.
-    /// - Exclusive may start when no incompatible active sub-agent exists.
-    /// - FIFO is preserved for independent work: once an Update or Exclusive
-    ///   reaches the front and is blocked, later independent compatible
-    ///   requests do not jump it.
-    /// - Reentrant descendants of an active Exclusive are allowed to pass as
-    ///   part of that exclusive subtree. Without this exception, an exclusive
-    ///   delegate that asks its own sub-agent to delegate would deadlock behind
-    ///   itself. Update does not get this exception because it is only meant to
-    ///   share with Shared work. Descendancy is computed from the side agent's
-    ///   stored parent agent, with the older `parent_tool_call_id` mapping as a
-    ///   fallback for manually seeded tests.
+    /// Dispatch queued `StartAgentRequest`s in FIFO order. Directory/update
+    /// coordination is owned by extensions such as `tau-ext-shell`, not by the
+    /// harness.
     pub(crate) fn drain_pending_start_agent_requests(&mut self) -> Result<(), HarnessError> {
         loop {
             let Some(idx) = self.next_dispatchable_start_agent_request_index() else {
@@ -5718,99 +5680,22 @@ impl Harness {
     }
 
     fn next_dispatchable_start_agent_request_index(&self) -> Option<usize> {
-        let mut blocked_barrier_ahead = false;
-        for (idx, pending) in self.pending_start_agent_requests.iter().enumerate() {
-            let can_start = self.start_agent_request_can_start(pending);
-            if !can_start {
-                if pending.query.execution_mode.blocks_fifo_when_waiting() {
-                    blocked_barrier_ahead = true;
-                }
-                continue;
-            }
-            if blocked_barrier_ahead && !self.query_belongs_to_active_exclusive(&pending.parent_cid)
-            {
-                continue;
-            }
-            return Some(idx);
-        }
-        None
+        (!self.pending_start_agent_requests.is_empty()).then_some(0)
     }
 
-    fn start_agent_request_can_start(&self, pending: &PendingStartAgentRequest) -> bool {
-        self.active_start_agent_requests
-            .iter()
-            .all(|(active_cid, active)| {
-                !self.active_start_agent_request_is_incompatible(
-                    active_cid,
-                    active,
-                    &pending.parent_cid,
-                    pending.query.execution_mode,
-                )
-            })
-    }
-
-    fn active_start_agent_request_is_incompatible(
-        &self,
-        active_cid: &AgentId,
-        active: &ActiveStartAgentRequest,
-        candidate_parent_cid: &AgentId,
-        candidate_mode: tau_proto::ToolExecutionMode,
-    ) -> bool {
-        if let Some(exclusive_root) = self.active_exclusive_ancestor_for(candidate_parent_cid)
-            && self.agent_descends_from(active_cid, &exclusive_root)
+    /// Compatibility hook for older teardown paths. Start-agent dispatch no
+    /// longer holds harness-side update/exclusive locks, so release only tries
+    /// to drain any queued requests left by earlier errors.
+    fn release_start_agent_request(&mut self, _cid: &AgentId) {
+        if !self.pending_start_agent_requests.is_empty()
+            && let Err(error) = self.drain_pending_start_agent_requests()
         {
-            return false;
+            self.emit_info(&format!("queued start-agent dispatch failed: {error}"));
         }
-        !candidate_mode.can_overlap_with(active.execution_mode)
-    }
-
-    fn query_belongs_to_active_exclusive(&self, parent_cid: &AgentId) -> bool {
-        self.active_exclusive_ancestor_for(parent_cid).is_some()
-    }
-
-    fn active_exclusive_ancestor_for(&self, cid: &AgentId) -> Option<AgentId> {
-        self.active_start_agent_requests
-            .iter()
-            .find_map(|(active_cid, active)| {
-                matches!(
-                    active.execution_mode,
-                    tau_proto::ToolExecutionMode::Exclusive
-                )
-                .then_some(active_cid)
-                .filter(|active_cid| self.agent_descends_from(cid, active_cid))
-                .cloned()
-            })
-    }
-
-    fn agent_descends_from(&self, cid: &AgentId, ancestor: &AgentId) -> bool {
-        let mut current = Some(cid.clone());
-        let mut seen = std::collections::HashSet::new();
-        while let Some(current_cid) = current {
-            if &current_cid == ancestor {
-                return true;
-            }
-            if !seen.insert(current_cid.clone()) {
-                return false;
-            }
-            current = self.agents.get(&current_cid).and_then(|conv| {
-                conv.parent_agent_id
-                    .as_ref()
-                    .filter(|parent_cid| self.agents.contains_key(*parent_cid))
-                    .cloned()
-                    .or_else(|| {
-                        conv.parent_tool_call_id
-                            .as_ref()
-                            .and_then(|call_id| self.tool_agents.get(call_id))
-                            .cloned()
-                    })
-            });
-        }
-        false
     }
 
     /// Spawn a fresh side agent runtime for an extension's
-    /// [`tau_proto::StartAgentRequest`] and dispatch it after the global
-    /// scheduler admits it.
+    /// [`tau_proto::StartAgentRequest`] and dispatch it after FIFO admission.
     ///
     /// Two forking modes depending on whether the request is tool-backed:
     ///
@@ -5845,14 +5730,13 @@ impl Harness {
             pending_agent_messages,
         } = pending;
         let parent_call_id = query.tool_call_id.clone();
+        let is_tool_backed = parent_call_id.is_some();
         let task_name = query.task_name.clone();
         let conversation_role = if query.tool_call_id.is_some() || query.role.is_some() {
             Some(role)
         } else {
             None
         };
-        let execution_mode = query.execution_mode;
-        let delegate_execution_mode = parent_call_id.as_ref().map(|_| execution_mode);
         let parent_agent_id = self
             .agents
             .contains_key(&parent_cid)
@@ -5888,14 +5772,11 @@ impl Harness {
         conv.delegate_input_stats = query.input_stats;
         conv.role = conversation_role;
         conv.agent_id = Some(agent_id.clone());
-        conv.delegate_execution_mode = delegate_execution_mode;
         conv.pending_prompts = pending_agent_messages;
         self.agent_routes.insert(agent_id.clone(), cid.clone());
         self.agents.insert(cid.clone(), conv);
         self.ensure_loaded_agent_for_agent(&cid, &agent_id);
-        self.active_start_agent_requests
-            .insert(cid.clone(), ActiveStartAgentRequest { execution_mode });
-        if delegate_execution_mode.is_some() {
+        if is_tool_backed {
             self.set_agent_state(&agent_id, AgentState::ActiveDelegated);
         }
 
@@ -5924,16 +5805,7 @@ impl Harness {
             conv.parent_tool_call_id = None;
             conv.parent_agent_id = None;
             conv.task_name = None;
-            conv.delegate_execution_mode = None;
             conv.delegate_input_stats = Default::default();
-        }
-    }
-
-    fn release_start_agent_request(&mut self, cid: &AgentId) {
-        if self.active_start_agent_requests.remove(cid).is_some()
-            && let Err(error) = self.drain_pending_start_agent_requests()
-        {
-            self.emit_info(&format!("queued start-agent dispatch failed: {error}"));
         }
     }
 
@@ -5950,7 +5822,6 @@ impl Harness {
             return;
         };
         let role = conv.role.clone();
-        let execution_mode = conv.delegate_execution_mode;
         let ctx_window = conv.context_input_tokens.and_then(|_| {
             self.model_for_agent_role(conv)
                 .as_ref()
@@ -5969,7 +5840,7 @@ impl Harness {
             call_id,
             task_name,
             role,
-            execution_mode,
+            execution_mode: None,
             ctx_percent: conv.context_percent_used,
             ctx_input_tokens: conv.context_input_tokens,
             ctx_window,
@@ -6719,7 +6590,6 @@ impl Harness {
         self.pending_tool_availability_notices.clear();
         self.unavailable_tool_notices_delivered.clear();
         self.pending_start_agent_requests.clear();
-        self.active_start_agent_requests.clear();
         self.subagents = SubagentToolState::default();
 
         // Token and context accounting are session-scoped. Reset them
@@ -7343,7 +7213,6 @@ impl Harness {
         {
             let session_id = conv.session_id.clone();
             self.unload_agent_from_session_if_loaded(&session_id, &agent_id);
-            self.active_start_agent_requests.remove(cid);
             self.agent_routes.remove(&agent_id);
             self.agent_states.remove(&agent_id);
             self.stopped_agent_ids.insert(agent_id);
@@ -8480,22 +8349,15 @@ impl Harness {
             ) && conv.parent_tool_call_id.is_none()
         });
 
-        let mut normalized_calls: Vec<(
-            AgentToolCall,
-            tau_proto::ToolExecutionMode,
-            BackgroundSupport,
-            ToolTurnLockScope,
-        )> = Vec::new();
+        let mut normalized_calls: Vec<(AgentToolCall, BackgroundSupport)> = Vec::new();
         if requested_tool_calls {
             normalized_calls = tool_calls
                 .iter()
                 .map(|call| {
                     let call = call.clone();
-                    let mode = self.resolve_tool_execution_mode_for_call(&call);
                     let background_support =
                         self.resolve_tool_background_support(call.name.as_str());
-                    let lock_scope = self.resolve_tool_turn_lock_scope(call.name.as_str());
-                    (call, mode, background_support, lock_scope)
+                    (call, background_support)
                 })
                 .collect();
             let mut normalized_calls_iter = normalized_calls.iter();
@@ -8504,7 +8366,7 @@ impl Harness {
                 .into_iter()
                 .map(|item| match item {
                     ContextItem::ToolCall(_) => {
-                        let (call, _, _, _) = normalized_calls_iter
+                        let (call, _) = normalized_calls_iter
                             .next()
                             .expect("tool-call normalization count should match output items");
                         ContextItem::ToolCall(ToolCallItem {
@@ -8519,7 +8381,7 @@ impl Harness {
                 .collect();
             tool_calls = normalized_calls
                 .iter()
-                .map(|(call, _, _, _)| call.clone())
+                .map(|(call, _)| call.clone())
                 .collect();
         }
 
@@ -8680,16 +8542,16 @@ impl Harness {
             // Normalize empty call_ids to a synthetic one. Models
             // sometimes emit hallucinated tool calls with both a
             // missing name *and* a missing id; an empty id would
-            // collide with itself in `in_flight_tool_execution_modes` /
+            // collide with itself in `in_flight_tool_invocations` /
             // `pending_tool_sessions`, and would later render into
             // conversation history as an empty `call_id` which the
             // OpenAI Responses API rejects with
             // `input[N].call_id: empty string`. Fix it at the boundary.
             let remaining_calls: Vec<ToolCallId> = normalized_calls
                 .iter()
-                .map(|(call, _, _, _)| call.id.clone())
+                .map(|(call, _)| call.id.clone())
                 .collect();
-            for (call, _, _, _) in &normalized_calls {
+            for (call, _) in &normalized_calls {
                 self.pending_tools.insert(
                     call.id.clone(),
                     PendingTool {
@@ -8710,12 +8572,11 @@ impl Harness {
                 self.apply_pending_cancel_for_agent(&cid);
                 return Ok(());
             }
-            // Enqueue in the order the agent emitted them. Dispatch is done by
-            // `drain_pending_tool_invocations`, which respects the execution
-            // mode ordering rules.
-            for (call, mode, background_support, lock_scope) in normalized_calls {
-                self.tool_turn
-                    .push(cid.clone(), call, mode, background_support, lock_scope);
+            // Queue all tool calls emitted by the provider response. The turn
+            // machine preserves provider order while tracking foreground and
+            // background completion state.
+            for (call, background_support) in normalized_calls {
+                self.tool_turn.push(cid.clone(), call, background_support);
             }
             self.drain_pending_tool_invocations()?;
         } else {
@@ -8793,17 +8654,6 @@ impl Harness {
         }
     }
 
-    /// Returns the execution mode of a tool name.
-    ///
-    /// Falls back to `Exclusive` for unknown tools so an unregistered
-    /// name does not accidentally parallelize.
-    fn resolve_tool_execution_mode(&self, name: &str) -> tau_proto::ToolExecutionMode {
-        self.registry
-            .resolve_provider(name)
-            .map(|provider| provider.tool.execution_mode)
-            .unwrap_or(tau_proto::ToolExecutionMode::Exclusive)
-    }
-
     /// Returns the effective foreground/background support for a tool name.
     /// Missing registration metadata uses the protocol default of
     /// `MinForegroundSeconds(5)`.
@@ -8812,30 +8662,6 @@ impl Harness {
             .resolve_provider(name)
             .and_then(|provider| provider.tool.background_support)
             .unwrap_or_else(BackgroundSupport::default_effective)
-    }
-
-    /// Same as [`resolve_tool_execution_mode`] for a concrete tool call.
-    ///
-    /// `delegate` registers as `Shared` so multiple sub-agent requests can be
-    /// handed to the extension from one parent turn. The delegate call's
-    /// `execution_mode` argument belongs to the emitted `StartAgentRequest`,
-    /// not to this parent-conversation tool invocation; per-delegation
-    /// exclusivity is enforced later by the harness-owned
-    /// `StartAgentRequest` scheduler.
-    fn resolve_tool_execution_mode_for_call(
-        &self,
-        call: &AgentToolCall,
-    ) -> tau_proto::ToolExecutionMode {
-        self.resolve_tool_execution_mode(call.name.as_str())
-    }
-
-    fn resolve_tool_turn_lock_scope(&self, name: &str) -> ToolTurnLockScope {
-        self.registry
-            .resolve_provider(name)
-            .filter(|provider| provider.tool.name.as_str() == "delegate")
-            .map_or(ToolTurnLockScope::Normal, |_| {
-                ToolTurnLockScope::DelegateLauncher
-            })
     }
 
     /// Drain scheduler-selected tool invocations into harness side effects.
@@ -8851,9 +8677,7 @@ impl Harness {
                 PendingToolInvocation {
                     conversation_id,
                     invocation,
-                    execution_mode: _,
                     background_support: _,
-                    lock_scope: _,
                 },
                 foreground_action,
             )) = self.tool_turn.pop_dispatchable(Instant::now())
@@ -9436,6 +9260,21 @@ impl Harness {
         self.clear_tool_call_tracking(call_id.as_str());
     }
 
+    fn tool_owner_agent_id(&self, cid: &AgentId) -> AgentId {
+        self.agents
+            .get(cid)
+            .and_then(|conv| conv.agent_id.clone())
+            .map(AgentId::from)
+            .unwrap_or_else(|| cid.clone())
+    }
+
+    fn tool_owner_originator(&self, cid: &AgentId) -> PromptOriginator {
+        self.agents
+            .get(cid)
+            .map(|conv| conv.originator.clone())
+            .unwrap_or_default()
+    }
+
     fn execute_agent_tool_call(
         &mut self,
         cid: &AgentId,
@@ -9452,6 +9291,8 @@ impl Harness {
                 unavailable_tool_error_message(&tool_name)
             };
             let call_id: ToolCallId = call.id.clone();
+            let owner_agent_id = self.tool_owner_agent_id(cid);
+            let owner_originator = self.tool_owner_originator(cid);
             self.tool_agents.insert(call_id.clone(), cid.clone());
             self.pending_tools.insert(
                 call_id.clone(),
@@ -9468,7 +9309,8 @@ impl Harness {
                 tool_name: tool_name.clone(),
                 tool_type: call.tool_type,
                 arguments: call.arguments.clone(),
-                originator: tau_proto::PromptOriginator::User,
+                agent_id: owner_agent_id,
+                originator: owner_originator.clone(),
             };
             self.publish_for_agent(cid, Event::ToolRequest(request));
             self.publish_terminal_tool_error(
@@ -9481,7 +9323,7 @@ impl Harness {
                     message,
                     details: None,
                     display: None,
-                    originator: tau_proto::PromptOriginator::User,
+                    originator: owner_originator,
                 },
             );
             self.on_tool_call_complete(call_id.as_str());
@@ -9501,6 +9343,8 @@ impl Harness {
         }
 
         let call_id: ToolCallId = call.id.clone();
+        let owner_agent_id = self.tool_owner_agent_id(cid);
+        let owner_originator = self.tool_owner_originator(cid);
 
         // Track conversation attribution before publishing — the
         // publish path persists the `ToolRequest` into the session
@@ -9521,7 +9365,8 @@ impl Harness {
             tool_name: visible_tool_name.clone(),
             tool_type: call.tool_type,
             arguments: call.arguments.clone(),
-            originator: tau_proto::PromptOriginator::User,
+            agent_id: owner_agent_id.clone(),
+            originator: owner_originator.clone(),
         };
         self.publish_for_agent(cid, Event::ToolRequest(published_request));
         let request = ToolRequest {
@@ -9529,7 +9374,8 @@ impl Harness {
             tool_name: internal_tool_name.clone(),
             tool_type: call.tool_type,
             arguments: call.arguments.clone(),
-            originator: tau_proto::PromptOriginator::User,
+            agent_id: owner_agent_id.clone(),
+            originator: owner_originator.clone(),
         };
 
         match self.registry.route_tool_request(request) {
@@ -10023,9 +9869,9 @@ fn shell_command_payload(command: &str) -> Option<tau_proto::ToolDisplayPayload>
 
 /// Build the [`ToolDisplay`] descriptor the renderer paints for a
 /// running `delegate` tool block. Carries the sub-task name as the
-/// args label and two progress counters (tools and context); the role and
-/// execution mode stay on [`tau_proto::DelegateProgress`] so the UI can paint
-/// them as dedicated chips. The tools counter is completed/total so
+/// args label and two progress counters (tools and context); the role stays on
+/// [`tau_proto::DelegateProgress`] so the UI can paint it as a dedicated chip.
+/// The tools counter is completed/total so
 /// users can infer the currently running count as `total - completed`.
 /// The trailing chip is set to
 /// [`ToolDisplayStatus::InProgress`] so the renderer paints

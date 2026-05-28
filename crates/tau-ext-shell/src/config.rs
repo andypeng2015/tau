@@ -9,6 +9,15 @@ use crate::isolation::apply_command_isolation;
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ExtConfig {
     pub(crate) shell: ShellConfig,
+    pub(crate) dir_lock: DirLockConfig,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct DirLockConfig {
+    /// Enables the optional agent-visible `dir_lock` tool and makes mutating
+    /// ext-shell tools participate in directory update locking.
+    pub(crate) enable: bool,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

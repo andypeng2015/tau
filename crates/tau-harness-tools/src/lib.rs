@@ -168,7 +168,7 @@ impl BuiltinTools {
             query_id: query_id.clone(),
             instruction: delegate_instruction(&self_agent_id, &parsed.prompt),
             role: parsed.role,
-            execution_mode: parsed.execution_mode,
+            execution_mode: ToolExecutionMode::Shared,
             input_stats: ToolDisplayStats::for_text(&parsed.prompt),
             tool_call_id: Some(call_id.clone()),
             task_name: Some(parsed.task_name),
@@ -873,7 +873,6 @@ fn parse_message_args(arguments: &CborValue) -> Result<MessageArgs, String> {
 struct DelegateArgs {
     task_name: String,
     prompt: String,
-    execution_mode: ToolExecutionMode,
     role: Option<String>,
 }
 
@@ -883,7 +882,6 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
     };
     let mut prompt = None;
     let mut task_name = None;
-    let mut execution_mode = None;
     let mut role = None;
     for (k, v) in entries {
         let CborValue::Text(name) = k else { continue };
@@ -900,23 +898,12 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
                 CborValue::Text(text) => role = Some(text.clone()),
                 _ => return Err("`role` must be a string".to_owned()),
             },
-            "execution_mode" => match v {
-                CborValue::Text(text) if text == "shared" => {
-                    execution_mode = Some(ToolExecutionMode::Shared)
-                }
-                CborValue::Text(text) if text == "update" => {
-                    execution_mode = Some(ToolExecutionMode::Update)
-                }
-                CborValue::Text(text) if text == "exclusive" => {
-                    execution_mode = Some(ToolExecutionMode::Exclusive)
-                }
-                CborValue::Text(_) => {
-                    return Err(
-                        "`execution_mode` must be `shared`, `update`, or `exclusive`".to_owned(),
-                    );
-                }
-                _ => return Err("`execution_mode` must be a string".to_owned()),
-            },
+            "execution_mode" => {
+                return Err(
+                    "`execution_mode` is no longer supported; use `dir_lock` for filesystem update coordination"
+                        .to_owned(),
+                );
+            }
             _ => {}
         }
     }
@@ -931,7 +918,6 @@ fn parse_delegate_args(arguments: &CborValue) -> Result<DelegateArgs, String> {
     Ok(DelegateArgs {
         task_name,
         prompt,
-        execution_mode: execution_mode.unwrap_or(ToolExecutionMode::Shared),
         role: role.filter(|role| !role.trim().is_empty()),
     })
 }
@@ -1062,7 +1048,7 @@ fn skill_tool_spec() -> ToolSpec {
 }
 
 fn delegate_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(DELEGATE_TOOL_NAME), model_visible_name: None, description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"execution_mode":{"type":"string","enum":["shared","update","exclusive"],"description":"Default: `shared`."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(DELEGATE_TOOL_NAME), model_visible_name: None, description: Some("Delegate a self-contained sub-task to a fresh sub-agent that runs with its own context and tools, and returns only its final text answer. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` headers/values. Pass `sub_agent_id` to `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short human-readable label for the sub-task (a few words, lowercase). Surfaced live to the user as `delegate [task_name]` while the sub-agent runs."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, execution_mode: ToolExecutionMode::Shared, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn message_tool_spec() -> ToolSpec {
@@ -1081,7 +1067,7 @@ fn wait_tool_spec() -> ToolSpec {
 mod tests {
     use super::*;
 
-    fn delegate_args_with_mode(mode: &str) -> CborValue {
+    fn delegate_args_with_execution_mode(mode: &str) -> CborValue {
         CborValue::Map(vec![
             (
                 CborValue::Text("task_name".to_owned()),
@@ -1126,13 +1112,10 @@ mod tests {
     }
 
     #[test]
-    fn delegate_tool_schema_advertises_update_execution_mode() {
+    fn delegate_tool_schema_omits_execution_mode() {
         let spec = delegate_tool_spec();
         let parameters = spec.parameters.expect("parameters");
-        assert_eq!(
-            parameters["properties"]["execution_mode"]["enum"],
-            serde_json::json!(["shared", "update", "exclusive"])
-        );
+        assert!(parameters["properties"].get("execution_mode").is_none());
     }
 
     #[test]
@@ -1156,22 +1139,15 @@ mod tests {
         assert_eq!(cbor_map_text(&value, "output"), Some("done"));
     }
 
-    /// Delegate accepts the `update` mode advertised in the tool schema and
-    /// forwards it to the global sub-agent scheduler.
+    /// Delegate no longer owns filesystem update coordination. Explicit old
+    /// `execution_mode` arguments fail loudly and point callers to `dir_lock`.
     #[test]
-    fn delegate_args_accept_update_execution_mode() {
-        let parsed = parse_delegate_args(&delegate_args_with_mode("update")).expect("parse");
-        assert_eq!(parsed.execution_mode, ToolExecutionMode::Update);
-    }
-
-    /// Bad mode diagnostics list every accepted spelling so model-visible tool
-    /// errors are actionable.
-    #[test]
-    fn delegate_args_execution_mode_error_mentions_update() {
-        let error = parse_delegate_args(&delegate_args_with_mode("mutating")).expect_err("error");
+    fn delegate_args_reject_execution_mode() {
+        let error =
+            parse_delegate_args(&delegate_args_with_execution_mode("update")).expect_err("error");
         assert_eq!(
             error,
-            "`execution_mode` must be `shared`, `update`, or `exclusive`"
+            "`execution_mode` is no longer supported; use `dir_lock` for filesystem update coordination"
         );
     }
 }
