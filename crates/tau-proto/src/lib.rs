@@ -146,14 +146,13 @@ pub struct ProviderName(String);
 /// Model name as understood by the provider (e.g.
 /// `"claude-sonnet-4-20250514"`, `"gpt-5.5"`, `"llama3.2:latest"`).
 ///
-/// Validated at construction: non-empty and no `/` (which would collide
-/// with the [`ModelId`] separator). Otherwise permissive — provider
-/// model IDs include `:`, `.`, `-`, `_`, etc.
+/// Validated at construction: non-empty. Otherwise permissive — provider
+/// model IDs include `/`, `:`, `.`, `-`, `_`, etc.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct ModelName(String);
 
 /// Qualified model identifier — a [`ProviderName`] and [`ModelName`]
-/// joined by `/` on the wire (e.g. `"openai/gpt-4o"`).
+/// joined by the first `/` on the wire (e.g. `"openai/gpt-4o"`).
 ///
 /// Round-trips through serde as a flat `"provider/model"` string so
 /// existing CBOR events, JSON5 config files and persisted session
@@ -305,11 +304,6 @@ impl ModelName {
     fn validate(name: &str) -> Result<(), ParseNameError> {
         if name.is_empty() {
             return Err(ParseNameError("model name must be non-empty".to_owned()));
-        }
-        if name.contains('/') {
-            return Err(ParseNameError(format!(
-                "model name '{name}' may not contain '/'"
-            )));
         }
         Ok(())
     }

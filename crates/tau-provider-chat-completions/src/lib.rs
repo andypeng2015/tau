@@ -1,5 +1,7 @@
 //! OpenAI-compatible Chat Completions backend helpers.
 
+pub mod openrouter;
+
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 
@@ -67,6 +69,9 @@ pub struct ChatCompletionsModel {
     /// Context window size surfaced to the harness.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
+    /// Optional model-specific compatibility overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<ChatCompletionsCompat>,
 }
 
 /// Compatibility switches for OpenAI-compatible Chat Completions APIs.
@@ -136,10 +141,13 @@ impl ChatCompletionsCompat {
 fn run_prompt<W: Write>(
     agent_prompt_id: &AgentPromptId,
     prompt: &tau_proto::AgentPromptCreated,
-    provider: ResolvedProvider,
+    mut provider: ResolvedProvider,
     model: ChatCompletionsModel,
     writer: &mut FrameWriter<W>,
 ) -> ProviderResponseFinished {
+    if let Some(model_compat) = model.compat {
+        provider.compat = model_compat;
+    }
     let mut empty_response_retries = 0_usize;
     loop {
         let result = {
@@ -239,7 +247,7 @@ pub fn models_for_provider(
             display_name: model.display_name.clone(),
             default_affinity: 0,
             context_window: model.context_window,
-            efforts: model_efforts(provider.compat),
+            efforts: model_efforts(model.compat.unwrap_or(provider.compat)),
             verbosities: vec![tau_proto::Verbosity::Medium],
             thinking_summaries: vec![ThinkingSummary::Off],
             supports_compaction: false,
@@ -624,6 +632,19 @@ fn apply_event(
 ) {
     if let Some(usage) = event.get("usage") {
         capture_usage(state, usage);
+    }
+    if let Some(error) = event.get("error")
+        && let Some(message) = error.get("message").and_then(|m| m.as_str())
+    {
+        if !state.text.is_empty() {
+            state.text.push_str("\n\n");
+        }
+        state
+            .text
+            .push_str(&format!("[OpenRouter Stream Error: {message}]"));
+        state.stop_reason = ProviderStopReason::Error;
+        on_update(&state.text, thinking_for_update(state));
+        return;
     }
     let Some(choice) = event["choices"]
         .as_array()

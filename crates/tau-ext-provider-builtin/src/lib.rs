@@ -22,6 +22,7 @@ use tau_proto::{
     ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason,
 };
 use tau_provider::storage::{AuthFile, ProviderStore};
+use tau_provider_chat_completions::openrouter::{OpenRouterProfile, fetch_openrouter_models};
 use tau_provider_chat_completions::{
     ChatCompletionsModel, ChatCompletionsProvider, models_for_provider as chat_models_for_provider,
     run_prompt_for_provider as run_chat_completions_prompt,
@@ -41,6 +42,9 @@ pub enum BuiltinProviderProfile {
     Chatgpt(ChatGptProfile),
     /// OpenAI-compatible Chat Completions provider.
     ChatCompletions(ChatCompletionsProvider),
+    /// OpenRouter provider using a wrapped Chat Completions backend.
+    #[serde(rename = "openrouter")]
+    OpenRouter(OpenRouterProfile),
 }
 
 /// ChatGPT/Codex provider profile.
@@ -126,12 +130,13 @@ fn cmd_add(args: &[String]) -> Result<(), Box<dyn Error>> {
         );
     }
     let kind: String = Input::new()
-        .with_prompt("Provider kind (chatgpt or chat-completions)")
+        .with_prompt("Provider kind (chatgpt, chat-completions, or openrouter)")
         .default("chatgpt".to_owned())
         .interact_text()?;
     match kind.trim() {
         "chatgpt" => cmd_add_chatgpt()?,
         "chat-completions" => cmd_add_chat_completions()?,
+        "openrouter" => cmd_add_openrouter()?,
         other => return Err(format!("unknown provider kind: {other}").into()),
     }
     Ok(())
@@ -179,6 +184,27 @@ fn chat_completions_add_compat() -> tau_provider_chat_completions::ChatCompletio
         max_completion_tokens: false,
         ..tau_provider_chat_completions::ChatCompletionsCompat::openai_defaults()
     }
+}
+
+fn cmd_add_openrouter() -> Result<(), Box<dyn Error>> {
+    let name = prompt_provider_name("openrouter")?;
+    let api_key: String = Input::new()
+        .with_prompt("API key")
+        .allow_empty(true)
+        .interact_text()?;
+    let models_input: String = Input::new()
+        .with_prompt("Models (comma-separated, or press enter to fetch from OpenRouter)")
+        .allow_empty(true)
+        .interact_text()?;
+    let models = if models_input.trim().is_empty() {
+        eprintln!("Fetching models from OpenRouter...");
+        fetch_openrouter_models(&api_key)?
+    } else {
+        parse_chat_model_list(&models_input)?
+    };
+    let profile = OpenRouterProfile { api_key, models };
+    save_profile(&name, &BuiltinProviderProfile::OpenRouter(profile))?;
+    Ok(())
 }
 
 fn cmd_remove(name_arg: Option<&str>) -> Result<(), Box<dyn Error>> {
@@ -233,6 +259,22 @@ fn cmd_list() -> Result<(), Box<dyn Error>> {
                     provider.base_url
                 );
             }
+            BuiltinProviderProfile::OpenRouter(profile) => {
+                let auth_status = if profile.api_key.trim().is_empty() {
+                    "no-api-key"
+                } else {
+                    "api-key"
+                };
+                let models = profile
+                    .models
+                    .iter()
+                    .map(|model| model.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{name}\topenrouter\thttps://openrouter.ai/api/v1\t{models}\t{auth_status}"
+                );
+            }
         }
     }
     Ok(())
@@ -258,6 +300,7 @@ fn parse_chat_model_list(input: &str) -> Result<Vec<ChatCompletionsModel>, Box<d
             id: ModelName::try_new(model.to_owned())?,
             display_name: None,
             context_window: 128_000,
+            compat: None,
         });
     }
     if models.is_empty() {
@@ -1212,6 +1255,18 @@ fn resolve_prompt_backend(
                 model: configured_model,
             })
         }
+        BuiltinProviderProfile::OpenRouter(profile) => {
+            let provider = profile.to_chat_completions();
+            let configured_model = provider
+                .models
+                .iter()
+                .find(|configured| configured.id == model.model)?
+                .clone();
+            Some(PromptBackend::ChatCompletions {
+                provider,
+                model: configured_model,
+            })
+        }
     }
 }
 
@@ -1223,7 +1278,7 @@ fn resolve_responses_backend(
         BuiltinProviderProfile::Chatgpt(profile) => {
             resolve_chatgpt_backend(model, &model.provider, &mut profile.auth)
         }
-        BuiltinProviderProfile::ChatCompletions(_) => None,
+        BuiltinProviderProfile::ChatCompletions(_) | BuiltinProviderProfile::OpenRouter(_) => None,
     }
 }
 
@@ -1826,6 +1881,10 @@ fn models_for_profiles(profiles: &BuiltinProviderProfiles) -> Vec<ProviderModelI
             }
             BuiltinProviderProfile::ChatCompletions(provider) => {
                 models.extend(chat_models_for_provider(provider_name, provider));
+            }
+            BuiltinProviderProfile::OpenRouter(profile) => {
+                let provider = profile.to_chat_completions();
+                models.extend(chat_models_for_provider(provider_name, &provider));
             }
         }
     }

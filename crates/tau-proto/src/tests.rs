@@ -589,6 +589,20 @@ fn event_wire_form_uses_dotted_event_tag() {
 }
 
 #[test]
+fn model_id_parses_provider_and_slashy_model_name() {
+    // OpenRouter and similar providers use native model ids such as
+    // `anthropic/claude-sonnet-4`. The first slash separates Tau's provider
+    // namespace; remaining slashes belong to the provider-native model id.
+    let model: ModelId = "openrouter/anthropic/claude-sonnet-4"
+        .parse()
+        .expect("model id");
+
+    assert_eq!(model.provider.as_str(), "openrouter");
+    assert_eq!(model.model.as_str(), "anthropic/claude-sonnet-4");
+    assert_eq!(model.to_string(), "openrouter/anthropic/claude-sonnet-4");
+}
+
+#[test]
 fn provider_models_updated_name_matches_wire_family() {
     // `provider.models_updated` is routed by event name, so `Event::name()` must
     // match the serde tag exactly. A past implementation accidentally reported

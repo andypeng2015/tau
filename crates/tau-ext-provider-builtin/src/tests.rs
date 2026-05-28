@@ -1,3 +1,5 @@
+use tau_provider_chat_completions::openrouter::OpenRouterProfile;
+
 use super::*;
 
 #[test]
@@ -36,9 +38,14 @@ fn profile_storage_kinds_do_not_carry_openai_prefix() {
         ChatCompletionsProvider::default(),
     ))
     .expect("serialize chat completions profile");
+    let openrouter = serde_json::to_value(BuiltinProviderProfile::OpenRouter(
+        OpenRouterProfile::default(),
+    ))
+    .expect("serialize openrouter profile");
 
     assert_eq!(chatgpt["kind"], "chatgpt");
     assert_eq!(chat_completions["kind"], "chat_completions");
+    assert_eq!(openrouter["kind"], "openrouter");
 }
 
 #[test]

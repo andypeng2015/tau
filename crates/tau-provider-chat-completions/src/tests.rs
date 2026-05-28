@@ -8,6 +8,7 @@ fn provider() -> ChatCompletionsProvider {
             id: ModelName::new("gpt-4o"),
             display_name: None,
             context_window: 128_000,
+            compat: None,
         }],
         max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
         extra_body: BTreeMap::new(),
@@ -129,6 +130,22 @@ fn chat_request_sets_default_max_tokens_for_generic_providers() {
 
     assert_eq!(json["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS);
     assert!(json.get("max_completion_tokens").is_none());
+}
+
+#[test]
+fn chat_request_sends_slashy_model_ids_unchanged() {
+    // Provider-native model ids can contain `/`; Tau's provider namespace is
+    // separated at the `ModelId` layer, not in the Chat Completions request.
+    let mut provider = provider();
+    provider.models[0].id = ModelName::new("anthropic/claude-sonnet-4");
+    let request = build_request(
+        &resolved_provider(&provider),
+        &provider.models[0],
+        &prompt(),
+    );
+    let json = serde_json::to_value(request).expect("request json");
+
+    assert_eq!(json["model"], "anthropic/claude-sonnet-4");
 }
 
 #[test]
