@@ -2401,9 +2401,11 @@ dependencies = [
  "tau-extension",
  "tau-proto",
  "tempfile",
+ "time",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "ureq",
  "webpki-roots",
 ]
 

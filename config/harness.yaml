@@ -62,6 +62,7 @@
 #     # removed from the harness environment after startup).
 #     secrets:
 #       personal_mail_password: {}        # required by default
+#       personal_calendar_ics_url: {}
 #       backup_mail_password:
 #         optional: true                  # omit when no value is configured
 #     config:
@@ -78,4 +79,15 @@
 #               # Replace legacy auth.password_env/auth.command/password_command
 #               # with auth.password_secret plus the declaration above.
 #               password_secret: personal_mail_password
+#       calendar:
+#         enable: true
+#         accounts:
+#           - id: personal-calendar
+#             enable: true
+#             backend:
+#               type: ics_feed
+#               url_secret: personal_calendar_ics_url
+#             calendars:
+#               default: main
+#               allow: [main]
 {}

@@ -6,6 +6,7 @@
 
 mod actions;
 mod config;
+mod ics_feed;
 mod runtime;
 mod tool;
 
@@ -13,6 +14,7 @@ pub use actions::calendar_action_schema;
 pub use config::{
     CalendarAccountConfig, CalendarBackendConfig, CalendarExtensionConfig, CalendarSelectionConfig,
 };
+pub use ics_feed::IcsFeedBackend;
 pub use runtime::RuntimeState;
 pub use tool::{calendar_prompt_fragment, calendar_tool_spec};
 

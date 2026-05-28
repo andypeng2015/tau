@@ -137,6 +137,7 @@ extensions:
     enable: true
     secrets:
       mail_password: {}
+      personal_calendar_ics_url: {}
     config:
       email:
         enable: true
@@ -176,7 +177,18 @@ extensions:
             - '*@trusted.example'
           allow_state_policy_extensions: true
       calendar:
-        enable: false
+        enable: true
+        accounts:
+          - id: personal-calendar
+            enable: true
+            display_name: Personal calendar
+            backend:
+              type: ics_feed
+              url_secret: personal_calendar_ics_url
+            calendars:
+              default: main
+              allow:
+                - main
 ```
 
 Create the secret value as raw UTF-8 text. Despite the `.yaml` suffix, the secret file is read as trimmed text, not as a structured YAML document.
@@ -184,7 +196,9 @@ Create the secret value as raw UTF-8 text. Despite the `.yaml` suffix, the secre
 ```sh
 mkdir -p ~/.local/state/tau/secrets
 printf '%s\n' 'app-password-or-token' > ~/.local/state/tau/secrets/mail_password.yaml
+printf '%s\n' 'https://example.com/private-calendar.ics' > ~/.local/state/tau/secrets/personal_calendar_ics_url.yaml
 chmod 600 ~/.local/state/tau/secrets/mail_password.yaml
+chmod 600 ~/.local/state/tau/secrets/personal_calendar_ics_url.yaml
 ```
 
 For one-shot startup, an environment variable also works. The suffix is normalized to the secret name.

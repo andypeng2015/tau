@@ -103,9 +103,12 @@ impl RuntimeState {
             Ok(pim) => self.configure_pim(pim, configure),
             Err(message) if has_pim_module_keys(&configure.config) => Err(message),
             Err(_) => {
+                let calendar_secrets = configure.secrets.clone();
                 self.email.configure(configure)?;
-                self.calendar
-                    .configure_with_config(calendar::CalendarExtensionConfig::default())
+                self.calendar.configure_with_config(
+                    calendar::CalendarExtensionConfig::default(),
+                    calendar_secrets,
+                )
             }
         }
     }
@@ -123,7 +126,8 @@ impl RuntimeState {
             configure.state_dir.clone(),
             configure.secrets.clone(),
         )?;
-        self.calendar.configure_with_config(calendar_config)
+        self.calendar
+            .configure_with_config(calendar_config, configure.secrets)
     }
 
     fn dispatch_tool(&mut self, invoke: tau_proto::ToolStarted) -> Event {

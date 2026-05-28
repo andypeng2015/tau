@@ -273,10 +273,10 @@ accept multiple ids. Agent access and mutation activity is appended as JSONL and
 can be reviewed with `/email log last [number]`.
 
 The same extension also owns the initial `calendar` tool and `/calendar` action
-schema. Calendar backends are intentionally still pending; the current surface
-establishes config/routing boundaries before read-only ICS and Google Calendar
-support are wired in. The legacy `std-email` built-in remains as an alias for
-existing email-only configs.
+schema. Read-only `ics_feed` accounts can list calendars, list events, read event
+details, and return free/busy blocks from bounded iCalendar feeds. Google
+Calendar support remains pending. The legacy `std-email` built-in remains as an
+alias for existing email-only configs.
 
 ### `provider-builtin` — Built-in provider backend
 

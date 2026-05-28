@@ -86,14 +86,39 @@ pub struct ValidatedAccount {
     pub enable: bool,
     /// Optional display name.
     pub display_name: Option<String>,
-    /// Configured backend kind, if any.
-    pub backend_kind: Option<&'static str>,
+    /// Configured backend.
+    pub backend: Option<ValidatedBackendConfig>,
     /// Default calendar id.
     pub default_calendar: Option<String>,
     /// Allowed calendar ids or names.
     pub allowed_calendars: Vec<String>,
     /// Default IANA timezone.
     pub timezone: Option<String>,
+}
+
+/// Validated backend-specific calendar account configuration.
+pub enum ValidatedBackendConfig {
+    /// Generic read-only iCalendar feed.
+    IcsFeed {
+        /// Secret containing the feed URL.
+        url_secret: Option<String>,
+        /// Literal feed URL.
+        url: Option<String>,
+    },
+    /// Native Google Calendar API backend.
+    Google {
+        /// Named OAuth profile holding Google tokens.
+        oauth_profile: Option<String>,
+    },
+    /// Generic CalDAV backend.
+    Caldav {
+        /// CalDAV service URL.
+        url: Option<String>,
+        /// Login user name for Basic-style DAV servers.
+        login: Option<String>,
+        /// Secret containing a DAV password or app password.
+        password_secret: Option<String>,
+    },
 }
 
 impl CalendarExtensionConfig {
@@ -115,7 +140,7 @@ impl CalendarExtensionConfig {
             }
             let id = account.id.clone();
             account_order.push(id.clone());
-            accounts.insert(id, ValidatedAccount::from_config(account));
+            accounts.insert(id, ValidatedAccount::from_config(account)?);
         }
         Ok(ValidatedConfig {
             enable: self.enable,
@@ -126,22 +151,59 @@ impl CalendarExtensionConfig {
 }
 
 impl ValidatedAccount {
-    fn from_config(value: CalendarAccountConfig) -> Self {
-        let backend_kind = match value.backend {
-            Some(CalendarBackendConfig::IcsFeed { .. }) => Some("ics_feed"),
-            Some(CalendarBackendConfig::Google { .. }) => Some("google"),
-            Some(CalendarBackendConfig::Caldav { .. }) => Some("caldav"),
+    fn from_config(value: CalendarAccountConfig) -> Result<Self, String> {
+        let backend = match value.backend {
+            Some(CalendarBackendConfig::IcsFeed { url_secret, url }) => {
+                validate_ics_feed_source(url_secret.as_deref(), url.as_deref())?;
+                Some(ValidatedBackendConfig::IcsFeed { url_secret, url })
+            }
+            Some(CalendarBackendConfig::Google { oauth_profile }) => {
+                Some(ValidatedBackendConfig::Google { oauth_profile })
+            }
+            Some(CalendarBackendConfig::Caldav {
+                url,
+                login,
+                password_secret,
+            }) => Some(ValidatedBackendConfig::Caldav {
+                url,
+                login,
+                password_secret,
+            }),
             None => None,
         };
-        Self {
+        Ok(Self {
             id: value.id,
             enable: value.enable,
             display_name: value.display_name,
-            backend_kind,
+            backend,
             default_calendar: value.calendars.default,
             allowed_calendars: value.calendars.allow,
             timezone: value.timezone,
+        })
+    }
+
+    /// Return the stable backend kind name.
+    pub fn backend_kind(&self) -> &'static str {
+        match &self.backend {
+            Some(ValidatedBackendConfig::IcsFeed { .. }) => "ics_feed",
+            Some(ValidatedBackendConfig::Google { .. }) => "google",
+            Some(ValidatedBackendConfig::Caldav { .. }) => "caldav",
+            None => "none",
         }
+    }
+}
+
+fn validate_ics_feed_source(url_secret: Option<&str>, url: Option<&str>) -> Result<(), String> {
+    match (url_secret, url) {
+        (Some(secret), None) if secret.trim().is_empty() => {
+            Err("ics_feed url_secret must not be empty".to_owned())
+        }
+        (None, Some(url)) if url.trim().is_empty() => {
+            Err("ics_feed url must not be empty".to_owned())
+        }
+        (Some(_), None) | (None, Some(_)) => Ok(()),
+        (None, None) => Err("ics_feed requires exactly one of url_secret or url".to_owned()),
+        (Some(_), Some(_)) => Err("ics_feed accepts only one of url_secret or url".to_owned()),
     }
 }
 
