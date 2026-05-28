@@ -1649,12 +1649,7 @@ fn finish_stream<W: Write>(
     let provider_terminal_event = state.provider_terminal_event.take();
     let usage = state.usage();
     let provider_response_id = state.response_id.clone();
-    let mut output_items = state.into_output_items();
-    if output_items.is_empty() {
-        output_items.push(common::assistant_text_item(
-            "(provider returned an empty response)",
-        ));
-    }
+    let output_items = state.into_output_items();
     let finished = ProviderResponseFinished {
         agent_prompt_id: agent_prompt_id.into(),
         agent_id: prompt.agent_id.clone(),

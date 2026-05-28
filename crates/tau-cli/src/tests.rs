@@ -3083,6 +3083,26 @@ fn render_compaction_block_styles_completed_status() {
 }
 
 #[test]
+fn render_empty_provider_response_placeholder_without_context_item() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    // Regression: the empty-response notice is a CLI presentation fallback, not
+    // a provider-authored assistant message inserted into durable output_items.
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
+        "sp-empty",
+        Vec::new(),
+    )));
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "(provider returned an empty response)"));
+}
+
+#[test]
 fn manual_compaction_trigger_does_not_render_progress_status() {
     let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(

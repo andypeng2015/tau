@@ -3130,6 +3130,11 @@ impl EventRenderer {
         // block via `DelegateProgress` instead, so the user sees one line per
         // delegation rather than a flood of nested invocations.
         self.main_agent_turn_active = true;
+        if finished.output_items.is_empty() {
+            self.finish_prompt_tool_summary();
+            self.render_empty_provider_response_placeholder();
+            return;
+        }
         let tool_calls = tool_calls_from_output_items(&finished.output_items);
         self.main_tools_total += tool_calls.len() as u64;
         self.set_main_tools_visible(!tool_calls.is_empty());
@@ -3137,9 +3142,21 @@ impl EventRenderer {
         for item in &finished.output_items {
             self.render_finished_context_item(item, summary_block_id);
         }
-        if !finished.output_items.is_empty() {
-            self.handle.redraw();
-        }
+        self.handle.redraw();
+    }
+
+    fn render_empty_provider_response_placeholder(&mut self) {
+        use tau_cli_term::resolve::themed_block;
+        use tau_themes::names;
+
+        self.handle.print_output(
+            "agent-response-empty",
+            themed_block(
+                &self.theme,
+                names::AGENT_RESPONSE,
+                "(provider returned an empty response)",
+            ),
+        );
     }
 
     fn prepare_tool_summary_for_finished_calls(
