@@ -29,6 +29,7 @@ fn build_request_includes_prompt_cache_key_when_supported() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -68,6 +69,7 @@ fn build_request_includes_service_tier_when_configured() {
             ..Default::default()
         },
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
@@ -95,6 +97,7 @@ fn build_request_maps_off_effort_to_openai_none() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -130,6 +133,7 @@ fn build_request_omits_prompt_cache_key_without_seed() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -158,6 +162,7 @@ fn build_request_first_turn_replays_full_history_without_chain() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -210,6 +215,7 @@ fn build_request_full_replay_serializes_restored_tool_error_before_next_user_mes
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -242,32 +248,6 @@ fn build_request_full_replay_serializes_restored_tool_error_before_next_user_mes
     assert_eq!(input[2]["content"][0]["text"], "after restart");
 }
 
-#[test]
-fn build_compact_request_omits_store_field() {
-    let config = chain_test_config();
-    let messages = vec![user_text("hello")];
-    let request = PromptPayload {
-        system_prompt: "sys",
-        context_items: &messages,
-        tools: &[],
-        params: tau_proto::ModelParams::default(),
-        tool_choice: tau_proto::ToolChoice::default(),
-        previous_response: None,
-        originator: &tau_proto::PromptOriginator::User,
-        session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
-        share_user_cache_key: false,
-    };
-
-    let body = serde_json::to_value(build_compact_request(&config, &request)).expect("serialize");
-    let object = body.as_object().expect("request body is an object");
-
-    assert!(
-        !object.contains_key("store"),
-        "the compact endpoint rejects store entirely"
-    );
-}
-
 /// Stateful-chain turn: when the harness supplies a
 /// `previous_response`, the request body slices off the prefix
 /// already covered by that response and pins the prior `response.id`.
@@ -294,6 +274,7 @@ fn build_request_chain_turn_sends_delta_and_previous_response_id() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: Some(PreviousResponse {
             id: "resp_abc",
             next_item_index: 2,
@@ -335,6 +316,7 @@ fn build_request_chain_with_oob_index_falls_back_to_full_replay() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: Some(PreviousResponse {
             id: "resp_abc",
             next_item_index: 99,
@@ -403,6 +385,7 @@ fn build_request_chain_turn_still_emits_prompt_cache_key() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: Some(PreviousResponse {
             id: "resp_abc",
             next_item_index: 2,
@@ -439,6 +422,7 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -451,6 +435,7 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &ext,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -489,6 +474,7 @@ fn build_request_share_user_cache_key_pins_extension_to_user_bucket() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
+        compaction: None,
         previous_response: None,
         originator: &ext,
         share_user_cache_key: true,
@@ -530,6 +516,7 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
+        compaction: None,
         previous_response,
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
@@ -542,6 +529,7 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
+        compaction: None,
         previous_response,
         originator: &ext,
         share_user_cache_key: true,
@@ -582,6 +570,7 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::None,
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -597,6 +586,82 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
         tools.len(),
         1,
         "tools must stay declared so the cache prefix matches"
+    );
+}
+
+#[test]
+fn build_request_sends_compaction_context_management_and_trigger_item() {
+    let config = ResponsesConfig {
+        supports_compaction: true,
+        ..chain_test_config()
+    };
+    let items = [ContextItem::CompactionTrigger];
+    let request = PromptPayload {
+        system_prompt: "system",
+        context_items: &items,
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        compaction: Some(tau_proto::PromptCompactionContext {
+            compact_threshold: Some(1200),
+        }),
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        agent_id: &tau_proto::AgentId::new("test-agent"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+
+    assert_eq!(body["context_management"][0]["type"], "compaction");
+    assert_eq!(body["context_management"][0]["compact_threshold"], 1200);
+    assert_eq!(body["input"][0]["type"], "compaction_trigger");
+}
+
+#[test]
+fn build_request_trims_full_replay_before_latest_compaction_item() {
+    let config = ResponsesConfig {
+        supports_compaction: true,
+        ..chain_test_config()
+    };
+    let compaction_item = serde_json::json!({
+        "type": "compaction",
+        "summary": "old history",
+    });
+    let items = [
+        user_text("obsolete"),
+        ContextItem::Compaction(OpaqueProviderItem(crate::common::json_to_cbor(
+            &compaction_item,
+        ))),
+        user_text("new"),
+    ];
+    let request = PromptPayload {
+        system_prompt: "system",
+        context_items: &items,
+        tools: &[],
+        params: tau_proto::ModelParams::default(),
+        tool_choice: tau_proto::ToolChoice::default(),
+        compaction: Some(tau_proto::PromptCompactionContext {
+            compact_threshold: None,
+        }),
+        previous_response: None,
+        originator: &tau_proto::PromptOriginator::User,
+        session_id: &tau_proto::SessionId::new("test-session"),
+        agent_id: &tau_proto::AgentId::new("test-agent"),
+        share_user_cache_key: false,
+    };
+
+    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let input = body["input"].as_array().expect("input array");
+
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0]["type"], "compaction");
+    assert_eq!(input[1]["content"][0]["text"], "new");
+    assert!(
+        body["context_management"][0]
+            .get("compact_threshold")
+            .is_none()
     );
 }
 
@@ -710,6 +775,7 @@ fn build_request_stamps_phase_on_assistant_messages_when_supported() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -749,6 +815,7 @@ fn build_request_omits_phase_when_unsupported() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -794,6 +861,7 @@ fn build_request_stamps_phase_on_pre_tool_call_text_flush() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -887,6 +955,7 @@ fn build_request_emits_include_when_encrypted_reasoning_supported() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -912,6 +981,7 @@ fn build_request_omits_include_when_encrypted_reasoning_unsupported() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -954,6 +1024,7 @@ fn build_request_replays_reasoning_item_as_top_level_input() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -1017,6 +1088,7 @@ fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -1111,6 +1183,7 @@ fn build_request_chain_keeps_custom_tool_output_type_from_prior_history() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
+        compaction: None,
         previous_response: Some(PreviousResponse {
             id: "resp_prev",
             next_item_index: 1,
@@ -1200,6 +1273,7 @@ fn ws_envelope_adds_type_and_drops_stream() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -1237,6 +1311,7 @@ fn ws_prewarm_envelope_sets_generate_false_and_drops_previous_response() {
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
+        compaction: None,
         previous_response: Some(PreviousResponse {
             id: "resp_previous",
             next_item_index: 1,

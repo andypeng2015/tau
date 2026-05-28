@@ -70,10 +70,6 @@ pub(crate) struct EventRenderer {
     /// per-prompt cleanup is a single `prompts.remove(spid)` instead of
     /// four separate `.remove()` calls easy to forget when extending.
     prompts: HashMap<String, PromptState>,
-    /// Live provider-side compaction blocks keyed by session id.
-    /// Compaction has first-class session lifecycle events rather than
-    /// being inferred from the hidden compact prompt sent to the agent.
-    compaction_blocks: HashMap<tau_proto::AgentId, tau_cli_term::BlockId>,
     /// Last locally-echoed user message that has not yet been classified
     /// as a normal or queued prompt. Used to replace only the matching
     /// echo when the harness reports that prompt as queued.
@@ -245,7 +241,6 @@ pub(crate) struct EventRenderer {
 struct AgentUiState {
     output: tau_cli_term::OutputSnapshot,
     prompts: HashMap<String, PromptState>,
-    compaction_blocks: HashMap<tau_proto::AgentId, tau_cli_term::BlockId>,
     last_user_block: Option<(tau_cli_term::BlockId, String)>,
     queued_user_blocks: VecDeque<(tau_cli_term::BlockId, String)>,
     tool_calls: HashMap<String, ToolCallState>,
@@ -913,7 +908,6 @@ impl EventRenderer {
             shell_agents: HashMap::new(),
             current_agent_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             prompts: HashMap::new(),
-            compaction_blocks: HashMap::new(),
             last_user_block: None,
             queued_user_blocks: VecDeque::new(),
             tool_calls: HashMap::new(),
@@ -1079,7 +1073,6 @@ impl EventRenderer {
         AgentUiState {
             output: self.handle.output_snapshot(),
             prompts: std::mem::take(&mut self.prompts),
-            compaction_blocks: std::mem::take(&mut self.compaction_blocks),
             last_user_block: self.last_user_block.take(),
             queued_user_blocks: std::mem::take(&mut self.queued_user_blocks),
             tool_calls: std::mem::take(&mut self.tool_calls),
@@ -1121,7 +1114,6 @@ impl EventRenderer {
             self.handle.replace_output_snapshot_quiet(state.output);
         }
         self.prompts = state.prompts;
-        self.compaction_blocks = state.compaction_blocks;
         self.last_user_block = state.last_user_block;
         self.queued_user_blocks = state.queued_user_blocks;
         self.tool_calls = state.tool_calls;
@@ -1400,138 +1392,6 @@ impl EventRenderer {
         tau_cli_term::StyledBlock::new(tau_cli_term::StyledText::from(String::new()))
     }
 
-    fn compaction_token_chip(tokens: u64) -> String {
-        format!("#{}", format_token_count(tokens))
-    }
-
-    fn compaction_progress_status(original_input_tokens: Option<u64>) -> String {
-        match original_input_tokens {
-            Some(tokens) => format!(
-                "{} {}",
-                Self::compaction_token_chip(tokens),
-                tau_proto::PROGRESS_INDICATOR_TEXT,
-            ),
-            None => tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
-        }
-    }
-
-    fn compaction_success_status(
-        original_input_tokens: Option<u64>,
-        compacted_input_tokens: Option<u64>,
-    ) -> String {
-        match (original_input_tokens, compacted_input_tokens) {
-            (Some(original), Some(compacted)) => format!(
-                "{} ok: {}",
-                Self::compaction_token_chip(original),
-                Self::compaction_token_chip(compacted)
-            ),
-            (Some(original), None) => format!("{} ok", Self::compaction_token_chip(original)),
-            (None, Some(compacted)) => format!("ok: {}", Self::compaction_token_chip(compacted)),
-            (None, None) => "ok".to_owned(),
-        }
-    }
-
-    fn compaction_error_status(message: Option<&str>) -> String {
-        let label = message
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .unwrap_or("failed");
-        let mut short: String = label.chars().take(48).collect();
-        if label.chars().nth(48).is_some() {
-            short.push('…');
-        }
-        format!("err: {short}")
-    }
-
-    fn compaction_failure_status(
-        original_input_tokens: Option<u64>,
-        message: Option<&str>,
-    ) -> String {
-        let error = Self::compaction_error_status(message);
-        match original_input_tokens {
-            Some(original) => format!("{} {error}", Self::compaction_token_chip(original)),
-            None => error,
-        }
-    }
-
-    fn handle_compaction_event(&mut self, event: &Event) -> bool {
-        let originator = match event {
-            Event::AgentCompactionStarted(started) => &started.originator,
-            Event::AgentCompactionFinished(finished) => &finished.originator,
-            Event::AgentCompacted(compacted) => &compacted.originator,
-            _ => return false,
-        };
-        if !originator.is_user() {
-            return true;
-        }
-
-        match event {
-            Event::AgentCompactionStarted(started) => {
-                if let Some(existing) = self.compaction_blocks.remove(&started.agent_id) {
-                    self.handle.remove_block(existing);
-                }
-                let block = render_compaction_block(
-                    &self.theme,
-                    Self::compaction_progress_status(started.original_input_tokens),
-                    CompactionStatus::Progress,
-                );
-                let id = self.handle.new_block("compaction-progress", block);
-                self.handle.push_above_active(id);
-                self.handle.redraw();
-                self.compaction_blocks.insert(started.agent_id.clone(), id);
-                true
-            }
-            Event::AgentCompacted(compacted) => {
-                // `AgentCompacted` is the durable success fact replayed to
-                // late-joining UIs. During a live compaction we still wait for
-                // `AgentCompactionFinished` to replace the in-flight block;
-                // on replay there is no lifecycle block, so render the final
-                // status from this event.
-                if !self.compaction_blocks.contains_key(&compacted.agent_id) {
-                    self.handle.print_output(
-                        "compaction-result",
-                        render_compaction_block(
-                            &self.theme,
-                            Self::compaction_success_status(
-                                compacted.original_input_tokens,
-                                compacted.compacted_input_tokens,
-                            ),
-                            CompactionStatus::Success,
-                        ),
-                    );
-                }
-                true
-            }
-            Event::AgentCompactionFinished(finished) => {
-                if let Some(block_id) = self.compaction_blocks.remove(&finished.agent_id) {
-                    self.handle.remove_block(block_id);
-                }
-                let (status_text, status) = match finished.outcome {
-                    tau_proto::AgentCompactionOutcome::Succeeded => (
-                        Self::compaction_success_status(
-                            finished.original_input_tokens,
-                            finished.compacted_input_tokens,
-                        ),
-                        CompactionStatus::Success,
-                    ),
-                    tau_proto::AgentCompactionOutcome::Failed => (
-                        Self::compaction_failure_status(
-                            finished.original_input_tokens,
-                            finished.message.as_deref(),
-                        ),
-                        CompactionStatus::Error,
-                    ),
-                };
-                self.handle.print_output(
-                    "compaction-result",
-                    render_compaction_block(&self.theme, status_text, status),
-                );
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn render_tool_history_block(&self, display: &ToolCallDisplay) -> tau_cli_term::StyledBlock {
         match self.show_tools {
             tau_config::settings::ShowTools::Full => render_tool_block(&self.theme, display),
@@ -1763,7 +1623,6 @@ impl EventRenderer {
         self.clear_selected_agent();
         self.agents_ui_state.clear();
         self.prompts.clear();
-        self.compaction_blocks.clear();
         self.last_user_block = None;
         self.queued_user_blocks.clear();
         self.tool_calls.clear();
@@ -2122,6 +1981,14 @@ impl EventRenderer {
     fn sync_agent_activity_for_lifecycle(&mut self, event: &Event) {
         match event {
             Event::UiPromptSubmitted(_) => self.agent_activity.mark_optimistic_submission(),
+            Event::AgentCompactionTriggered(triggered) => {
+                let agent_id = triggered.agent_id.to_string();
+                if triggered.originator.is_user() {
+                    self.mark_agent_live(agent_id);
+                } else {
+                    self.remember_agent(agent_id);
+                }
+            }
             Event::AgentPromptCreated(prompt) => {
                 self.agent_activity.start_prompt(&prompt.agent_prompt_id);
             }
@@ -2410,7 +2277,7 @@ impl EventRenderer {
     fn event_selects_agent_from_empty(&self, event: &Event) -> bool {
         match event {
             Event::AgentPromptCreated(prompt) => prompt.originator.is_user(),
-            Event::AgentCompactionRequested(request) => request.prompt.originator.is_user(),
+            Event::AgentCompactionTriggered(triggered) => triggered.originator.is_user(),
             Event::AgentPromptQueued(queued) => !queued.message_class.is_internal(),
             Event::AgentPromptSubmitted(prompt) => {
                 prompt.originator.is_user() && !prompt.message_class.is_internal()
@@ -2426,8 +2293,8 @@ impl EventRenderer {
         match event {
             Event::UiPromptSubmitted(prompt) => !prompt.originator.is_user(),
             Event::AgentPromptSubmitted(prompt) => !prompt.originator.is_user(),
+            Event::AgentCompactionTriggered(triggered) => !triggered.originator.is_user(),
             Event::AgentPromptCreated(prompt) => !prompt.originator.is_user(),
-            Event::AgentCompactionRequested(request) => !request.prompt.originator.is_user(),
             Event::AgentPromptTerminated(terminated) => !terminated.originator.is_user(),
             Event::ProviderPromptSubmitted(submitted) => !submitted.originator.is_user(),
             Event::ProviderResponseUpdated(update) => !update.originator.is_user(),
@@ -2525,6 +2392,14 @@ impl EventRenderer {
                     self.query_agents.insert(query_id.clone(), agent_id);
                 }
             }
+            Event::AgentCompactionTriggered(triggered) => {
+                let agent_id = triggered.agent_id.to_string();
+                if triggered.originator.is_user() {
+                    self.mark_agent_live(agent_id);
+                } else {
+                    self.remember_agent(agent_id);
+                }
+            }
             Event::AgentPromptCreated(prompt) => {
                 let agent_id = prompt.agent_id.to_string();
                 self.remember_agent(agent_id.clone());
@@ -2533,12 +2408,6 @@ impl EventRenderer {
                 }
                 self.prompt_agents
                     .insert(prompt.agent_prompt_id.to_string(), agent_id);
-            }
-            Event::AgentCompactionRequested(request) => {
-                let agent_id = request.prompt.agent_id.to_string();
-                self.mark_agent_live(agent_id.clone());
-                self.prompt_agents
-                    .insert(request.prompt.agent_prompt_id.to_string(), agent_id);
             }
             Event::ProviderResponseFinished(finished) => {
                 let agent_id = finished.agent_id.to_string();
@@ -2553,15 +2422,6 @@ impl EventRenderer {
                     self.tool_agents
                         .insert(call.call_id.to_string(), agent_id.clone());
                 }
-            }
-            Event::AgentCompactionStarted(started) => {
-                self.remember_agent(started.agent_id.to_string());
-            }
-            Event::AgentCompactionFinished(finished) => {
-                self.remember_agent(finished.agent_id.to_string());
-            }
-            Event::AgentCompacted(compacted) => {
-                self.remember_agent(compacted.agent_id.to_string());
             }
             Event::HarnessAgentContextUsageChanged(changed) => {
                 self.remember_agent(changed.agent_id.to_string());
@@ -2620,6 +2480,7 @@ impl EventRenderer {
             Event::AgentPromptQueued(queued) => Some(queued.agent_id.to_string()),
             Event::AgentPromptRecalled(recalled) => Some(recalled.agent_id.to_string()),
             Event::AgentPromptSteered(steered) => Some(steered.agent_id.to_string()),
+            Event::AgentCompactionTriggered(triggered) => Some(triggered.agent_id.to_string()),
             Event::HarnessAgentContextUsageChanged(changed) => Some(changed.agent_id.to_string()),
             Event::UiCancelPrompt(cancel) => {
                 cancel.target_agent_id.as_ref().map(ToString::to_string)
@@ -2641,7 +2502,6 @@ impl EventRenderer {
                 .map(ToString::to_string)
                 .or_else(|| self.shell_agents.get(finished.command_id.as_str()).cloned()),
             Event::AgentPromptCreated(prompt) => Some(prompt.agent_id.to_string()),
-            Event::AgentCompactionRequested(request) => Some(request.prompt.agent_id.to_string()),
             Event::AgentPromptTerminated(terminated) => self
                 .agent_id_for_prompt(terminated.agent_prompt_id.as_str(), &terminated.originator),
             Event::ProviderPromptSubmitted(submitted) => self
@@ -2655,9 +2515,6 @@ impl EventRenderer {
                 .cloned()
                 .or_else(|| self.agent_id_for_originator(&update.originator)),
             Event::ProviderResponseFinished(finished) => Some(finished.agent_id.to_string()),
-            Event::AgentCompactionStarted(started) => Some(started.agent_id.to_string()),
-            Event::AgentCompactionFinished(finished) => Some(finished.agent_id.to_string()),
-            Event::AgentCompacted(compacted) => Some(compacted.agent_id.to_string()),
             _ => self.current_agent_id.clone(),
         }
     }
@@ -2684,10 +2541,6 @@ impl EventRenderer {
 
     fn handle_recorded_at_for_visible_agent(&mut self, event: &Event, recorded_at: UnixMicros) {
         self.sync_agent_activity_for_lifecycle(event);
-
-        if self.handle_compaction_event(event) {
-            return;
-        }
 
         self.sync_main_tools_visibility_for_prompt_lifecycle(event);
 
@@ -3383,6 +3236,12 @@ impl EventRenderer {
             }
             ContextItem::ToolCall(call) => {
                 self.render_tool_call_placeholder(call, summary_block_id);
+            }
+            ContextItem::Compaction(_) => {
+                self.handle.print_output(
+                    "compaction-completed",
+                    render_compaction_block(&self.theme, "compacted", CompactionStatus::Success),
+                );
             }
             _ => {}
         }

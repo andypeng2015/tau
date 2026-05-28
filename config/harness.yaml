@@ -21,7 +21,8 @@
 # groups. Tab cycles between groups; Shift-Tab cycles within the selected
 # role's group. Group-level fields are defaults for every role in `roles`.
 # `description` is shown in `/role ...` completions. `compactionThreshold`
-# sets the context-window percentage (0-100) where automatic compaction starts.
+# sets the token threshold where server-side automatic compaction starts
+# (minimum 1000). Omit it to use the provider/server default behavior.
 # Per-role `promptFragments` add instructions only for that role.
 # `promptOverride` selects a system prompt template. `tools` and `disableTools`
 # customize internal tool availability for the role.
@@ -37,7 +38,7 @@
 #       senior-engineer:
 #         description: Balanced coding engineer.
 #         model: chatgpt/gpt-5.5
-#         compactionThreshold: 85
+#         compactionThreshold: 200000
 #         tools: [read, grep]
 #         disableTools: [shell]
 #       staff-engineer:

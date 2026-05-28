@@ -14,17 +14,16 @@ use tau_core::{
     ToolRegistry, ToolRouteError, ToolRouteTarget, validate_tool_arguments,
 };
 use tau_proto::{
-    ActionError, ActionInvocationId, ActionInvoke, ActionResult, ActionSchemaPublished,
-    AgentCompactionRequested, AgentId, AgentPromptCreated, AgentPromptId, AgentPromptQueued,
-    AgentPromptRecalled, AgentPromptTerminated, AgentPromptTerminationReason, BackgroundSupport,
-    CborValue, ClientKind, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector,
-    ExtensionName, Frame, HarnessAgentContextUsageChanged, HarnessContextUsageChanged,
-    HarnessRoleSelected, Message, MessageItem, ModelId, PreviousResponseCandidate, PromptFragment,
-    PromptOriginator, ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderResponseFinished,
-    ProviderStopReason, ProviderTokenUsage, SessionId, TokenUsageStats, ToolBackgroundError,
-    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition,
-    ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind,
-    ToolType, UiCancelPrompt,
+    ActionError, ActionInvocationId, ActionInvoke, ActionResult, ActionSchemaPublished, AgentId,
+    AgentPromptCreated, AgentPromptId, AgentPromptQueued, AgentPromptRecalled,
+    AgentPromptTerminated, AgentPromptTerminationReason, BackgroundSupport, CborValue, ClientKind,
+    ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector, ExtensionName, Frame,
+    HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessRoleSelected, Message,
+    MessageItem, ModelId, PreviousResponseCandidate, PromptFragment, PromptOriginator,
+    ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderResponseFinished, ProviderStopReason,
+    ProviderTokenUsage, SessionId, TokenUsageStats, ToolBackgroundError, ToolBackgroundResult,
+    ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName,
+    ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind, ToolType, UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -72,7 +71,6 @@ use crate::turn::{PromptSubmission, TurnState};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-const AUTO_COMPACTION_CONTEXT_PERCENT: u8 = 90;
 const BUILT_IN_SKILLS_SOURCE_ID: &str = "harness:built-in-skills";
 const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";
@@ -580,105 +578,6 @@ fn response_requests_tool_calls(response: &ProviderResponseFinished) -> bool {
         .any(|item| matches!(item, ContextItem::ToolCall(_)))
 }
 
-fn compaction_items_from_output_items(output_items: &[ContextItem]) -> Vec<ContextItem> {
-    output_items
-        .iter()
-        .filter(|item| matches!(item, ContextItem::Compaction(_)))
-        .cloned()
-        .collect()
-}
-
-/// Estimate how many prompt/input tokens the compacted replacement window will
-/// occupy when replayed on the next turn.
-///
-/// Tau does not carry a tokenizer in the harness, and the OpenAI standalone
-/// compaction endpoint does not normally report token usage. For UI status we
-/// use the same coarse convention used by many provider dashboards: roughly
-/// four UTF-8 bytes per token, measured over the provider-owned item payloads
-/// that prompt assembly will replay after compaction. This is not a billing
-/// counter; it is a prompt-size estimate for the `compact … ok: #…` chip.
-fn estimate_compacted_input_tokens(replacement_window: &[ContextItem]) -> Option<u64> {
-    const APPROX_BYTES_PER_TOKEN: u64 = 4;
-
-    let bytes: u64 = replacement_window
-        .iter()
-        .map(approx_context_item_provider_bytes)
-        .sum();
-    (bytes > 0).then_some(bytes.div_ceil(APPROX_BYTES_PER_TOKEN).max(1))
-}
-
-fn approx_context_item_provider_bytes(item: &ContextItem) -> u64 {
-    match item {
-        ContextItem::Message(message) => {
-            let content_bytes: u64 = message
-                .content
-                .iter()
-                .map(|part| match part {
-                    ContentPart::Text { text } => text.len() as u64,
-                })
-                .sum();
-            // Small role/item overhead keeps tiny summaries from looking free
-            // without dominating real summaries.
-            content_bytes + 16
-        }
-        ContextItem::ToolCall(call) => {
-            call.call_id.as_str().len() as u64
-                + call.name.as_str().len() as u64
-                + approx_cbor_json_bytes(&call.arguments)
-                + 16
-        }
-        ContextItem::ToolResult(result) => {
-            let status_bytes = match &result.status {
-                tau_proto::ToolResultStatus::Success => 0,
-                tau_proto::ToolResultStatus::Error { message }
-                | tau_proto::ToolResultStatus::Cancelled { reason: message } => {
-                    message.len() as u64
-                }
-            };
-            result.call_id.as_str().len() as u64
-                + status_bytes
-                + result.output.render().len() as u64
-                + 16
-        }
-        ContextItem::Reasoning(item)
-        | ContextItem::Compaction(item)
-        | ContextItem::UnknownProviderItem(item) => approx_cbor_json_bytes(&item.0),
-    }
-}
-
-fn approx_cbor_json_bytes(value: &CborValue) -> u64 {
-    match value {
-        CborValue::Null => 4,
-        CborValue::Bool(value) => {
-            if *value {
-                4
-            } else {
-                5
-            }
-        }
-        CborValue::Integer(value) => {
-            let value: i128 = (*value).into();
-            value.to_string().len() as u64
-        }
-        CborValue::Float(value) => value.to_string().len() as u64,
-        CborValue::Bytes(bytes) => (bytes.len() as u64).div_ceil(3) * 4,
-        CborValue::Text(text) => text.len() as u64,
-        CborValue::Array(values) => {
-            2 + values.iter().map(approx_cbor_json_bytes).sum::<u64>()
-                + values.len().saturating_sub(1) as u64
-        }
-        CborValue::Map(entries) => {
-            2 + entries
-                .iter()
-                .map(|(key, value)| approx_cbor_json_bytes(key) + approx_cbor_json_bytes(value) + 3)
-                .sum::<u64>()
-                + entries.len().saturating_sub(1) as u64
-        }
-        CborValue::Tag(_, value) => approx_cbor_json_bytes(value),
-        _ => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -716,22 +615,6 @@ pub(crate) struct CurrentSessionState {
     pub(crate) context_percent_used: Option<u8>,
     /// Current-session token usage totals.
     pub(crate) token_usage: TokenUsageStats,
-}
-
-#[derive(Debug)]
-enum PendingCompactionResume {
-    UserPrompt(String),
-    FollowupTurn,
-    None,
-}
-
-#[derive(Debug)]
-struct PendingCompaction {
-    target_cid: AgentId,
-    target_agent_id: Option<String>,
-    originator: PromptOriginator,
-    original_input_tokens: Option<u64>,
-    resume: PendingCompactionResume,
 }
 
 #[derive(Debug)]
@@ -1072,7 +955,6 @@ pub struct Harness {
     pub(crate) canceled_prompts: std::collections::HashSet<AgentPromptId>,
     /// In-flight auto-compaction summaries keyed by the temporary
     /// side-conversation that is generating them.
-    pending_compactions: std::collections::HashMap<AgentId, PendingCompaction>,
     /// Extension-started side-agent agents waiting for dispatch.
     pending_start_agent_requests: VecDeque<PendingStartAgentRequest>,
     /// State for harness-owned delegate/wait tools.
@@ -1105,10 +987,10 @@ where
     use std::io::{BufReader, BufWriter};
 
     use tau_proto::{
-        Ack, CborValue, ContentPart, ContextItem, ContextRole, Effort, EventName, FrameReader,
-        FrameWriter, Hello, MessageItem, OpaqueProviderItem, PROTOCOL_VERSION, ProviderModelInfo,
-        ProviderModelsUpdated, ProviderPromptSubmitted, Ready, Subscribe, ThinkingSummary,
-        ToolCallItem, ToolName, Verbosity,
+        Ack, ContentPart, ContextItem, ContextRole, Effort, EventName, FrameReader, FrameWriter,
+        Hello, MessageItem, PROTOCOL_VERSION, ProviderModelInfo, ProviderModelsUpdated,
+        ProviderPromptSubmitted, Ready, Subscribe, ThinkingSummary, ToolCallItem, ToolName,
+        Verbosity,
     };
 
     fn materialize_prompt(prompt: &tau_proto::AgentPromptCreated) -> tau_proto::AgentPromptCreated {
@@ -1125,11 +1007,10 @@ where
         client_name: "tau-echo-provider".into(),
         client_kind: ClientKind::Provider,
     })))?;
-    // Live-only test provider: prompt, compaction, and cancel events are work
-    // requests. Replaying past ones would rerun or cancel completed turns.
+    // Live-only test provider: prompt and cancel events are work requests.
+    // Replaying past ones would rerun or cancel completed turns.
     writer.write_frame(&Frame::Message(Message::Subscribe(Subscribe {
         selectors: vec![
-            EventSelector::Exact(EventName::AGENT_COMPACTION_REQUESTED),
             EventSelector::Exact(EventName::AGENT_PROMPT_CREATED),
             EventSelector::Exact(EventName::UI_CANCEL_PROMPT),
         ],
@@ -1161,45 +1042,6 @@ where
         };
         let (log_id, inner) = frame.peel_log();
         match inner {
-            Frame::Event(Event::AgentCompactionRequested(request)) => {
-                let spid = request.prompt.agent_prompt_id.clone();
-                let prompt = materialize_prompt(&request.prompt);
-                writer.write_frame(&Frame::Event(Event::ProviderPromptSubmitted(
-                    ProviderPromptSubmitted {
-                        agent_prompt_id: spid.clone(),
-                        originator: prompt.originator.clone(),
-                    },
-                )))?;
-                writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
-                    ProviderResponseFinished {
-                        agent_prompt_id: spid,
-                        agent_id: prompt.agent_id.clone(),
-                        output_items: vec![ContextItem::Compaction(OpaqueProviderItem(
-                            CborValue::Map(vec![
-                                (
-                                    CborValue::Text("type".to_owned()),
-                                    CborValue::Text("message".to_owned()),
-                                ),
-                                (
-                                    CborValue::Text("role".to_owned()),
-                                    CborValue::Text("assistant".to_owned()),
-                                ),
-                                (
-                                    CborValue::Text("text".to_owned()),
-                                    CborValue::Text("Agent compacted.".to_owned()),
-                                ),
-                            ]),
-                        ))],
-                        stop_reason: ProviderStopReason::Compaction,
-                        originator: prompt.originator.clone(),
-                        usage: None,
-                        backend: None,
-                        provider_response_id: None,
-                        ws_pool_delta: None,
-                    },
-                )))?;
-                writer.flush()?;
-            }
             Frame::Event(Event::AgentPromptCreated(prompt)) => {
                 let spid = prompt.agent_prompt_id.clone();
                 let prompt = materialize_prompt(&prompt);
@@ -1503,7 +1345,6 @@ impl Harness {
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
-            pending_compactions: std::collections::HashMap::new(),
             pending_start_agent_requests: VecDeque::new(),
             subagents: SubagentToolState::default(),
             dirs,
@@ -1744,7 +1585,6 @@ impl Harness {
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
             canceled_prompts: std::collections::HashSet::new(),
-            pending_compactions: std::collections::HashMap::new(),
             pending_start_agent_requests: VecDeque::new(),
             subagents: SubagentToolState::default(),
             dirs,
@@ -2183,7 +2023,6 @@ impl Harness {
     fn provider_route_for_prompt_request(&self, event: &Event) -> Option<tau_proto::ConnectionId> {
         let model = match event {
             Event::AgentPromptCreated(prompt) => prompt.model.as_ref(),
-            Event::AgentCompactionRequested(request) => request.prompt.model.as_ref(),
             _ => None,
         }?;
         self.provider_model_routes.get(model).cloned()
@@ -2196,7 +2035,6 @@ impl Harness {
     ) {
         let Some(agent_prompt_id) = (match event {
             Event::AgentPromptCreated(prompt) => Some(&prompt.agent_prompt_id),
-            Event::AgentCompactionRequested(request) => Some(&request.prompt.agent_prompt_id),
             _ => None,
         }) else {
             return;
@@ -2593,8 +2431,8 @@ impl Harness {
             Event::AgentStarted(started) => Some(started.agent_id.clone()),
             Event::AgentPromptSubmitted(prompt) => Some(prompt.agent_id.clone()),
             Event::AgentPromptSteered(prompt) => Some(prompt.agent_id.clone()),
+            Event::AgentCompactionTriggered(triggered) => Some(triggered.agent_id.clone()),
             Event::AgentUserMessageInjected(injected) => Some(injected.agent_id.clone()),
-            Event::AgentCompacted(compacted) => Some(compacted.agent_id.clone()),
             Event::AgentMessageSent(message) => Some(message.sender_id.clone()),
             Event::AgentMessageReceived(message) => Some(message.recipient_id.clone()),
             Event::AgentHeadMoved(moved) => Some(moved.agent_id.clone()),
@@ -4329,11 +4167,6 @@ impl Harness {
                 self.emit_info("cancelling current prompt");
                 self.try_advance_queue();
             }
-            AgentTurnState::Compacting => {
-                self.cancel_pending_compaction_for_target(cid);
-                self.emit_info("cancelling current compaction");
-                self.try_advance_queue();
-            }
             AgentTurnState::ToolsRunning { remaining_calls } => {
                 self.cancel_remaining_tool_calls(cid, remaining_calls, &cancel.reason);
                 if let Some(conv) = self.agents.get_mut(cid) {
@@ -4375,69 +4208,6 @@ impl Harness {
             conv.in_flight_prompt = None;
             conv.turn_state = AgentTurnState::Idle;
         }
-    }
-
-    fn cancel_pending_compaction_for_target(&mut self, target_cid: &AgentId) {
-        let Some(summary_cid) =
-            self.pending_compactions
-                .iter()
-                .find_map(|(summary_cid, pending)| {
-                    (pending.target_cid == *target_cid).then_some(summary_cid.clone())
-                })
-        else {
-            return;
-        };
-        let Some((summary_session_id, summary_prompt_id, summary_originator)) =
-            self.agents.get(&summary_cid).and_then(|conv| {
-                conv.in_flight_prompt.clone().map(|agent_prompt_id| {
-                    (
-                        conv.session_id.clone(),
-                        agent_prompt_id,
-                        conv.originator.clone(),
-                    )
-                })
-            })
-        else {
-            return;
-        };
-        let Some(pending) = self.pending_compactions.remove(&summary_cid) else {
-            return;
-        };
-
-        self.canceled_prompts.insert(summary_prompt_id.clone());
-        self.publish_prompt_terminated(
-            summary_session_id,
-            summary_prompt_id.clone(),
-            AgentPromptTerminationReason::Canceled,
-            summary_originator,
-        );
-        self.prompt_agents.remove(summary_prompt_id.as_str());
-        self.pending_provider_prompts.remove(&summary_prompt_id);
-        self.prompt_models.remove(&summary_prompt_id);
-        self.prompt_fingerprints.remove(&summary_prompt_id);
-        self.prompt_cache_diagnostics.remove(&summary_prompt_id);
-        self.agents.remove(&summary_cid);
-
-        if let Some(target_conv) = self.agents.get_mut(target_cid) {
-            target_conv.pending_cancel = None;
-            target_conv.pending_prompts.clear();
-            target_conv.turn_state = AgentTurnState::Idle;
-        }
-
-        self.publish_event(
-            None,
-            Event::AgentCompactionFinished(tau_proto::AgentCompactionFinished {
-                agent_id: pending
-                    .target_agent_id
-                    .expect("agent has durable id")
-                    .into(),
-                originator: pending.originator,
-                original_input_tokens: pending.original_input_tokens,
-                compacted_input_tokens: None,
-                outcome: tau_proto::AgentCompactionOutcome::Failed,
-                message: Some("cancelled".to_owned()),
-            }),
-        );
     }
 
     fn cancel_remaining_tool_calls(
@@ -5886,15 +5656,8 @@ impl Harness {
         self.publish_event(None, Event::ToolDelegateProgress(progress));
     }
 
-    fn maybe_start_auto_compaction_for_user_prompt(&mut self, cid: &AgentId, text: &str) -> bool {
-        if !self.should_auto_compact_for_agent(cid) {
-            return false;
-        }
-        self.start_auto_compaction_for_agent(
-            cid,
-            PendingCompactionResume::UserPrompt(text.to_owned()),
-        );
-        true
+    fn maybe_start_auto_compaction_for_user_prompt(&mut self, _cid: &AgentId, _text: &str) -> bool {
+        false
     }
 
     fn handle_compact_request(&mut self, session_id: SessionId, target_agent_id: Option<&str>) {
@@ -5909,75 +5672,65 @@ impl Harness {
             self.emit_info("unknown agent for compaction");
             return;
         };
-        if self.pending_compaction_targeted_at(&cid) {
-            self.emit_info("compaction is already in progress");
-            return;
-        }
         if self.dispatch_blocked_for(&cid) {
             self.emit_info("cannot compact while a prompt or tool turn is in flight");
             return;
         }
-        if !self.selected_model_supports_compaction() {
-            self.emit_info("selected model does not support remote compaction");
+        if !self.agent_model_supports_compaction(&cid) {
+            self.emit_info("selected model does not support compaction");
             return;
         }
         let Some(conv) = self.agents.get(&cid) else {
             self.emit_info("target user agent is missing");
             return;
         };
-        let Some(tree) = conv
-            .agent_id
-            .as_deref()
-            .and_then(|agent_id| self.agent_store.agent(agent_id))
-        else {
+        let Some(agent_id) = conv.agent_id.clone() else {
             self.emit_info("nothing to compact yet");
             return;
         };
-        let prompt_context = assemble_prompt_context_from(tree, conv.head);
-        if prompt_context.context_items.is_empty() {
-            self.emit_info("nothing to compact yet");
-            return;
-        }
-        self.start_auto_compaction_for_agent(&cid, PendingCompactionResume::None);
+        self.publish_for_agent(
+            &cid,
+            Event::AgentCompactionTriggered(tau_proto::AgentCompactionTriggered {
+                agent_id: agent_id.into(),
+                originator: conv.originator.clone(),
+            }),
+        );
+        self.dispatch_prompt_after_publish_idle(&cid);
     }
 
-    fn maybe_start_auto_compaction_for_followup(&mut self, cid: &AgentId) -> bool {
-        if !self.should_auto_compact_for_agent(cid) {
-            return false;
-        }
-        self.start_auto_compaction_for_agent(cid, PendingCompactionResume::FollowupTurn);
-        true
+    fn maybe_start_auto_compaction_for_followup(&mut self, _cid: &AgentId) -> bool {
+        false
     }
 
-    fn should_auto_compact_for_agent(&self, cid: &AgentId) -> bool {
-        if self.pending_compaction_targeted_at(cid) {
-            return false;
-        }
-        if !self.selected_model_supports_compaction() {
-            return false;
-        }
-        let current_percent = self
-            .agents
-            .get(cid)
-            .and_then(|conv| conv.context_percent_used);
-        let threshold = self.compaction_threshold_for_agent(cid);
-        current_percent.is_some_and(|p| threshold <= p)
-    }
-
-    fn compaction_threshold_for_agent(&self, cid: &AgentId) -> u8 {
+    fn compaction_threshold_for_agent(&self, cid: &AgentId) -> Option<u64> {
         let role_name = self.role_name_for_agent_id(cid);
         self.available_roles
             .get(&role_name)
             .and_then(|role| role.compaction_threshold)
-            .unwrap_or(AUTO_COMPACTION_CONTEXT_PERCENT)
     }
 
-    fn selected_model_supports_compaction(&self) -> bool {
-        let Some(model) = self.selected_model.as_ref() else {
+    fn compaction_context_for_agent(
+        &self,
+        cid: &AgentId,
+        model: Option<&ModelId>,
+    ) -> Option<tau_proto::PromptCompactionContext> {
+        let supports_compaction = model
+            .and_then(|model| self.provider_model_info.get(model))
+            .is_some_and(|info| info.supports_compaction);
+        supports_compaction.then(|| tau_proto::PromptCompactionContext {
+            compact_threshold: self.compaction_threshold_for_agent(cid),
+        })
+    }
+
+    fn agent_model_supports_compaction(&self, cid: &AgentId) -> bool {
+        let Some(conv) = self.agents.get(cid) else {
+            return false;
+        };
+        let Some(model) = self.model_for_agent_role(conv) else {
             return false;
         };
         self.provider_model_info
-            .get(model)
+            .get(&model)
             .is_some_and(|info| info.supports_compaction)
     }
 
@@ -6230,65 +5983,6 @@ impl Harness {
         self.refresh_provider_models_and_publish_state();
     }
 
-    fn pending_compaction_targeted_at(&self, cid: &AgentId) -> bool {
-        self.pending_compactions
-            .values()
-            .any(|pending| pending.target_cid == *cid)
-    }
-
-    fn start_auto_compaction_for_agent(
-        &mut self,
-        target_cid: &AgentId,
-        resume: PendingCompactionResume,
-    ) {
-        let Some(target_conv) = self.agents.get(target_cid) else {
-            return;
-        };
-        let target_head = target_conv.head;
-        let target_session_id = target_conv.session_id.clone();
-        let target_originator = target_conv.originator.clone();
-        let original_input_tokens = target_conv.context_input_tokens;
-        let summary_cid: AgentId = format!("compact-{}", self.next_agent_prompt_id).into();
-        let mut conv = Agent::new(
-            summary_cid.clone(),
-            target_session_id.clone(),
-            tau_proto::PromptOriginator::Extension {
-                name: HARNESS_CONNECTION_ID.into(),
-                query_id: format!("auto-compact-{target_cid}"),
-            },
-            target_head,
-            Some(HARNESS_CONNECTION_ID.into()),
-        );
-        conv.agent_id = self.target_agent_id_for_agent(target_cid);
-        self.agents.insert(summary_cid.clone(), conv);
-        self.pending_compactions.insert(
-            summary_cid.clone(),
-            PendingCompaction {
-                target_cid: target_cid.clone(),
-                target_agent_id: self.target_agent_id_for_agent(target_cid),
-                originator: target_originator.clone(),
-                original_input_tokens,
-                resume,
-            },
-        );
-        if let Some(target) = self.agents.get_mut(target_cid) {
-            target.turn_state = AgentTurnState::Compacting;
-        }
-        let compaction_agent_id: tau_proto::AgentId = self
-            .target_agent_id_for_agent(target_cid)
-            .expect("agent has durable id")
-            .into();
-        self.publish_event(
-            None,
-            Event::AgentCompactionStarted(tau_proto::AgentCompactionStarted {
-                agent_id: compaction_agent_id,
-                originator: target_originator,
-                original_input_tokens,
-            }),
-        );
-        self.dispatch_prompt_after_publish_idle(&summary_cid);
-    }
-
     #[cfg(test)]
     fn submit_user_prompt(
         &mut self,
@@ -6421,13 +6115,6 @@ impl Harness {
             .iter()
             .filter_map(|(cid, conv)| {
                 if conv.parent_tool_call_id.is_some() {
-                    return None;
-                }
-                // A compaction summary is also an extension-owned side
-                // conversation, but it is not disposable. Its finished
-                // response is what restores the target agent from
-                // `Compacting` and drains any queued prompt.
-                if self.pending_compactions.contains_key(cid) {
                     return None;
                 }
                 if !matches!(
@@ -6619,7 +6306,6 @@ impl Harness {
         self.pending_action_invocations.clear();
         self.prompt_agents.clear();
         self.pending_provider_prompts.clear();
-        self.pending_compactions.clear();
         self.pending_restore_notice_sessions.clear();
         self.pending_restore_background_notices.clear();
         self.pending_tool_availability_notices.clear();
@@ -7499,9 +7185,8 @@ impl Harness {
     }
 
     /// Mints a new `AgentPromptId`, registers it with `cid`'s
-    /// conversation, and dispatches either a normal
-    /// `AgentPromptCreated` or a `AgentCompactionRequested` to the
-    /// agent. Reads `system_prompt` / `messages` / `tools` from the
+    /// conversation, and dispatches `AgentPromptCreated` to the agent. Reads
+    /// `system_prompt` / `messages` / `tools` from the
     /// agent's agent tree.
     ///
     /// Linear-prefix invariant: each subsequent prompt for the same
@@ -7669,9 +7354,7 @@ impl Harness {
             };
         }
 
-        // Publish the prompt-shaped request event. Normal turns use
-        // `AgentPromptCreated`; provider-side compaction uses the
-        // dedicated `AgentCompactionRequested` envelope.
+        // Publish the prompt-shaped request event.
         let model = prompt_model;
         if let Some(model) = model.as_ref() {
             self.current_session_state.token_usage.start_request(model);
@@ -7684,35 +7367,27 @@ impl Harness {
         // racing the response.
         self.prompt_fingerprints
             .insert(agent_prompt_id.clone(), request_fingerprint);
-        let is_compaction_request = self.pending_compactions.contains_key(cid);
-        if !is_compaction_request {
-            self.prompt_cache_diagnostics.insert(
-                agent_prompt_id.clone(),
-                PromptCacheDiagnosticContext {
-                    model: model.clone(),
-                    previous_response: previous_response.clone(),
-                    originator: originator.clone(),
-                    tool_choice,
-                    request_fingerprint: request_fingerprint.digest,
-                },
-            );
-        }
+        self.prompt_cache_diagnostics.insert(
+            agent_prompt_id.clone(),
+            PromptCacheDiagnosticContext {
+                model: model.clone(),
+                previous_response: previous_response.clone(),
+                originator: originator.clone(),
+                tool_choice,
+                request_fingerprint: request_fingerprint.digest,
+            },
+        );
         let session_id = self
             .agents
             .get(cid)
             .expect("agent still exists")
             .session_id
             .clone();
-        let agent_id: tau_proto::AgentId = if is_compaction_request {
-            self.pending_compactions
-                .get(cid)
-                .and_then(|pending| pending.target_agent_id.clone())
-                .or_else(|| self.ensure_agent_id_for_agent(cid))
-        } else {
-            self.ensure_agent_id_for_agent(cid)
-        }
-        .expect("agent has durable id")
-        .into();
+        let agent_id: tau_proto::AgentId = self
+            .ensure_agent_id_for_agent(cid)
+            .expect("agent has durable id")
+            .into();
+        let compaction = self.compaction_context_for_agent(cid, model.as_ref());
         let prompt = AgentPromptCreated {
             agent_prompt_id: agent_prompt_id.clone(),
             agent_id,
@@ -7727,20 +7402,10 @@ impl Harness {
             originator,
             share_user_cache_key,
             ctx_id,
+            compaction,
             previous_response_candidate: previous_response,
         };
-        let event = if is_compaction_request {
-            Event::AgentCompactionRequested(AgentCompactionRequested {
-                prompt: AgentPromptCreated {
-                    ctx_id: None,
-                    previous_response_candidate: None,
-                    ..prompt
-                },
-            })
-        } else {
-            Event::AgentPromptCreated(prompt)
-        };
-        self.publish_event(None, event);
+        self.publish_event(None, Event::AgentPromptCreated(prompt));
 
         agent_prompt_id
     }
@@ -8060,162 +7725,6 @@ impl Harness {
         );
     }
 
-    fn finish_pending_compaction(
-        &mut self,
-        summary_cid: AgentId,
-        mut response: ProviderResponseFinished,
-        source: Option<&str>,
-    ) -> Result<(), HarnessError> {
-        let requested_tool_calls = response_requests_tool_calls(&response);
-        let replacement_window = compaction_items_from_output_items(&response.output_items);
-        let text = assistant_text_from_output_items(&response.output_items);
-        let Some(pending) = self.pending_compactions.remove(&summary_cid) else {
-            return Ok(());
-        };
-
-        response.agent_id = pending
-            .target_agent_id
-            .clone()
-            .expect("agent has durable id")
-            .into();
-        self.publish_for_agent_from(
-            &summary_cid,
-            source,
-            Event::ProviderResponseFinished(response.clone()),
-        );
-        self.prompt_agents.remove(response.agent_prompt_id.as_str());
-        self.pending_provider_prompts
-            .remove(&response.agent_prompt_id);
-        self.prompt_models.remove(&response.agent_prompt_id);
-        self.prompt_fingerprints.remove(&response.agent_prompt_id);
-        self.prompt_cache_diagnostics
-            .remove(&response.agent_prompt_id);
-        self.completed_prompts
-            .insert(response.agent_prompt_id.clone());
-        self.remove_agent(&summary_cid);
-
-        let Some(target_conv) = self.agents.get_mut(&pending.target_cid) else {
-            self.publish_event(
-                None,
-                Event::AgentCompactionFinished(tau_proto::AgentCompactionFinished {
-                    agent_id: pending
-                        .target_agent_id
-                        .clone()
-                        .expect("agent has durable id")
-                        .into(),
-                    originator: pending.originator,
-                    original_input_tokens: pending.original_input_tokens,
-                    compacted_input_tokens: None,
-                    outcome: tau_proto::AgentCompactionOutcome::Failed,
-                    message: Some("target agent no longer exists".to_owned()),
-                }),
-            );
-            return Ok(());
-        };
-        target_conv.turn_state = AgentTurnState::Idle;
-        target_conv.chain_anchor = None;
-        target_conv.last_prompt_id = None;
-        target_conv.context_input_tokens = None;
-        target_conv.context_percent_used = None;
-        target_conv.result_dedup = crate::dedup::ResultDedupMap::new();
-
-        let (outcome, message, compacted_input_tokens) = if requested_tool_calls {
-            (
-                tau_proto::AgentCompactionOutcome::Failed,
-                Some("tool call attempted".to_owned()),
-                None,
-            )
-        } else if !replacement_window.is_empty() {
-            let compacted_input_tokens = response
-                .usage
-                .as_ref()
-                .and_then(|usage| {
-                    (usage.response_received_tokens > 0).then_some(usage.response_received_tokens)
-                })
-                .or_else(|| estimate_compacted_input_tokens(&replacement_window));
-            self.publish_for_agent(
-                &pending.target_cid,
-                Event::AgentCompacted(tau_proto::AgentCompacted {
-                    agent_id: pending
-                        .target_agent_id
-                        .clone()
-                        .expect("agent has durable id")
-                        .into(),
-                    originator: pending.originator.clone(),
-                    original_input_tokens: pending.original_input_tokens,
-                    compacted_input_tokens,
-                    replacement_window: replacement_window.clone(),
-                }),
-            );
-            (
-                tau_proto::AgentCompactionOutcome::Succeeded,
-                None,
-                compacted_input_tokens,
-            )
-        } else {
-            let message = text
-                .as_deref()
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && *text != "Agent compacted.")
-                .map(|text| text.strip_prefix("LLM error: ").unwrap_or(text).to_owned())
-                .unwrap_or_else(|| "no compacted window".to_owned());
-            (
-                tau_proto::AgentCompactionOutcome::Failed,
-                Some(message),
-                None,
-            )
-        };
-        self.publish_event(
-            None,
-            Event::AgentCompactionFinished(tau_proto::AgentCompactionFinished {
-                agent_id: pending
-                    .target_agent_id
-                    .clone()
-                    .expect("agent has durable id")
-                    .into(),
-                originator: pending.originator.clone(),
-                original_input_tokens: pending.original_input_tokens,
-                compacted_input_tokens,
-                outcome,
-                message,
-            }),
-        );
-
-        let folded_background_prompts =
-            self.fold_queued_background_completion_prompts(&pending.target_cid);
-        match pending.resume {
-            PendingCompactionResume::UserPrompt(text) => {
-                for restore_prompt in
-                    self.take_pending_restore_prompts_for_user_prompt(&pending.target_cid)
-                {
-                    self.publish_pending_prompt_for_agent(&pending.target_cid, restore_prompt)?;
-                }
-                self.publish_pending_prompt_for_agent(
-                    &pending.target_cid,
-                    PendingPrompt::user(text),
-                )?;
-                self.dispatch_prompt_after_publish_idle(&pending.target_cid);
-                Ok(())
-            }
-            PendingCompactionResume::FollowupTurn => {
-                self.dispatch_prompt_after_publish_idle(&pending.target_cid);
-                Ok(())
-            }
-            PendingCompactionResume::None => {
-                if folded_background_prompts {
-                    self.dispatch_prompt_after_publish_idle(&pending.target_cid);
-                }
-                // Manual compaction has no built-in follow-up prompt, but a
-                // user may have queued one while the target agent was in
-                // `Compacting`. Always give the queue a chance to drain after
-                // restoring the target to `Idle`; otherwise the queued prompt
-                // can remain parked until some unrelated state change occurs.
-                self.try_advance_queue();
-                Ok(())
-            }
-        }
-    }
-
     #[cfg(test)]
     fn handle_provider_response_finished(
         &mut self,
@@ -8355,9 +7864,6 @@ impl Harness {
                 continue;
             }
             call.display = build_tool_args_display(call.name.as_str(), &call.arguments);
-        }
-        if self.pending_compactions.contains_key(&cid) {
-            return self.finish_pending_compaction(cid, response, source);
         }
         if requested_tool_calls && tool_calls.is_empty() {
             self.emit_info(&format!(
@@ -9197,45 +8703,6 @@ impl Harness {
                 }),
             );
         }
-    }
-
-    fn fold_queued_background_completion_prompts(&mut self, cid: &AgentId) -> bool {
-        let completion_texts: HashSet<String> = self
-            .background_completion_targets
-            .iter()
-            .filter(|&(call_id, owner)| {
-                owner == cid
-                    && !self
-                        .suppressed_background_completion_prompts
-                        .contains(call_id)
-            })
-            .map(|(call_id, _)| background_completion_prompt(call_id))
-            .collect();
-        if completion_texts.is_empty() {
-            return false;
-        }
-        let prompts: Vec<PendingPrompt> = self
-            .agents
-            .get_mut(cid)
-            .map(|conv| {
-                let mut folded = Vec::new();
-                let mut retained = VecDeque::with_capacity(conv.pending_prompts.len());
-                while let Some(prompt) = conv.pending_prompts.pop_front() {
-                    if prompt.is_internal() && completion_texts.contains(&prompt.text) {
-                        folded.push(prompt);
-                    } else {
-                        retained.push_back(prompt);
-                    }
-                }
-                conv.pending_prompts = retained;
-                folded
-            })
-            .unwrap_or_default();
-        if prompts.is_empty() {
-            return false;
-        }
-        self.publish_prompts_as_steered(cid, prompts);
-        true
     }
 
     /// Drain any prompts queued on `cid` while the agent was in

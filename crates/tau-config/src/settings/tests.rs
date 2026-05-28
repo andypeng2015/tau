@@ -263,9 +263,9 @@ fn harness_settings_load_role_compaction_threshold() {
         r#"{
             roleGroups: {
                 engineer: {
-                    compactionThreshold: 70,
+                    compactionThreshold: 70000,
                     roles: {
-                        engineer: { compactionThreshold: 80 },
+                        engineer: { compactionThreshold: 80000 },
                         reviewer: {},
                     },
                 },
@@ -275,8 +275,8 @@ fn harness_settings_load_role_compaction_threshold() {
     .expect("write");
 
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
-    assert_eq!(s.roles["engineer"].compaction_threshold, Some(80));
-    assert_eq!(s.roles["reviewer"].compaction_threshold, Some(70));
+    assert_eq!(s.roles["engineer"].compaction_threshold, Some(80000));
+    assert_eq!(s.roles["reviewer"].compaction_threshold, Some(70000));
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn harness_settings_rejects_invalid_role_compaction_threshold() {
             roleGroups: {
                 engineer: {
                     roles: {
-                        engineer: { compactionThreshold: 101 },
+                        engineer: { compactionThreshold: 999 },
                     },
                 },
             },
@@ -300,8 +300,8 @@ fn harness_settings_rejects_invalid_role_compaction_threshold() {
     let error = load_harness_settings_in(&dirs_with_config(dir))
         .expect_err("reject invalid compaction threshold");
     assert!(
-        error.to_string().contains("percentage from 0 to 100"),
-        "error should mention valid percentage range: {error}"
+        error.to_string().contains("at least 1000"),
+        "error should mention minimum token threshold: {error}"
     );
 }
 

@@ -586,52 +586,6 @@ where
                 let mut profiles = load_prompt_profiles();
                 handle_prewarm(&prewarm, &mut profiles, &chatgpt_runtime);
             }
-            Frame::Event(Event::AgentCompactionRequested(request)) => {
-                let agent_prompt_id = request.prompt.agent_prompt_id.clone();
-                let prompt = materialize_prompt(&request.prompt);
-
-                if cancellation.take_canceled(&agent_prompt_id) {
-                    let mut frame_writer = FrameWriter::new(&mut writer);
-                    finish_canceled(&agent_prompt_id, &prompt, &mut frame_writer)?;
-                    if let Some(id) = log_id {
-                        ack_tracker.complete(id);
-                    }
-                    write_ready_acks(&mut writer, &mut ack_tracker)?;
-                    continue;
-                }
-
-                trace_prompt_like("provider compaction request", &request, &agent_prompt_id);
-                {
-                    let mut frame_writer = FrameWriter::new(&mut writer);
-                    write_prompt_submitted(
-                        &agent_prompt_id,
-                        &prompt.originator,
-                        &mut frame_writer,
-                    )?;
-                }
-
-                let mut retry_ctx = FrameRetryContext {
-                    frame_rx: &frame_rx,
-                    deferred: &mut deferred,
-                    cancellation: cancellation.clone(),
-                };
-                let mut profiles = load_prompt_profiles();
-                let mut frame_writer = FrameWriter::new(&mut writer);
-                match prompt
-                    .model
-                    .as_ref()
-                    .and_then(|model| resolve_responses_backend(model, &mut profiles))
-                {
-                    Some(backend) => handle_compaction_request(
-                        &agent_prompt_id,
-                        &backend,
-                        &prompt,
-                        &mut frame_writer,
-                        &mut retry_ctx,
-                    )?,
-                    None => finish_missing_backend(&prompt, &agent_prompt_id, &mut frame_writer)?,
-                }
-            }
             Frame::Event(Event::AgentPromptCreated(prompt)) => {
                 let agent_prompt_id = prompt.agent_prompt_id.clone();
                 let prompt = materialize_prompt(&prompt);
@@ -1157,12 +1111,6 @@ trait RetrySleeper {
     }
 }
 
-struct FrameRetryContext<'a> {
-    frame_rx: &'a Receiver<Frame>,
-    deferred: &'a mut VecDeque<Frame>,
-    cancellation: Arc<CancellationState>,
-}
-
 struct SharedRetryContext {
     cancellation: Arc<CancellationState>,
 }
@@ -1171,57 +1119,6 @@ struct SharedRetryContext {
 enum SleepOutcome {
     Elapsed,
     Aborted,
-}
-
-impl RetrySleeper for FrameRetryContext<'_> {
-    fn sleep_or_abort(&mut self, delay: Duration, current_apid: &str) -> SleepOutcome {
-        let deadline = Instant::now() + delay;
-        loop {
-            if self
-                .cancellation
-                .sleep_or_abort(Duration::ZERO, current_apid)
-                == SleepOutcome::Aborted
-            {
-                return SleepOutcome::Aborted;
-            }
-            let now = Instant::now();
-            let Some(remaining) = deadline.checked_duration_since(now) else {
-                return SleepOutcome::Elapsed;
-            };
-            match self.frame_rx.recv_timeout(remaining) {
-                Err(RecvTimeoutError::Timeout) => return SleepOutcome::Elapsed,
-                Err(RecvTimeoutError::Disconnected) => return SleepOutcome::Aborted,
-                Ok(frame) => {
-                    if let Frame::Event(Event::UiCancelPrompt(cancel)) = &frame {
-                        match &cancel.agent_prompt_id {
-                            None => {
-                                self.cancellation.cancel_retry_sleeps();
-                                self.deferred.push_back(frame);
-                                return SleepOutcome::Aborted;
-                            }
-                            Some(apid) if apid.as_str() == current_apid => {
-                                self.cancellation.cancel(apid.clone());
-                                self.deferred.push_back(frame);
-                                return SleepOutcome::Aborted;
-                            }
-                            Some(apid) => {
-                                self.cancellation.cancel(apid.clone());
-                                continue;
-                            }
-                        }
-                    }
-                    let abort = matches!(&frame, Frame::Message(Message::Disconnect(_)));
-                    if abort {
-                        self.cancellation.shutdown();
-                    }
-                    self.deferred.push_back(frame);
-                    if abort {
-                        return SleepOutcome::Aborted;
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl RetrySleeper for SharedRetryContext {
@@ -1509,6 +1406,7 @@ fn handle_prewarm(
         tools: &prewarm.tools,
         params: prewarm.model_params,
         tool_choice: prewarm.tool_choice,
+        compaction: None,
         previous_response: None,
         originator: &prewarm.originator,
         share_user_cache_key: prewarm.share_user_cache_key,
@@ -1577,6 +1475,7 @@ where
         tools: &prompt.tools,
         params: prompt.model_params,
         tool_choice: prompt.tool_choice,
+        compaction: prompt.compaction,
         previous_response: prompt.previous_response_candidate.as_ref().map(|p| {
             common::PreviousResponse {
                 id: p.provider_response_id.as_str(),
@@ -1652,74 +1551,6 @@ where
                 writer,
             )?
         }
-    }
-    Ok(())
-}
-
-fn handle_compaction_request<R, W: Write>(
-    agent_prompt_id: &str,
-    config: &responses::ResponsesConfig,
-    prompt: &tau_proto::AgentPromptCreated,
-    writer: &mut FrameWriter<W>,
-    retry_ctx: &mut R,
-) -> Result<(), Box<dyn Error>>
-where
-    R: RetrySleeper,
-{
-    let agent_session_id = tau_proto::SessionId::new(prompt.agent_id.as_str());
-    let request = common::PromptPayload {
-        system_prompt: &prompt.system_prompt,
-        context_items: &prompt.context_items,
-        tools: &prompt.tools,
-        params: prompt.model_params,
-        tool_choice: prompt.tool_choice,
-        previous_response: None,
-        originator: &prompt.originator,
-        share_user_cache_key: prompt.share_user_cache_key,
-        session_id: &prompt.session_id,
-        agent_id: &prompt.agent_id,
-    };
-    let backend = backend_descriptor(config, ProviderBackendTransport::HttpSse, false);
-    let result = if config.supports_compaction {
-        with_llm_retry(
-            agent_prompt_id,
-            &prompt.originator,
-            writer,
-            retry_ctx,
-            |_writer, _retry_ctx| {
-                responses::responses_compact(config, &request).map(|items| {
-                    let mut state = common::StreamState::new();
-                    state.append_chat_message_delta("Conversation compacted.");
-                    state.compacted_input_items = items;
-                    state
-                })
-            },
-        )
-    } else {
-        Err(common::LlmError::HttpStatus(
-            0,
-            "provider does not support remote compaction".to_owned(),
-        ))
-    };
-    match result {
-        Ok(state) => finish_stream(
-            agent_session_id.as_str(),
-            agent_prompt_id,
-            prompt,
-            &backend,
-            state,
-            None,
-            writer,
-        )?,
-        Err(error) => finish_error(
-            agent_session_id.as_str(),
-            agent_prompt_id,
-            prompt,
-            &backend,
-            error,
-            None,
-            writer,
-        )?,
     }
     Ok(())
 }

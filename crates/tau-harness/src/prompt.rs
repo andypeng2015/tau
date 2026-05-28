@@ -471,9 +471,6 @@ pub(crate) fn assemble_prompt_context_from(
             AgentEntry::ToolResults { items } => {
                 context_items.extend(items.iter().cloned().map(ContextItem::ToolResult));
             }
-            AgentEntry::Compaction { replacement_window } => {
-                context_items = replacement_window.clone();
-            }
             AgentEntry::AgentMessage {
                 direction, message, ..
             } => {

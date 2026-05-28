@@ -490,50 +490,6 @@ fn interception_drop_of_must_pass_event_is_overridden() {
 }
 
 #[test]
-fn interception_drop_of_session_compacted_is_overridden() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut h = echo_harness(tmp.path()).expect("harness");
-    let _interceptor = connect_test_tool(&mut h, "interceptor");
-    h.handle_extension_event(
-        "interceptor",
-        Frame::Message(Message::Intercept(Intercept {
-            selectors: vec![EventSelector::Exact(tau_proto::EventName::AGENT_COMPACTED)],
-            priority: InterceptionPriority::new(0),
-        })),
-    )
-    .expect("intercept registration");
-    let baseline_seq = h.event_log.next_seq();
-
-    let compacted = Event::AgentCompacted(tau_proto::AgentCompacted {
-        agent_id: "main".into(),
-        originator: tau_proto::PromptOriginator::User,
-        original_input_tokens: None,
-        compacted_input_tokens: None,
-        replacement_window: vec![ContextItem::Message(MessageItem {
-            role: ContextRole::Assistant,
-            content: vec![ContentPart::Text {
-                text: "Agent compacted.".to_owned(),
-            }],
-            phase: None,
-        })],
-    });
-    h.publish_event(None, compacted.clone());
-    h.handle_extension_event(
-        "interceptor",
-        Frame::Message(Message::InterceptReply(InterceptReply {
-            action: InterceptAction::Drop,
-        })),
-    )
-    .expect("drop reply");
-
-    let entry = h
-        .event_log
-        .get_next_from(baseline_seq)
-        .expect("session.compacted must commit despite Drop");
-    assert_eq!(entry.event, compacted);
-}
-
-#[test]
 fn interception_disconnect_mid_reply_publishes_original() {
     let tmp = TempDir::new().expect("tempdir");
     let mut h = echo_harness(tmp.path()).expect("harness");

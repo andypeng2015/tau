@@ -148,9 +148,6 @@ pub fn format_session_entry(entry: &AgentEntry) -> String {
         AgentEntry::UserInput { items } => {
             format!("user: {}", first_message_text(items).unwrap_or_default())
         }
-        AgentEntry::Compaction { replacement_window } => {
-            format!("compacted: {} item(s)", replacement_window.len())
-        }
         AgentEntry::AssistantResponse { output_items, .. } => {
             let body =
                 assistant_output_preview(output_items).unwrap_or_else(|| "(no text)".to_owned());
@@ -204,6 +201,7 @@ fn assistant_output_preview(items: &[ContextItem]) -> Option<String> {
         .filter_map(|item| match item {
             ContextItem::Message(_) => first_message_text(std::slice::from_ref(item)),
             ContextItem::ToolCall(call) => Some(tool_call_preview(call)),
+            ContextItem::CompactionTrigger => Some("manual compaction requested".to_owned()),
             _ => None,
         })
         .collect::<Vec<_>>();

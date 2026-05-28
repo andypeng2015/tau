@@ -294,6 +294,7 @@ fn should_replay_agent_event_to_late_subscriber(event: &Event) -> bool {
         Event::AgentPromptSubmitted(_)
             | Event::AgentPromptSteered(_)
             | Event::AgentUserMessageInjected(_)
+            | Event::AgentCompactionTriggered(_)
             | Event::AgentMessageSent(_)
             | Event::AgentMessageReceived(_)
             | Event::ProviderToolResult(_)
@@ -301,7 +302,6 @@ fn should_replay_agent_event_to_late_subscriber(event: &Event) -> bool {
             | Event::ToolBackgroundResult(_)
             | Event::ToolBackgroundError(_)
             | Event::ToolCancelled(_)
-            | Event::AgentCompacted(_)
             | Event::ProviderResponseFinished(_)
     )
 }

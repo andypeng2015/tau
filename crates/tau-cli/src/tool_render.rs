@@ -249,14 +249,12 @@ pub(crate) enum ToolStatus {
     Time,
 }
 
-/// Status variants for session compaction lifecycle lines. Kept
-/// separate from tool-call display state because compaction is not a
-/// model-visible tool invocation.
+/// Status variant for completed compaction lines. Kept separate from
+/// tool-call display state because compaction is not a model-visible tool
+/// invocation.
 #[derive(Clone, Copy)]
 pub(crate) enum CompactionStatus {
     Success,
-    Error,
-    Progress,
 }
 
 #[derive(Clone)]
@@ -787,11 +785,10 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
     }
 }
 
-/// Render the provider-side compaction lifecycle as a compact session
-/// status line: `compact …`, `compact #226.2k …`, or
-/// `compact #226.2k ok: #4.5k`.
-/// Compaction is not a model-visible tool invocation, so this paints the
-/// small lifecycle line directly instead of fabricating a `ToolDisplay`.
+/// Render a completed provider-side compaction item as a compact session
+/// status line. Compaction is not a model-visible tool invocation, so this
+/// paints the small lifecycle line directly instead of fabricating a
+/// `ToolDisplay`.
 pub(crate) fn render_compaction_block(
     theme: &tau_themes::Theme,
     status_text: impl Into<String>,
@@ -807,8 +804,6 @@ pub(crate) fn render_compaction_block(
     let spacer = themed.add_style(names::TOOL_ARGS);
     let status_style = themed.add_style(match status {
         CompactionStatus::Success => names::TOOL_STATUS_SUCCESS,
-        CompactionStatus::Error => names::TOOL_STATUS_ERROR,
-        CompactionStatus::Progress => names::PROGRESS_INDICATOR,
     });
     let context_style = themed.add_style(names::STATUS_CONTEXT);
     let mut children = vec![

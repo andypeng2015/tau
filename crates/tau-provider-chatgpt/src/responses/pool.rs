@@ -685,6 +685,7 @@ fn without_previous_response<'a>(
     request: &crate::common::PromptPayload<'a>,
 ) -> crate::common::PromptPayload<'a> {
     crate::common::PromptPayload {
+        compaction: None,
         previous_response: None,
         system_prompt: request.system_prompt,
         context_items: request.context_items,

@@ -254,6 +254,7 @@ fn request_for_transport<'a>(
         tools: request.tools,
         params: request.params,
         tool_choice: request.tool_choice,
+        compaction: request.compaction,
         originator: request.originator,
         session_id: request.session_id,
         agent_id: request.agent_id,

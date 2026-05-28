@@ -16,12 +16,12 @@ use tau_core::{
     ConnectionSendError, ConnectionSink, RoutedFrame,
 };
 use tau_proto::{
-    AgentCompactionRequested, AgentPromptCreated, AgentPromptId, AgentPromptQueued,
-    AgentPromptRecalled, AgentPromptSteered, CborValue, ContentPart, ContextItem, ContextRole,
-    Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter, Intercept, InterceptAction,
-    InterceptReply, InterceptionPriority, Message, MessageItem, NodeId, ProviderResponseFinished,
-    ProviderResponseUpdated, StartAgentRequest, Subscribe, ToolCallId, ToolCallItem, ToolName,
-    ToolResult, ToolResultItem, ToolResultStatus, ToolSpec, UiPromptDraft, UiPromptSubmitted,
+    AgentPromptCreated, AgentPromptId, AgentPromptQueued, AgentPromptRecalled, AgentPromptSteered,
+    CborValue, ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector, Frame,
+    FrameReader, FrameWriter, Intercept, InterceptAction, InterceptReply, InterceptionPriority,
+    Message, MessageItem, NodeId, ProviderResponseFinished, ProviderResponseUpdated,
+    StartAgentRequest, Subscribe, ToolCallId, ToolCallItem, ToolName, ToolResult, ToolResultItem,
+    ToolResultStatus, ToolSpec, UiPromptDraft, UiPromptSubmitted,
 };
 use tau_session_inspect::{
     default_session_id, format_session_entry, open_session_store, policy_lines, session_lines,
@@ -695,33 +695,10 @@ fn read_raw_prompt_created(h: &Harness, spid: &AgentPromptId) -> AgentPromptCrea
     }
 }
 
-fn read_raw_compaction_requested(h: &Harness, spid: &AgentPromptId) -> AgentCompactionRequested {
-    let mut cursor = tau_proto::EventLogSeq::new(0);
-    loop {
-        let entry = h
-            .event_log
-            .get_next_from(cursor)
-            .expect("compaction request event in log");
-        cursor = entry.seq.next();
-        match entry.event {
-            Event::AgentCompactionRequested(request) if &request.prompt.agent_prompt_id == spid => {
-                return request;
-            }
-            _ => {}
-        }
-    }
-}
-
 fn read_prompt_created(h: &Harness, spid: &AgentPromptId) -> AgentPromptCreated {
     let raw = read_raw_prompt_created(h, spid);
     h.read_agent_prompt_created(&raw.session_id, spid)
         .expect("materialized prompt event")
-}
-
-fn read_compaction_requested(h: &Harness, spid: &AgentPromptId) -> AgentPromptCreated {
-    let request = read_raw_compaction_requested(h, spid);
-    h.materialize_agent_prompt_created(&request.prompt)
-        .expect("materialized compaction request")
 }
 
 fn intercepted_payload(events: &Arc<Mutex<Vec<RoutedFrame>>>) -> (Event, bool) {

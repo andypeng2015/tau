@@ -497,8 +497,11 @@ struct RawRoleGroup {
     thinking_summary: Option<tau_proto::ThinkingSummary>,
     #[serde(rename = "serviceTier")]
     service_tier: Option<tau_proto::ServiceTier>,
-    #[serde(default, deserialize_with = "deserialize_optional_percent")]
-    compaction_threshold: Option<u8>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_compaction_threshold"
+    )]
+    compaction_threshold: Option<u64>,
     prompt_fragments: Vec<RolePromptFragment>,
     #[serde(rename = "promptOverride")]
     prompt_override: Option<String>,
@@ -790,15 +793,15 @@ pub struct AgentRole {
     /// Provider service tier preferred by this role.
     #[serde(skip_serializing_if = "Option::is_none", rename = "serviceTier")]
     pub service_tier: Option<tau_proto::ServiceTier>,
-    /// Context-window percentage at which automatic compaction should start.
-    /// Missing values use Tau's default threshold.
+    /// Token threshold at which server-side automatic compaction should start.
+    /// Missing values use the provider/server default behavior.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         rename = "compactionThreshold",
-        deserialize_with = "deserialize_optional_percent"
+        deserialize_with = "deserialize_optional_compaction_threshold"
     )]
-    pub compaction_threshold: Option<u8>,
+    pub compaction_threshold: Option<u64>,
     /// Prompt fragments contributed by this role. Fragments are rendered as
     /// Handlebars templates and ordered together with tool/extension fragments.
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "promptFragments")]
@@ -826,17 +829,21 @@ pub struct AgentRole {
     pub disable_tools: Vec<ToolName>,
 }
 
-fn deserialize_optional_percent<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+fn deserialize_optional_compaction_threshold<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<u8>::deserialize(deserializer)?;
-    if let Some(percent) = value
-        && percent > 100
+    const MIN_COMPACTION_THRESHOLD: u64 = 1000;
+
+    let value = Option::<u64>::deserialize(deserializer)?;
+    if let Some(threshold) = value
+        && threshold < MIN_COMPACTION_THRESHOLD
     {
         return Err(D::Error::invalid_value(
-            Unexpected::Unsigned(u64::from(percent)),
-            &"a percentage from 0 to 100",
+            Unexpected::Unsigned(threshold),
+            &"a token threshold of at least 1000",
         ));
     }
     Ok(value)

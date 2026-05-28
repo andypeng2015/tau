@@ -229,15 +229,15 @@ fn parse_disable_tool_list_update(value: &str) -> Result<Vec<tau_proto::ToolName
     Ok(parse_tool_list_update(value)?.unwrap_or_default())
 }
 
-fn parse_compaction_threshold_update(value: &str) -> Result<Option<u8>, String> {
+fn parse_compaction_threshold_update(value: &str) -> Result<Option<u64>, String> {
     if is_reset_value(value) {
         return Ok(None);
     }
     let threshold = value
-        .parse::<u8>()
-        .map_err(|_| "compaction-threshold must be a percentage from 0 to 100".to_owned())?;
-    if threshold > 100 {
-        return Err("compaction-threshold must be a percentage from 0 to 100".to_owned());
+        .parse::<u64>()
+        .map_err(|_| "compaction-threshold must be a token count of at least 1000".to_owned())?;
+    if threshold < 1000 {
+        return Err("compaction-threshold must be a token count of at least 1000".to_owned());
     }
     Ok(Some(threshold))
 }

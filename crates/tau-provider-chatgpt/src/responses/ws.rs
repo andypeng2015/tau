@@ -244,6 +244,7 @@ impl WsConn {
                             transport: Some(tau_proto::ProviderBackendTransport::Websocket),
                         };
                         chained_request = PromptPayload {
+                            compaction: None,
                             previous_response: Some(owned_previous),
                             system_prompt: request.system_prompt,
                             context_items: request.context_items,

@@ -156,39 +156,9 @@ fn representative_events() -> Vec<Event> {
             originator: PromptOriginator::User,
             ctx_id: None,
         }),
-        Event::AgentCompactionStarted(AgentCompactionStarted {
+        Event::AgentCompactionTriggered(AgentCompactionTriggered {
             agent_id: "engineer_abcd1234".into(),
             originator: PromptOriginator::User,
-            original_input_tokens: None,
-        }),
-        Event::AgentCompactionFinished(AgentCompactionFinished {
-            agent_id: "engineer_abcd1234".into(),
-            originator: PromptOriginator::User,
-            original_input_tokens: None,
-            compacted_input_tokens: None,
-            outcome: AgentCompactionOutcome::Succeeded,
-            message: None,
-        }),
-        Event::AgentCompactionRequested(AgentCompactionRequested {
-            prompt: AgentPromptCreated {
-                agent_prompt_id: "sp-compact-1".into(),
-                agent_id: "engineer_abcd1234".into(),
-                session_id: "session_123".into(),
-                system_prompt: "You are helpful.".to_owned(),
-                context_items: vec![user_text_item("compact this")],
-                tools: Vec::new(),
-                tools_ref: None,
-                model: None,
-                model_params: ModelParams::default(),
-                tool_choice: ToolChoice::default(),
-                originator: PromptOriginator::Extension {
-                    name: ExtensionName::new("harness"),
-                    query_id: "auto-compact-default".to_owned(),
-                },
-                share_user_cache_key: false,
-                ctx_id: None,
-                previous_response_candidate: None,
-            },
         }),
         Event::AgentPromptCreated(AgentPromptCreated {
             agent_prompt_id: "sp-1".into(),
@@ -210,6 +180,7 @@ fn representative_events() -> Vec<Event> {
             tool_choice: ToolChoice::default(),
             originator: PromptOriginator::User,
             ctx_id: None,
+            compaction: None,
             previous_response_candidate: None,
             share_user_cache_key: false,
         }),
@@ -838,19 +809,6 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
             ctx_id: None,
-        }),
-        Event::AgentCompactionStarted(AgentCompactionStarted {
-            agent_id: "worker".into(),
-            originator: PromptOriginator::User,
-            original_input_tokens: None,
-        }),
-        Event::AgentCompactionFinished(AgentCompactionFinished {
-            agent_id: "worker".into(),
-            originator: PromptOriginator::User,
-            original_input_tokens: None,
-            compacted_input_tokens: None,
-            outcome: AgentCompactionOutcome::Succeeded,
-            message: None,
         }),
         Event::AgentPromptQueued(AgentPromptQueued {
             agent_id: "worker".into(),

@@ -37,12 +37,6 @@ impl ResponsesSurface {
         format!("{base}/codex/responses")
     }
 
-    fn compact_url(self, base_url: &str) -> String {
-        let _ = self;
-        let base = base_url.trim_end_matches('/');
-        format!("{base}/codex/responses/compact")
-    }
-
     fn store_value(self) -> bool {
         let _ = self;
         false
@@ -102,7 +96,7 @@ pub struct ResponsesConfig {
     /// Whether to attempt a persistent WebSocket transport for this
     /// provider instead of one-shot HTTP+SSE.
     pub supports_websocket: bool,
-    /// Whether this provider exposes a standalone compaction endpoint.
+    /// Whether this provider supports server-side context compaction.
     pub supports_compaction: bool,
     /// Whether this provider accepts the `prompt_cache_key` field.
     /// The wire key is derived per `(base_url, agent lifetime)`, then split by
@@ -228,6 +222,7 @@ pub fn responses_stream(
         "Responses chain rejected by upstream; retrying with full replay"
     );
     let fallback = PromptPayload {
+        compaction: request.compaction,
         previous_response: None,
         system_prompt: request.system_prompt,
         context_items: request.context_items,
@@ -242,40 +237,6 @@ pub fn responses_stream(
     let mut state = responses_stream_once(agent_prompt_id, config, &fallback, on_update)?;
     state.stale_chain_fallback = true;
     Ok(state)
-}
-
-pub fn responses_compact(
-    config: &ResponsesConfig,
-    request: &PromptPayload<'_>,
-) -> Result<Vec<String>, LlmError> {
-    let url = config.surface.compact_url(&config.base_url);
-    let body = build_compact_request(config, request);
-    let body_str = serde_json::to_string(&body).map_err(LlmError::Json)?;
-
-    let mut req = tau_provider::oauth::proxy_agent()
-        .post(&url)
-        .content_type("application/json")
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("OpenAI-Beta", "responses=experimental");
-    if let Some(ref account_id) = config.account_id {
-        req = req.header("chatgpt-account-id", account_id);
-    }
-
-    let mut response = req
-        .send(&body_str)
-        .map_err(|e| LlmError::Http(Box::new(e)))?;
-    if !response.status().is_success() {
-        let code = response.status().as_u16();
-        let body = response.body_mut().read_to_string().unwrap_or_default();
-        return Err(LlmError::HttpStatus(code, body));
-    }
-    let value: serde_json::Value =
-        serde_json::from_reader(response.body_mut().as_reader()).map_err(LlmError::Json)?;
-    let output = value
-        .get("output")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| LlmError::HttpStatus(0, "compaction response missing output".to_owned()))?;
-    Ok(output.iter().map(serde_json::Value::to_string).collect())
 }
 
 /// True for the narrow class of 4xx errors that say the prior
@@ -615,9 +576,7 @@ struct ResponsesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     /// Always `Some(false)` on the ChatGPT Codex Responses endpoint —
-    /// it rejects `store: true` even when chaining (see
-    /// `build_request`). Omitted for the standalone compaction endpoint,
-    /// which rejects the field entirely.
+    /// it rejects `store: true` even when chaining (see `build_request`).
     #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -645,6 +604,9 @@ struct ResponsesRequest {
     /// lower-priority service).
     #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<&'static str>,
+    /// Optional server-side context management controls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<Vec<ContextManagementRequest>>,
     /// Stateful-chain mode: points to the prior turn's `response.id`.
     /// When set, the upstream API carries reasoning context across
     /// turns and the request body only needs the *new* input
@@ -683,6 +645,14 @@ struct TextRequest {
     /// `low`/`medium`/`high` — see
     /// <https://developers.openai.com/api/docs/guides/deployment-checklist#set-up-textverbosity>.
     verbosity: &'static str,
+}
+
+#[derive(Serialize)]
+struct ContextManagementRequest {
+    #[serde(rename = "type")]
+    ty: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compact_threshold: Option<u64>,
 }
 
 fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> ResponsesRequest {
@@ -758,6 +728,12 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
     } else {
         Vec::new()
     };
+    let context_management = request.compaction.map(|compaction| {
+        vec![ContextManagementRequest {
+            ty: "compaction",
+            compact_threshold: compaction.compact_threshold,
+        }]
+    });
 
     ResponsesRequest {
         model: config.model_id.clone(),
@@ -779,48 +755,32 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
             .params
             .service_tier
             .map(tau_proto::ServiceTier::as_wire),
+        context_management,
         previous_response_id,
     }
-}
-
-fn build_compact_request(
-    config: &ResponsesConfig,
-    request: &PromptPayload<'_>,
-) -> ResponsesRequest {
-    let mut body = build_request(
-        config,
-        &PromptPayload {
-            system_prompt: request.system_prompt,
-            context_items: request.context_items,
-            tools: request.tools,
-            params: request.params,
-            tool_choice: request.tool_choice,
-            previous_response: None,
-            originator: request.originator,
-            share_user_cache_key: request.share_user_cache_key,
-            session_id: request.session_id,
-            agent_id: request.agent_id,
-        },
-    );
-    body.stream = None;
-    body.previous_response_id = None;
-    body.store = None;
-    body.tool_choice = None;
-    body.prompt_cache_key = None;
-    body.service_tier = None;
-    body.include.clear();
-    body
 }
 
 fn build_input_items(
     config: &ResponsesConfig,
     input_items: &[ContextItem],
 ) -> Vec<serde_json::Value> {
+    let input_items = if config.supports_compaction {
+        trim_before_latest_compaction(input_items)
+    } else {
+        input_items
+    };
     let mut input = Vec::new();
     for item in input_items {
         convert_context_item(item, config.supports_phase, &mut input);
     }
     input
+}
+
+fn trim_before_latest_compaction(input_items: &[ContextItem]) -> &[ContextItem] {
+    input_items
+        .iter()
+        .rposition(|item| matches!(item, ContextItem::Compaction(_)))
+        .map_or(input_items, |index| &input_items[index..])
 }
 
 /// WebSocket-side wrapper around a Responses request. The OpenAI
@@ -1147,6 +1107,11 @@ fn convert_context_item(
         }
         ContextItem::Reasoning(item) => {
             out.push(cbor_to_json(&item.0));
+        }
+        ContextItem::CompactionTrigger => {
+            out.push(serde_json::json!({
+                "type": "compaction_trigger",
+            }));
         }
         ContextItem::Compaction(item) | ContextItem::UnknownProviderItem(item) => {
             out.push(cbor_to_json(&item.0));

@@ -5,11 +5,11 @@ use clap::Parser;
 use tau_cli_term::TermHandle;
 use tau_cli_term_raw::{Color, Term};
 use tau_proto::{
-    AgentCompactionRequested, AgentPromptCreated, AgentPromptQueued, AgentPromptSteered,
+    AgentCompactionTriggered, AgentPromptCreated, AgentPromptQueued, AgentPromptSteered,
     AgentPromptSubmitted, AgentPromptTerminated, AgentPromptTerminationReason, CborValue,
     ContentPart, ContextItem, ContextRole, Effort, Event, ExtAgentsMdAvailable, ExtensionReady,
     HarnessContextUsageChanged, HarnessRoleInfo, HarnessRoleSelected, HarnessRolesAvailable,
-    MessageItem, ProviderPromptSubmitted, ProviderResponseFinished, ProviderResponseUpdated,
+    MessageItem, OpaqueProviderItem, ProviderResponseFinished, ProviderResponseUpdated,
     ProviderStopReason, ServiceTier, SessionStartReason, SessionStarted, ThinkingSummary,
     ToolBackgroundResult, ToolCallItem, ToolCancelled, ToolError, ToolResult, UiPromptSubmitted,
     UiRoleUpdateAction, Verbosity,
@@ -323,6 +323,7 @@ fn agent_prompt_created(agent_prompt_id: &str, session_id: &str) -> AgentPromptC
         originator: tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         ctx_id: None,
+        compaction: None,
         previous_response_candidate: None,
     }
 }
@@ -539,62 +540,6 @@ fn replayed_durable_first_user_prompt_selects_live_agent() {
             .contains("engineer_abc12345")
     );
     assert!(vt.screen_contains(80, "hello"));
-}
-
-#[test]
-fn compaction_provider_lifecycle_routes_to_selected_agent() {
-    // Regression: a compaction summary is requested through an internal
-    // auto-compact side conversation, but its provider prompt lifecycle belongs
-    // to the selected user agent so hidden activity does not remain stuck.
-    let (_term, handle, _vt) = setup(80, 24);
-    let mut renderer = EventRenderer::new(
-        handle,
-        tau_cli_term::CompletionData::new(),
-        tau_themes::Theme::builtin(),
-    );
-    let in_progress = renderer.agent_in_progress_state();
-    let mut compaction_prompt = agent_prompt_created("compact-sp", "s1");
-    compaction_prompt.agent_id = "engineer_abc12345".to_owned().into();
-    compaction_prompt.originator = tau_proto::PromptOriginator::Extension {
-        name: "harness".into(),
-        query_id: "auto-compact-default".to_owned(),
-    };
-
-    renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
-        session_id: "s1".into(),
-        text: "hello".to_owned(),
-        target_agent_id: Some("engineer_abc12345".to_owned().into()),
-        message_class: tau_proto::PromptMessageClass::User,
-        originator: tau_proto::PromptOriginator::User,
-        ctx_id: None,
-    }));
-    renderer.handle(&Event::AgentCompactionRequested(AgentCompactionRequested {
-        prompt: compaction_prompt,
-    }));
-    renderer.handle(&Event::ProviderPromptSubmitted(ProviderPromptSubmitted {
-        agent_prompt_id: "compact-sp".into(),
-        originator: tau_proto::PromptOriginator::Extension {
-            name: "harness".into(),
-            query_id: "auto-compact-default".to_owned(),
-        },
-    }));
-    assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
-
-    renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_prompt_id: "compact-sp".into(),
-        agent_id: "engineer_abc12345".to_owned().into(),
-        output_items: vec![assistant_message_item("compacted")],
-        stop_reason: ProviderStopReason::EndTurn,
-        originator: tau_proto::PromptOriginator::Extension {
-            name: "harness".into(),
-            query_id: "auto-compact-default".to_owned(),
-        },
-        usage: None,
-        backend: None,
-        provider_response_id: None,
-        ws_pool_delta: None,
-    }));
-    assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
@@ -1413,9 +1358,9 @@ fn role_setting_updates_are_typed_and_reset_aware() {
         }
     );
     assert_eq!(
-        parse_role_setting_update("compaction-threshold", "85").expect("threshold 85"),
+        parse_role_setting_update("compaction-threshold", "85000").expect("threshold 85000"),
         UiRoleUpdateAction::SetCompactionThreshold {
-            compaction_threshold: Some(85),
+            compaction_threshold: Some(85000),
         }
     );
     assert_eq!(
@@ -1424,7 +1369,7 @@ fn role_setting_updates_are_typed_and_reset_aware() {
             compaction_threshold: None,
         }
     );
-    assert!(parse_role_setting_update("compaction-threshold", "101").is_err());
+    assert!(parse_role_setting_update("compaction-threshold", "999").is_err());
     assert_eq!(
         parse_role_setting_update("enable-tools", "web_search,grep").expect("enable tools"),
         UiRoleUpdateAction::SetEnableTools {
@@ -3122,100 +3067,23 @@ fn streaming_indicator_appends_during_updates() {
 }
 
 #[test]
-fn compaction_lifecycle_renders_status_line() {
-    let (_term, handle, vt) = setup(80, 24);
-    let mut renderer = EventRenderer::new(
-        handle.clone(),
-        tau_cli_term::CompletionData::new(),
-        tau_themes::Theme::builtin(),
-    );
-
-    renderer.handle(&Event::AgentCompactionStarted(
-        tau_proto::AgentCompactionStarted {
-            agent_id: "main".into(),
-            originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: Some(226_200),
-        },
-    ));
-    sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k …"));
-
-    renderer.handle(&Event::AgentCompacted(tau_proto::AgentCompacted {
-        agent_id: "main".into(),
-        originator: tau_proto::PromptOriginator::User,
-        original_input_tokens: Some(226_200),
-        compacted_input_tokens: Some(4_500),
-        replacement_window: vec![assistant_message_item("Conversation compacted.")],
-    }));
-    sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k …"));
-    assert!(!vt.screen_contains(80, "compact ok"));
-
-    renderer.handle(&Event::AgentCompactionFinished(
-        tau_proto::AgentCompactionFinished {
-            agent_id: "main".into(),
-            originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: Some(226_200),
-            compacted_input_tokens: Some(4_500),
-            outcome: tau_proto::AgentCompactionOutcome::Succeeded,
-            message: None,
-        },
-    ));
-    sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k ok: #4.5k"));
-    assert!(!vt.screen_contains(80, "compact #226.2k …"));
-}
-
-#[test]
-fn render_compaction_block_styles_token_chips_like_context_status() {
+fn render_compaction_block_styles_completed_status() {
     let theme = tau_themes::Theme::builtin();
 
-    // Regression: compaction status text is mostly lifecycle status, but the
-    // `#…` token chips carry the same semantic theme as context stats in the
-    // status bar and delegate progress chips.
-    let block =
-        render_compaction_block(&theme, "#10.9k/258.4k ok: #4.5k", CompactionStatus::Success);
+    let block = render_compaction_block(&theme, "compacted", CompactionStatus::Success);
     let spans = block.content.spans();
-    let context_style = tau_cli_term::resolve::resolve(&theme, tau_themes::names::STATUS_CONTEXT);
     let success_style =
         tau_cli_term::resolve::resolve(&theme, tau_themes::names::TOOL_STATUS_SUCCESS);
+    let compacted = spans
+        .iter()
+        .find(|span| span.text == "compacted")
+        .expect("completed compaction status span");
 
-    let original_chip = spans
-        .iter()
-        .find(|span| span.text == "#10.9k/258.4k")
-        .expect("original token chip span");
-    let compacted_chip = spans
-        .iter()
-        .find(|span| span.text == "#4.5k")
-        .expect("compacted token chip span");
-    let success_text = spans
-        .iter()
-        .find(|span| span.text == "ok:")
-        .expect("success status span");
-
-    assert_eq!(original_chip.style, context_style);
-    assert_eq!(compacted_chip.style, context_style);
-    assert_eq!(success_text.style, success_style);
-
-    let progress_block = render_compaction_block(&theme, "#226.2k …", CompactionStatus::Progress);
-    let progress_spans = progress_block.content.spans();
-    let progress_style =
-        tau_cli_term::resolve::resolve(&theme, tau_themes::names::PROGRESS_INDICATOR);
-    let progress_chip = progress_spans
-        .iter()
-        .find(|span| span.text == "#226.2k")
-        .expect("progress token chip span");
-    let ellipsis = progress_spans
-        .iter()
-        .find(|span| span.text == "…")
-        .expect("progress ellipsis span");
-
-    assert_eq!(progress_chip.style, context_style);
-    assert_eq!(ellipsis.style, progress_style);
+    assert_eq!(compacted.style, success_style);
 }
 
 #[test]
-fn replayed_compacted_event_renders_success_status() {
+fn manual_compaction_trigger_does_not_render_progress_status() {
     let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
         handle.clone(),
@@ -3223,15 +3091,37 @@ fn replayed_compacted_event_renders_success_status() {
         tau_themes::Theme::builtin(),
     );
 
-    renderer.handle(&Event::AgentCompacted(tau_proto::AgentCompacted {
+    renderer.handle(&Event::AgentCompactionTriggered(AgentCompactionTriggered {
         agent_id: "main".into(),
         originator: tau_proto::PromptOriginator::User,
-        original_input_tokens: Some(226_200),
-        compacted_input_tokens: Some(4_500),
-        replacement_window: vec![assistant_message_item("Conversation compacted.")],
     }));
     sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k ok: #4.5k"));
+
+    assert!(!vt.screen_contains(80, "compact"));
+    assert!(!vt.screen_contains(80, "manual compaction requested"));
+}
+
+#[test]
+fn render_provider_compaction_item_when_response_finishes() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    // Regression: a manual trigger event only records the user request. The UI
+    // should show compaction after the provider returns the durable compaction
+    // item, which means server-side compaction has actually completed.
+    renderer.handle(&Event::ProviderResponseFinished(finished_response(
+        "sp-compact",
+        vec![ContextItem::Compaction(OpaqueProviderItem(CborValue::Map(
+            vec![],
+        )))],
+    )));
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "compact compacted"));
 }
 
 #[test]
@@ -3297,81 +3187,6 @@ fn delegate_progress_redraws_live_parent_block() {
         "delegate progress should repaint without an explicit test redraw: {:?}",
         vt.screen_text(100)
     );
-}
-
-#[test]
-fn side_conversation_compaction_is_hidden_from_main_transcript() {
-    let (_term, handle, vt) = setup(80, 24);
-    let mut renderer = EventRenderer::new(
-        handle.clone(),
-        tau_cli_term::CompletionData::new(),
-        tau_themes::Theme::builtin(),
-    );
-    let originator = tau_proto::PromptOriginator::Extension {
-        name: "core-subagents".into(),
-        query_id: "delegate-1".to_owned(),
-    };
-
-    // Regression: sub-agent compaction lifecycle events are still
-    // delivered to the main UI, but the main transcript must not show
-    // their progress/result blocks.
-    renderer.handle(&Event::AgentCompactionStarted(
-        tau_proto::AgentCompactionStarted {
-            agent_id: "main".into(),
-            originator: originator.clone(),
-            original_input_tokens: Some(10_000),
-        },
-    ));
-    renderer.handle(&Event::AgentCompacted(tau_proto::AgentCompacted {
-        agent_id: "main".into(),
-        originator: originator.clone(),
-        original_input_tokens: Some(10_000),
-        compacted_input_tokens: Some(1_000),
-        replacement_window: vec![assistant_message_item("Conversation compacted.")],
-    }));
-    renderer.handle(&Event::AgentCompactionFinished(
-        tau_proto::AgentCompactionFinished {
-            agent_id: "main".into(),
-            originator,
-            original_input_tokens: Some(10_000),
-            compacted_input_tokens: Some(1_000),
-            outcome: tau_proto::AgentCompactionOutcome::Succeeded,
-            message: None,
-        },
-    ));
-
-    sync(&handle);
-    assert!(!vt.screen_contains(80, "compact"));
-}
-
-#[test]
-fn failed_compaction_renders_error_status() {
-    let (_term, handle, vt) = setup(80, 24);
-    let mut renderer = EventRenderer::new(
-        handle.clone(),
-        tau_cli_term::CompletionData::new(),
-        tau_themes::Theme::builtin(),
-    );
-
-    renderer.handle(&Event::AgentCompactionStarted(
-        tau_proto::AgentCompactionStarted {
-            agent_id: "main".into(),
-            originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: Some(226_200),
-        },
-    ));
-    renderer.handle(&Event::AgentCompactionFinished(
-        tau_proto::AgentCompactionFinished {
-            agent_id: "main".into(),
-            originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: Some(226_200),
-            compacted_input_tokens: None,
-            outcome: tau_proto::AgentCompactionOutcome::Failed,
-            message: Some("provider unavailable".to_owned()),
-        },
-    ));
-    sync(&handle);
-    assert!(vt.screen_contains(80, "compact #226.2k err: provider unavailable"));
 }
 
 /// Regression: invalid provider tool calls can fail schema validation before

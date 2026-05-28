@@ -108,7 +108,6 @@ pub(crate) struct ChainFingerprintParts {
 pub(crate) enum AgentTurnState {
     #[default]
     Idle,
-    Compacting,
     AgentThinking {
         #[allow(dead_code)]
         agent_prompt_id: AgentPromptId,

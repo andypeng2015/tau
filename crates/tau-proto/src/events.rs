@@ -1592,8 +1592,7 @@ pub struct ProviderModelInfo {
     pub verbosities: Vec<Verbosity>,
     /// Thinking-summary modes accepted by this model, in UI cycling order.
     pub thinking_summaries: Vec<ThinkingSummary>,
-    /// Whether this model can use the provider's standalone compaction
-    /// endpoint.
+    /// Whether this model can use provider/server-side context compaction.
     #[serde(default)]
     pub supports_compaction: bool,
 }
@@ -1761,12 +1760,12 @@ pub enum UiRoleUpdateAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service_tier: Option<ServiceTier>,
     },
-    /// Set or clear the role's automatic compaction threshold percentage.
+    /// Set or clear the role's automatic compaction token threshold.
     SetCompactionThreshold {
-        /// Context-window percentage at which automatic compaction should
-        /// start, or `None` to use Tau's default threshold.
+        /// Token threshold at which automatic server-side compaction should
+        /// start, or `None` to use the provider/server default behavior.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        compaction_threshold: Option<u8>,
+        compaction_threshold: Option<u64>,
     },
     /// Set or clear the role's explicit tool allow-list.
     SetTools {
@@ -2044,6 +2043,22 @@ pub struct AgentPromptRecalled {
     pub text: String,
 }
 
+/// A durable provider-visible manual compaction trigger was inserted into
+/// an agent transcript.
+///
+/// This records the user-facing fact that compaction was requested. It is not
+/// a lifecycle/status event: providers translate the folded
+/// [`ContextItem::CompactionTrigger`] into their server-side compaction
+/// mechanism during normal prompt handling.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentCompactionTriggered {
+    /// Agent transcript receiving the compaction trigger.
+    pub agent_id: AgentId,
+    /// Who requested the trigger.
+    #[serde(default)]
+    pub originator: PromptOriginator,
+}
+
 /// A previously queued user prompt that the harness folded into the
 /// in-flight turn as a steering message — appended to the next
 /// `AgentPromptCreated` for this agent alongside tool results, rather
@@ -2214,6 +2229,11 @@ pub struct AgentPromptCreated {
     /// the rest of the chain by spid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx_id: Option<String>,
+    /// Server-side context-management compaction request metadata for providers
+    /// that support compaction. When present without a threshold, the provider
+    /// should opt in to its server default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<PromptCompactionContext>,
     /// Hint for backends that support stateful chaining: the most
     /// recent provider response id from this conversation and the item
     /// index where the new turn's content begins. Backends that do not
@@ -2221,6 +2241,15 @@ pub struct AgentPromptCreated {
     /// `context_items` payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_response_candidate: Option<PreviousResponseCandidate>,
+}
+
+/// Request metadata for provider/server-side context compaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PromptCompactionContext {
+    /// Token threshold at which automatic server-side compaction should run.
+    /// `None` means use the provider/server default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_threshold: Option<u64>,
 }
 
 /// Why a prompt ended without a provider response being accepted.
@@ -2249,19 +2278,6 @@ pub struct AgentPromptTerminated {
     /// Who asked for this prompt.
     #[serde(default)]
     pub originator: PromptOriginator,
-}
-
-/// The harness assembled a provider-side compaction request and
-/// assigned it an ID.
-///
-/// Compaction reuses the same prompt-delivery and materialization
-/// scheme as [`AgentPromptCreated`], but it is a distinct provider
-/// operation with its own event name so consumers do not need to infer
-/// alternate semantics from a mode flag on a normal prompt event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentCompactionRequested {
-    #[serde(flatten)]
-    pub prompt: AgentPromptCreated,
 }
 
 /// Best-effort provider-side prompt-cache prewarm request.
@@ -2294,92 +2310,6 @@ pub struct AgentPromptPrewarmRequested {
     /// Preserve the first real user prompt's cache-key derivation.
     #[serde(default, skip_serializing_if = "is_false")]
     pub share_user_cache_key: bool,
-}
-
-/// A provider-side compaction pass has started for this agent.
-///
-/// This is a transient lifecycle event for clients to render progress;
-/// successful compaction is recorded durably by [`AgentCompacted`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AgentCompactionStarted {
-    /// Agent transcript being compacted.
-    pub agent_id: AgentId,
-    /// Conversation that owns this compaction. UIs use this to hide
-    /// sub-agent compaction lifecycle blocks from the main transcript.
-    #[serde(default)]
-    pub originator: PromptOriginator,
-    /// Input-token count of the conversation before compaction, if known.
-    /// Renderers use this as the `#…` context-size chip on the live status.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_input_tokens: Option<u64>,
-}
-
-/// Final status of a provider-side compaction lifecycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentCompactionOutcome {
-    Succeeded,
-    Failed,
-}
-
-/// A provider-side compaction pass finished.
-///
-/// This is transient UI/status metadata. On success, a separate
-/// [`AgentCompacted`] event carries the durable compacted input items.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AgentCompactionFinished {
-    /// Agent transcript whose compaction finished.
-    pub agent_id: AgentId,
-    /// Conversation that owns this compaction. UIs use this to hide
-    /// sub-agent compaction lifecycle blocks from the main transcript.
-    #[serde(default)]
-    pub originator: PromptOriginator,
-    /// Input-token count of the conversation before compaction, if known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_input_tokens: Option<u64>,
-    /// Prompt/input-token count of the compacted replacement window, if known.
-    ///
-    /// Providers do not always report usage for standalone compaction. When
-    /// exact usage is unavailable, the harness may fill this with its
-    /// documented prompt-size estimate for the provider-owned items that
-    /// will be replayed after compaction. It is UI context-size metadata,
-    /// not a billing counter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compacted_input_tokens: Option<u64>,
-    pub outcome: AgentCompactionOutcome,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// The harness replaced earlier branch history with a compact summary.
-///
-/// The durable event log remains append-only: compaction does not delete
-/// prior events from disk. Instead, prompt assembly treats this event as a
-/// history reset point and replays only the summary plus the entries that
-/// follow it on the current branch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentCompacted {
-    /// Agent transcript whose earlier branch history was compacted.
-    pub agent_id: AgentId,
-    /// Conversation that owns this durable compaction summary. UIs use
-    /// this to hide sub-agent compaction results from the main transcript.
-    #[serde(default)]
-    pub originator: PromptOriginator,
-    /// Input-token count of the conversation before compaction, if known.
-    /// Stored on the durable event so replayed UIs can render the same status.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_input_tokens: Option<u64>,
-    /// Prompt/input-token count of the compacted replacement window, if known.
-    ///
-    /// Providers do not always report usage for standalone compaction. When
-    /// exact usage is unavailable, the harness may fill this with its
-    /// documented prompt-size estimate for the provider-owned items that
-    /// will be replayed after compaction. Stored on the durable event so
-    /// replayed UIs can render the same status. It is UI context-size
-    /// metadata, not a billing counter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compacted_input_tokens: Option<u64>,
-    pub replacement_window: Vec<ContextItem>,
 }
 
 /// Reference to a prior turn's response, used to enable stateful
@@ -2789,14 +2719,8 @@ pub enum Event {
     AgentPromptRecalled(AgentPromptRecalled),
     #[serde(rename = "agent.prompt_steered")]
     AgentPromptSteered(AgentPromptSteered),
-    #[serde(rename = "agent.compaction_started")]
-    AgentCompactionStarted(AgentCompactionStarted),
-    #[serde(rename = "agent.compaction_finished")]
-    AgentCompactionFinished(AgentCompactionFinished),
-    #[serde(rename = "agent.compacted")]
-    AgentCompacted(AgentCompacted),
-    #[serde(rename = "agent.compaction_requested")]
-    AgentCompactionRequested(AgentCompactionRequested),
+    #[serde(rename = "agent.compaction_triggered")]
+    AgentCompactionTriggered(AgentCompactionTriggered),
     #[serde(rename = "agent.prompt_created")]
     AgentPromptCreated(AgentPromptCreated),
     #[serde(rename = "agent.prompt_terminated")]
@@ -2909,15 +2833,12 @@ impl Event {
             Self::AgentPromptQueued(_) => EventName::AGENT_PROMPT_QUEUED,
             Self::AgentPromptRecalled(_) => EventName::AGENT_PROMPT_RECALLED,
             Self::AgentPromptSteered(_) => EventName::AGENT_PROMPT_STEERED,
+            Self::AgentCompactionTriggered(_) => EventName::AGENT_COMPACTION_TRIGGERED,
             Self::AgentStarted(_) => EventName::AGENT_STARTED,
             Self::SessionStarted(_) => EventName::SESSION_STARTED,
             Self::SessionShutdown(_) => EventName::SESSION_SHUTDOWN,
             Self::SessionAgentLoaded(_) => EventName::SESSION_AGENT_LOADED,
             Self::SessionAgentUnloaded(_) => EventName::SESSION_AGENT_UNLOADED,
-            Self::AgentCompactionStarted(_) => EventName::AGENT_COMPACTION_STARTED,
-            Self::AgentCompactionFinished(_) => EventName::AGENT_COMPACTION_FINISHED,
-            Self::AgentCompacted(_) => EventName::AGENT_COMPACTED,
-            Self::AgentCompactionRequested(_) => EventName::AGENT_COMPACTION_REQUESTED,
             Self::AgentPromptCreated(_) => EventName::AGENT_PROMPT_CREATED,
             Self::AgentPromptTerminated(_) => EventName::AGENT_PROMPT_TERMINATED,
             Self::AgentPromptPrewarmRequested(_) => EventName::AGENT_PROMPT_PREWARM_REQUESTED,
@@ -2948,9 +2869,6 @@ impl Event {
                 | Self::ActionError(_)
                 | Self::ShellCommandProgress(_)
                 | Self::UiPromptSubmitted(_)
-                | Self::AgentCompactionStarted(_)
-                | Self::AgentCompactionFinished(_)
-                | Self::AgentCompactionRequested(_)
                 | Self::AgentPromptQueued(_)
                 | Self::AgentPromptRecalled(_)
                 | Self::AgentPromptCreated(_)

@@ -561,6 +561,7 @@ fn append_context_item(item: &ContextItem, messages: &mut Vec<serde_json::Value>
             }));
         }
         ContextItem::Reasoning(_)
+        | ContextItem::CompactionTrigger
         | ContextItem::Compaction(_)
         | ContextItem::UnknownProviderItem(_) => {}
     }

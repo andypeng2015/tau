@@ -23,6 +23,9 @@ pub struct PromptPayload<'a> {
     /// answer. Tools and `system_prompt` are still passed verbatim
     /// in either case so the prompt-cache prefix stays stable.
     pub tool_choice: tau_proto::ToolChoice,
+    /// Server-side context-management compaction metadata, when enabled for
+    /// this prompt/model.
+    pub compaction: Option<tau_proto::PromptCompactionContext>,
     /// Hint from the harness for stateful chaining: the previous
     /// turn's `response_id` and the index in `context_items` where new
     /// content for this turn begins. Backends that don't support

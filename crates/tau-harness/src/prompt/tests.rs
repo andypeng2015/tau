@@ -678,55 +678,6 @@ fn assemble_conversation_preserves_agent_phase() {
     assert_eq!(assistant.phase, Some(tau_proto::MessagePhase::Commentary));
 }
 
-#[test]
-fn assemble_conversation_restarts_from_compacted_summary() {
-    let mut tree = tau_core::AgentTree::from_events("session-1".into(), &[]);
-    tree.apply_event(&user_prompt("first question"));
-    tree.apply_event(&Event::ProviderResponseFinished(
-        tau_proto::ProviderResponseFinished {
-            agent_prompt_id: "sp-1".into(),
-            agent_id: "main".into(),
-            output_items: vec![assistant_message("first answer")],
-            stop_reason: tau_proto::ProviderStopReason::EndTurn,
-            originator: tau_proto::PromptOriginator::User,
-            usage: None,
-            backend: None,
-            provider_response_id: None,
-            ws_pool_delta: None,
-        },
-    ));
-    tree.apply_event(&Event::AgentCompacted(tau_proto::AgentCompacted {
-        agent_id: "main".into(),
-        originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: None,
-            compacted_input_tokens: None,
-            replacement_window: vec![ContextItem::Message(MessageItem {
-                role: ContextRole::Assistant,
-                content: vec![ContentPart::Text {
-                    text: "Summary of earlier conversation:\n- User is debugging compaction\n- Keep edits focused"
-                        .to_owned(),
-                }],
-                phase: None,
-            })],
-        }));
-    tree.apply_event(&user_prompt("continue"));
-
-    let items = assemble_conversation_from(&tree, tree.head());
-    assert_eq!(items.len(), 2, "pre-compaction history must be dropped");
-    assert!(matches!(
-        &items[0],
-        ContextItem::Message(MessageItem { content, .. })
-            if matches!(&content[0], ContentPart::Text { text }
-                if text.contains("Summary of earlier conversation:")
-                    && text.contains("debugging compaction"))
-    ));
-    assert!(matches!(
-        &items[1],
-        ContextItem::Message(MessageItem { content, .. })
-            if matches!(&content[0], ContentPart::Text { text } if text == "continue")
-    ));
-}
-
 /// Split durable agent-message events must preserve prompt roles: sender-side
 /// projections replay as assistant history, while recipient-side projections
 /// replay as user-style input. Otherwise a follow-up prompt can invert who said

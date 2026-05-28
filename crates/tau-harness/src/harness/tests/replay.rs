@@ -619,6 +619,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
             model_params: Default::default(),
             tool_choice: Default::default(),
             originator: Default::default(),
+            compaction: None,
             previous_response_candidate: None,
             share_user_cache_key: false,
             ctx_id: None,
@@ -635,20 +636,9 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     );
     h.publish_event(
         None,
-        Event::AgentCompactionStarted(tau_proto::AgentCompactionStarted {
+        Event::AgentCompactionTriggered(tau_proto::AgentCompactionTriggered {
             agent_id: agent_id.clone().into(),
             originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: None,
-        }),
-    );
-    h.publish_event(
-        None,
-        Event::AgentCompacted(tau_proto::AgentCompacted {
-            agent_id: agent_id.clone().into(),
-            originator: tau_proto::PromptOriginator::User,
-            original_input_tokens: None,
-            compacted_input_tokens: None,
-            replacement_window: assistant_output("Agent compacted."),
         }),
     );
     h.publish_event(
@@ -701,8 +691,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     }
 
     assert!(replayed.contains(&tau_proto::EventName::PROVIDER_RESPONSE_FINISHED));
-    assert!(replayed.contains(&tau_proto::EventName::AGENT_COMPACTED));
-    assert!(!replayed.contains(&tau_proto::EventName::AGENT_COMPACTION_STARTED));
+    assert!(replayed.contains(&tau_proto::EventName::AGENT_COMPACTION_TRIGGERED));
     assert!(!replayed.contains(&tau_proto::EventName::AGENT_PROMPT_QUEUED));
     assert!(!replayed.contains(&tau_proto::EventName::AGENT_PROMPT_CREATED));
     assert!(!replayed.contains(&tau_proto::EventName::PROVIDER_RESPONSE_UPDATED));

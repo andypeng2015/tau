@@ -296,6 +296,8 @@ impl EventName {
         Self::from_static(EventCategory::Agent, "prompt_recalled");
     pub const AGENT_PROMPT_STEERED: Self =
         Self::from_static(EventCategory::Agent, "prompt_steered");
+    pub const AGENT_COMPACTION_TRIGGERED: Self =
+        Self::from_static(EventCategory::Agent, "compaction_triggered");
     pub const AGENT_STARTED: Self = Self::from_static(EventCategory::Agent, "started");
     pub const SESSION_STARTED: Self = Self::from_static(EventCategory::Session, "started");
     pub const SESSION_SHUTDOWN: Self = Self::from_static(EventCategory::Session, "shutdown");
@@ -303,13 +305,6 @@ impl EventName {
         Self::from_static(EventCategory::Session, "agent_loaded");
     pub const SESSION_AGENT_UNLOADED: Self =
         Self::from_static(EventCategory::Session, "agent_unloaded");
-    pub const AGENT_COMPACTION_STARTED: Self =
-        Self::from_static(EventCategory::Agent, "compaction_started");
-    pub const AGENT_COMPACTION_FINISHED: Self =
-        Self::from_static(EventCategory::Agent, "compaction_finished");
-    pub const AGENT_COMPACTED: Self = Self::from_static(EventCategory::Agent, "compacted");
-    pub const AGENT_COMPACTION_REQUESTED: Self =
-        Self::from_static(EventCategory::Agent, "compaction_requested");
     pub const AGENT_PROMPT_CREATED: Self =
         Self::from_static(EventCategory::Agent, "prompt_created");
     pub const AGENT_PROMPT_TERMINATED: Self =

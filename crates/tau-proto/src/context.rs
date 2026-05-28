@@ -213,6 +213,8 @@ pub enum ContextItem {
     ToolResult(ToolResultItem),
     /// Provider-specific reasoning item.
     Reasoning(OpaqueProviderItem),
+    /// User- or harness-authored request for the provider to compact context.
+    CompactionTrigger,
     /// Provider-specific compaction item.
     Compaction(OpaqueProviderItem),
     /// Provider item that Tau does not yet understand.

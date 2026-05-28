@@ -104,15 +104,10 @@ const MUST_PASS_BY_DEFAULT: &[EventName] = &[
     EventName::AGENT_PROMPT_SUBMITTED,
     EventName::AGENT_USER_MESSAGE_INJECTED,
     EventName::AGENT_PROMPT_STEERED,
-    // Durable compaction state: once the harness has accepted a provider
-    // compaction result, dropping this event would make the UI report
-    // success while the next prompt still replays the un-compacted branch.
-    EventName::AGENT_COMPACTED,
+    EventName::AGENT_COMPACTION_TRIGGERED,
     // Agent request life-cycle: the agent extension consumes normal
-    // `AgentPromptCreated` turns and `AgentCompactionRequested`
-    // requests to know when to talk to the LLM. Dropping either wedges
-    // the conversation.
-    EventName::AGENT_COMPACTION_REQUESTED,
+    // `AgentPromptCreated` turns to know when to talk to the LLM. Dropping
+    // one wedges the conversation.
     EventName::AGENT_PROMPT_CREATED,
     // Agent response: dropping this would wedge `c.head` /
     // `prompt_agents` bookkeeping and the conversation

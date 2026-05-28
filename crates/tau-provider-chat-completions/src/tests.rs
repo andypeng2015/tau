@@ -47,6 +47,7 @@ fn prompt() -> tau_proto::AgentPromptCreated {
         originator: tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         ctx_id: None,
+        compaction: None,
         previous_response_candidate: None,
     }
 }

@@ -89,8 +89,8 @@ pub enum AgentMessageDirection {
     Inbound,
 }
 
-/// One persisted chat, tool, compaction, or cross-agent-message entry belonging
-/// to an agent.
+/// One persisted chat, tool, or cross-agent-message entry belonging to an
+/// agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentEntry {
     /// User-style model input recorded in the transcript.
@@ -113,11 +113,6 @@ pub enum AgentEntry {
     ToolResults {
         /// Results ordered by the model's original tool-call order.
         items: Vec<ToolResultItem>,
-    },
-    /// Compaction replacement window for the current branch.
-    Compaction {
-        /// Replacement context items that summarize earlier branch history.
-        replacement_window: Vec<ContextItem>,
     },
     /// Cross-agent message projection stored in this agent's transcript.
     AgentMessage {
@@ -609,10 +604,10 @@ impl AgentTree {
                     })],
                 },
             )),
-            Event::AgentCompacted(compacted) => Some(self.append_node_at(
+            Event::AgentCompactionTriggered(_) => Some(self.append_node_at(
                 parent,
-                AgentEntry::Compaction {
-                    replacement_window: compacted.replacement_window.clone(),
+                AgentEntry::UserInput {
+                    items: vec![ContextItem::CompactionTrigger],
                 },
             )),
             Event::AgentMessageSent(message) => self
@@ -759,7 +754,9 @@ impl AgentTree {
                 Ok(())
             }
             Event::AgentPromptSteered(steered) if steered.agent_id == self.agent_id => Ok(()),
-            Event::AgentCompacted(compacted) if compacted.agent_id == self.agent_id => Ok(()),
+            Event::AgentCompactionTriggered(triggered) if triggered.agent_id == self.agent_id => {
+                Ok(())
+            }
             Event::AgentMessageSent(message)
                 if self.agent_message_entry_from_sent(message).is_some() =>
             {
@@ -789,7 +786,7 @@ impl AgentTree {
             | Event::AgentPromptSubmitted(_)
             | Event::AgentUserMessageInjected(_)
             | Event::AgentPromptSteered(_)
-            | Event::AgentCompacted(_)
+            | Event::AgentCompactionTriggered(_)
             | Event::AgentMessageSent(_)
             | Event::AgentMessageReceived(_)
             | Event::AgentHeadMoved(_)

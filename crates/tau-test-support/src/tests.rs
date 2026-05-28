@@ -250,6 +250,7 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
         tool_choice: tau_proto::ToolChoice::default(),
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
+        compaction: None,
         previous_response_candidate: None,
         share_user_cache_key: false,
     };
