@@ -49,7 +49,6 @@ struct LockState {
 struct ManualLock {
     owner: AgentId,
     dir: PathBuf,
-    count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -65,8 +64,6 @@ pub(crate) struct ForceUnlockedLock {
     pub(crate) owner: AgentId,
     /// Canonical directory that was locked.
     pub(crate) dir: PathBuf,
-    /// Reference count that was removed.
-    pub(crate) count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +84,12 @@ enum WaitKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LockAcquireError {
     Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ManualLockAcquireError {
+    Cancelled,
+    AlreadyHeld { dir: PathBuf },
 }
 
 /// RAII guard for an automatic writer lock. Dropping it releases the active
@@ -162,13 +165,16 @@ impl DirLockManager {
         owner: AgentId,
         dir: PathBuf,
         on_wait: F,
-    ) -> Result<(), LockAcquireError>
+    ) -> Result<(), ManualLockAcquireError>
     where
         F: FnOnce(),
     {
         let dirs = vec![dir];
         let mut on_wait = Some(on_wait);
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
+        if let Some(held_dir) = state.manual_lock_owned_overlapping(&owner, &dirs) {
+            return Err(ManualLockAcquireError::AlreadyHeld { dir: held_dir });
+        }
         if state.can_grant_now(&owner, &dirs, WaitKind::Manual) {
             state.add_manual(owner, dirs);
             self.inner.changed.notify_all();
@@ -183,10 +189,17 @@ impl DirLockManager {
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
         loop {
             let Some(pos) = state.waiters.iter().position(|queued| queued.id == waiter) else {
-                return Err(LockAcquireError::Cancelled);
+                return Err(ManualLockAcquireError::Cancelled);
             };
             if pos == 0 {
                 let queued = state.waiters.front().expect("position says front exists");
+                if let Some(held_dir) =
+                    state.manual_lock_owned_overlapping(&queued.owner, &queued.dirs)
+                {
+                    state.waiters.pop_front().expect("front exists");
+                    self.inner.changed.notify_all();
+                    return Err(ManualLockAcquireError::AlreadyHeld { dir: held_dir });
+                }
                 if !state.has_conflict(&queued.owner, &queued.dirs, queued.kind) {
                     let queued = state.waiters.pop_front().expect("front exists");
                     state.add_manual(queued.owner, queued.dirs);
@@ -203,7 +216,7 @@ impl DirLockManager {
     }
 
     /// Release one exact manual lock held by `owner` for `dir`.
-    pub(crate) fn unlock_manual(&self, owner: &AgentId, dir: &Path) -> Result<usize, String> {
+    pub(crate) fn unlock_manual(&self, owner: &AgentId, dir: &Path) -> Result<(), String> {
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
         let Some(pos) = state
             .manual
@@ -215,15 +228,9 @@ impl DirLockManager {
                 dir.display()
             ));
         };
-        let remaining = if 1 < state.manual[pos].count {
-            state.manual[pos].count -= 1;
-            state.manual[pos].count
-        } else {
-            state.manual.remove(pos);
-            0
-        };
+        state.manual.remove(pos);
         self.inner.changed.notify_all();
-        Ok(remaining)
+        Ok(())
     }
 
     /// Cancel a queued lock waiter for `call_id`, if one exists.
@@ -252,7 +259,6 @@ impl DirLockManager {
                 removed.push(ForceUnlockedLock {
                     owner: lock.owner.clone(),
                     dir: lock.dir.clone(),
-                    count: lock.count,
                 });
             }
             !should_remove
@@ -313,6 +319,13 @@ impl LockState {
         id
     }
 
+    fn manual_lock_owned_overlapping(&self, owner: &AgentId, dirs: &[PathBuf]) -> Option<PathBuf> {
+        self.manual.iter().find_map(|lock| {
+            (&lock.owner == owner && dirs.iter().any(|dir| paths_overlap(&lock.dir, dir)))
+                .then(|| lock.dir.clone())
+        })
+    }
+
     fn can_grant_now(&self, owner: &AgentId, dirs: &[PathBuf], kind: WaitKind) -> bool {
         let bypass_queue = self.can_bypass_queue(owner, dirs, kind);
         (bypass_queue || self.waiters.is_empty()) && !self.has_conflict(owner, dirs, kind)
@@ -320,9 +333,7 @@ impl LockState {
 
     fn can_bypass_queue(&self, owner: &AgentId, dirs: &[PathBuf], kind: WaitKind) -> bool {
         match kind {
-            WaitKind::Manual => self.manual.iter().any(|lock| {
-                &lock.owner == owner && dirs.iter().any(|dir| paths_overlap(&lock.dir, dir))
-            }),
+            WaitKind::Manual => false,
             WaitKind::Automatic => dirs.iter().all(|dir| {
                 self.manual
                     .iter()
@@ -354,19 +365,15 @@ impl LockState {
 
     fn add_manual(&mut self, owner: AgentId, dirs: Vec<PathBuf>) {
         for dir in dirs {
-            if let Some(lock) = self
-                .manual
-                .iter_mut()
-                .find(|lock| lock.owner == owner && lock.dir == dir)
-            {
-                lock.count += 1;
-            } else {
-                self.manual.push(ManualLock {
-                    owner: owner.clone(),
-                    dir,
-                    count: 1,
-                });
-            }
+            debug_assert!(
+                self.manual
+                    .iter()
+                    .all(|lock| lock.owner != owner || !paths_overlap(&lock.dir, &dir))
+            );
+            self.manual.push(ManualLock {
+                owner: owner.clone(),
+                dir,
+            });
         }
     }
 
@@ -456,21 +463,34 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tx,
                     tool_result(
                         &invoke,
-                        dir_lock_result_value("update", &dir, Some(true), None),
+                        dir_lock_result_value("update", &dir, Some(true)),
                         locked_display("locked", &dir),
                     ),
                 ),
-                Err(LockAcquireError::Cancelled) => {
+                Err(ManualLockAcquireError::Cancelled) => {
                     send_event(tx, cancelled_event(invoke));
                 }
+                Err(ManualLockAcquireError::AlreadyHeld { dir: held_dir }) => send_event(
+                    tx,
+                    tool_error(
+                        &invoke,
+                        format!(
+                            "agent `{}` already holds a directory lock for {}; unlock it before locking {}",
+                            invoke.agent_id,
+                            held_dir.display(),
+                            dir.display()
+                        ),
+                        Some(invoke.arguments.clone()),
+                    ),
+                ),
             }
         }
         "unlock" => match manager.unlock_manual(&invoke.agent_id, &dir) {
-            Ok(remaining) => send_event(
+            Ok(()) => send_event(
                 tx,
                 tool_result(
                     &invoke,
-                    dir_lock_result_value("unlock", &dir, Some(false), Some(remaining)),
+                    dir_lock_result_value("unlock", &dir, Some(false)),
                     locked_display("unlocked", &dir),
                 ),
             ),
@@ -719,12 +739,7 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-fn dir_lock_result_value(
-    command: &str,
-    dir: &Path,
-    locked: Option<bool>,
-    remaining: Option<usize>,
-) -> CborValue {
+fn dir_lock_result_value(command: &str, dir: &Path, locked: Option<bool>) -> CborValue {
     let mut entries = vec![
         (
             CborValue::Text("command".to_owned()),
@@ -739,12 +754,6 @@ fn dir_lock_result_value(
         entries.push((
             CborValue::Text("locked".to_owned()),
             CborValue::Bool(locked),
-        ));
-    }
-    if let Some(remaining) = remaining {
-        entries.push((
-            CborValue::Text("remaining".to_owned()),
-            CborValue::Integer((remaining as i64).into()),
         ));
     }
     CborValue::Map(entries)
@@ -856,6 +865,56 @@ mod tests {
             .unlock_manual(&"agent-b".into(), Path::new("/repo"))
             .expect("unlock root");
         let guard = second.join().expect("second").expect("second acquired");
+        drop(guard);
+    }
+
+    #[test]
+    fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
+        let manager = DirLockManager::default();
+        manager
+            .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+            .expect("manual lock");
+
+        // A second manual lock by the same agent is usually a forgotten unlock,
+        // so reject both exact and ancestor/child overlaps instead of hiding the
+        // mistake behind extra lock ownership.
+        assert_eq!(
+            manager.acquire_manual(
+                "manual-a-again".into(),
+                "agent-a".into(),
+                path("/repo/a"),
+                || {}
+            ),
+            Err(ManualLockAcquireError::AlreadyHeld {
+                dir: path("/repo/a")
+            })
+        );
+        assert_eq!(
+            manager.acquire_manual(
+                "manual-a-child".into(),
+                "agent-a".into(),
+                path("/repo/a/child"),
+                || {}
+            ),
+            Err(ManualLockAcquireError::AlreadyHeld {
+                dir: path("/repo/a")
+            })
+        );
+        assert_eq!(
+            manager.acquire_manual("manual-root".into(), "agent-a".into(), path("/repo"), || {}),
+            Err(ManualLockAcquireError::AlreadyHeld {
+                dir: path("/repo/a")
+            })
+        );
+
+        let guard = manager
+            .acquire_auto(
+                "auto-a".into(),
+                "agent-a".into(),
+                vec![path("/repo/a/child")],
+                || {},
+            )
+            .expect("same-owner automatic tool reentry");
         drop(guard);
     }
 

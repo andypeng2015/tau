@@ -680,20 +680,13 @@ fn dispatch_action_invoke(invoke: ActionInvoke, lock_manager: &DirLockManager) -
         );
     }
 
-    let removed_refs: usize = removed.iter().map(|entry| entry.count).sum();
     let mut lines = vec![format!(
-        "Force-unlocked {} manual directory lock(s), {} reference(s), overlapping {}.",
+        "Force-unlocked {} manual directory lock(s) overlapping {}.",
         removed.len(),
-        removed_refs,
         dir.display()
     )];
     for entry in removed {
-        lines.push(format!(
-            "{} owner={} count={}",
-            entry.dir.display(),
-            entry.owner,
-            entry.count
-        ));
+        lines.push(format!("{} owner={}", entry.dir.display(), entry.owner));
     }
     Event::ActionResult(ActionResult {
         invocation_id: invoke.invocation_id,

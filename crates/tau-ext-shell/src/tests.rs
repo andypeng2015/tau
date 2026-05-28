@@ -667,7 +667,104 @@ fn dir_lock_blocks_conflicting_write_until_unlock() {
 }
 
 #[test]
-fn startup_registers_shell_schemas_with_shared_mode_cwd_and_timeout_minimum() {
+fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let child_dir = lock_dir.join("child");
+    fs::create_dir(&child_dir).expect("child dir");
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "lock-root",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush first lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => break,
+            Some(_) => continue,
+            None => panic!("extension closed before first lock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "lock-child-again",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &child_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock duplicate update");
+    writer.flush().expect("flush duplicate lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolError(error)) if error.call_id.as_str() == "lock-child-again" => {
+                assert!(error.message.contains("already holds a directory lock"));
+                assert!(
+                    error
+                        .message
+                        .contains(lock_dir.to_str().expect("utf8 path"))
+                );
+                break;
+            }
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-child-again" => {
+                panic!("duplicate manual lock succeeded: {result:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before duplicate lock error"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "same-agent-write",
+            WRITE_TOOL_NAME,
+            cbor_text_map(vec![
+                ("path", &child_dir.join("file.txt").display().to_string()),
+                ("content", "hello"),
+            ]),
+            "agent-a",
+        ))
+        .expect("same-agent write");
+    writer.flush().expect("flush same-agent write");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-write" => {
+                assert_eq!(
+                    fs::read_to_string(child_dir.join("file.txt")).expect("same-agent write file"),
+                    "hello"
+                );
+                break;
+            }
+            Some(Event::ToolProgress(progress))
+                if progress.call_id.as_str() == "same-agent-write" =>
+            {
+                panic!("same-agent automatic write waited on its own manual lock: {progress:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before same-agent write result"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn startup_registers_shell_schemas_with_cwd_and_timeout_minimum() {
     // The model-visible schema must advertise the implemented working-directory
     // argument and reject negative timeouts before invocation. Directory update
     // coordination is handled inside ext-shell when dir_lock is enabled, not by

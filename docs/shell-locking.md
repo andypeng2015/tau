@@ -21,7 +21,7 @@ Arguments:
 
 All `directory` values are canonicalized before use. Missing paths or non-directories are errors.
 
-`update` acquires a manual update lock for the canonical directory and the owning `agent_id`. `unlock` releases one matching manual lock held by that same agent. Repeated `update` calls by the same agent on the same directory are reference-counted and require the same number of `unlock` calls.
+`update` acquires a manual update lock for the canonical directory and the owning `agent_id`. `unlock` releases one matching manual lock held by that same agent. A second `update` by the same agent for the same directory, an ancestor, or a child is an error; manual double-locking is treated as a likely forgotten unlock.
 
 Conflicts are based on path ancestry: a lock conflicts when either directory contains the other. Reads do not participate.
 
