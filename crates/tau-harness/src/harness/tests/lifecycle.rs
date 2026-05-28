@@ -863,6 +863,108 @@ fn extension_emit_and_start_agent_request_are_staged_until_ready() {
 }
 
 #[test]
+fn prompt_created_waits_for_registered_agent_context_provider() {
+    // Context readiness is an explicit extension capability, not a side effect
+    // of subscribing to `session.agent_loaded`. Once a provider registers, the
+    // submitted user message may commit immediately, but `AgentPromptCreated`
+    // must wait for that provider's per-agent context before freezing the model
+    // snapshot.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let conn_id = "conn-agent-context-ready";
+    let _sink = connect_handshaking_tool(&mut h, conn_id);
+
+    h.handle_extension_message(
+        conn_id,
+        Message::Subscribe(Subscribe {
+            selectors: vec![EventSelector::Exact(
+                tau_proto::EventName::SESSION_AGENT_LOADED,
+            )],
+        }),
+    )
+    .expect("subscribe");
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ExtensionContextProviderRegister(
+            tau_proto::ExtensionContextProviderRegister {},
+        )),
+    )
+    .expect("register context provider");
+    h.handle_extension_message(
+        conn_id,
+        Message::Ready(tau_proto::Ready {
+            message: Some("ready".to_owned()),
+        }),
+    )
+    .expect("ready");
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ExtPromptFragmentPublish(
+            tau_proto::ExtPromptFragmentPublish {
+                fragment: tau_proto::PromptFragment::new(
+                    "test.cwd",
+                    tau_proto::PromptPriority::new(20),
+                    "Current working directory: {{#each agent_context.cwd}}{{#if @first}}{{value}}{{/if}}{{/each}}",
+                ),
+            },
+        )),
+    )
+    .expect("prompt fragment");
+
+    h.dispatch_user_prompt("s1".into(), "first prompt".to_owned())
+        .expect("dispatch user prompt");
+    assert!(h.prompt_snapshots.is_empty());
+    assert!(event_log_events(&h).iter().any(|event| matches!(
+        event,
+        Event::AgentPromptSubmitted(prompt) if prompt.text == "first prompt"
+    )));
+
+    let agent_id = h
+        .agents
+        .values()
+        .find(|agent| agent.originator.is_user())
+        .and_then(|agent| agent.agent_id.as_deref())
+        .expect("durable user agent")
+        .to_owned();
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ExtAgentContextPublish(
+            tau_proto::ExtAgentContextPublish {
+                agent_id: agent_id.clone().into(),
+                key: "cwd".into(),
+                value: tau_proto::AgentContextValue(serde_json::json!("/tmp/work")),
+            },
+        )),
+    )
+    .expect("publish cwd");
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ExtensionContextReady(
+            tau_proto::ExtensionContextReady {
+                session_id: "s1".into(),
+                agent_id: agent_id.into(),
+            },
+        )),
+    )
+    .expect("context ready");
+
+    let prompt = h
+        .prompt_snapshots
+        .values()
+        .find(|prompt| prompt_context_contains(prompt, "first prompt"))
+        .expect("prompt dispatched after context ready");
+    assert!(
+        prompt
+            .system_prompt
+            .contains("Current working directory: /tmp/work")
+    );
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
 fn disconnect_before_ready_drops_all_staged_state() {
     // If a handshaking extension goes away, its staged batch is discarded rather
     // than becoming visible through model routes, prompt assembly, interceptors,

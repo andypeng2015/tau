@@ -217,6 +217,8 @@ impl EventName {
         Self::from_static(EventCategory::Extension, "skill_available");
     pub const EXTENSION_AGENTS_MD_AVAILABLE: Self =
         Self::from_static(EventCategory::Extension, "agents_md_available");
+    pub const EXTENSION_CONTEXT_PROVIDER_REGISTER: Self =
+        Self::from_static(EventCategory::Extension, "context_provider_register");
     pub const EXTENSION_CONTEXT_READY: Self =
         Self::from_static(EventCategory::Extension, "context_ready");
     pub const EXTENSION_AGENT_CONTEXT_PUBLISH: Self =

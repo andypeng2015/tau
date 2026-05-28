@@ -451,6 +451,9 @@ where
     for tool in tools {
         handshake = handshake.register_tool(tool);
     }
+    handshake = handshake.announce_event(Event::ExtensionContextProviderRegister(
+        tau_proto::ExtensionContextProviderRegister {},
+    ));
     handshake
         .announce_event(Event::ExtPromptFragmentPublish(ExtPromptFragmentPublish {
             fragment: shell_cwd_prompt_fragment(),

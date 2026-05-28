@@ -774,6 +774,9 @@ struct ExtensionActivationStage {
     skill_announcements: Vec<tau_proto::ExtSkillAvailable>,
     /// AGENTS.md announcements received before `Ready`, in wire order.
     agents_files: Vec<tau_proto::ExtAgentsMdAvailable>,
+    /// Whether the extension registered as an agent context provider before
+    /// `Ready`.
+    agent_context_provider_registered: bool,
     /// Agent context publishes received before `Ready`, in wire order.
     agent_context_publishes: Vec<tau_proto::ExtAgentContextPublish>,
     /// Extension-level prompt fragments received before `Ready`, keyed by name
@@ -1020,6 +1023,9 @@ pub struct Harness {
     pub(crate) discovered_agents_files: Vec<DiscoveredAgentsFile>,
     /// Session-scoped JSON context contributions published by extensions.
     pub(crate) agent_context: AgentContextStore,
+    /// Extensions that explicitly registered as per-agent prompt-context
+    /// providers.
+    pub(crate) agent_context_providers: HashSet<tau_proto::ConnectionId>,
     /// Per-agent context providers still expected to acknowledge the latest
     /// `session.agent_loaded` before that agent's first prompt can dispatch.
     pub(crate) pending_agent_context_ready:
@@ -1483,6 +1489,7 @@ impl Harness {
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
+            agent_context_providers: HashSet::new(),
             pending_agent_context_ready: HashMap::new(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
@@ -1723,6 +1730,7 @@ impl Harness {
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
+            agent_context_providers: HashSet::new(),
             pending_agent_context_ready: HashMap::new(),
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
@@ -2394,7 +2402,7 @@ impl Harness {
             // limbo (e.g. side query that timed out).
             return;
         }
-        self.send_prompt_to_agent_for(&cid);
+        self.dispatch_prompt_after_publish_idle(&cid);
     }
 
     /// Classify whether a non-user message recipient can receive a hidden
@@ -3069,6 +3077,11 @@ impl Harness {
             .push(agents);
     }
 
+    fn stage_agent_context_provider_register(&mut self, source_id: &str) {
+        self.extension_activation_stage_mut(source_id)
+            .agent_context_provider_registered = true;
+    }
+
     fn stage_agent_context_publish(
         &mut self,
         source_id: &str,
@@ -3277,6 +3290,15 @@ impl Harness {
         );
     }
 
+    fn register_agent_context_provider(&mut self, source_id: &str) {
+        self.agent_context_providers
+            .insert(tau_proto::ConnectionId::from(source_id));
+        self.publish_event(
+            Some(source_id),
+            Event::ExtensionContextProviderRegister(tau_proto::ExtensionContextProviderRegister {}),
+        );
+    }
+
     fn publish_agent_context_publish(
         &mut self,
         source_id: &str,
@@ -3334,6 +3356,9 @@ impl Harness {
         }
         for agents in stage.agents_files {
             self.publish_agents_md_available(source_id, agents);
+        }
+        if stage.agent_context_provider_registered {
+            self.register_agent_context_provider(source_id);
         }
         for publish in stage.agent_context_publishes {
             self.publish_agent_context_publish(source_id, publish);
@@ -3740,6 +3765,13 @@ impl Harness {
                     self.stage_provider_models_update(source_id, updated);
                 } else {
                     self.publish_provider_models_update(source_id, updated);
+                }
+            }
+            Event::ExtensionContextProviderRegister(_) => {
+                if self.should_stage_extension_capabilities(source_id) {
+                    self.stage_agent_context_provider_register(source_id);
+                } else {
+                    self.register_agent_context_provider(source_id);
                 }
             }
             Event::ExtensionContextReady(ready) => {
@@ -4589,6 +4621,7 @@ impl Harness {
         self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
         let disconnected = tau_proto::ConnectionId::from(connection_id);
+        self.agent_context_providers.remove(&disconnected);
         self.pending_agent_context_ready.retain(|_, waiting_on| {
             waiting_on.remove(&disconnected);
             !waiting_on.is_empty()
@@ -5447,6 +5480,9 @@ impl Harness {
             agent_id,
         });
         self.tool_connections_subscribed_to(&event)
+            .into_iter()
+            .filter(|connection_id| self.agent_context_providers.contains(connection_id))
+            .collect()
     }
 
     fn tool_connections_subscribed_to(&self, event: &Event) -> HashSet<tau_proto::ConnectionId> {
@@ -7065,6 +7101,7 @@ impl Harness {
             waiting_on.remove(&source_id);
             if waiting_on.is_empty() {
                 self.pending_agent_context_ready.remove(&ready.agent_id);
+                self.drain_publish_idle_dispatches();
                 self.try_advance_queue();
             }
         }

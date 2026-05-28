@@ -197,6 +197,7 @@ pub fn run_embedded_message_with_echo(
         session_id,
         tau_proto::SessionStartReason::Initial,
     )?;
+    disable_echo_tool_context_gate_for_tests(&mut harness);
     let mut outcome = match harness.send_user_message(session_id, message, None) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -221,6 +222,15 @@ fn echo_tools() -> Vec<crate::harness::InProcessTool> {
         name: "shell",
         runner: shell_runner,
     }]
+}
+
+#[cfg(any(test, feature = "echo-agent"))]
+fn disable_echo_tool_context_gate_for_tests(harness: &mut Harness) {
+    // Echo-mode harnesses use the shell extension only to satisfy deterministic
+    // tool calls. Keep those helpers focused on provider/tool behavior instead
+    // of deferring prompts for shell's cwd context acknowledgement.
+    harness.agent_context_providers.clear();
+    harness.pending_agent_context_ready.clear();
 }
 
 /// Runs a foreground daemon that accepts socket clients.
@@ -300,6 +310,7 @@ pub fn run_daemon_with_echo(
         eager_session_id,
         session_start_reason(options.session_status),
     )?;
+    disable_echo_tool_context_gate_for_tests(&mut harness);
 
     let tx = harness.tx.clone();
     thread::spawn(move || {

@@ -19,12 +19,14 @@ fn responses_backend() -> tau_proto::ProviderBackend {
 
 fn publish_pending_agent_context_ready(h: &mut Harness, agent_id: &str) {
     let agent_id = tau_proto::AgentId::from(agent_id);
-    let source_id = h
+    let Some(source_id) = h
         .pending_agent_context_ready
         .get(&agent_id)
         .and_then(|waiting_on| waiting_on.iter().next())
         .cloned()
-        .expect("agent context provider pending");
+    else {
+        return;
+    };
     h.handle_extension_event(
         source_id.as_str(),
         Frame::Event(Event::ExtensionContextReady(
@@ -3823,7 +3825,7 @@ fn queued_prompt_extends_completed_first_prompt() {
     let first = h
         .submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    assert_eq!(first, PromptSubmission::Queued);
+    assert_eq!(first, PromptSubmission::Dispatched);
     let first_agent_id = h
         .agents
         .get(&test_user_agent(&h))
@@ -4339,7 +4341,7 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
     let submission = h
         .submit_user_prompt("s2".into(), "hello".to_owned())
         .expect("submit");
-    assert_eq!(submission, PromptSubmission::Queued);
+    assert_eq!(submission, PromptSubmission::Dispatched);
     let new_cid = test_user_agent(&h);
     let new_agent_id = h.agents[&new_cid]
         .agent_id

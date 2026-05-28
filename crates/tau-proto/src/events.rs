@@ -1385,6 +1385,12 @@ pub struct ExtAgentsMdAvailable {
     pub content: String,
 }
 
+/// An extension declares that it will publish per-agent prompt context after
+/// each matching `session.agent_loaded` event and acknowledge completion with
+/// `extension.context_ready`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionContextProviderRegister {}
+
 /// An extension finished broadcasting refreshed prompt context for one agent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionContextReady {
@@ -2685,6 +2691,8 @@ pub enum Event {
     ExtSkillAvailable(ExtSkillAvailable),
     #[serde(rename = "extension.agents_md_available")]
     ExtAgentsMdAvailable(ExtAgentsMdAvailable),
+    #[serde(rename = "extension.context_provider_register")]
+    ExtensionContextProviderRegister(ExtensionContextProviderRegister),
     #[serde(rename = "extension.context_ready")]
     ExtensionContextReady(ExtensionContextReady),
     #[serde(rename = "extension.agent_context_publish")]
@@ -2851,6 +2859,9 @@ impl Event {
             Self::ExtensionRestarting(_) => EventName::EXTENSION_RESTARTING,
             Self::ExtSkillAvailable(_) => EventName::EXTENSION_SKILL_AVAILABLE,
             Self::ExtAgentsMdAvailable(_) => EventName::EXTENSION_AGENTS_MD_AVAILABLE,
+            Self::ExtensionContextProviderRegister(_) => {
+                EventName::EXTENSION_CONTEXT_PROVIDER_REGISTER
+            }
             Self::ExtensionContextReady(_) => EventName::EXTENSION_CONTEXT_READY,
             Self::ExtAgentContextPublish(_) => EventName::EXTENSION_AGENT_CONTEXT_PUBLISH,
             Self::ExtPromptFragmentPublish(_) => EventName::EXTENSION_PROMPT_FRAGMENT_PUBLISH,

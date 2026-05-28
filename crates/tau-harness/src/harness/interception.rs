@@ -272,11 +272,15 @@ impl Harness {
     }
 
     fn dispatch_or_defer_prompt(&mut self, cid: &AgentId, gate: PromptDispatchGate) {
-        if self.publish_chain_is_idle() {
-            self.send_prompt_to_agent_for(cid);
+        if !self.publish_chain_is_idle() {
+            self.defer_prompt_dispatch(cid.clone(), gate);
             return;
         }
-        self.defer_prompt_dispatch(cid.clone(), gate);
+        if !self.agent_context_ready_for(cid) {
+            self.defer_prompt_dispatch(cid.clone(), PromptDispatchGate::PublishIdle);
+            return;
+        }
+        self.send_prompt_to_agent_for(cid);
     }
 
     fn defer_prompt_dispatch(&mut self, cid: AgentId, gate: PromptDispatchGate) {
@@ -515,14 +519,19 @@ impl Harness {
         }
     }
 
-    fn drain_publish_idle_dispatches(&mut self) {
+    pub(crate) fn drain_publish_idle_dispatches(&mut self) {
         while self.publish_chain_is_idle() {
             let Some(cid) = self.pending_publish_idle_dispatches.pop_front() else {
                 break;
             };
-            if self.agents.contains_key(&cid) {
-                self.send_prompt_to_agent_for(&cid);
+            if !self.agents.contains_key(&cid) {
+                continue;
             }
+            if !self.agent_context_ready_for(&cid) {
+                self.pending_publish_idle_dispatches.push_front(cid);
+                break;
+            }
+            self.send_prompt_to_agent_for(&cid);
         }
     }
 }

@@ -218,19 +218,20 @@ fn action_invoke(invocation_id: &str, action_id: &str, directory: &str) -> Event
 /// messages are filtered out by the test-side `EventReader` wrapper.
 fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
     for expected in [
-        EventName::TOOL_REGISTER,                     // echo
-        EventName::TOOL_REGISTER,                     // read
-        EventName::TOOL_REGISTER,                     // write
-        EventName::TOOL_REGISTER,                     // edit
-        EventName::TOOL_REGISTER,                     // apply_patch
-        EventName::TOOL_REGISTER,                     // dir_lock
-        EventName::TOOL_REGISTER,                     // grep
-        EventName::TOOL_REGISTER,                     // find
-        EventName::TOOL_REGISTER,                     // ls
-        EventName::TOOL_REGISTER,                     // shell
-        EventName::TOOL_REGISTER,                     // gpt_shell
-        EventName::EXTENSION_PROMPT_FRAGMENT_PUBLISH, // shell.cwd
-        EventName::ACTION_SCHEMA_PUBLISHED,           // shell-dir-force-unlock
+        EventName::TOOL_REGISTER,                       // echo
+        EventName::TOOL_REGISTER,                       // read
+        EventName::TOOL_REGISTER,                       // write
+        EventName::TOOL_REGISTER,                       // edit
+        EventName::TOOL_REGISTER,                       // apply_patch
+        EventName::TOOL_REGISTER,                       // dir_lock
+        EventName::TOOL_REGISTER,                       // grep
+        EventName::TOOL_REGISTER,                       // find
+        EventName::TOOL_REGISTER,                       // ls
+        EventName::TOOL_REGISTER,                       // shell
+        EventName::TOOL_REGISTER,                       // gpt_shell
+        EventName::EXTENSION_CONTEXT_PROVIDER_REGISTER, // shell cwd context
+        EventName::EXTENSION_PROMPT_FRAGMENT_PUBLISH,   // shell.cwd
+        EventName::ACTION_SCHEMA_PUBLISHED,             // shell-dir-force-unlock
     ] {
         let event = reader
             .read_event()
@@ -362,7 +363,7 @@ fn startup_publishes_shell_dir_force_unlock_action() {
     let (mut reader, mut writer) = spawn_extension();
 
     let mut found_schema = false;
-    for _ in 0..13 {
+    for _ in 0..14 {
         let event = reader
             .read_event()
             .expect("read")
@@ -1124,9 +1125,10 @@ fn startup_registers_shell_cwd_prompt_fragment() {
     // tool, so it remains available even when shell tools are disabled.
     let (mut reader, mut writer) = spawn_extension();
 
+    let mut found_context_provider = false;
     let mut found_fragment = false;
     let mut saw_tool_fragment = false;
-    for _ in 0..13 {
+    for _ in 0..14 {
         let event = reader
             .read_event()
             .expect("read")
@@ -1134,6 +1136,9 @@ fn startup_registers_shell_cwd_prompt_fragment() {
         match event {
             Event::ToolRegister(register) => {
                 saw_tool_fragment |= register.prompt_fragment.is_some();
+            }
+            Event::ExtensionContextProviderRegister(_) => {
+                found_context_provider = true;
             }
             Event::ExtPromptFragmentPublish(publish) => {
                 assert_eq!(publish.fragment.name, "shell.cwd");
@@ -1153,6 +1158,10 @@ fn startup_registers_shell_cwd_prompt_fragment() {
             _ => {}
         }
     }
+    assert!(
+        found_context_provider,
+        "shell cwd context must gate first prompt dispatch"
+    );
     assert!(found_fragment, "expected shell cwd prompt fragment publish");
     assert!(!saw_tool_fragment, "cwd must not be attached to any tool");
 

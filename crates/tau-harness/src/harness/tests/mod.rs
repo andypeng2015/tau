@@ -163,14 +163,28 @@ fn test_cwd() -> PathBuf {
 }
 
 fn ensure_test_user_agent(h: &mut Harness) -> AgentId {
-    h.agents
+    let cid = h
+        .agents
         .iter()
         .find_map(|(cid, conv)| conv.originator.is_user().then_some(cid.clone()))
         .unwrap_or_else(|| {
             let session_id = h.current_session_id.clone();
             let role = h.selected_role.clone();
             h.create_durable_user_agent(session_id, &role, test_cwd())
-        })
+        });
+    // Most harness unit tests use this helper to focus on tool/provider state,
+    // not extension-provided prompt context. Treat the synthetic agent as if
+    // registered context providers have already acknowledged it; tests that
+    // exercise context readiness drive `session.agent_loaded` explicitly.
+    if let Some(agent_id) = h
+        .agents
+        .get(&cid)
+        .and_then(|conv| conv.agent_id.as_deref())
+        .map(tau_proto::AgentId::from)
+    {
+        h.pending_agent_context_ready.remove(&agent_id);
+    }
+    cid
 }
 
 fn test_user_agent(h: &Harness) -> AgentId {
@@ -316,7 +330,7 @@ fn echo_harness_with_dirs_and_start_reason(
     fn shell_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
         tau_ext_shell::run(r, w).map_err(|e| e.to_string())
     }
-    Harness::new_with_provider(
+    let mut h = Harness::new_with_provider(
         state_dir,
         dirs,
         echo_runner,
@@ -326,7 +340,13 @@ fn echo_harness_with_dirs_and_start_reason(
         }],
         session_id,
         start_reason,
-    )
+    )?;
+    // Most harness tests use the in-process shell only as a tool provider. Do
+    // not let its startup context-provider registration defer unrelated prompt
+    // dispatch assertions; readiness-specific tests register providers directly.
+    h.agent_context_providers.clear();
+    h.pending_agent_context_ready.clear();
+    Ok(h)
 }
 
 fn quiet_provider_harness(state_dir: impl Into<PathBuf>) -> Result<Harness, HarnessError> {

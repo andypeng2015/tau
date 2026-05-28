@@ -212,6 +212,7 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
             | Frame::Event(Event::ExtensionStarting(_))
             | Frame::Event(Event::ExtensionReady(_))
             | Frame::Event(Event::ProviderModelsUpdated(_))
+            | Frame::Event(Event::ExtensionContextProviderRegister(_))
             | Frame::Event(Event::ExtPromptFragmentPublish(_)) => {}
             Frame::Message(tau_proto::Message::Ready(_)) => break,
             _ => panic!("unexpected tool startup event: {startup_frame:?}"),
