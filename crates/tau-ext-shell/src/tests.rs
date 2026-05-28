@@ -201,6 +201,19 @@ fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue, agent_id: 
     })
 }
 
+fn action_invoke(invocation_id: &str, action_id: &str, directory: &str) -> Event {
+    Event::ActionInvoke(tau_proto::ActionInvoke {
+        invocation_id: invocation_id.into(),
+        session_id: "session-1".into(),
+        extension_name: "tau-ext-shell".into(),
+        instance_id: 0.into(),
+        action_id: action_id.to_owned(),
+        raw_line: format!("/shell-dir-force-unlock {directory}"),
+        argv: vec![directory.to_owned()],
+        arguments: cbor_text_map(vec![("directory", directory)]),
+    })
+}
+
 /// Consumes startup events (tool registers). The hello/subscribe/ready
 /// messages are filtered out by the test-side `EventReader` wrapper.
 fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
@@ -217,6 +230,7 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
         EventName::TOOL_REGISTER,                     // shell
         EventName::TOOL_REGISTER,                     // gpt_shell
         EventName::EXTENSION_PROMPT_FRAGMENT_PUBLISH, // shell.cwd
+        EventName::ACTION_SCHEMA_PUBLISHED,           // shell-dir-force-unlock
     ] {
         let event = reader
             .read_event()
@@ -340,6 +354,144 @@ fn startup_registers_dir_lock_enabled_by_default() {
         }
     }
     assert!(found_dir_lock, "expected dir_lock registration");
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn startup_publishes_shell_dir_force_unlock_action() {
+    let (mut reader, mut writer) = spawn_extension();
+
+    let mut found_schema = false;
+    for _ in 0..13 {
+        let event = reader
+            .read_event()
+            .expect("read")
+            .expect("startup event should arrive");
+        let Event::ActionSchemaPublished(published) = event else {
+            continue;
+        };
+        published.schema.validate().expect("schema validates");
+        let root = published
+            .schema
+            .roots
+            .iter()
+            .find(|root| root.name == "/shell-dir-force-unlock")
+            .expect("force unlock action root");
+        assert_eq!(
+            root.action_id.as_deref(),
+            Some(SHELL_DIR_FORCE_UNLOCK_ACTION_ID)
+        );
+        assert_eq!(root.args.len(), 1);
+        assert_eq!(root.args[0].name, "directory");
+        assert!(matches!(
+            root.args[0].kind,
+            tau_actions::ActionArgKind::RestString
+        ));
+        found_schema = true;
+    }
+    assert!(found_schema, "expected shell action schema");
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().join("root");
+    let child_dir = lock_dir.join("child");
+    fs::create_dir_all(&child_dir).expect("child dir");
+    let write_path = child_dir.join("file.txt");
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "lock-root",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => break,
+            Some(_) => continue,
+            None => panic!("extension closed before lock result"),
+        }
+    }
+
+    writer
+        .write_event(&action_invoke(
+            "force-unlock-1",
+            SHELL_DIR_FORCE_UNLOCK_ACTION_ID,
+            &child_dir.display().to_string(),
+        ))
+        .expect("force unlock");
+    writer.flush().expect("flush force unlock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ActionResult(result))
+                if result.invocation_id.as_str() == "force-unlock-1" =>
+            {
+                let tau_proto::ActionOutput::Text { text } = result.output else {
+                    panic!("expected text output");
+                };
+                assert!(text.contains("Force-unlocked 1 manual directory lock"));
+                assert!(text.contains("owner=agent-a"));
+                assert!(text.contains(&lock_dir.display().to_string()));
+                break;
+            }
+            Some(Event::ActionError(error)) if error.invocation_id.as_str() == "force-unlock-1" => {
+                panic!("force unlock failed: {}", error.message);
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before force unlock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "write-after-force-unlock",
+            WRITE_TOOL_NAME,
+            cbor_text_map(vec![
+                ("path", &write_path.display().to_string()),
+                ("content", "hello"),
+            ]),
+            "agent-b",
+        ))
+        .expect("write");
+    writer.flush().expect("flush write");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result))
+                if result.call_id.as_str() == "write-after-force-unlock" =>
+            {
+                break;
+            }
+            Some(Event::ToolProgress(progress))
+                if progress.call_id.as_str() == "write-after-force-unlock" =>
+            {
+                panic!("write still waited after force unlock: {progress:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before write result"),
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(&write_path).expect("written file"),
+        "hello"
+    );
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -566,7 +718,7 @@ fn startup_registers_shell_cwd_prompt_fragment() {
 
     let mut found_fragment = false;
     let mut saw_tool_fragment = false;
-    for _ in 0..12 {
+    for _ in 0..13 {
         let event = reader
             .read_event()
             .expect("read")

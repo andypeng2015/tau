@@ -27,7 +27,7 @@ Conflicts are based on path ancestry: a lock conflicts when either directory con
 
 The wait queue is FIFO. If the front waiter is blocked, later waiters do not jump ahead. Same-owner reentry is allowed so an agent holding a manual lock can keep using mutating tools under that lock without deadlocking itself.
 
-Manual locks are released when ext-shell observes `SessionAgentUnloaded` for the owning agent, and all manual locks are released on `SessionShutdown`.
+Manual locks are released when ext-shell observes `SessionAgentUnloaded` for the owning agent, and all manual locks are released on `SessionShutdown`. The extension also publishes a UI action `/shell-dir-force-unlock DIRECTORY` that canonicalizes an existing directory and force-releases all overlapping manual locks, regardless of owner. It does not cancel or release automatic locks held by currently running tools.
 
 
 ## Automatic locking for ext-shell tools
@@ -46,7 +46,7 @@ Automatic locks are held only for the tool invocation duration. They serialize w
 
 ## UI behavior
 
-Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` update that shows the directory or directories being waited on. Normal foreground and auto-background behavior still applies because the harness sees the call as running until the extension sends a terminal event.
+Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` update that shows the directory or directories being waited on. Those displayed directories are valid inputs to `/shell-dir-force-unlock`; the action releases overlapping manual locks, so either an ancestor or child lock can be cleared from the waiting path. Normal foreground and auto-background behavior still applies because the harness sees the call as running until the extension sends a terminal event.
 
 
 ## Caveats

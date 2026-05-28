@@ -235,7 +235,9 @@ an `echo` tool for testing. The shell command and any wrapper prefix are configu
 When `dir_lock.enable` is true (the default), the `dir_lock` tool can manually
 lock an existing directory for updates, and `write`, `edit`, `apply_patch`,
 `shell`, and `gpt_shell` acquire matching automatic locks before mutating. Reads
-remain unblocked; user `!` commands are outside this agent-tool lock path.
+remain unblocked; user `!` commands are outside this agent-tool lock path. The
+extension also injects `/shell-dir-force-unlock DIRECTORY` so the user can clear
+manual locks that overlap a displayed waiting directory.
 
 Tau also discovers project and user agent context from conventional paths. It
 loads `AGENTS.md` from `$HOME/.agents/`, from each current-working-directory

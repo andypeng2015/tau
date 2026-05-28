@@ -2282,6 +2282,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "tau-actions",
  "tau-extension",
  "tau-proto",
  "tau-skills",

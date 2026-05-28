@@ -58,6 +58,17 @@ struct AutomaticLock {
     dirs: Vec<PathBuf>,
 }
 
+/// Manual directory lock removed by a user force-unlock action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ForceUnlockedLock {
+    /// Agent that owned the manual lock.
+    pub(crate) owner: AgentId,
+    /// Canonical directory that was locked.
+    pub(crate) dir: PathBuf,
+    /// Reference count that was removed.
+    pub(crate) count: usize,
+}
+
 #[derive(Clone, Debug)]
 struct Waiter {
     id: u64,
@@ -222,6 +233,31 @@ impl DirLockManager {
         state.waiters.retain(|waiter| &waiter.call_id != call_id);
         let removed = state.waiters.len() != before;
         if removed {
+            self.inner.changed.notify_all();
+        }
+        removed
+    }
+
+    /// Force-release every manual lock overlapping `dir`, regardless of owner.
+    ///
+    /// This is used by the user-facing slash action for recovery from stale or
+    /// mistaken manual locks. Automatic locks held by running tools are not
+    /// touched.
+    pub(crate) fn force_unlock_overlapping(&self, dir: &Path) -> Vec<ForceUnlockedLock> {
+        let mut state = self.inner.state.lock().expect("dir lock state poisoned");
+        let mut removed = Vec::new();
+        state.manual.retain(|lock| {
+            let should_remove = paths_overlap(&lock.dir, dir);
+            if should_remove {
+                removed.push(ForceUnlockedLock {
+                    owner: lock.owner.clone(),
+                    dir: lock.dir.clone(),
+                    count: lock.count,
+                });
+            }
+            !should_remove
+        });
+        if !removed.is_empty() {
             self.inner.changed.notify_all();
         }
         removed

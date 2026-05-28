@@ -168,6 +168,7 @@ When locking is enabled, verify all of these behaviors:
 * Mutating tools participate when enabled: `write`, `edit`, `apply_patch`, `shell`, and `gpt_shell` wait on conflicting locks.
 * Lock waiters do not consume the ext-shell worker semaphore before their lock is available. A large number of blocked lock waiters should not prevent unrelated reads from running.
 * Waiting tool UI/status includes the directory or directories being waited on, and normal auto-background behavior still applies.
+* The `/shell-dir-force-unlock DIRECTORY` UI action is published by ext-shell and force-releases manual locks overlapping that canonical directory, regardless of owner.
 * `delegate` agents are independent owners. A parent lock does not automatically cover a delegate, and a delegate lock does not belong to the parent.
 * User `!` shell commands are excluded from this lock path.
 
@@ -207,13 +208,19 @@ Use separate agents so owner reentry does not hide conflicts. Verify these cases
 
 The FIFO check is the starvation guard. If C completes before B while B is already queued at the front, record it as a bug.
 
-#### Phase 5: cancellation and background behavior
+#### Phase 5: user force-unlock action
+
+Hold `root/a` from Agent A. Start Agent B mutating `root/a/child` and wait until the UI shows it is waiting on `root/a/child` or another canonical child directory. Invoke `/shell-dir-force-unlock root/a/child` from the UI. Expected: the action output names the released lock owner and count, Agent B completes, and a later `dir_lock unlock root/a` from Agent A errors because the manual lock was already force-released.
+
+Also test the reverse overlap: Agent A holds `root/a/child`, Agent B waits on `root/a`, and `/shell-dir-force-unlock root/a` releases the child lock. Calling the action for a directory with no overlapping manual locks should return a clear action error. Running automatic locks should not be force-released; wait for those tools or cancel them normally.
+
+#### Phase 6: cancellation and background behavior
 
 Hold `root/a` from one agent. Start a delegate or shell call whose mutating `shell` invocation uses `cwd: root/a` and would create a sentinel file. Let it wait long enough to show the waiting directory in the UI; if it backgrounds, record the placeholder ID. Call `cancel` on the waiting shell tool call ID. Expected: cancel is accepted, the waiting lock request is removed, `wait` returns a canceled result if the call backgrounded, and the sentinel file is still absent after the lock is later released.
 
 Do not count cancellation of `write` or `edit` as required unless the harness exposes those call IDs as cancellable in that run. The important lock-specific behavior is that a waiting lock request can be canceled and does not run later after unlock.
 
-#### Phase 6: agent lifecycle cleanup
+#### Phase 7: agent lifecycle cleanup
 
 Start a delegate that calls `dir_lock update root/a`, reports that it acquired the lock, and then exits without unlocking. After the delegate completes and the agent unloads, a different agent should be able to lock or mutate `root/a` without waiting forever. If the lock remains stuck after the owning agent is gone, record it as a lifecycle cleanup bug.
 
@@ -229,6 +236,7 @@ Report concise but complete findings:
 * Whether reads stayed unblocked.
 * For each mutating tool, whether it waited on the expected directory and completed only after unlock.
 * Whether waiting UI/status showed the blocked directory and whether auto-background plus `wait` behaved normally.
+* Whether `/shell-dir-force-unlock DIRECTORY` was available, released overlapping manual locks, reported owner/count, and left automatic locks alone.
 * Whether FIFO prevented later independent waiters from jumping ahead of a blocked front waiter.
 * Whether cancellation removed a waiting lock request and prevented the delayed mutation.
 * Whether agent unload/session shutdown released manual locks.

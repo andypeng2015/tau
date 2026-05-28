@@ -208,7 +208,8 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
                 assert!(register_report.warnings.is_empty());
                 registered_tool_names.push(tool_register.tool.name);
             }
-            Frame::Event(Event::ExtensionStarting(_))
+            Frame::Event(Event::ActionSchemaPublished(_))
+            | Frame::Event(Event::ExtensionStarting(_))
             | Frame::Event(Event::ExtensionReady(_))
             | Frame::Event(Event::ProviderModelsUpdated(_))
             | Frame::Event(Event::ExtPromptFragmentPublish(_)) => {}

@@ -9,13 +9,15 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
 use tau_proto::{
-    Ack, AgentContextKey, AgentContextValue, ConfigError, Event, EventLogSeq,
-    ExtAgentContextPublish, ExtPromptFragmentPublish, ExtensionContextReady, Frame, FrameReader,
-    FrameWriter, Message, PromptContent, PromptFragment, PromptPriority, SessionAgentLoaded,
-    SessionStarted, ToolCancelled, ToolExecutionMode, ToolResult, ToolResultKind, ToolSpec,
+    Ack, ActionError, ActionInvoke, ActionOutput, ActionResult, AgentContextKey, AgentContextValue,
+    ConfigError, Event, EventLogSeq, ExtAgentContextPublish, ExtPromptFragmentPublish,
+    ExtensionContextReady, Frame, FrameReader, FrameWriter, Message, PromptContent, PromptFragment,
+    PromptPriority, SessionAgentLoaded, SessionStarted, ToolCancelled, ToolExecutionMode,
+    ToolResult, ToolResultKind, ToolSpec,
 };
 use tracing::{debug, trace};
 
@@ -43,6 +45,8 @@ use crate::tools::{
     APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, FIND_TOOL_NAME, GPT_SHELL_TOOL_NAME, GREP_TOOL_NAME,
     LS_TOOL_NAME, READ_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME, execute_tool,
 };
+
+const SHELL_DIR_FORCE_UNLOCK_ACTION_ID: &str = "shell.dir.force_unlock";
 
 /// Runs the extension on stdin/stdout.
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
@@ -445,6 +449,7 @@ where
     let mut handshake = tau_extension::Handshake::tool("tau-ext-shell").subscribe([
         tau_proto::EventName::TOOL_STARTED,
         tau_proto::EventName::TOOL_CANCEL_REQUEST,
+        tau_proto::EventName::ACTION_INVOKE,
         tau_proto::EventName::SESSION_STARTED,
         tau_proto::EventName::SESSION_AGENT_LOADED,
         tau_proto::EventName::SESSION_AGENT_UNLOADED,
@@ -458,6 +463,7 @@ where
         .announce_event(Event::ExtPromptFragmentPublish(ExtPromptFragmentPublish {
             fragment: shell_cwd_prompt_fragment(),
         }))
+        .publish_actions(shell_action_schema())
         .ready_message("filesystem and shell tools ready")
         .run(&mut writer)?;
 
@@ -566,6 +572,9 @@ where
             Frame::Event(Event::SessionShutdown(_)) => {
                 lock_manager.release_all_manual();
             }
+            Frame::Event(Event::ActionInvoke(invoke)) => {
+                tx.send(Frame::Event(dispatch_action_invoke(invoke, &lock_manager)))?;
+            }
             Frame::Event(Event::ToolCancelRequest(request)) => {
                 let cancel_tx = running_shells
                     .lock()
@@ -641,6 +650,78 @@ fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {
         execution_mode: ToolExecutionMode::Shared,
         background_support: None,
     }
+}
+
+fn shell_action_schema() -> tau_actions::ActionSchema {
+    tau_actions::ActionSchema {
+        version: tau_actions::ACTION_SCHEMA_VERSION,
+        roots: vec![tau_actions::ActionCommand {
+            name: "/shell-dir-force-unlock".to_owned(),
+            description: "Force-release ext-shell manual directory locks overlapping a directory"
+                .to_owned(),
+            action_id: Some(SHELL_DIR_FORCE_UNLOCK_ACTION_ID.to_owned()),
+            args: vec![tau_actions::ActionArg {
+                name: "directory".to_owned(),
+                description: "Existing directory whose overlapping manual locks should be released"
+                    .to_owned(),
+                required: true,
+                kind: tau_actions::ActionArgKind::RestString,
+            }],
+            children: Vec::new(),
+        }],
+    }
+}
+
+fn dispatch_action_invoke(invoke: ActionInvoke, lock_manager: &DirLockManager) -> Event {
+    if invoke.action_id != SHELL_DIR_FORCE_UNLOCK_ACTION_ID {
+        return action_error(invoke, "unknown shell action".to_owned());
+    }
+    let Some(directory) = invoke.argv.first().map(String::as_str) else {
+        return action_error(invoke, "missing directory argument".to_owned());
+    };
+    let dir = match crate::dir_lock::canonical_existing_dir(Path::new(directory)) {
+        Ok(dir) => dir,
+        Err(message) => return action_error(invoke, message),
+    };
+    let removed = lock_manager.force_unlock_overlapping(&dir);
+    if removed.is_empty() {
+        return action_error(
+            invoke,
+            format!("no manual directory locks overlap {}", dir.display()),
+        );
+    }
+
+    let removed_refs: usize = removed.iter().map(|entry| entry.count).sum();
+    let mut lines = vec![format!(
+        "Force-unlocked {} manual directory lock(s), {} reference(s), overlapping {}.",
+        removed.len(),
+        removed_refs,
+        dir.display()
+    )];
+    for entry in removed {
+        lines.push(format!(
+            "{} owner={} count={}",
+            entry.dir.display(),
+            entry.owner,
+            entry.count
+        ));
+    }
+    Event::ActionResult(ActionResult {
+        invocation_id: invoke.invocation_id,
+        action_id: invoke.action_id,
+        output: ActionOutput::Text {
+            text: lines.join("\n"),
+        },
+    })
+}
+
+fn action_error(invoke: ActionInvoke, message: String) -> Event {
+    Event::ActionError(ActionError {
+        invocation_id: invoke.invocation_id,
+        action_id: invoke.action_id,
+        message,
+        details: None,
+    })
 }
 
 fn dispatch_locked_tool_invoke(
