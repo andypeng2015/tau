@@ -884,11 +884,27 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
     loop {
         match reader.read_event().expect("read") {
             Some(Event::ToolError(error)) if error.call_id.as_str() == "lock-child-again" => {
-                assert!(error.message.contains("already holds a directory lock"));
+                assert_eq!(error.message, "dir_lock_duplicate");
                 assert!(
-                    error
+                    !error
                         .message
                         .contains(lock_dir.to_str().expect("utf8 path"))
+                );
+                let details = error.details.as_ref().expect("structured details");
+                assert_eq!(
+                    cbor_map_text(details, "blocking_directory"),
+                    Some(lock_dir.to_str().expect("utf8 path"))
+                );
+                assert_eq!(
+                    cbor_map_text(details, "requested_directory"),
+                    Some(child_dir.to_str().expect("utf8 path"))
+                );
+                assert_eq!(cbor_map_text(details, "lock_owner_id"), Some("agent-a"));
+                assert_eq!(
+                    cbor_map_text(details, "output"),
+                    Some(
+                        "Directory lock already held by this agent. Unlock the existing lock before locking another overlapping directory."
+                    )
                 );
                 let display = error.display.as_ref().expect("error display");
                 assert_eq!(display.args, child_dir.display().to_string());

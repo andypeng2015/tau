@@ -26,6 +26,10 @@ pub(crate) const DIR_LOCK_TOOL_NAME: &str = "dir_lock";
 
 const DEFAULT_LOCK_WAIT_LIVENESS_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_LOCK_ABANDONED_AFTER: Duration = Duration::from_secs(120);
+const ABANDONED_LOCK_ERROR: &str = "dir_lock_abandoned";
+const ABANDONED_LOCK_OUTPUT: &str = "Directory locked and inactive - possibly abandoned. Consider messaging the lock owner agent and/or force-unlocking with `dir_lock unlock` using `blocking_directory` as `directory` and `lock_owner_id` as `owner_agent_id`.";
+const DUPLICATE_LOCK_ERROR: &str = "dir_lock_duplicate";
+const DUPLICATE_LOCK_OUTPUT: &str = "Directory lock already held by this agent. Unlock the existing lock before locking another overlapping directory.";
 
 #[derive(Clone, Copy, Debug)]
 struct LockWaitPolicy {
@@ -58,21 +62,52 @@ pub(crate) struct AbandonedLock {
 
 impl AbandonedLock {
     fn message(&self) -> String {
-        format!(
-            "directory lock cannot be acquired because {} is held by agent `{}` and appears abandoned (idle for {}s, held for {}s). Ask `{}` to unlock it, or force-unlock it with `dir_lock` using command `unlock`, directory `{}`, and owner_agent_id `{}`.",
-            self.dir.display(),
-            self.owner,
-            self.idle_for.as_secs(),
-            self.held_for.as_secs(),
-            self.owner,
-            self.dir.display(),
-            self.owner
-        )
+        ABANDONED_LOCK_ERROR.to_owned()
+    }
+
+    fn details(&self) -> CborValue {
+        CborValue::Map(vec![
+            cbor_text_entry("blocking_directory", self.dir.display().to_string()),
+            cbor_text_entry("lock_owner_id", self.owner.to_string()),
+            cbor_duration_seconds_entry("idle_seconds", self.idle_for),
+            cbor_duration_seconds_entry("held_seconds", self.held_for),
+            cbor_text_entry("output", ABANDONED_LOCK_OUTPUT),
+        ])
     }
 
     pub(crate) fn tool_failure(&self) -> ToolFailure {
-        ToolFailure::from(self.message()).with_args(self.dir.display().to_string())
+        ToolFailure::from(self.message())
+            .with_args(self.dir.display().to_string())
+            .with_details(self.details())
     }
+}
+
+fn duplicate_manual_lock_details(
+    owner: &AgentId,
+    blocking_dir: &Path,
+    requested_dir: &Path,
+) -> CborValue {
+    CborValue::Map(vec![
+        cbor_text_entry("blocking_directory", blocking_dir.display().to_string()),
+        cbor_text_entry("requested_directory", requested_dir.display().to_string()),
+        cbor_text_entry("lock_owner_id", owner.to_string()),
+        cbor_text_entry("output", DUPLICATE_LOCK_OUTPUT),
+    ])
+}
+
+fn cbor_text_entry(key: &str, value: impl Into<String>) -> (CborValue, CborValue) {
+    (
+        CborValue::Text(key.to_owned()),
+        CborValue::Text(value.into()),
+    )
+}
+
+fn cbor_duration_seconds_entry(key: &str, duration: Duration) -> (CborValue, CborValue) {
+    let seconds = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+    (
+        CborValue::Text(key.to_owned()),
+        CborValue::Integer(seconds.into()),
+    )
 }
 
 /// Shared state used by all ext-shell workers that participate in directory
@@ -681,13 +716,12 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tx,
                     tool_error_with_args(
                         &invoke,
-                        format!(
-                            "agent `{}` already holds a directory lock for {}; unlock it before locking {}",
-                            invoke.agent_id,
-                            held_dir.display(),
-                            dir.display()
-                        ),
-                        Some(invoke.arguments.clone()),
+                        DUPLICATE_LOCK_ERROR.to_owned(),
+                        Some(duplicate_manual_lock_details(
+                            &invoke.agent_id,
+                            &held_dir,
+                            &dir,
+                        )),
                         Some(dir.display().to_string()),
                     ),
                 ),
@@ -696,7 +730,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tool_error_with_args(
                         &invoke,
                         lock.message(),
-                        Some(invoke.arguments.clone()),
+                        Some(lock.details()),
                         Some(lock.dir.display().to_string()),
                     ),
                 ),
@@ -1055,6 +1089,34 @@ mod tests {
         PathBuf::from(value)
     }
 
+    fn cbor_text_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
+        let CborValue::Map(entries) = value else {
+            return None;
+        };
+        entries
+            .iter()
+            .find_map(|(field, value)| match (field, value) {
+                (CborValue::Text(field), CborValue::Text(value)) if field == key => {
+                    Some(value.as_str())
+                }
+                _ => None,
+            })
+    }
+
+    fn cbor_int_field(value: &CborValue, key: &str) -> Option<i128> {
+        let CborValue::Map(entries) = value else {
+            return None;
+        };
+        entries
+            .iter()
+            .find_map(|(field, value)| match (field, value) {
+                (CborValue::Text(field), CborValue::Integer(value)) if field == key => {
+                    Some((*value).into())
+                }
+                _ => None,
+            })
+    }
+
     #[test]
     fn path_conflicts_include_ancestors_and_children() {
         assert!(paths_overlap(Path::new("/tmp/a"), Path::new("/tmp/a")));
@@ -1229,6 +1291,24 @@ mod tests {
         assert_eq!(lock.owner, "agent-a");
         assert_eq!(lock.dir, path("/repo/a"));
         assert!(Duration::from_secs(1) < lock.idle_for);
+
+        let failure = lock.tool_failure();
+        assert_eq!(failure.message, ABANDONED_LOCK_ERROR);
+        assert!(!failure.message.contains("agent-a"));
+        assert!(!failure.message.contains("/repo/a"));
+        let details = failure.details.as_deref().expect("structured details");
+        assert_eq!(
+            cbor_text_field(details, "output"),
+            Some(ABANDONED_LOCK_OUTPUT)
+        );
+        assert_eq!(
+            cbor_text_field(details, "blocking_directory"),
+            Some("/repo/a")
+        );
+        assert_eq!(cbor_text_field(details, "lock_owner_id"), Some("agent-a"));
+        assert!(1 < cbor_int_field(details, "idle_seconds").expect("idle seconds"));
+        assert!(1 < cbor_int_field(details, "held_seconds").expect("held seconds"));
+
         assert!(
             manager
                 .inner
