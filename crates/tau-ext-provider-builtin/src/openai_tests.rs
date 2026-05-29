@@ -50,23 +50,28 @@ fn prompt() -> tau_proto::AgentPromptCreated {
         agent_id: "agent-1".into(),
         session_id: "session-1".into(),
         system_prompt: String::new(),
-        context_items: vec![ContextItem::Message(tau_proto::MessageItem {
-            role: tau_proto::ContextRole::User,
-            content: vec![tau_proto::ContentPart::Text {
-                text: "hello".to_owned(),
-            }],
-            phase: None,
-        })],
+        context: tau_proto::PromptContext {
+            blocks: vec![tau_proto::ContextBlock::UserInput(
+                tau_proto::UserInputBlock {
+                    items: vec![ContextItem::Message(tau_proto::MessageItem {
+                        role: tau_proto::ContextRole::User,
+                        content: vec![tau_proto::ContentPart::Text {
+                            text: "hello".to_owned(),
+                        }],
+                        phase: None,
+                    })],
+                },
+            )],
+        },
         tools: Vec::new(),
         tools_ref: None,
-        model: Some(model_id(CHATGPT_PROVIDER_NAME, "gpt-5.5")),
+        model: model_id(CHATGPT_PROVIDER_NAME, "gpt-5.5"),
         model_params: Default::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         originator: tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         ctx_id: None,
         compaction: None,
-        previous_response_candidate: None,
     }
 }
 

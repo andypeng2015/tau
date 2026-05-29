@@ -191,14 +191,15 @@ fn provider_tool_errors(h: &Harness, call_id: &str) -> Vec<tau_proto::ToolError>
         .collect()
 }
 
-fn prompt_tool_result<'a>(
-    prompt: &'a AgentPromptCreated,
-    call_id: &str,
-) -> Option<&'a ToolResultItem> {
-    prompt.context_items.iter().find_map(|item| match item {
-        ContextItem::ToolResult(result) if result.call_id.as_str() == call_id => Some(result),
-        _ => None,
-    })
+fn prompt_tool_result(prompt: &AgentPromptCreated, call_id: &str) -> Option<ToolResultItem> {
+    prompt
+        .context
+        .flatten()
+        .into_iter()
+        .find_map(|item| match item {
+            ContextItem::ToolResult(result) if result.call_id.as_str() == call_id => Some(result),
+            _ => None,
+        })
 }
 
 /// Regression: a cold resume used to leave the restored branch ending in an
@@ -613,15 +614,15 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
             agent_prompt_id: spid.clone(),
             session_id: session_id.clone(),
             system_prompt: String::new(),
-            context_items: Vec::new(),
+            context: tau_proto::PromptContext { blocks: Vec::new() }, // Vec::new(),
             tools: Vec::new(),
             tools_ref: None,
-            model: None,
+            model: "test/model".parse().expect("model id"),
             model_params: Default::default(),
             tool_choice: Default::default(),
             originator: Default::default(),
             compaction: None,
-            previous_response_candidate: None,
+
             share_user_cache_key: false,
             ctx_id: None,
         }),
@@ -1122,7 +1123,7 @@ fn resumed_harness_replays_persisted_session_history() {
         .expect("resumed session prompt id")
         .clone();
     let prompt = read_prompt_created(&resumed, &spid);
-    let serialized = serde_json::to_string(&prompt.context_items).expect("json");
+    let serialized = serde_json::to_string(&prompt.context.flatten()).expect("json");
 
     assert!(
         serialized.contains("remember potato"),
@@ -1171,7 +1172,7 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
     append_user_message_via_event(&mut h, "s1", "second");
     let spid2 = h.send_prompt_to_agent("s1");
     let prompt2 = read_prompt_created(&h, &spid2);
-    let serialized = serde_json::to_string(&prompt2.context_items).expect("json");
+    let serialized = serde_json::to_string(&prompt2.context.flatten()).expect("json");
     assert!(
         !serialized.contains("The user is asking"),
         "prompt replay must not echo reasoning summary back to the model",

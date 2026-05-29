@@ -4,7 +4,37 @@ use tau_proto::{
 };
 
 use super::*;
-use crate::common::{LlmError, PreviousResponse};
+use crate::common::LlmError;
+
+fn context(items: &[ContextItem]) -> &'static tau_proto::PromptContext {
+    Box::leak(Box::new(tau_proto::PromptContext {
+        blocks: vec![tau_proto::ContextBlock::UserInput(
+            tau_proto::UserInputBlock {
+                items: items.to_vec(),
+            },
+        )],
+    }))
+}
+
+fn context_with_response_id(
+    response_id: &str,
+    before: Vec<ContextItem>,
+    assistant: Vec<ContextItem>,
+    after: Vec<ContextItem>,
+) -> &'static tau_proto::PromptContext {
+    Box::leak(Box::new(tau_proto::PromptContext {
+        blocks: vec![
+            tau_proto::ContextBlock::UserInput(tau_proto::UserInputBlock { items: before }),
+            tau_proto::ContextBlock::AssistantResponse(tau_proto::AssistantResponseBlock {
+                provider_response_id: Some(response_id.to_owned()),
+                backend: None,
+                output_items: assistant,
+                usage: None,
+            }),
+            tau_proto::ContextBlock::UserInput(tau_proto::UserInputBlock { items: after }),
+        ],
+    }))
+}
 
 #[test]
 fn build_request_includes_prompt_cache_key_when_supported() {
@@ -26,19 +56,18 @@ fn build_request_includes_prompt_cache_key_when_supported() {
     };
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let prompt_cache_key = body["prompt_cache_key"].as_str().expect("prompt_cache_key");
 
     assert!(uuid::Uuid::parse_str(prompt_cache_key).is_ok());
@@ -64,7 +93,7 @@ fn build_request_includes_service_tier_when_configured() {
     };
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams {
             service_tier: Some(tau_proto::ServiceTier::Fast),
@@ -72,14 +101,13 @@ fn build_request_includes_service_tier_when_configured() {
         },
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
 
     assert_eq!(body["service_tier"], "priority");
 }
@@ -95,19 +123,18 @@ fn build_request_maps_off_effort_to_openai_none() {
     };
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
 
     assert_eq!(body["reasoning"]["effort"], "none");
 }
@@ -132,19 +159,18 @@ fn build_request_omits_prompt_cache_key_without_seed() {
     };
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let object = body.as_object().expect("request object");
 
     assert!(!object.contains_key("prompt_cache_key"));
@@ -161,19 +187,18 @@ fn build_request_first_turn_replays_full_history_without_chain() {
     let messages = vec![user_text("hello"), assistant_text("hi there")];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
 
     assert_eq!(body["store"], false);
     assert!(
@@ -214,19 +239,18 @@ fn build_request_full_replay_serializes_restored_tool_error_before_next_user_mes
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let object = body.as_object().expect("request body is an object");
     assert!(
         object.get("previous_response_id").is_none(),
@@ -262,34 +286,29 @@ fn build_request_full_replay_serializes_restored_tool_error_before_next_user_mes
 #[test]
 fn build_request_chain_turn_sends_delta_and_previous_response_id() {
     let config = chain_test_config();
-    // Full transcript: 1 user, 1 assistant, 1 user tool-result.
-    // Chain anchor was captured after the assistant turn
-    // (message_index = 2), so only the trailing tool-result should
-    // make it into the request.
-    let messages = vec![
-        user_text("first turn"),
-        assistant_text("first response"),
-        user_text("second turn"),
-    ];
+    // Full transcript: 1 user, 1 assistant response, 1 user.
+    // The cached response id was captured after the assistant turn, so only
+    // the trailing user message should make it into the request.
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context_with_response_id(
+            "resp_abc",
+            vec![user_text("first turn")],
+            vec![assistant_text("first response")],
+            vec![user_text("second turn")],
+        ),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(PreviousResponse {
-            id: "resp_abc",
-            next_item_index: 2,
-            transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, Some("resp_abc")))
+        .expect("serialize");
 
     assert_eq!(
         body["store"], false,
@@ -305,33 +324,28 @@ fn build_request_chain_turn_sends_delta_and_previous_response_id() {
     assert_eq!(input[0]["content"][0]["text"], "second turn");
 }
 
-/// Defensive: a stale `message_index` (somehow larger than the
-/// assembled transcript) must NOT panic and must NOT chain — fall
-/// back to a full-replay first-turn-style request so the conversation
-/// keeps working instead of crashing the agent.
+/// Defensive: a cached response id missing from the prompt context must NOT
+/// chain — fall back to a full-replay first-turn-style request so the
+/// conversation keeps working instead of sending an invalid delta.
 #[test]
-fn build_request_chain_with_oob_index_falls_back_to_full_replay() {
+fn build_request_cached_response_missing_from_context_falls_back_to_full_replay() {
     let config = chain_test_config();
     let messages = vec![user_text("only")];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(PreviousResponse {
-            id: "resp_abc",
-            next_item_index: 99,
-            transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body =
+        serde_json::to_value(build_request(&config, &request, Some("missing"))).expect("serialize");
 
     assert_eq!(body["store"], false);
     assert!(
@@ -342,28 +356,6 @@ fn build_request_chain_with_oob_index_falls_back_to_full_replay() {
     );
     let input = body["input"].as_array().expect("input array");
     assert_eq!(input.len(), 1);
-}
-
-/// A 4xx body that mentions `previous_response` is the signal that
-/// the upstream's stored state for our chain has been evicted. We
-/// detect this so the in-agent fallback can re-send with a full
-/// transcript without bothering the user.
-#[test]
-fn stale_chain_error_detection() {
-    let stale = LlmError::HttpStatus(
-        400,
-        r#"{"error":{"message":"previous_response_id 'resp_x' not found"}}"#.into(),
-    );
-    assert!(is_stale_chain_error(&stale));
-
-    let unrelated = LlmError::HttpStatus(400, r#"{"error":{"message":"bad request"}}"#.into());
-    assert!(!is_stale_chain_error(&unrelated));
-
-    // 500s flow through the harness's transient-retry path, not the
-    // chain-fallback path — even if the body happens to mention the
-    // chain.
-    let server = LlmError::HttpStatus(503, "previous_response upstream blip".into());
-    assert!(!is_stale_chain_error(&server));
 }
 
 /// Regression: `prompt_cache_key` must still ride along on chained
@@ -377,30 +369,26 @@ fn build_request_chain_turn_still_emits_prompt_cache_key() {
         supports_prompt_cache_key: true,
         ..chain_test_config()
     };
-    let messages = vec![
-        user_text("first turn"),
-        assistant_text("first response"),
-        user_text("second turn"),
-    ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context_with_response_id(
+            "resp_abc",
+            vec![user_text("first turn")],
+            vec![assistant_text("first response")],
+            vec![user_text("second turn")],
+        ),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(PreviousResponse {
-            id: "resp_abc",
-            next_item_index: 2,
-            transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, Some("resp_abc")))
+        .expect("serialize");
     assert_eq!(body["previous_response_id"], "resp_abc");
     assert!(body["prompt_cache_key"].is_string());
 }
@@ -421,12 +409,11 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
     };
     let user_request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -434,20 +421,21 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
     };
     let ext_request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &ext,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let user_body = serde_json::to_value(build_request(&config, &user_request)).expect("serialize");
-    let ext_body = serde_json::to_value(build_request(&config, &ext_request)).expect("serialize");
+    let user_body =
+        serde_json::to_value(build_request(&config, &user_request, None)).expect("serialize");
+    let ext_body =
+        serde_json::to_value(build_request(&config, &ext_request, None)).expect("serialize");
 
     assert!(user_body["prompt_cache_key"].is_string());
     assert!(ext_body["prompt_cache_key"].is_string());
@@ -473,18 +461,18 @@ fn build_request_share_user_cache_key_pins_extension_to_user_bucket() {
     };
     let shared_request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         compaction: None,
-        previous_response: None,
         originator: &ext,
         share_user_cache_key: true,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
     };
-    let body = serde_json::to_value(build_request(&config, &shared_request)).expect("serialize");
+    let body =
+        serde_json::to_value(build_request(&config, &shared_request, None)).expect("serialize");
     assert!(body["prompt_cache_key"].is_string());
 }
 
@@ -507,20 +495,25 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
         parameters: None,
         format: None,
     };
-    let messages = [user_text("summarize")];
-    let previous_response = Some(PreviousResponse {
-        id: "resp_parent",
-        next_item_index: 0,
-        transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-    });
+    let user_context = context_with_response_id(
+        "resp_parent",
+        vec![user_text("parent prompt")],
+        vec![assistant_text("parent response")],
+        vec![user_text("summarize")],
+    );
+    let ext_context = context_with_response_id(
+        "resp_parent",
+        vec![user_text("parent prompt")],
+        vec![assistant_text("parent response")],
+        vec![user_text("summarize")],
+    );
     let user_request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: user_context,
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         compaction: None,
-        previous_response,
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         session_id: &tau_proto::SessionId::new("test-session"),
@@ -528,21 +521,26 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
     };
     let shared_ext_request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: ext_context,
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         compaction: None,
-        previous_response,
         originator: &ext,
         share_user_cache_key: true,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
     };
 
-    let user_body = serde_json::to_value(build_request(&config, &user_request)).expect("serialize");
-    let ext_body =
-        serde_json::to_value(build_request(&config, &shared_ext_request)).expect("serialize");
+    let user_body =
+        serde_json::to_value(build_request(&config, &user_request, Some("resp_parent")))
+            .expect("serialize");
+    let ext_body = serde_json::to_value(build_request(
+        &config,
+        &shared_ext_request,
+        Some("resp_parent"),
+    ))
+    .expect("serialize");
 
     assert_eq!(ext_body, user_body);
     assert_eq!(ext_body["prompt_cache_key"], user_body["prompt_cache_key"]);
@@ -569,19 +567,18 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
     };
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::None,
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
 
     assert_eq!(body["tool_choice"], "none");
     let tools = body["tools"].as_array().expect("tools array");
@@ -601,21 +598,20 @@ fn build_request_sends_compaction_context_management_and_trigger_item() {
     let items = [ContextItem::CompactionTrigger];
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &items,
+        context: context(&items),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: Some(tau_proto::PromptCompactionContext {
             compact_threshold: Some(1200),
         }),
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
 
     assert_eq!(body["context_management"][0]["type"], "compaction");
     assert_eq!(body["context_management"][0]["compact_threshold"], 1200);
@@ -641,21 +637,20 @@ fn build_request_trims_full_replay_before_latest_compaction_item() {
     ];
     let request = PromptPayload {
         system_prompt: "system",
-        context_items: &items,
+        context: context(&items),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: Some(tau_proto::PromptCompactionContext {
             compact_threshold: None,
         }),
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let input = body["input"].as_array().expect("input array");
 
     assert_eq!(input.len(), 2);
@@ -771,18 +766,17 @@ fn build_request_stamps_phase_on_assistant_messages_when_supported() {
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let input = body["input"].as_array().expect("input");
 
     let assistant_items: Vec<&serde_json::Value> = input
@@ -811,18 +805,17 @@ fn build_request_omits_phase_when_unsupported() {
     )];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let input = body["input"].as_array().expect("input");
     let assistant_item = input
         .iter()
@@ -857,18 +850,17 @@ fn build_request_stamps_phase_on_pre_tool_call_text_flush() {
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let input = body["input"].as_array().expect("input");
     let assistant_items: Vec<&serde_json::Value> = input
         .iter()
@@ -951,18 +943,17 @@ fn build_request_emits_include_when_encrypted_reasoning_supported() {
     let config = encrypted_reasoning_test_config();
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let include = body["include"].as_array().expect("include array");
     assert_eq!(include.len(), 1);
     assert_eq!(include[0], "reasoning.encrypted_content");
@@ -977,18 +968,17 @@ fn build_request_omits_include_when_encrypted_reasoning_unsupported() {
     let config = chain_test_config();
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     assert!(
         body.as_object()
             .expect("request body is an object")
@@ -1020,18 +1010,17 @@ fn build_request_replays_reasoning_item_as_top_level_input() {
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let input = body["input"].as_array().expect("input");
     let reasoning_idx = input
         .iter()
@@ -1084,19 +1073,18 @@ fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: std::slice::from_ref(&tool),
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
     let tools = body["tools"].as_array().expect("tools");
     assert_eq!(tools[0]["type"], "custom");
     assert_eq!(tools[0]["name"], "apply_patch");
@@ -1163,39 +1151,44 @@ fn apply_event_accumulates_custom_tool_input_deltas() {
 #[test]
 fn build_request_chain_keeps_custom_tool_output_type_from_prior_history() {
     let config = chain_test_config();
-    let messages = vec![
-        assistant_tool_call(
-            "call-custom",
-            "apply_patch",
-            tau_proto::ToolType::Custom,
-            tau_proto::CborValue::Text("patch body".into()),
-        ),
-        ContextItem::ToolResult(ToolResultItem {
-            call_id: "call-custom".into(),
-            tool_type: tau_proto::ToolType::Custom,
-            status: ToolResultStatus::Success,
-            output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Text("ok".into())),
-        }),
-    ];
+    let tool_result = ToolResultItem {
+        call_id: "call-custom".into(),
+        tool_type: tau_proto::ToolType::Custom,
+        status: ToolResultStatus::Success,
+        output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Text("ok".into())),
+    };
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: Box::leak(Box::new(tau_proto::PromptContext {
+            blocks: vec![
+                tau_proto::ContextBlock::AssistantResponse(tau_proto::AssistantResponseBlock {
+                    provider_response_id: Some("resp_custom".to_owned()),
+                    backend: None,
+                    output_items: vec![assistant_tool_call(
+                        "call-custom",
+                        "apply_patch",
+                        tau_proto::ToolType::Custom,
+                        tau_proto::CborValue::Text("patch body".into()),
+                    )],
+                    usage: None,
+                }),
+                tau_proto::ContextBlock::ToolResults(tau_proto::ToolResultsBlock {
+                    items: vec![tool_result],
+                }),
+            ],
+        })),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::Auto,
         compaction: None,
-        previous_response: Some(PreviousResponse {
-            id: "resp_prev",
-            next_item_index: 1,
-            transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_request(&config, &request)).expect("serialize");
+    let body = serde_json::to_value(build_request(&config, &request, Some("resp_custom")))
+        .expect("serialize");
     let input = body["input"].as_array().expect("input");
     assert_eq!(
         input.len(),
@@ -1325,20 +1318,21 @@ fn ws_envelope_adds_type_and_drops_stream() {
     let config = chain_test_config();
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let http_body = serde_json::to_value(build_request(&config, &request)).expect("http body");
-    let ws_body = serde_json::to_value(build_ws_envelope(&config, &request)).expect("ws envelope");
+    let http_body =
+        serde_json::to_value(build_request(&config, &request, None)).expect("http body");
+    let ws_body = serde_json::to_value(build_ws_envelope(&config, &request, None, None))
+        .expect("ws envelope");
 
     assert_eq!(ws_body["type"], "response.create");
     let ws_object = ws_body.as_object().expect("WS envelope object");
@@ -1363,23 +1357,18 @@ fn ws_prewarm_envelope_sets_generate_false_and_drops_previous_response() {
     let messages = vec![user_text("AGENTS.md context")];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(PreviousResponse {
-            id: "resp_previous",
-            next_item_index: 1,
-            transport: Some(tau_proto::ProviderBackendTransport::HttpSse),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
         agent_id: &tau_proto::AgentId::new("test-agent"),
         share_user_cache_key: false,
     };
 
-    let body = serde_json::to_value(build_ws_prewarm_envelope(&config, &request))
+    let body = serde_json::to_value(build_ws_envelope(&config, &request, None, Some(false)))
         .expect("prewarm envelope");
 
     assert_eq!(body["type"], "response.create");

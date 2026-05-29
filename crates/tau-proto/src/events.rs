@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActionInvocationId, AgentContextKey, AgentId, AgentMessageId, AgentPromptId, CborValue,
     ContextItem, DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId,
-    PromptFragment, ProviderTokenUsage, SessionId, SkillName, ToolCallId, ToolDefinition, ToolName,
+    PromptContext, PromptFragment, ProviderTokenUsage, SessionId, SkillName, ToolCallId,
+    ToolDefinition, ToolName,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -2184,16 +2185,15 @@ pub struct AgentPromptCreated {
     pub session_id: SessionId,
     /// System prompt sent alongside the item timeline.
     pub system_prompt: String,
-    /// Fully materialized context items for this turn.
-    pub context_items: Vec<ContextItem>,
+    /// Fully materialized prompt context for this turn.
+    pub context: PromptContext,
     /// Tool definitions, or empty when [`Self::tools_ref`] is set.
     pub tools: Vec<ToolDefinition>,
     /// Optional reference to full tool definitions from an earlier prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_ref: Option<PromptToolsRef>,
     /// Currently selected model as `"provider/model_id"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelId>,
+    pub model: ModelId,
     /// Per-prompt model knobs (reasoning effort, output verbosity,
     /// thinking-summary mode). The harness stamps in its current
     /// selection on every prompt; backends pass each field through
@@ -2234,13 +2234,6 @@ pub struct AgentPromptCreated {
     /// should opt in to its server default behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<PromptCompactionContext>,
-    /// Hint for backends that support stateful chaining: the most
-    /// recent provider response id from this conversation and the item
-    /// index where the new turn's content begins. Backends that do not
-    /// support chaining ignore this and use the full materialized
-    /// `context_items` payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_response_candidate: Option<PreviousResponseCandidate>,
 }
 
 /// Request metadata for provider/server-side context compaction.
@@ -2293,7 +2286,7 @@ pub struct AgentPromptPrewarmRequested {
     pub agent_id: AgentId,
     pub session_id: SessionId,
     pub system_prompt: String,
-    pub context_items: Vec<ContextItem>,
+    pub context: PromptContext,
     pub tools: Vec<ToolDefinition>,
     /// Currently selected model as `"provider/model_id"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2310,22 +2303,6 @@ pub struct AgentPromptPrewarmRequested {
     /// Preserve the first real user prompt's cache-key derivation.
     #[serde(default, skip_serializing_if = "is_false")]
     pub share_user_cache_key: bool,
-}
-
-/// Reference to a prior turn's response, used to enable stateful
-/// chaining on backends that support it. See
-/// [`AgentPromptCreated::previous_response_candidate`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PreviousResponseCandidate {
-    /// `response.id` returned by the provider on the most recent
-    /// successful turn for this conversation.
-    pub provider_response_id: String,
-    /// Index in [`AgentPromptCreated::context_items`] where items
-    /// added since the prior response begin. Backends slicing for a
-    /// delta call use `context_items[next_item_index..]`.
-    pub next_item_index: usize,
-    /// Backend that produced `provider_response_id`, when known.
-    pub backend: ProviderBackend,
 }
 
 // ---------------------------------------------------------------------------
@@ -2440,16 +2417,10 @@ pub struct ProviderResponseFinished {
     pub ws_pool_delta: Option<WsPoolDelta>,
 }
 
-/// Per-turn delta of the provider's Codex WebSocket pool counters. All
-/// three counters are monotonic-since-process-start in the provider;
-/// the harness records the *delta* incurred by a single turn so
-/// offline analysis can attribute cache misses to WS-layer events.
-///
-/// A non-zero `silent_reconnects` or `chain_strips_on_fresh` on a
-/// turn is the definitive signature of why that turn's
-/// `previous_response_id` was stripped on the wire — and therefore
-/// why its `cached_tokens` dropped to the static system+tools
-/// baseline.
+/// Per-turn delta of the provider's Codex WebSocket pool counters. The
+/// counters are monotonic-since-process-start in the provider; the harness
+/// records the *delta* incurred by a single turn so offline analysis can
+/// attribute cache misses to WS-layer events.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WsPoolDelta {
     /// Fresh sockets opened this turn. Counts every reason: cold
@@ -2459,49 +2430,28 @@ pub struct WsPoolDelta {
     /// Cached sockets that died mid-turn and triggered the silent
     /// reopen-and-replay-without-chain-id recovery this turn.
     pub silent_reconnects: u32,
-    /// Times the fresh-socket path stripped `previous_response_id`
-    /// from the outgoing request this turn because the new socket's
-    /// chain cache was empty by definition.
-    pub chain_strips_on_fresh: u32,
 }
 
-/// Diagnostic emitted when a chained prompt reports unexpectedly low
-/// provider cache reuse. The harness derives it from the original
-/// [`AgentPromptCreated`] plus final [`ProviderResponseFinished`]
-/// token usage so offline analysis can distinguish provider/cache-key
-/// misses from obvious WS chain-strip misses.
+/// Diagnostic emitted when a prompt with a previous provider response reports
+/// unexpectedly low provider cache reuse. The harness derives it from the
+/// original [`AgentPromptCreated`] plus final [`ProviderResponseFinished`]
+/// token usage so offline analysis can spot suspicious cache misses and then
+/// inspect the dumped provider request JSON for exact wire details.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderCacheMissDiagnostic {
     /// Prompt id whose cache behavior looked unexpectedly low.
     pub agent_prompt_id: AgentPromptId,
     /// Currently selected model as `"provider/model_id"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelId>,
-    /// Previous provider response id the prompt attempted to chain from.
-    pub previous_response_id: String,
-    /// Expected provider-visible item index at which new prompt content began.
-    pub previous_response_message_index: usize,
-    /// Number of provider-visible prompt items that were expected to be
-    /// cacheable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_prefix_count: Option<usize>,
+    pub model: ModelId,
     /// Prompt originator copied from the finished provider response.
     #[serde(default)]
     pub originator: PromptOriginator,
     /// Tool-choice mode used by the request that produced this diagnostic.
     #[serde(default, skip_serializing_if = "ToolChoice::is_default")]
     pub tool_choice: ToolChoice,
-    /// Wire `prompt_cache_key` if known to the component emitting the
-    /// diagnostic. The harness currently lacks provider config, so it
-    /// leaves this absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_cache_key: Option<String>,
     /// WebSocket-pool turn delta, when the backend can report one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_pool_delta: Option<WsPoolDelta>,
-    /// Hex blake3 fingerprint of the provider-visible request fields
-    /// Tau expects to remain stable across a chain.
-    pub request_body_fingerprint: String,
     /// Input tokens reported by the current response.
     pub input_tokens: u64,
     /// Provider-cache-hit input tokens reported by the current response.

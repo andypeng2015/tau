@@ -15,92 +15,11 @@ use std::collections::VecDeque;
 
 use tau_core::NodeId;
 use tau_proto::{
-    AgentId, AgentPromptId, ConnectionId, ModelId, ModelParams, PromptMessageClass,
-    PromptOriginator, ProviderBackend, SessionId, ToolCallId, ToolChoice, ToolDefinition,
-    ToolDisplayStats,
+    AgentId, AgentPromptId, ConnectionId, PromptMessageClass, PromptOriginator, SessionId,
+    ToolCallId, ToolDisplayStats,
 };
 
 use crate::dedup::ResultDedupMap;
-
-/// Hash the per-request inputs whose drift would invalidate a Codex
-/// chain (`previous_response_id`). System prompt, tool list, and model
-/// params each appear on the wire on every turn; if they differ from
-/// the prior turn the server's reasoning continuity can decohere
-/// silently. Used by both [`ChainAnchor::request_fingerprint`] (set
-/// when the anchor is minted) and the anchor-validity check before
-/// sending the next prompt.
-///
-/// `tool_choice` is hashed too. It is serialized on the wire by both
-/// Responses and Chat Completions backends; carrying a
-/// `previous_response_id` across a `tool_choice` flip sends a request
-/// whose non-input fields no longer match the anchored response and
-/// can silently fall off the provider cache. Non-tool extension side
-/// queries therefore preserve `ToolChoice::Auto` and the harness
-/// enforces "no tool execution" locally instead of mutating the wire
-/// request.
-///
-/// Domain-separated by a NUL byte between fields so e.g. a system
-/// prompt ending in `"]"` can't be confused with the start of the
-/// tools JSON. Field serialization failures (impossibly rare on these
-/// types) collapse to empty bytes, which just means a mismatch and a
-/// safe full-replay fallback.
-#[cfg(test)]
-pub(crate) fn compute_chain_fingerprint(
-    system_prompt: &str,
-    tools: &[ToolDefinition],
-    model_params: &ModelParams,
-    tool_choice: ToolChoice,
-) -> [u8; 32] {
-    compute_chain_fingerprint_detail(system_prompt, tools, model_params, tool_choice).digest
-}
-
-pub(crate) fn compute_chain_fingerprint_detail(
-    system_prompt: &str,
-    tools: &[ToolDefinition],
-    model_params: &ModelParams,
-    tool_choice: ToolChoice,
-) -> ChainFingerprintDetail {
-    let tools_json = serde_json::to_vec(tools).unwrap_or_default();
-    let params_json = serde_json::to_vec(model_params).unwrap_or_default();
-    let tool_choice_json = serde_json::to_vec(&tool_choice).unwrap_or_default();
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(system_prompt.as_bytes());
-    hasher.update(b"\0tools:");
-    hasher.update(&tools_json);
-    hasher.update(b"\0params:");
-    hasher.update(&params_json);
-    hasher.update(b"\0tool_choice:");
-    hasher.update(&tool_choice_json);
-
-    ChainFingerprintDetail {
-        digest: *hasher.finalize().as_bytes(),
-        parts: ChainFingerprintParts {
-            system_prompt: hash_bytes(system_prompt.as_bytes()),
-            tools: hash_bytes(&tools_json),
-            model_params: hash_bytes(&params_json),
-            tool_choice: hash_bytes(&tool_choice_json),
-        },
-    }
-}
-
-fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ChainFingerprintDetail {
-    pub(crate) digest: [u8; 32],
-    pub(crate) parts: ChainFingerprintParts,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ChainFingerprintParts {
-    pub(crate) system_prompt: [u8; 32],
-    pub(crate) tools: [u8; 32],
-    pub(crate) model_params: [u8; 32],
-    pub(crate) tool_choice: [u8; 32],
-}
 
 /// Per-agent turn state. There is no global execution slot — each loaded agent
 /// tracks whether its next prompt can be dispatched.
@@ -213,15 +132,7 @@ pub(crate) struct Agent {
     /// agent has used. Computed from `context_input_tokens` and the
     /// model's window size; `None` when the window is unknown.
     pub(crate) context_percent_used: Option<u8>,
-    /// Stateful-chain anchor for backends that support it (currently
-    /// the OpenAI Codex Responses API). Set when an agent reports a
-    /// `response_id` on the previous finished turn; consumed by the
-    /// next `send_prompt_to_agent_for` as a hint that the upstream
-    /// call can chain off the prior turn instead of replaying the
-    /// full transcript. `None` initially, after the selected role
-    /// resolves to a different model, or after an edit / error
-    /// invalidates the chain.
-    pub(crate) chain_anchor: Option<ChainAnchor>,
+
     /// Per-conversation map from tool-result-content hash to the first
     /// `call_id` on this branch that produced that content. Consulted
     /// at intake of every `ToolResult` / `ToolError` to collapse a
@@ -230,44 +141,6 @@ pub(crate) struct Agent {
     /// [`Agent::head`] whenever the cursor moves
     /// non-linearly. See `crate::dedup` for the full rationale.
     pub(crate) result_dedup: ResultDedupMap,
-}
-
-/// See [`Agent::chain_anchor`].
-#[derive(Clone, Debug)]
-pub(crate) struct ChainAnchor {
-    /// `response.id` returned by the provider on the most recent
-    /// successful turn for this conversation.
-    pub(crate) response_id: String,
-    /// The agent's tree cursor at the moment the anchor was
-    /// captured (after the finished response was folded). The chain
-    /// is valid only while the current `head` descends from this
-    /// node — if a `UiNavigateTree` jumps to a different branch, the
-    /// next send detects the mismatch and drops the anchor.
-    pub(crate) head: Option<NodeId>,
-    /// Model id that produced `response_id`. Switching models busts
-    /// the chain even if the tree position is unchanged.
-    pub(crate) model: ModelId,
-    /// Number of assembled `ConversationMessage`s in the conversation
-    /// at the moment the anchor was captured. The next send slices
-    /// `messages[message_count..]` to get the new content the upstream
-    /// API hasn't seen yet.
-    pub(crate) message_count: usize,
-    /// Backend that produced `response_id`. The next prompt reuses
-    /// this verbatim in `previous_response_candidate` so the agent can
-    /// decide whether the candidate is compatible with the chosen
-    /// transport and provider connection state.
-    pub(crate) backend: ProviderBackend,
-    /// Blake3 fingerprint of `(system_prompt, tools, model_params,
-    /// tool_choice)` as observed when the anchor was minted. Codex rejects
-    /// (or silently misinterprets) a chained request whose non-input fields
-    /// drift from the prior turn, so the next send re-hashes the same
-    /// inputs and drops the anchor on mismatch — catching the divergence
-    /// before the round-trip rather than after.
-    pub(crate) request_fingerprint: [u8; 32],
-    /// Per-field hashes for the same provider-visible request fields.
-    /// Only used for diagnostics when the aggregate fingerprint
-    /// mismatches, so the next cache diagnostic says which field drifted.
-    pub(crate) request_fingerprint_parts: ChainFingerprintParts,
 }
 
 /// Where a queued prompt came from.
@@ -381,11 +254,7 @@ impl Agent {
             context_input_tokens: None,
             context_cached_tokens: None,
             context_percent_used: None,
-            chain_anchor: None,
             result_dedup: ResultDedupMap::new(),
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

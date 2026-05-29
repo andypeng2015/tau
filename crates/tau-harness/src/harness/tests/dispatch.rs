@@ -479,23 +479,27 @@ fn seed_main_agent_loaded(state_dir: &Path) {
 
 fn context_text_count(prompt: &AgentPromptCreated, text: &str) -> usize {
     prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter(|item| text_part(item) == Some(text))
         .count()
 }
 
-fn restore_notice_context_text(prompt: &AgentPromptCreated) -> Option<&str> {
+fn restore_notice_context_text(prompt: &AgentPromptCreated) -> Option<String> {
     prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(text_part)
         .find(|text| is_restore_notice_prompt_text(text))
+        .map(str::to_owned)
 }
 
 fn restore_notice_context_count(prompt: &AgentPromptCreated) -> usize {
     prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(text_part)
         .filter(|text| is_restore_notice_prompt_text(text))
@@ -2700,13 +2704,15 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
     let spid: AgentPromptId = "sp-0".into();
     let prompt = read_prompt_created(&h, &spid);
     let tool_use_ids: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_call_id)
         .map(str::to_owned)
         .collect();
     let tool_result_ids: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_result_id)
         .map(str::to_owned)
@@ -2918,7 +2924,8 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
                 saw_next_round = true;
 
                 let user_texts: Vec<String> = p
-                    .context_items
+                    .context
+                    .flatten()
                     .iter()
                     .filter_map(|item| match item {
                         ContextItem::Message(MessageItem {
@@ -2939,10 +2946,11 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
                 // tool_use replied to with a steer instead of the
                 // ToolResult, which providers reject.
                 let last_tool_result_idx = p
-                    .context_items
+                    .context
+                    .flatten()
                     .iter()
                     .rposition(|item| matches!(item, ContextItem::ToolResult(_)));
-                let last_user_idx = p.context_items.iter().rposition(|item| {
+                let last_user_idx = p.context.flatten().iter().rposition(|item| {
                     matches!(
                         item,
                         ContextItem::Message(MessageItem {
@@ -3070,7 +3078,7 @@ fn agent_prompt_created_uses_refs_for_linear_extension() {
     assert!(raw2.tools_ref.is_none());
     assert_eq!(raw2.system_prompt, prompt1.system_prompt);
     assert_eq!(prompt2.system_prompt, prompt1.system_prompt);
-    assert_eq!(raw2.context_items, prompt2.context_items);
+    assert_eq!(raw2.context.flatten(), prompt2.context.flatten());
     assert_eq!(prompt2.tools, prompt1.tools);
 
     h.shutdown().expect("shutdown");
@@ -3131,14 +3139,14 @@ fn linear_agent_prompts_strictly_extend_previous_messages() {
     assert_eq!(prompt2.model, prompt1.model);
     assert_eq!(prompt2.model_params, prompt1.model_params);
     assert!(
-        prompt1.context_items.len() < prompt2.context_items.len(),
+        prompt1.context.flatten().len() < prompt2.context.flatten().len(),
         "second prompt should strictly extend first: {} !< {}",
-        prompt1.context_items.len(),
-        prompt2.context_items.len()
+        prompt1.context.flatten().len(),
+        prompt2.context.flatten().len()
     );
     assert_eq!(
-        &prompt2.context_items[..prompt1.context_items.len()],
-        prompt1.context_items.as_slice(),
+        &prompt2.context.flatten()[..prompt1.context.flatten().len()],
+        prompt1.context.flatten().as_slice(),
         "second prompt must keep first prompt context items as an exact prefix"
     );
 
@@ -3162,7 +3170,7 @@ fn response_id_anchors_next_prompt_with_previous_response() {
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
     let spid1: AgentPromptId = "sp-0".into();
-    let prompt1 = read_prompt_created(&h, &spid1);
+    let _prompt1 = read_prompt_created(&h, &spid1);
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
@@ -3201,124 +3209,10 @@ fn response_id_anchors_next_prompt_with_previous_response() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    let prev = prompt2
-        .previous_response_candidate
-        .expect("chain anchor on prompt 2");
-    assert_eq!(prev.provider_response_id, "resp_abc");
-    // After turn 1 finished and was folded, the assembled count is:
-    //   user "first" + assistant "first answer" = 2 context items.
-    // That's the slice point — `context_items[2..]` on prompt 2 is
-    // just the new "second" user turn (1 item).
-    assert_eq!(prev.next_item_index, prompt1.context_items.len() + 1);
-    assert_eq!(prev.next_item_index + 1, prompt2.context_items.len());
-
-    h.shutdown().expect("shutdown");
-}
-
-#[test]
-fn chained_low_corrected_cache_hit_emits_diagnostic() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    h.selected_model = Some("test/model".into());
-
-    h.submit_user_prompt("s1".into(), "first".to_owned())
-        .expect("submit first");
-    let cid = test_user_agent(&h);
-    let target_agent_id = durable_agent_id_for_conversation(&h, &cid);
-    let spid1: AgentPromptId = "sp-0".into();
-    h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: spid1,
-        agent_id: target_agent_id.clone(),
-        output_items: vec![ContextItem::Message(MessageItem {
-            role: ContextRole::Assistant,
-
-            content: vec![ContentPart::Text {
-                text: "first answer".to_owned(),
-            }],
-
-            phase: None,
-        })],
-
-        stop_reason: tau_proto::ProviderStopReason::EndTurn,
-        error: None,
-        usage: match (Some(1_000), Some(0), None) {
-            (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
-                model: None,
-                prompt_sent_tokens: input_tokens.unwrap_or(0),
-                prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                response_received_tokens: output_tokens.unwrap_or(0),
-                stats: Default::default(),
-            }),
-        },
-        originator: tau_proto::PromptOriginator::User,
-        backend: Some(responses_backend()),
-        provider_response_id: Some("resp_abc".to_owned()),
-        ws_pool_delta: None,
-    })
-    .expect("finish first");
-
-    h.submit_user_prompt("s1".into(), "second".to_owned())
-        .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: spid2.clone(),
-        agent_id: target_agent_id,
-        output_items: vec![ContextItem::Message(MessageItem {
-            role: ContextRole::Assistant,
-
-            content: vec![ContentPart::Text {
-                text: "second answer".to_owned(),
-            }],
-
-            phase: None,
-        })],
-
-        stop_reason: tau_proto::ProviderStopReason::EndTurn,
-        error: None,
-        usage: match (Some(1_100), Some(0), None) {
-            (None, None, None) => None,
-            (input_tokens, cached_tokens, output_tokens) => Some(tau_proto::ProviderTokenUsage {
-                model: None,
-                prompt_sent_tokens: input_tokens.unwrap_or(0),
-                prompt_cached_tokens: cached_tokens.unwrap_or(0),
-                response_received_tokens: output_tokens.unwrap_or(0),
-                stats: Default::default(),
-            }),
-        },
-        originator: tau_proto::PromptOriginator::User,
-        backend: Some(responses_backend()),
-        provider_response_id: Some("resp_def".to_owned()),
-        ws_pool_delta: Some(tau_proto::WsPoolDelta {
-            upgrades: 0,
-            silent_reconnects: 0,
-            chain_strips_on_fresh: 0,
-        }),
-    })
-    .expect("finish second");
-
-    let mut cursor = tau_proto::EventLogSeq::new(0);
-    let mut diagnostic = None;
-    while let Some(entry) = h.event_log.get_next_from(cursor) {
-        cursor = entry.seq.next();
-        if let Event::ProviderCacheMissDiagnostic(event) = entry.event {
-            diagnostic = Some(event);
-        }
-    }
-    let diagnostic = diagnostic.expect("cache miss diagnostic");
-    assert_eq!(diagnostic.agent_prompt_id, spid2);
     assert_eq!(
-        diagnostic.model,
-        Some("echo/model".parse().expect("model id"))
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
-    assert_eq!(diagnostic.previous_response_id, "resp_abc");
-    assert_eq!(diagnostic.input_tokens, 1_100);
-    assert_eq!(diagnostic.cached_tokens, 0);
-    assert_eq!(diagnostic.previous_input_tokens, 1_000);
-    assert_eq!(diagnostic.cacheable_input_tokens, 512);
-    assert_eq!(diagnostic.corrected_cache_efficiency, 0.0);
-    assert_eq!(diagnostic.request_body_fingerprint.len(), 64);
 
     h.shutdown().expect("shutdown");
 }
@@ -3467,9 +3361,9 @@ fn model_switch_invalidates_chain_anchor() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    assert!(
-        prompt2.previous_response_candidate.is_none(),
-        "resolved model change must clear the previous-response anchor"
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
 
     h.shutdown().expect("shutdown");
@@ -3539,9 +3433,9 @@ fn params_drift_invalidates_chain_anchor() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    assert!(
-        prompt2.previous_response_candidate.is_none(),
-        "params drift must clear the previous-response anchor"
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
 }
 
@@ -3617,9 +3511,9 @@ fn system_prompt_drift_invalidates_chain_anchor() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    assert!(
-        prompt2.previous_response_candidate.is_none(),
-        "system-prompt drift (skill became visible) must clear the chain anchor"
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
 }
 
@@ -3694,9 +3588,9 @@ fn tools_drift_invalidates_chain_anchor() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    assert!(
-        prompt2.previous_response_candidate.is_none(),
-        "tools drift (new tool registered) must clear the chain anchor"
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
 }
 
@@ -3753,11 +3647,10 @@ fn stable_params_preserve_chain_anchor() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    let prev = prompt2
-        .previous_response_candidate
-        .as_ref()
-        .expect("chain should survive when no inputs drifted");
-    assert_eq!(prev.provider_response_id, "resp_xyz");
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
+    );
 }
 
 /// A turn that didn't yield a `response_id` (Chat Completions
@@ -3812,9 +3705,9 @@ fn missing_response_id_leaves_chain_unset() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
 
-    assert!(
-        prompt2.previous_response_candidate.is_none(),
-        "no response_id on the prior turn means no chain"
+    assert_eq!(
+        prompt2.context.flatten().last().and_then(text_part),
+        Some("second")
     );
 
     h.shutdown().expect("shutdown");
@@ -3881,14 +3774,15 @@ fn queued_prompt_extends_completed_first_prompt() {
     let spid2: AgentPromptId = "sp-1".into();
     let prompt2 = read_prompt_created(&h, &spid2);
     assert!(
-        prompt1.context_items.len() < prompt2.context_items.len(),
+        prompt1.context.flatten().len() < prompt2.context.flatten().len(),
         "queued follow-up should extend the first prompt"
     );
     assert_eq!(
-        &prompt2.context_items[..prompt1.context_items.len()],
-        prompt1.context_items.as_slice()
+        &prompt2.context.flatten()[..prompt1.context.flatten().len()],
+        prompt1.context.flatten().as_slice()
     );
-    let last = prompt2.context_items.last().expect("last item");
+    let prompt2_items = prompt2.context.flatten();
+    let last = prompt2_items.last().expect("last item");
     assert!(matches!(
         last,
         ContextItem::Message(MessageItem {
@@ -3955,7 +3849,7 @@ fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
         event,
         Event::AgentPromptPrewarmRequested(prewarm)
             if prewarm
-                .context_items
+                .context.flatten()
                 .iter()
                 .any(|item| text_part(item).is_some_and(is_restore_notice_prompt_text))
     )));
@@ -3966,12 +3860,14 @@ fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
     let spid: AgentPromptId = "sp-0".into();
     let prompt = read_prompt_created(&h, &spid);
     let notice_pos = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| text_part(item).is_some_and(is_restore_notice_prompt_text))
         .expect("restore notice in first prompt");
     let user_pos = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| text_part(item) == Some("after restore"))
         .expect("user prompt in first prompt");
@@ -4077,12 +3973,14 @@ fn resumed_lost_background_tool_gets_error_and_wait_returns() {
     let first_spid: AgentPromptId = "sp-0".into();
     let first_prompt = read_prompt_created(&h, &first_spid);
     let notice_pos = first_prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| text_part(item) == Some(notice.as_str()))
         .expect("background interruption notice in first prompt");
     let user_pos = first_prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| text_part(item) == Some("after restore"))
         .expect("user prompt in first prompt");
@@ -4394,7 +4292,8 @@ fn manual_compact_appends_trigger_and_dispatches_normal_prompt() {
     let prompt = prompt.expect("normal prompt created");
     assert!(
         prompt
-            .context_items
+            .context
+            .flatten()
             .contains(&ContextItem::CompactionTrigger)
     );
     assert_eq!(
@@ -5064,7 +4963,7 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
         })
         .expect("message prompt dispatched");
     let prompt = read_prompt_created(&h, &message_spid);
-    let serialized = serde_json::to_string(&prompt.context_items).expect("json");
+    let serialized = serde_json::to_string(&prompt.context.flatten()).expect("json");
     assert!(serialized.contains("please include this"));
 
     h.handle_provider_response_finished(ProviderResponseFinished {
@@ -5212,7 +5111,8 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
     // the provider rejects), and never the user's task framing (which
     // would invite recursive re-delegation).
     let saw_orphan_tool_use = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .any(|item| tool_call_id(item) == Some("delegate-call"));
     assert!(
@@ -5220,7 +5120,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
         "side prompt must not replay the parent's unresolved delegate tool_use"
     );
 
-    let saw_user_framing = prompt.context_items.iter().any(|item| {
+    let saw_user_framing = prompt.context.flatten().iter().any(|item| {
         matches!(
             item,
             ContextItem::Message(MessageItem {
@@ -5234,7 +5134,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
         "side prompt must NOT inherit the user's task framing — sub-agents start with a fresh context"
     );
 
-    let saw_own_instruction = prompt.context_items.iter().any(|item| {
+    let saw_own_instruction = prompt.context.flatten().iter().any(|item| {
         matches!(
             item,
             ContextItem::Message(MessageItem {
@@ -5354,7 +5254,7 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
     // Parent transcript nodes belong to the parent agent, so the side
     // prompt starts from its own instruction instead of inheriting the
     // parent branch.
-    let user_task_present = side_prompt.context_items.iter().any(|item| {
+    let user_task_present = side_prompt.context.flatten().iter().any(|item| {
         matches!(
             item,
             ContextItem::Message(MessageItem {
@@ -5363,7 +5263,7 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
             }) if text_part(item).is_some_and(|text| text.contains("find the bug in foo.rs"))
         )
     });
-    let agent_answer_present = side_prompt.context_items.iter().any(|item| {
+    let agent_answer_present = side_prompt.context.flatten().iter().any(|item| {
         matches!(
             item,
             ContextItem::Message(MessageItem {
@@ -5372,7 +5272,7 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
             }) if text_part(item).is_some_and(|text| text.contains("I fixed the off-by-one"))
         )
     });
-    let instruction_present = side_prompt.context_items.iter().any(|item| {
+    let instruction_present = side_prompt.context.flatten().iter().any(|item| {
         matches!(
             item,
             ContextItem::Message(MessageItem {
@@ -5384,17 +5284,17 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
     assert!(
         !user_task_present,
         "side prompt must not inherit parent user message: {:?}",
-        side_prompt.context_items,
+        side_prompt.context.flatten(),
     );
     assert!(
         !agent_answer_present,
         "side prompt must not inherit parent assistant reply: {:?}",
-        side_prompt.context_items,
+        side_prompt.context.flatten(),
     );
     assert!(
         instruction_present,
         "side prompt must contain the summarize-instruction itself: {:?}",
-        side_prompt.context_items,
+        side_prompt.context.flatten(),
     );
 
     // Tool execution is blocked locally by the harness. The provider
@@ -5505,10 +5405,6 @@ fn non_tool_start_agent_request_preserves_tool_choice_without_parent_chain_ancho
         "idle-summary side conv must opt out of the extension cache-key split — \
          otherwise it cold-starts a separate cache bucket from the user's prefix \
          and the whole point of sharing the warm prefix is lost",
-    );
-    assert!(
-        side_prompt.previous_response_candidate.is_none(),
-        "idle-summary side conv must not reuse the parent agent's chain anchor"
     );
 }
 
@@ -6790,16 +6686,9 @@ fn wait_tool_reply_is_folded_into_followup_prompt() {
         })
         .expect("follow-up prompt id");
     let prompt = read_prompt_created(&h, &followup_spid);
-    let tool_uses: Vec<&str> = prompt
-        .context_items
-        .iter()
-        .filter_map(tool_call_id)
-        .collect();
-    let tool_results: Vec<&str> = prompt
-        .context_items
-        .iter()
-        .filter_map(tool_result_id)
-        .collect();
+    let prompt_items = prompt.context.flatten();
+    let tool_uses: Vec<&str> = prompt_items.iter().filter_map(tool_call_id).collect();
+    let tool_results: Vec<&str> = prompt_items.iter().filter_map(tool_result_id).collect();
 
     assert!(
         tool_uses.contains(&"wait-call"),
@@ -7655,7 +7544,7 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
         .expect("side prompt id");
     let prompt = read_prompt_created(&h, &side_spid);
 
-    assert_eq!(prompt.model.as_ref(), Some(&worker_model));
+    assert_eq!(prompt.model, worker_model);
     assert_eq!(prompt.model_params.effort, tau_proto::Effort::High);
     assert_eq!(prompt.model_params.verbosity, tau_proto::Verbosity::High);
     assert_eq!(
@@ -8055,13 +7944,15 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
     let prompt = read_prompt_created(&h, &outer_resume_spid);
 
     let tool_uses: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_call_id)
         .map(str::to_owned)
         .collect();
     let tool_results: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_result_id)
         .map(str::to_owned)
@@ -8228,7 +8119,8 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
     let prompt = read_prompt_created(&h, &nested_side_spid);
 
     let tool_uses: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_call_id)
         .map(str::to_owned)
@@ -8389,7 +8281,8 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         .expect("main resume prompt id");
     let prompt = read_prompt_created(&h, &main_resume_spid);
     let tool_results: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_result_id)
         .map(str::to_owned)
@@ -8547,7 +8440,8 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         .expect("leaf prompt id");
     let prompt = read_prompt_created(&h, &leaf_spid);
     let rendered = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(text_part)
         .collect::<Vec<_>>()
@@ -8567,7 +8461,8 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
     );
 
     let tool_uses: Vec<String> = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(tool_call_id)
         .map(str::to_owned)

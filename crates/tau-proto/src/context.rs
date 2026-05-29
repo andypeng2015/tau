@@ -221,30 +221,78 @@ pub enum ContextItem {
     UnknownProviderItem(OpaqueProviderItem),
 }
 
-/// Transcript node projected from durable facts.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
-pub enum TranscriptNode {
-    /// User input node.
-    UserInput(UserInputNode),
-    /// Assistant response node.
-    AssistantResponse(AssistantResponseNode),
-    /// Tool results node.
-    ToolResults(ToolResultsNode),
-    /// Compaction replacement node.
-    Compaction(CompactionNode),
+/// Materialized provider prompt context grouped into semantic blocks.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PromptContext {
+    /// Ordered semantic blocks that make up the effective prompt history.
+    pub blocks: Vec<ContextBlock>,
 }
 
-/// Transcript node containing user input context items.
+impl PromptContext {
+    /// Iterates over the provider-visible item timeline.
+    pub fn flatten_iter(&self) -> impl Iterator<Item = ContextItem> + '_ {
+        fn context_block_items(block: &ContextBlock) -> ContextBlockItems<'_> {
+            match block {
+                ContextBlock::UserInput(block) => ContextBlockItems::Context(block.items.iter()),
+                ContextBlock::AssistantResponse(block) => {
+                    ContextBlockItems::Context(block.output_items.iter())
+                }
+                ContextBlock::ToolResults(block) => {
+                    ContextBlockItems::ToolResult(block.items.iter())
+                }
+            }
+        }
+
+        enum ContextBlockItems<'a> {
+            Context(std::slice::Iter<'a, ContextItem>),
+            ToolResult(std::slice::Iter<'a, ToolResultItem>),
+        }
+
+        impl Iterator for ContextBlockItems<'_> {
+            type Item = ContextItem;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                match self {
+                    ContextBlockItems::Context(iter) => iter.next().cloned(),
+                    ContextBlockItems::ToolResult(iter) => {
+                        iter.next().cloned().map(ContextItem::ToolResult)
+                    }
+                }
+            }
+        }
+
+        self.blocks.iter().flat_map(context_block_items)
+    }
+
+    /// Flattens all blocks into the provider-visible item timeline.
+    #[must_use]
+    pub fn flatten(&self) -> Vec<ContextItem> {
+        self.flatten_iter().collect()
+    }
+}
+
+/// One semantic block in a materialized provider prompt context.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UserInputNode {
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum ContextBlock {
+    /// User- or harness-authored input items.
+    UserInput(UserInputBlock),
+    /// One assistant response accepted from a provider.
+    AssistantResponse(AssistantResponseBlock),
+    /// Terminal tool results for one tool round.
+    ToolResults(ToolResultsBlock),
+}
+
+/// Context block containing user input context items.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserInputBlock {
     /// Context items that make up the user input.
     pub items: Vec<ContextItem>,
 }
 
-/// Transcript node containing one assistant response.
+/// Context block containing one assistant response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AssistantResponseNode {
+pub struct AssistantResponseBlock {
     /// Provider response id, when the backend returned one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_response_id: Option<String>,
@@ -258,18 +306,11 @@ pub struct AssistantResponseNode {
     pub usage: Option<ProviderTokenUsage>,
 }
 
-/// Transcript node containing tool results.
+/// Context block containing tool results.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ToolResultsNode {
-    /// Tool result items in this node.
+pub struct ToolResultsBlock {
+    /// Tool result items in this block.
     pub items: Vec<ToolResultItem>,
-}
-
-/// Transcript node containing a compacted replacement window.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CompactionNode {
-    /// Context items that replace earlier transcript history.
-    pub replacement_window: Vec<ContextItem>,
 }
 
 /// Assistant-message phase label, mirroring the OpenAI Codex

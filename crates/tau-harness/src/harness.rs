@@ -19,11 +19,11 @@ use tau_proto::{
     AgentPromptTerminated, AgentPromptTerminationReason, BackgroundSupport, CborValue, ClientKind,
     ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector, ExtensionName, Frame,
     HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessRoleSelected, Message,
-    MessageItem, ModelId, PreviousResponseCandidate, PromptFragment, PromptOriginator,
-    ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderResponseFinished, ProviderStopReason,
-    ProviderTokenUsage, SessionId, TokenUsageStats, ToolBackgroundError, ToolBackgroundResult,
-    ToolCallId, ToolCallItem, ToolCancelled, ToolChoice, ToolDefinition, ToolError, ToolName,
-    ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind, ToolType, UiCancelPrompt,
+    MessageItem, ModelId, PromptFragment, PromptOriginator, ProviderModelInfo,
+    ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage, SessionId, TokenUsageStats,
+    ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled,
+    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult,
+    ToolResultKind, ToolType, UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -60,9 +60,9 @@ use crate::model::{
     verbosities_for_model,
 };
 use crate::prompt::{
-    BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, assemble_conversation_from,
-    assemble_prompt_context_from, build_system_prompt_with_tool_template_context,
-    built_in_system_prompt_templates, render_agents_context_message,
+    BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, assemble_prompt_context_from,
+    build_system_prompt_with_tool_template_context, built_in_system_prompt_templates,
+    render_agents_context_message,
 };
 use crate::secrets::{load_secret_sources, resolve_extension_secrets};
 use crate::settings::{Config, load_harness_settings_or_warn};
@@ -443,16 +443,6 @@ pub(crate) struct PendingTool {
     pub(crate) tool_type: ToolType,
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
-}
-
 const AGENT_ID_MIN_SUFFIX_NIBBLES: usize = 1;
 const AGENT_ID_MAX_SUFFIX_NIBBLES: usize = 8;
 
@@ -614,15 +604,6 @@ mod subagents_tool;
 /// Connection ID used for harness-owned tools and their side-query
 /// [`PromptOriginator`] name (e.g. `skill`, `delegate`, and `wait`).
 pub(crate) const HARNESS_CONNECTION_ID: &str = "__harness__";
-
-#[derive(Clone, Debug)]
-pub(crate) struct PromptCacheDiagnosticContext {
-    pub(crate) model: Option<ModelId>,
-    pub(crate) previous_response: Option<PreviousResponseCandidate>,
-    pub(crate) originator: PromptOriginator,
-    pub(crate) tool_choice: ToolChoice,
-    pub(crate) request_fingerprint: [u8; 32],
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct CurrentSessionState {
@@ -827,12 +808,6 @@ pub struct Harness {
     /// New prompts are emitted fully materialized; snapshots remain so
     /// late joiners and `tools_ref` events can still be served.
     pub(crate) prompt_snapshots: std::collections::HashMap<AgentPromptId, AgentPromptCreated>,
-    /// Per-prompt fields needed to explain a low provider cache hit
-    /// after the final usage report arrives. Kept outside
-    /// `prompt_snapshots` because diagnostics need derived send-time
-    /// metadata like the previous-response candidate.
-    pub(crate) prompt_cache_diagnostics:
-        std::collections::HashMap<AgentPromptId, PromptCacheDiagnosticContext>,
     /// All in-flight agents keyed by durable `AgentId`. User agents and side
     /// agents use the same identity; there is no default/main alias.
     pub(crate) agents: std::collections::HashMap<AgentId, Agent>,
@@ -915,14 +890,6 @@ pub struct Harness {
     /// attribute the corresponding finished response even if the user
     /// switches models while it is in flight.
     pub(crate) prompt_models: std::collections::HashMap<AgentPromptId, ModelId>,
-    /// Per-prompt fingerprint of `(system_prompt, tools, model_params)`
-    /// as observed on the outbound request. Read at response time to
-    /// stamp `ChainAnchor::request_fingerprint`, so the anchor records
-    /// what was *actually sent* even if the user flipped a setting
-    /// between send and receive. See
-    /// [`crate::agent::compute_chain_fingerprint`].
-    pub(crate) prompt_fingerprints:
-        std::collections::HashMap<AgentPromptId, crate::agent::ChainFingerprintDetail>,
     /// Skills discovered by extensions, keyed by name.
     pub(crate) discovered_skills: std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     /// AGENTS.md files discovered by extensions, in delivery order.
@@ -1068,6 +1035,7 @@ where
             Frame::Event(Event::AgentPromptCreated(prompt)) => {
                 let spid = prompt.agent_prompt_id.clone();
                 let prompt = materialize_prompt(&prompt);
+                let context_items = prompt.context.flatten();
                 writer.write_frame(&Frame::Event(Event::ProviderPromptSubmitted(
                     ProviderPromptSubmitted {
                         agent_prompt_id: spid.clone(),
@@ -1075,13 +1043,11 @@ where
                     },
                 )))?;
 
-                let is_tool_result = prompt
-                    .context_items
+                let is_tool_result = context_items
                     .last()
                     .is_some_and(|item| matches!(item, ContextItem::ToolResult(_)));
                 if is_tool_result {
-                    let text = prompt
-                        .context_items
+                    let text = context_items
                         .last()
                         .and_then(|item| match item {
                             ContextItem::ToolResult(result) => Some(result.output.render()),
@@ -1107,8 +1073,7 @@ where
                         },
                     )))?;
                 } else {
-                    let user_text = prompt
-                        .context_items
+                    let user_text = context_items
                         .iter()
                         .rev()
                         .find_map(|item| match item {
@@ -1328,7 +1293,6 @@ impl Harness {
             next_agent_prompt_id: 0,
             prompt_agents: std::collections::HashMap::new(),
             prompt_snapshots: std::collections::HashMap::new(),
-            prompt_cache_diagnostics: std::collections::HashMap::new(),
             agents,
             agent_routes: HashMap::new(),
             agent_states: HashMap::new(),
@@ -1352,7 +1316,6 @@ impl Harness {
             selected_model,
             current_session_state: CurrentSessionState::default(),
             prompt_models: std::collections::HashMap::new(),
-            prompt_fingerprints: std::collections::HashMap::new(),
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
@@ -1568,7 +1531,6 @@ impl Harness {
             next_agent_prompt_id: 0,
             prompt_agents: std::collections::HashMap::new(),
             prompt_snapshots: std::collections::HashMap::new(),
-            prompt_cache_diagnostics: std::collections::HashMap::new(),
             agents,
             agent_routes: HashMap::new(),
             agent_states: HashMap::new(),
@@ -1592,7 +1554,6 @@ impl Harness {
             selected_model,
             current_session_state: CurrentSessionState::default(),
             prompt_models: std::collections::HashMap::new(),
-            prompt_fingerprints: std::collections::HashMap::new(),
             discovered_skills: built_in_discovered_skills(),
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
@@ -2047,7 +2008,7 @@ impl Harness {
 
     fn provider_route_for_prompt_request(&self, event: &Event) -> Option<tau_proto::ConnectionId> {
         let model = match event {
-            Event::AgentPromptCreated(prompt) => prompt.model.as_ref(),
+            Event::AgentPromptCreated(prompt) => Some(&prompt.model),
             _ => None,
         }?;
         self.provider_model_routes.get(model).cloned()
@@ -5539,13 +5500,12 @@ impl Harness {
     ///   sub-agents can't see (and restage) ancestor task framing.
     ///
     /// - **Non-tool (`tool_call_id: None`, e.g. notifications' idle summary)**:
-    ///   the side agent inherits the parent agent's current head (and
-    ///   `chain_anchor`, if any) so the assembled prompt actually contains the
-    ///   user's recent history. The whole point of this flow is to summarize
-    ///   what the user/agent were doing — that needs the conversation it is
-    ///   summarizing. Sharing the prefix also lets prompt caching reuse the
-    ///   parent's cached transcript verbatim, since the only delta is the
-    ///   appended instruction.
+    ///   the side agent inherits the parent agent's current head so the
+    ///   assembled prompt actually contains the user's recent history. The
+    ///   whole point of this flow is to summarize what the user/agent were
+    ///   doing — that needs the conversation it is summarizing. Sharing the
+    ///   prefix also lets prompt caching reuse the parent's cached transcript
+    ///   verbatim, since the only delta is the appended instruction.
     fn start_agent_request(
         &mut self,
         pending: PendingStartAgentRequest,
@@ -5722,11 +5682,11 @@ impl Harness {
     fn compaction_context_for_agent(
         &self,
         cid: &AgentId,
-        model: Option<&ModelId>,
-        force_compaction: bool,
+        model: &ModelId,
     ) -> Option<tau_proto::PromptCompactionContext> {
-        let supports_compaction = model
-            .and_then(|model| self.provider_model_info.get(model))
+        let supports_compaction = self
+            .provider_model_info
+            .get(model)
             .is_some_and(|info| info.supports_compaction);
         if !supports_compaction {
             return None;
@@ -5747,11 +5707,6 @@ impl Harness {
             tau_config::settings::RoleCompaction::Threshold(compact_threshold) => {
                 Some(tau_proto::PromptCompactionContext {
                     compact_threshold: Some(compact_threshold),
-                })
-            }
-            tau_config::settings::RoleCompaction::Disabled if force_compaction => {
-                Some(tau_proto::PromptCompactionContext {
-                    compact_threshold: None,
                 })
             }
             tau_config::settings::RoleCompaction::Disabled => None,
@@ -6962,6 +6917,7 @@ impl Harness {
             .map(|(cid, _)| cid.clone())
             .expect("test requires an existing user agent");
         self.send_prompt_to_agent_for(&cid)
+            .expect("test prompt requires a selected model")
     }
 
     fn set_agent_state(&mut self, agent_id: &str, state: AgentState) {
@@ -7234,13 +7190,12 @@ impl Harness {
     /// entirely off the prefix bytes, so any per-turn churn in
     /// `system_prompt`, `tools`, or earlier messages busts the cache.
     /// See `linear_agent_prompts_strictly_extend_previous_messages`.
-    pub(crate) fn send_prompt_to_agent_for(&mut self, cid: &AgentId) -> AgentPromptId {
+    pub(crate) fn send_prompt_to_agent_for(&mut self, cid: &AgentId) -> Option<AgentPromptId> {
         let _ = self.ensure_agent_id_for_agent(cid);
         let conv = self
             .agents
             .get(cid)
             .expect("send_prompt_to_agent_for: unknown agent id");
-        let session_id = conv.session_id.clone();
         let originator = conv.originator.clone();
         let role_name = self.role_name_for_agent(conv);
         let (prompt_model, prompt_params) = if conv.role.is_some() {
@@ -7258,6 +7213,12 @@ impl Harness {
                     .map(|model| self.params_for_role_model(&self.selected_role, model))
                     .unwrap_or_default(),
             )
+        };
+        let Some(model) = prompt_model else {
+            self.emit_info(&format!(
+                "role `{role_name}` has no available model — use /model to pick a role or enable a provider"
+            ));
+            return None;
         };
         // Non-tool extension side agents (`std-notifications`'
         // idle summary, etc.) must not execute tools — their whole
@@ -7298,89 +7259,13 @@ impl Harness {
         let prompt_context = tree
             .map(|t| assemble_prompt_context_from(t, head))
             .unwrap_or_else(|| crate::prompt::AssembledPromptContext {
-                context_items: Vec::new(),
+                context: tau_proto::PromptContext::default(),
             });
-        let context_items = prompt_context.context_items;
+        let context = prompt_context.context;
         let tools = self.gather_tool_definitions_for_role(&role_name);
         let durable_agent_id = agent_id_for_tree.as_deref().map(tau_proto::AgentId::from);
         let system_prompt =
             self.build_system_prompt_for_role_and_agent(&role_name, durable_agent_id.as_ref());
-        // Fingerprint the non-input fields of the impending request.
-        // Used to (a) drop the chain anchor when any of those fields
-        // drifted since the anchor was minted (matches Pi's
-        // `requestBodiesMatchExceptInput` check, catches divergence
-        // before the round-trip), and (b) stamp the next anchor at
-        // response time so a future send can repeat the comparison.
-        let request_fingerprint = crate::agent::compute_chain_fingerprint_detail(
-            &system_prompt,
-            &tools,
-            &prompt_params,
-            tool_choice,
-        );
-        // Stateful-chain hint: if the prior turn for this conversation
-        // produced a provider response id AND the anchor is still consistent
-        // (same model selected, anchor node still on the path to
-        // current head, item_count not larger than the assembled
-        // count, and the request body's non-input fields haven't
-        // drifted) we let the next turn run as a delta call. Otherwise
-        // drop the anchor — the chain is busted and full replay is
-        // the safe fallback. We resolve this BEFORE moving on so we
-        // can clear an invalidated anchor in the same pass.
-        let previous_response = {
-            let conv = self
-                .agents
-                .get(cid)
-                .expect("send_prompt_to_agent_for: unknown agent id");
-            let anchor = conv.chain_anchor.as_ref();
-            if let Some(a) = anchor {
-                let model_ok = prompt_model.as_ref() == Some(&a.model);
-                let count_ok = a.message_count <= context_items.len();
-                let tree_ok = tree.is_some_and(|t| anchor_is_ancestor(t, a.head, conv.head));
-                let fingerprint_ok = a.request_fingerprint == request_fingerprint.digest;
-                if model_ok && count_ok && tree_ok && fingerprint_ok {
-                    Some(tau_proto::PreviousResponseCandidate {
-                        provider_response_id: a.response_id.clone(),
-                        next_item_index: a.message_count,
-                        backend: a.backend.clone(),
-                    })
-                } else {
-                    tracing::debug!(
-                        target: "tau_harness",
-                        conversation_id = %cid,
-                        session_id = %session_id,
-                        response_id = %a.response_id,
-                        anchor_model = %a.model,
-                        current_model = ?prompt_model,
-                        model_ok,
-                        anchor_message_count = a.message_count,
-                        current_message_count = context_items.len(),
-                        count_ok,
-                        anchor_head = ?a.head,
-                        current_head = ?conv.head,
-                        tree_ok,
-                        fingerprint_ok,
-                        fingerprint_system_prompt_ok = a.request_fingerprint_parts.system_prompt
-                            == request_fingerprint.parts.system_prompt,
-                        fingerprint_tools_ok = a.request_fingerprint_parts.tools
-                            == request_fingerprint.parts.tools,
-                        fingerprint_model_params_ok = a.request_fingerprint_parts.model_params
-                            == request_fingerprint.parts.model_params,
-                        fingerprint_tool_choice_ok = a.request_fingerprint_parts.tool_choice
-                            == request_fingerprint.parts.tool_choice,
-                        "dropping stale previous_response_id chain anchor",
-                    );
-                    None
-                }
-            } else {
-                None
-            }
-        };
-        if previous_response.is_none() {
-            // Drop a stale anchor so we don't keep re-checking it.
-            if let Some(conv) = self.agents.get_mut(cid) {
-                conv.chain_anchor = None;
-            }
-        }
         let agent_prompt_id: AgentPromptId = format!("sp-{}", self.next_agent_prompt_id).into();
         self.next_agent_prompt_id += 1;
         self.prompt_agents
@@ -7394,28 +7279,9 @@ impl Harness {
         }
 
         // Publish the prompt-shaped request event.
-        let model = prompt_model;
-        if let Some(model) = model.as_ref() {
-            self.current_session_state.token_usage.start_request(model);
-            self.prompt_models
-                .insert(agent_prompt_id.clone(), model.clone());
-        }
-        // Stash the fingerprint of what we're about to send so the
-        // chain anchor we mint at response time records the body that
-        // was actually on the wire — defends against a setting flip
-        // racing the response.
-        self.prompt_fingerprints
-            .insert(agent_prompt_id.clone(), request_fingerprint);
-        self.prompt_cache_diagnostics.insert(
-            agent_prompt_id.clone(),
-            PromptCacheDiagnosticContext {
-                model: model.clone(),
-                previous_response: previous_response.clone(),
-                originator: originator.clone(),
-                tool_choice,
-                request_fingerprint: request_fingerprint.digest,
-            },
-        );
+        self.current_session_state.token_usage.start_request(&model);
+        self.prompt_models
+            .insert(agent_prompt_id.clone(), model.clone());
         let session_id = self
             .agents
             .get(cid)
@@ -7426,14 +7292,13 @@ impl Harness {
             .ensure_agent_id_for_agent(cid)
             .expect("agent has durable id")
             .into();
-        let force_compaction = context_items.contains(&ContextItem::CompactionTrigger);
-        let compaction = self.compaction_context_for_agent(cid, model.as_ref(), force_compaction);
+        let compaction = self.compaction_context_for_agent(cid, &model);
         let prompt = AgentPromptCreated {
             agent_prompt_id: agent_prompt_id.clone(),
             agent_id,
             session_id,
             system_prompt,
-            context_items,
+            context,
             tools,
             tools_ref: None,
             model,
@@ -7443,11 +7308,10 @@ impl Harness {
             share_user_cache_key,
             ctx_id,
             compaction,
-            previous_response_candidate: previous_response,
         };
         self.publish_event(None, Event::AgentPromptCreated(prompt));
 
-        agent_prompt_id
+        Some(agent_prompt_id)
     }
 
     fn role_name_for_agent(&self, conv: &Agent) -> String {
@@ -7700,71 +7564,6 @@ impl Harness {
         enabled && !role.disable_tools.iter().any(|name| name == &spec.name)
     }
 
-    fn maybe_emit_cache_miss_diagnostic(
-        &mut self,
-        response: &ProviderResponseFinished,
-        previous_input_tokens: Option<u64>,
-    ) {
-        let Some(context) = self
-            .prompt_cache_diagnostics
-            .remove(&response.agent_prompt_id)
-        else {
-            return;
-        };
-        let Some(previous_response) = context.previous_response else {
-            return;
-        };
-        let (Some(input_tokens), Some(cached_tokens), Some(previous_input_tokens)) = (
-            response
-                .usage
-                .as_ref()
-                .map(|usage| usage.prompt_sent_tokens),
-            response
-                .usage
-                .as_ref()
-                .map(|usage| usage.prompt_cached_tokens),
-            previous_input_tokens,
-        ) else {
-            return;
-        };
-        const PROMPT_CACHE_CHUNK_TOKENS: u64 = 512;
-
-        let cacheable_input_tokens = previous_input_tokens.min(input_tokens);
-        let cacheable_input_tokens =
-            cacheable_input_tokens / PROMPT_CACHE_CHUNK_TOKENS * PROMPT_CACHE_CHUNK_TOKENS;
-        if cacheable_input_tokens == 0 {
-            return;
-        }
-        // Corrected efficiency ignores newly-added prompt content by
-        // comparing cached tokens to the smaller of the previous and
-        // current input totals, rounded down to the provider cache
-        // chunk size. Emit only clear misses; healthy chained turns
-        // should be close to 1.0 here.
-        if cacheable_input_tokens < cached_tokens.saturating_mul(2) {
-            return;
-        }
-        self.publish_event(
-            None,
-            Event::ProviderCacheMissDiagnostic(ProviderCacheMissDiagnostic {
-                agent_prompt_id: response.agent_prompt_id.clone(),
-                model: context.model,
-                previous_response_id: previous_response.provider_response_id,
-                previous_response_message_index: previous_response.next_item_index,
-                message_prefix_count: None,
-                originator: context.originator,
-                tool_choice: context.tool_choice,
-                prompt_cache_key: None,
-                ws_pool_delta: response.ws_pool_delta,
-                request_body_fingerprint: hex_bytes(&context.request_fingerprint),
-                input_tokens,
-                cached_tokens,
-                previous_input_tokens,
-                cacheable_input_tokens,
-                corrected_cache_efficiency: cached_tokens as f32 / cacheable_input_tokens as f32,
-            }),
-        );
-    }
-
     #[cfg(test)]
     fn handle_provider_response_finished(
         &mut self,
@@ -7798,9 +7597,6 @@ impl Harness {
             self.pending_provider_prompts
                 .remove(&response.agent_prompt_id);
             self.prompt_models.remove(&response.agent_prompt_id);
-            self.prompt_fingerprints.remove(&response.agent_prompt_id);
-            self.prompt_cache_diagnostics
-                .remove(&response.agent_prompt_id);
             return Ok(());
         }
         let response_cid = self.agent_id_for_prompt(&response.agent_prompt_id);
@@ -7809,11 +7605,6 @@ impl Harness {
         // status bar, but the harness still needs their context %
         // to surface via `DelegateProgress`.
         if let Some(cid) = response_cid.as_ref() {
-            let previous_input_tokens = self
-                .agents
-                .get(cid)
-                .and_then(|conv| conv.context_input_tokens);
-            self.maybe_emit_cache_miss_diagnostic(&response, previous_input_tokens);
             let usage_model = self.prompt_models.get(&response.agent_prompt_id).cloned();
             self.update_agent_context_usage(cid, usage_model.as_ref(), input_tokens, cached_tokens);
             self.emit_delegate_progress(cid);
@@ -7865,9 +7656,6 @@ impl Harness {
             self.pending_provider_prompts
                 .remove(&response.agent_prompt_id);
             self.prompt_models.remove(&response.agent_prompt_id);
-            self.prompt_fingerprints.remove(&response.agent_prompt_id);
-            self.prompt_cache_diagnostics
-                .remove(&response.agent_prompt_id);
             self.completed_prompts
                 .insert(response.agent_prompt_id.clone());
             return Ok(());
@@ -7878,7 +7666,6 @@ impl Harness {
         // `selected_model` later would lie if the user switched
         // models mid-turn.
         let turn_model = self.prompt_models.remove(&response.agent_prompt_id);
-        let turn_fingerprint = self.prompt_fingerprints.remove(&response.agent_prompt_id);
         if let Some(ref model) = turn_model {
             let sent_tokens = input_tokens.unwrap_or(0);
             let cached_tokens = cached_tokens.unwrap_or(0);
@@ -7977,40 +7764,6 @@ impl Harness {
         self.prompt_agents.remove(response.agent_prompt_id.as_str());
         self.pending_provider_prompts
             .remove(&response.agent_prompt_id);
-        // Stateful-chain anchor: set only when the agent supplied a
-        // `response_id` (i.e. the upstream backend exposed one — the
-        // Responses API does, Chat Completions doesn't). The anchor
-        // pins this agent's current head + assembled message
-        // count so the next `send_prompt_to_agent_for` can send a
-        // delta instead of replaying the full transcript.
-        if let (Some(response_id), Some(model), Some(request_fingerprint), Some(backend)) = (
-            response.provider_response_id.clone(),
-            turn_model,
-            turn_fingerprint,
-            response.backend.clone(),
-        ) {
-            let (conv_head, conv_agent) = self
-                .agents
-                .get(&cid)
-                .map(|c| (c.head, c.agent_id.clone()))
-                .unwrap_or((None, None));
-            let message_count = conv_agent
-                .as_deref()
-                .and_then(|agent_id| self.agent_store.agent(agent_id))
-                .map(|tree| assemble_conversation_from(tree, conv_head).len())
-                .unwrap_or(0);
-            if let Some(conv) = self.agents.get_mut(&cid) {
-                conv.chain_anchor = Some(crate::agent::ChainAnchor {
-                    response_id,
-                    head: conv_head,
-                    model,
-                    message_count,
-                    backend,
-                    request_fingerprint: request_fingerprint.digest,
-                    request_fingerprint_parts: request_fingerprint.parts,
-                });
-            }
-        }
         if let Some(conv) = self.agents.get_mut(&cid) {
             conv.in_flight_prompt = None;
             conv.turn_state = AgentTurnState::Idle;
@@ -9095,19 +8848,14 @@ impl Harness {
             }),
         );
 
-        let prompt_id = harness.send_prompt_to_agent_for(&cid);
+        let prompt_id = harness
+            .send_prompt_to_agent_for(&cid)
+            .ok_or_else(|| HarnessError::Participant("no model available for prompt".to_owned()))?;
         let session_id = harness.agents[&cid].session_id.clone();
         let prompt = harness.read_agent_prompt_created(&session_id, &prompt_id)?;
         let mut out = String::new();
         out.push_str("================ MODEL / EFFORT ================\n");
-        out.push_str(&format!(
-            "model:  {}\n",
-            prompt
-                .model
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "(none)".to_owned())
-        ));
+        out.push_str(&format!("model:  {}\n", prompt.model));
         out.push_str(&format!("params: {:?}\n\n", prompt.model_params));
 
         out.push_str("================ SYSTEM PROMPT ================\n");
@@ -9117,9 +8865,9 @@ impl Harness {
         }
         out.push('\n');
 
-        out.push_str("================ CONTEXT ITEMS ================\n");
+        out.push_str("================ PROMPT CONTEXT ================\n");
         out.push_str(
-            &serde_json::to_string_pretty(&prompt.context_items)
+            &serde_json::to_string_pretty(&prompt.context)
                 .map_err(|e| HarnessError::Participant(e.to_string()))?,
         );
         out.push_str("\n\n");
@@ -9227,34 +8975,6 @@ fn provider_disconnected_error() -> HarnessError {
 ///
 /// Tools without a known label shape return `None`; the renderer
 /// falls back to a name-only block.
-/// True iff `anchor` is on the path from the tree root to
-/// `descendant`. Used to check whether a previously-captured
-/// stateful-chain anchor is still consistent with the conversation's
-/// current head — branch switches (via `UiNavigateTree`) leave the
-/// anchor stranded on a sibling branch, in which case the chain
-/// should be invalidated and the next turn replays the full
-/// transcript.
-fn anchor_is_ancestor(
-    tree: &tau_core::AgentTree,
-    anchor: Option<tau_core::NodeId>,
-    descendant: Option<tau_core::NodeId>,
-) -> bool {
-    // An empty-tree anchor matches an empty-tree descendant: both
-    // sit at the root sentinel. Anything else with `anchor == None`
-    // would be a malformed anchor (chain pinned to nothing).
-    let Some(anchor) = anchor else {
-        return descendant.is_none();
-    };
-    let mut current = descendant;
-    while let Some(id) = current {
-        if id == anchor {
-            return true;
-        }
-        current = tree.node(id).and_then(|node| node.parent_id);
-    }
-    false
-}
-
 fn build_tool_args_display(
     tool_name: &str,
     arguments: &tau_proto::CborValue,

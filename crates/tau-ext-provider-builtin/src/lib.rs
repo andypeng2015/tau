@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use tau_proto::{
     Ack, ClientKind, ContextItem, Event, EventName, Frame, FrameReader, FrameWriter, Message,
     ModelId, ModelName, ProviderBackend, ProviderBackendKind, ProviderBackendTransport,
-    ProviderModelInfo, ProviderModelsUpdated, ProviderName, ProviderPromptSubmitted,
-    ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason,
+    ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderModelsUpdated, ProviderName,
+    ProviderPromptSubmitted, ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason,
 };
 use tau_provider::storage::{AuthFile, ProviderStore};
 use tau_provider_chat_completions::openrouter::{OpenRouterProfile, fetch_openrouter_models};
@@ -603,11 +603,7 @@ where
                 trace_prompt_like("provider prompt", &prompt, &agent_prompt_id);
 
                 let mut profiles = load_prompt_profiles();
-                match prompt
-                    .model
-                    .as_ref()
-                    .and_then(|model| resolve_prompt_backend(model, &mut profiles))
-                {
+                match resolve_prompt_backend(&prompt.model, &mut profiles) {
                     Some(backend) => {
                         let job = PromptJob {
                             log_id,
@@ -1049,10 +1045,7 @@ fn finish_missing_backend<W: Write>(
     agent_prompt_id: &str,
     writer: &mut FrameWriter<W>,
 ) -> Result<(), Box<dyn Error>> {
-    let msg = match &prompt.model {
-        Some(model) => format!("cannot resolve provider backend for: {model}"),
-        None => "no model specified".to_owned(),
-    };
+    let msg = format!("cannot resolve provider backend for: {}", prompt.model);
     writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(
         simple_finished(
             agent_prompt_id.into(),
@@ -1398,12 +1391,11 @@ fn handle_prewarm(
     let session_id_str = prewarm.session_id.as_str();
     let request = common::PromptPayload {
         system_prompt: &prewarm.system_prompt,
-        context_items: &prewarm.context_items,
+        context: &prewarm.context,
         tools: &prewarm.tools,
         params: prewarm.model_params,
         tool_choice: prewarm.tool_choice,
         compaction: None,
-        previous_response: None,
         originator: &prewarm.originator,
         share_user_cache_key: prewarm.share_user_cache_key,
         session_id: &prewarm.session_id,
@@ -1467,18 +1459,11 @@ where
     write_prompt_submitted(agent_prompt_id, &prompt.originator, writer)?;
     let request = common::PromptPayload {
         system_prompt: &prompt.system_prompt,
-        context_items: &prompt.context_items,
+        context: &prompt.context,
         tools: &prompt.tools,
         params: prompt.model_params,
         tool_choice: prompt.tool_choice,
         compaction: prompt.compaction,
-        previous_response: prompt.previous_response_candidate.as_ref().map(|p| {
-            common::PreviousResponse {
-                id: p.provider_response_id.as_str(),
-                next_item_index: p.next_item_index,
-                transport: Some(p.backend.transport),
-            }
-        }),
         originator: &prompt.originator,
         share_user_cache_key: prompt.share_user_cache_key,
         session_id: &prompt.session_id,
@@ -1526,6 +1511,7 @@ where
                 prompt.session_id.as_str(),
                 agent_prompt_id,
                 prompt,
+                &request,
                 &backend,
                 dispatch.state,
                 ws_pool_delta,
@@ -1622,10 +1608,12 @@ fn maybe_debug_write_provider_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_stream<W: Write>(
     session_id: &str,
     agent_prompt_id: &str,
     prompt: &tau_proto::AgentPromptCreated,
+    request: &common::PromptPayload<'_>,
     backend: &ProviderBackend,
     mut state: common::StreamState,
     ws_pool_delta: Option<tau_proto::WsPoolDelta>,
@@ -1659,9 +1647,53 @@ fn finish_stream<W: Write>(
         ws_pool_delta,
     };
     maybe_debug_write_provider_response(session_id, &finished, provider_terminal_event.as_ref());
+    let diagnostic = cache_miss_diagnostic(prompt, request, &finished);
     writer.write_frame(&Frame::Event(Event::ProviderResponseFinished(finished)))?;
+    if let Some(diagnostic) = diagnostic {
+        writer.write_frame(&Frame::Event(Event::ProviderCacheMissDiagnostic(
+            diagnostic,
+        )))?;
+    }
     writer.flush()?;
     Ok(())
+}
+
+fn cache_miss_diagnostic(
+    prompt: &tau_proto::AgentPromptCreated,
+    request: &common::PromptPayload<'_>,
+    response: &ProviderResponseFinished,
+) -> Option<ProviderCacheMissDiagnostic> {
+    let previous_input_tokens = request.context.blocks.iter().rev().find_map(|block| {
+        let tau_proto::ContextBlock::AssistantResponse(block) = block else {
+            return None;
+        };
+        block
+            .provider_response_id
+            .as_ref()
+            .and(block.usage.as_ref())
+            .map(|usage| usage.prompt_sent_tokens)
+    })?;
+    let input_tokens = response.usage.as_ref()?.prompt_sent_tokens;
+    let cached_tokens = response.usage.as_ref()?.prompt_cached_tokens;
+    const PROMPT_CACHE_CHUNK_TOKENS: u64 = 512;
+    let cacheable_input_tokens = previous_input_tokens.min(input_tokens);
+    let cacheable_input_tokens =
+        cacheable_input_tokens / PROMPT_CACHE_CHUNK_TOKENS * PROMPT_CACHE_CHUNK_TOKENS;
+    if cacheable_input_tokens == 0 || cacheable_input_tokens < cached_tokens.saturating_mul(2) {
+        return None;
+    }
+    Some(ProviderCacheMissDiagnostic {
+        agent_prompt_id: response.agent_prompt_id.clone(),
+        model: prompt.model.clone(),
+        originator: response.originator.clone(),
+        tool_choice: request.tool_choice,
+        ws_pool_delta: response.ws_pool_delta,
+        input_tokens,
+        cached_tokens,
+        previous_input_tokens,
+        cacheable_input_tokens,
+        corrected_cache_efficiency: cached_tokens as f32 / cacheable_input_tokens as f32,
+    })
 }
 
 fn finish_error<W: Write>(

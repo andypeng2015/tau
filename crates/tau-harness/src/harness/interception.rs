@@ -275,7 +275,7 @@ impl Harness {
             self.defer_prompt_dispatch(cid.clone(), PromptDispatchGate::PublishIdle);
             return;
         }
-        self.send_prompt_to_agent_for(cid);
+        let _ = self.send_prompt_to_agent_for(cid);
     }
 
     fn defer_prompt_dispatch(&mut self, cid: AgentId, gate: PromptDispatchGate) {
@@ -526,7 +526,7 @@ impl Harness {
                 self.pending_publish_idle_dispatches.push_front(cid);
                 break;
             }
-            self.send_prompt_to_agent_for(&cid);
+            let _ = self.send_prompt_to_agent_for(&cid);
         }
     }
 }

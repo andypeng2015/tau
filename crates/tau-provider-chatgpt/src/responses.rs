@@ -113,13 +113,16 @@ pub struct ResponsesConfig {
 /// debug directory:
 ///
 /// `~/.local/state/tau/sessions/<session_id>/debug/provider-requests/`.
-pub fn maybe_debug_write_provider_request(
+pub(super) fn maybe_debug_write_provider_request(
     agent_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     transport: tau_proto::ProviderBackendTransport,
+    body: &impl Serialize,
 ) {
-    if let Err(error) = debug_write_provider_request(agent_prompt_id, config, request, transport) {
+    if let Err(error) =
+        debug_write_provider_request(agent_prompt_id, config, request, transport, body)
+    {
         tracing::warn!(
             target: crate::LOG_TARGET,
             session_id = %request.session_id,
@@ -144,6 +147,7 @@ fn debug_write_provider_request(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
     transport: tau_proto::ProviderBackendTransport,
+    body: &impl Serialize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(dir) = debug_provider_request_dir(request.session_id) else {
         return Ok(());
@@ -160,26 +164,14 @@ fn debug_write_provider_request(
     let path = dir.join(format!(
         "{ts}-{agent_prompt_id}-{transport_label}-request.json"
     ));
-    let body = match transport {
-        tau_proto::ProviderBackendTransport::HttpSse => {
-            serde_json::to_value(build_request(config, request))?
-        }
-        tau_proto::ProviderBackendTransport::Websocket => {
-            serde_json::to_value(build_ws_envelope(config, request))?
-        }
-    };
+    let body = serde_json::to_value(body)?;
     let metadata = serde_json::json!({
         "session_id": request.session_id,
         "agent_prompt_id": agent_prompt_id,
         "transport": transport_label,
         "backend": "responses",
         "model": config.model_id,
-        "previous_response": request.previous_response.as_ref().map(|p| serde_json::json!({
-            "id": p.id,
-            "next_item_index": p.next_item_index,
-            "transport": p.transport,
-        })),
-        "context_item_count": request.context_items.len(),
+        "context_item_count": request.context.flatten_iter().count(),
         "tool_count": request.tools.len(),
         "tool_choice": request.tool_choice,
         "body": body,
@@ -195,69 +187,10 @@ fn debug_write_provider_request(
 /// the provider has streamed so far (or `None` if no summary
 /// content has arrived yet).
 ///
-/// Stateful-chain fallback: when `request.previous_response` was set
-/// but the upstream rejects the prior `response_id` (server-side
-/// expiry, evicted state), this retries once with the full transcript
-/// instead of the delta. The fallback is invisible to the caller — a
-/// successful result looks identical to a chain hit, just with a
-/// larger request body. Only triggered for HTTP 4xx whose body
-/// mentions `previous_response`; transient 5xx / network errors
-/// surface to the harness retry layer unchanged.
+/// HTTP+SSE requests always send the full prompt. The Codex endpoint is called
+/// with `store: false`, so `previous_response_id` chaining is intentionally a
+/// WebSocket-only optimization.
 pub fn responses_stream(
-    agent_prompt_id: &str,
-    config: &ResponsesConfig,
-    request: &PromptPayload<'_>,
-    on_update: &mut impl FnMut(&str, Option<&str>),
-) -> Result<StreamState, LlmError> {
-    let first = responses_stream_once(agent_prompt_id, config, request, on_update);
-    if request.previous_response.is_none() {
-        return first;
-    }
-    let Err(error) = first else {
-        return first;
-    };
-    if !is_stale_chain_error(&error) {
-        return Err(error);
-    }
-    tracing::info!(
-        target: crate::LOG_TARGET,
-        "Responses chain rejected by upstream; retrying with full replay"
-    );
-    let fallback = PromptPayload {
-        compaction: request.compaction,
-        previous_response: None,
-        system_prompt: request.system_prompt,
-        context_items: request.context_items,
-        tools: request.tools,
-        params: request.params,
-        tool_choice: request.tool_choice,
-        originator: request.originator,
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        share_user_cache_key: false,
-    };
-    let mut state = responses_stream_once(agent_prompt_id, config, &fallback, on_update)?;
-    state.stale_chain_fallback = true;
-    Ok(state)
-}
-
-/// True for the narrow class of 4xx errors that say the prior
-/// `previous_response_id` we sent is no longer valid (expired,
-/// evicted, never existed). Matched on body substrings rather than a
-/// brittle JSON-shape contract — the provider's error envelope has
-/// changed shape before, and a missed match here just means the user
-/// sees the error instead of an auto-retry.
-fn is_stale_chain_error(error: &LlmError) -> bool {
-    let LlmError::HttpStatus(code, body) = error else {
-        return false;
-    };
-    if !(400..500).contains(code) {
-        return false;
-    }
-    body.contains("previous_response") || body.contains("response not found")
-}
-
-fn responses_stream_once(
     agent_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
@@ -265,13 +198,14 @@ fn responses_stream_once(
 ) -> Result<StreamState, LlmError> {
     let url = config.surface.responses_url(&config.base_url);
 
+    let body = build_request(config, request, None);
     maybe_debug_write_provider_request(
         agent_prompt_id,
         config,
         request,
         tau_proto::ProviderBackendTransport::HttpSse,
+        &body,
     );
-    let body = build_request(config, request);
     let body_str = serde_json::to_string(&body).map_err(LlmError::Json)?;
 
     let mut req = tau_provider::oauth::proxy_agent()
@@ -662,26 +596,50 @@ struct ContextManagementRequest {
     compact_threshold: Option<u64>,
 }
 
-fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> ResponsesRequest {
+fn build_request(
+    config: &ResponsesConfig,
+    request: &PromptPayload<'_>,
+    cached_response_id: Option<&str>,
+) -> ResponsesRequest {
     let instructions = if request.system_prompt.is_empty() {
         None
     } else {
         Some(request.system_prompt.to_owned())
     };
 
-    // Stateful chaining: when the harness supplied a previous
-    // response id, slice the messages to just what's new since
-    // that response. The OpenAI Responses API picks up the prior
-    // conversation from the stored response — replaying its prefix
-    // would duplicate it. A defensive cap to `messages.len()` covers
-    // the (impossible by harness invariants) case of a stale index.
+    // Stateful chaining: when a previous response is available, slice the
+    // messages to just what's new since that response. The OpenAI
+    // Responses API picks up the prior conversation from the stored
+    // response — replaying its prefix would duplicate it. A defensive
+    // cap to `messages.len()` covers the impossible-by-invariant case
+    // of a stale index.
+    let context_items: Vec<_> = request.context.flatten_iter().collect();
+    let previous_response = cached_response_id.and_then(|id| {
+        let mut next_item_index = context_items.len();
+        for block in request.context.blocks.iter().rev() {
+            match block {
+                tau_proto::ContextBlock::AssistantResponse(response) => {
+                    if response.provider_response_id.as_deref() == Some(id) {
+                        return Some((id, next_item_index));
+                    }
+                    next_item_index = next_item_index.saturating_sub(response.output_items.len());
+                }
+                tau_proto::ContextBlock::UserInput(block) => {
+                    next_item_index = next_item_index.saturating_sub(block.items.len());
+                }
+                tau_proto::ContextBlock::ToolResults(block) => {
+                    next_item_index = next_item_index.saturating_sub(block.items.len());
+                }
+            }
+        }
+        None
+    });
     let (input_items, previous_response_id): (&[ContextItem], Option<String>) =
-        match request.previous_response {
-            Some(prev) if prev.next_item_index <= request.context_items.len() => (
-                &request.context_items[prev.next_item_index..],
-                Some(prev.id.to_owned()),
-            ),
-            _ => (request.context_items, None),
+        match previous_response {
+            Some((id, next_item_index)) if next_item_index <= context_items.len() => {
+                (&context_items[next_item_index..], Some(id.to_owned()))
+            }
+            _ => (context_items.as_slice(), None),
         };
 
     let input = build_input_items(config, input_items);
@@ -817,48 +775,17 @@ pub struct WsResponseCreate {
 /// one turn. Reuses the regular Responses request builder for the body — the
 /// only deltas vs. the HTTP body are (a) the top-level `type` tag and (b)
 /// dropping `stream` (transport-implicit on WS, per the WS guide).
-pub fn build_ws_envelope(
+pub(super) fn build_ws_envelope(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
+    cached_response_id: Option<&str>,
+    generate: Option<bool>,
 ) -> WsResponseCreate {
-    let mut body = build_request(config, request);
+    let mut body = build_request(config, request, cached_response_id);
     body.stream = None;
     WsResponseCreate {
         ty: "response.create",
-        generate: None,
-        body,
-    }
-}
-
-/// Stable fingerprint of the request fields that must match for a
-/// `generate:false` prewarm response to be usable as a
-/// `previous_response_id` anchor. The prompt `input` and chain id are
-/// intentionally blanked: the next real turn is allowed to extend the
-/// prewarmed input prefix, and the prewarm itself never has a prior
-/// chain id.
-pub fn ws_chain_fingerprint(
-    config: &ResponsesConfig,
-    request: &PromptPayload<'_>,
-) -> Result<String, LlmError> {
-    let mut body = build_request(config, request);
-    body.input.clear();
-    body.previous_response_id = None;
-    serde_json::to_string(&body).map_err(LlmError::Json)
-}
-
-/// Build a non-generating WebSocket envelope for provider-side
-/// prompt-cache prewarm. Normal turns must keep `generate` omitted;
-/// only this path serializes `generate: false`.
-pub fn build_ws_prewarm_envelope(
-    config: &ResponsesConfig,
-    request: &PromptPayload<'_>,
-) -> WsResponseCreate {
-    let mut body = build_request(config, request);
-    body.stream = None;
-    body.previous_response_id = None;
-    WsResponseCreate {
-        ty: "response.create",
-        generate: Some(false),
+        generate,
         body,
     }
 }

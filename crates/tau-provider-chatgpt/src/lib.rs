@@ -80,12 +80,11 @@ impl ChatGptRuntime {
                 .map(|disabled| !disabled.contains(session_id))
                 .unwrap_or(false);
         let state = if try_ws {
-            let ws_request = request_for_transport(request, ProviderBackendTransport::Websocket);
             match responses::pool::run_turn_through_shared_pool(
                 &self.ws_pool,
                 config,
                 agent_prompt_id,
-                &ws_request,
+                request,
                 should_abort,
                 on_update,
             ) {
@@ -104,9 +103,7 @@ impl ChatGptRuntime {
                     if let Ok(mut disabled) = self.ws_disabled.lock() {
                         disabled.insert(session_id.to_owned());
                     }
-                    let http_request =
-                        request_for_transport(request, ProviderBackendTransport::HttpSse);
-                    responses::responses_stream(agent_prompt_id, config, &http_request, on_update)?
+                    responses::responses_stream(agent_prompt_id, config, request, on_update)?
                 }
                 Err(other) => {
                     let error = other.into_llm_error();
@@ -133,22 +130,14 @@ impl ChatGptRuntime {
                             disabled.insert(session_id.to_owned());
                         }
                         transport = ProviderBackendTransport::HttpSse;
-                        let http_request =
-                            request_for_transport(request, ProviderBackendTransport::HttpSse);
-                        responses::responses_stream(
-                            agent_prompt_id,
-                            config,
-                            &http_request,
-                            on_update,
-                        )?
+                        responses::responses_stream(agent_prompt_id, config, request, on_update)?
                     } else {
                         return Err(error);
                     }
                 }
             }
         } else {
-            let http_request = request_for_transport(request, ProviderBackendTransport::HttpSse);
-            responses::responses_stream(agent_prompt_id, config, &http_request, on_update)?
+            responses::responses_stream(agent_prompt_id, config, request, on_update)?
         };
         let ws_pool_delta = ws_pool_before.and_then(|before| {
             self.ws_pool
@@ -227,41 +216,6 @@ impl ChatGptTurnState {
     }
 }
 
-fn request_for_transport<'a>(
-    request: &common::PromptPayload<'a>,
-    transport: ProviderBackendTransport,
-) -> common::PromptPayload<'a> {
-    let previous_response =
-        request
-            .previous_response
-            .and_then(|previous_response| match previous_response.transport {
-                Some(previous_transport) if previous_transport != transport => {
-                    tracing::info!(
-                        target: LOG_TARGET,
-                        session_id = %request.session_id,
-                        previous_transport = ?previous_transport,
-                        current_transport = ?transport,
-                        "stripping transport-incompatible previous_response_id",
-                    );
-                    None
-                }
-                _ => Some(previous_response),
-            });
-    common::PromptPayload {
-        previous_response,
-        system_prompt: request.system_prompt,
-        context_items: request.context_items,
-        tools: request.tools,
-        params: request.params,
-        tool_choice: request.tool_choice,
-        compaction: request.compaction,
-        originator: request.originator,
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        share_user_cache_key: request.share_user_cache_key,
-    }
-}
-
 fn should_disable_ws_error(error: &responses::pool::WsTurnError) -> bool {
     match error {
         responses::pool::WsTurnError::Canceled => false,
@@ -287,7 +241,6 @@ fn compute_ws_pool_delta(
     tau_proto::WsPoolDelta {
         upgrades: sub(after.upgrades, before.upgrades),
         silent_reconnects: sub(after.silent_reconnects, before.silent_reconnects),
-        chain_strips_on_fresh: sub(after.chain_strips_on_fresh, before.chain_strips_on_fresh),
     }
 }
 

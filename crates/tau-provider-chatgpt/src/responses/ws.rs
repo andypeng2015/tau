@@ -13,7 +13,7 @@
 //!   `session-id`, `thread-id`, and the dated `OpenAI-Beta:
 //!   responses_websockets=2026-02-06` header.
 //! - Send one client text frame per turn: a `{ "type": "response.create", ...
-//!   }` envelope produced by [`super::build_ws_envelope`].
+//!   }` envelope produced by `super::build_ws_envelope`.
 //! - Read server text frames as one decoded `response.*` event each and hand
 //!   them to [`super::apply_event`]. Same event shape as SSE (the WS guide is
 //!   explicit on this).
@@ -43,11 +43,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite};
 
-use super::{
-    ResponsesConfig, apply_event, build_ws_envelope, build_ws_prewarm_envelope,
-    ws_chain_fingerprint,
-};
-use crate::common::{LlmError, PreviousResponse, PromptPayload, StreamState};
+use super::{ResponsesConfig, apply_event, build_ws_envelope};
+use crate::common::{LlmError, PromptPayload, StreamState};
 use crate::responses::ws_runtime;
 
 /// Beta-feature header value the OpenAI WebSocket endpoint expects.
@@ -130,34 +127,10 @@ pub struct WsConn {
     /// mismatch means OAuth refreshed and this socket's auth is
     /// stale, so it gets dropped and reopened.
     pub bearer: String,
-    /// Response id returned by a non-generating prewarm on this
-    /// socket. The next matching real turn can send only the input
-    /// delta with `previous_response_id` pointing here, which is how
-    /// Codex's own client makes request prewarm useful.
-    prewarm_anchor: Option<PrewarmAnchor>,
-}
-
-struct PrewarmAnchor {
-    response_id: String,
-    item_count: usize,
-    context_items: Vec<tau_proto::ContextItem>,
-    fingerprint: String,
-}
-
-impl PrewarmAnchor {
-    fn matches(
-        &self,
-        config: &ResponsesConfig,
-        request: &PromptPayload<'_>,
-    ) -> Result<bool, LlmError> {
-        if request.context_items.len() < self.context_items.len() {
-            return Ok(false);
-        }
-        if request.context_items[..self.context_items.len()] != self.context_items {
-            return Ok(false);
-        }
-        Ok(self.fingerprint == ws_chain_fingerprint(config, request)?)
-    }
+    /// Cached response id returned on this live socket. It is only sent as
+    /// `previous_response_id` if request building finds it in the prompt
+    /// context.
+    cached_response_id: Option<String>,
 }
 
 impl WsConn {
@@ -213,7 +186,7 @@ impl WsConn {
             writer_abort,
             opened_at: Instant::now(),
             bearer,
-            prewarm_anchor: None,
+            cached_response_id: None,
         })
     }
 
@@ -232,47 +205,17 @@ impl WsConn {
         request: &PromptPayload<'_>,
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<StreamState, LlmError> {
-        let envelope = {
-            let owned_previous;
-            let chained_request;
-            let request = if request.previous_response.is_none() {
-                match self.prewarm_anchor.as_ref() {
-                    Some(anchor) if anchor.matches(config, request)? => {
-                        owned_previous = PreviousResponse {
-                            id: &anchor.response_id,
-                            next_item_index: anchor.item_count,
-                            transport: Some(tau_proto::ProviderBackendTransport::Websocket),
-                        };
-                        chained_request = PromptPayload {
-                            compaction: None,
-                            previous_response: Some(owned_previous),
-                            system_prompt: request.system_prompt,
-                            context_items: request.context_items,
-                            tools: request.tools,
-                            params: request.params,
-                            tool_choice: request.tool_choice,
-                            originator: request.originator,
-                            session_id: request.session_id,
-                            agent_id: request.agent_id,
-                            share_user_cache_key: request.share_user_cache_key,
-                        };
-                        &chained_request
-                    }
-                    _ => request,
-                }
-            } else {
-                request
-            };
-            super::maybe_debug_write_provider_request(
-                agent_prompt_id,
-                config,
-                request,
-                tau_proto::ProviderBackendTransport::Websocket,
-            );
-            build_ws_envelope(config, request)
-        };
+        let cached_response_id = self.cached_response_id.as_deref();
+        let envelope = build_ws_envelope(config, request, cached_response_id, None);
+        super::maybe_debug_write_provider_request(
+            agent_prompt_id,
+            config,
+            request,
+            tau_proto::ProviderBackendTransport::Websocket,
+            &envelope,
+        );
         let state = self.run_envelope(envelope, on_update)?;
-        self.prewarm_anchor = None;
+        self.cached_response_id = state.response_id.clone();
         Ok(state)
     }
 
@@ -284,16 +227,8 @@ impl WsConn {
         config: &ResponsesConfig,
         request: &PromptPayload<'_>,
     ) -> Result<StreamState, LlmError> {
-        let envelope = build_ws_prewarm_envelope(config, request);
-        let fingerprint = ws_chain_fingerprint(config, request)?;
-        let state = self.run_envelope(envelope, &mut |_, _| {})?;
-        self.prewarm_anchor = state.response_id.as_ref().map(|response_id| PrewarmAnchor {
-            response_id: response_id.clone(),
-            item_count: request.context_items.len(),
-            context_items: request.context_items.to_vec(),
-            fingerprint,
-        });
-        Ok(state)
+        let envelope = build_ws_envelope(config, request, None, Some(false));
+        self.run_envelope(envelope, &mut |_, _| {})
     }
 
     fn run_envelope(

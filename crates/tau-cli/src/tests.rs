@@ -315,17 +315,16 @@ fn agent_prompt_created(agent_prompt_id: &str, session_id: &str) -> AgentPromptC
         agent_id: "main".into(),
         session_id: session_id.into(),
         system_prompt: String::new(),
-        context_items: Vec::new(),
+        context: tau_proto::PromptContext::default(),
         tools: Vec::new(),
         tools_ref: None,
-        model: None,
+        model: "test/model".parse().expect("model id"),
         model_params: tau_proto::ModelParams::default(),
         tool_choice: Default::default(),
         originator: tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         ctx_id: None,
         compaction: None,
-        previous_response_candidate: None,
     }
 }
 

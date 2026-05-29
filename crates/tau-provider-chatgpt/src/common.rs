@@ -4,15 +4,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tau_proto::{
     CborValue, ContentPart, ContextItem, ContextRole, MessageItem, OpaqueProviderItem,
-    PromptOriginator, ProviderBackendTransport, ProviderTokenUsage, SessionId, ToolCallItem,
-    ToolDefinition,
+    PromptContext, PromptOriginator, ProviderTokenUsage, SessionId, ToolCallItem, ToolDefinition,
 };
 use uuid::Uuid;
 
 /// The parts of a prompt needed by an LLM backend client.
 pub struct PromptPayload<'a> {
     pub system_prompt: &'a str,
-    pub context_items: &'a [ContextItem],
+    pub context: &'a PromptContext,
     pub tools: &'a [ToolDefinition],
     /// Per-prompt model knobs (effort / verbosity / thinking-summary).
     /// Each field is honored only when the backend's config reports
@@ -26,14 +25,7 @@ pub struct PromptPayload<'a> {
     /// Server-side context-management compaction metadata, when enabled for
     /// this prompt/model.
     pub compaction: Option<tau_proto::PromptCompactionContext>,
-    /// Hint from the harness for stateful chaining: the previous
-    /// turn's `response_id` and the index in `context_items` where new
-    /// content for this turn begins. Backends that don't support
-    /// stateful chaining (Chat Completions) ignore this and replay
-    /// the full item slice. The Responses backend slices
-    /// `context_items[index..]` and sets `previous_response_id` on
-    /// the upstream call.
-    pub previous_response: Option<PreviousResponse<'a>>,
+
     /// Who originated this prompt — the interactive user, or a side query
     /// such as a harness-owned delegated sub-agent.
     /// Folded into the wire `prompt_cache_key` so concurrent
@@ -71,14 +63,6 @@ impl PromptPayload<'_> {
             self.share_user_cache_key,
         )
     }
-}
-
-/// See [`PromptPayload::previous_response`].
-#[derive(Clone, Copy)]
-pub struct PreviousResponse<'a> {
-    pub id: &'a str,
-    pub next_item_index: usize,
-    pub transport: Option<ProviderBackendTransport>,
 }
 
 /// Transport / protocol error returned from any LLM backend stream.

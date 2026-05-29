@@ -32,23 +32,28 @@ fn prompt() -> tau_proto::AgentPromptCreated {
         agent_id: "agent-test".into(),
         session_id: "session-test".into(),
         system_prompt: String::new(),
-        context_items: vec![ContextItem::Message(tau_proto::MessageItem {
-            role: ContextRole::User,
-            content: vec![ContentPart::Text {
-                text: "hello".to_owned(),
-            }],
-            phase: None,
-        })],
+        context: tau_proto::PromptContext {
+            blocks: vec![tau_proto::ContextBlock::UserInput(
+                tau_proto::UserInputBlock {
+                    items: vec![ContextItem::Message(tau_proto::MessageItem {
+                        role: ContextRole::User,
+                        content: vec![ContentPart::Text {
+                            text: "hello".to_owned(),
+                        }],
+                        phase: None,
+                    })],
+                },
+            )],
+        },
         tools: Vec::new(),
         tools_ref: None,
-        model: None,
+        model: "test/model".parse().expect("model id"),
         model_params: tau_proto::ModelParams::default(),
         tool_choice: ToolChoice::Auto,
         originator: tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         ctx_id: None,
         compaction: None,
-        previous_response_candidate: None,
     }
 }
 
@@ -141,7 +146,16 @@ fn reasoning_content_is_persisted_and_replayed_with_tool_call() {
     assert!(matches!(items[1], ContextItem::ToolCall(_)));
 
     let mut replay = prompt();
-    replay.context_items = items;
+    replay.context = tau_proto::PromptContext {
+        blocks: vec![tau_proto::ContextBlock::AssistantResponse(
+            tau_proto::AssistantResponseBlock {
+                provider_response_id: None,
+                backend: None,
+                output_items: items,
+                usage: None,
+            },
+        )],
+    };
     let provider = provider();
     let request = build_request(&resolved_provider(&provider), &provider.models[0], &replay);
     let json = serde_json::to_value(request).expect("request json");
@@ -206,7 +220,16 @@ fn replay_coalesces_assistant_text_and_tool_calls_in_stream_order() {
     assert!(matches!(items[3], ContextItem::ToolCall(_)));
 
     let mut replay = prompt();
-    replay.context_items = items;
+    replay.context = tau_proto::PromptContext {
+        blocks: vec![tau_proto::ContextBlock::AssistantResponse(
+            tau_proto::AssistantResponseBlock {
+                provider_response_id: None,
+                backend: None,
+                output_items: items,
+                usage: None,
+            },
+        )],
+    };
     let provider = provider();
     let request = build_request(&resolved_provider(&provider), &provider.models[0], &replay);
     let json = serde_json::to_value(request).expect("request json");

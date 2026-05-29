@@ -119,10 +119,6 @@ pub struct WsPoolStats {
     /// Cached sockets that died mid-turn and triggered the silent
     /// reopen-and-replay-without-chain-id recovery.
     pub silent_reconnects: u64,
-    /// Times the fresh-socket path stripped a `previous_response_id`
-    /// from the outgoing request because the new socket's chain
-    /// cache was empty by definition.
-    pub chain_strips_on_fresh: u64,
 }
 
 impl WsPool {
@@ -297,13 +293,10 @@ impl SharedWsPool {
         Ok(inner.pool.stats.silent_reconnects)
     }
 
-    fn record_fresh_open(&self, previous_response: bool) -> Result<WsPoolStats, WsTurnError> {
+    fn record_fresh_open(&self) -> Result<(), WsTurnError> {
         let mut inner = self.lock_inner()?;
         inner.pool.stats.upgrades += 1;
-        if previous_response {
-            inner.pool.stats.chain_strips_on_fresh += 1;
-        }
-        Ok(inner.pool.stats)
+        Ok(())
     }
 
     fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, SharedWsPoolInner>, WsTurnError> {
@@ -352,9 +345,8 @@ impl WsTurnError {
 /// Transparent reconnect: the Codex WS endpoint's
 /// `previous_response_id` cache is **connection-local** (per the
 /// OpenAI deployment-checklist WS guide). A fresh socket from
-/// `WsConn::connect` has an empty chain cache, so a `previous_response_id`
-/// carried in `request` would 404 on the server. The recovery path strips the
-/// chain id, replays the full prompt once over the new WS, and releases that
+/// `WsConn::connect` has an empty chain cache, so the request builder
+/// replays the full prompt once over the new WS and releases that
 /// socket back into the pool so the following turn is warm again.
 #[cfg(test)]
 pub fn run_turn_through_pool(
@@ -386,9 +378,8 @@ pub fn run_turn_through_pool(
                 );
                 drop(conn);
                 // Fall through to the fresh-open path below. If this was a
-                // chained turn, the fresh request will strip the stale
-                // connection-local id and rebuild WS warmth with one full
-                // replay.
+                // chained turn, the fresh request will rebuild WS warmth with
+                // one full replay.
             }
             Err(other) => {
                 drop(conn);
@@ -397,23 +388,12 @@ pub fn run_turn_through_pool(
         }
     }
 
-    // Fresh socket path. The chain cache here is empty by definition, so strip
-    // any prior `previous_response_id` and pay one cold full replay on WS. That
-    // is cheaper over the next turns than switching to HTTP and staying cold.
+    // Fresh socket path. The chain cache here is empty by definition, so pay
+    // one cold full replay on WS. That is cheaper over the next turns than
+    // switching to HTTP and staying cold.
     let mut conn = WsConn::connect(config, &key.thread_id).map_err(WsTurnError::Other)?;
     pool.stats.upgrades += 1;
-    let fresh_request = without_previous_response(request);
-    if request.previous_response.is_some() {
-        pool.stats.chain_strips_on_fresh += 1;
-        tracing::debug!(
-            target: crate::LOG_TARGET,
-            session_id,
-            upgrades = pool.stats.upgrades,
-            chain_strips_on_fresh = pool.stats.chain_strips_on_fresh,
-            "fresh Codex WS socket; stripping previous_response_id from outgoing request",
-        );
-    }
-    match conn.run_turn(config, agent_prompt_id, &fresh_request, on_update) {
+    match conn.run_turn(config, agent_prompt_id, request, on_update) {
         Ok(state) => {
             pool.release(key, conn);
             Ok(state)
@@ -486,18 +466,8 @@ pub fn run_turn_through_shared_pool(
         pool.abandon(&key)?;
         return Err(WsTurnError::Canceled);
     }
-    let stats = pool.record_fresh_open(request.previous_response.is_some())?;
-    if request.previous_response.is_some() {
-        tracing::debug!(
-            target: crate::LOG_TARGET,
-            session_id,
-            upgrades = stats.upgrades,
-            chain_strips_on_fresh = stats.chain_strips_on_fresh,
-            "fresh Codex WS socket; stripping previous_response_id from outgoing request",
-        );
-    }
-    let fresh_request = without_previous_response(request);
-    match conn.run_turn(config, agent_prompt_id, &fresh_request, on_update) {
+    pool.record_fresh_open()?;
+    match conn.run_turn(config, agent_prompt_id, request, on_update) {
         Ok(state) => {
             pool.release(key, conn)?;
             Ok(state)
@@ -617,7 +587,7 @@ pub fn run_prewarm_through_shared_pool(
             return Err(error);
         }
     };
-    pool.record_fresh_open(false)
+    pool.record_fresh_open()
         .map_err(WsTurnError::into_llm_error)?;
     match conn.run_prewarm(config, request) {
         Ok(state) => {
@@ -676,27 +646,6 @@ fn is_recoverable_ws_error(err: &LlmError) -> bool {
         return false;
     }
     !crate::common::is_account_limit_body(body)
-}
-
-/// Borrow `request` but blank out its `previous_response`. Used on
-/// the fresh-socket path where the chain id from a prior connection
-/// is guaranteed invalid (connection-local cache).
-fn without_previous_response<'a>(
-    request: &crate::common::PromptPayload<'a>,
-) -> crate::common::PromptPayload<'a> {
-    crate::common::PromptPayload {
-        compaction: None,
-        previous_response: None,
-        system_prompt: request.system_prompt,
-        context_items: request.context_items,
-        tools: request.tools,
-        params: request.params,
-        tool_choice: request.tool_choice,
-        originator: request.originator,
-        session_id: request.session_id,
-        agent_id: request.agent_id,
-        share_user_cache_key: request.share_user_cache_key,
-    }
 }
 
 #[cfg(test)]

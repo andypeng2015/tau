@@ -444,53 +444,74 @@ pub(crate) fn chrono_free_date() -> String {
 /// not reliable as the prompt-assembly cursor — use the conv's own
 /// head instead.
 pub(crate) struct AssembledPromptContext {
-    pub(crate) context_items: Vec<ContextItem>,
-}
-
-pub(crate) fn assemble_conversation_from(
-    tree: &tau_core::AgentTree,
-    head: Option<tau_core::NodeId>,
-) -> Vec<ContextItem> {
-    assemble_prompt_context_from(tree, head).context_items
+    pub(crate) context: tau_proto::PromptContext,
 }
 
 pub(crate) fn assemble_prompt_context_from(
     tree: &tau_core::AgentTree,
     head: Option<tau_core::NodeId>,
 ) -> AssembledPromptContext {
-    let mut context_items: Vec<ContextItem> = Vec::new();
+    let mut blocks: Vec<tau_proto::ContextBlock> = Vec::new();
 
     for entry in tree.branch_from(head) {
         match entry {
             AgentEntry::UserInput { items } => {
-                context_items.extend(items.iter().cloned());
+                blocks.push(tau_proto::ContextBlock::UserInput(
+                    tau_proto::UserInputBlock {
+                        items: items.clone(),
+                    },
+                ));
             }
-            AgentEntry::AssistantResponse { output_items, .. } => {
-                context_items.extend(output_items.iter().cloned());
+            AgentEntry::AssistantResponse {
+                provider_response_id,
+                backend,
+                output_items,
+                usage,
+            } => {
+                blocks.push(tau_proto::ContextBlock::AssistantResponse(
+                    tau_proto::AssistantResponseBlock {
+                        provider_response_id: provider_response_id.clone(),
+                        backend: backend.clone(),
+                        output_items: output_items.clone(),
+                        usage: usage.clone(),
+                    },
+                ));
             }
             AgentEntry::ToolResults { items } => {
-                context_items.extend(items.iter().cloned().map(ContextItem::ToolResult));
+                blocks.push(tau_proto::ContextBlock::ToolResults(
+                    tau_proto::ToolResultsBlock {
+                        items: items.clone(),
+                    },
+                ));
             }
             AgentEntry::AgentMessage {
                 direction, message, ..
             } => {
-                context_items.push(ContextItem::Message(tau_proto::MessageItem {
-                    role: match direction {
-                        tau_core::AgentMessageDirection::Outbound => {
-                            tau_proto::ContextRole::Assistant
-                        }
-                        tau_core::AgentMessageDirection::Inbound => tau_proto::ContextRole::User,
+                blocks.push(tau_proto::ContextBlock::UserInput(
+                    tau_proto::UserInputBlock {
+                        items: vec![ContextItem::Message(tau_proto::MessageItem {
+                            role: match direction {
+                                tau_core::AgentMessageDirection::Outbound => {
+                                    tau_proto::ContextRole::Assistant
+                                }
+                                tau_core::AgentMessageDirection::Inbound => {
+                                    tau_proto::ContextRole::User
+                                }
+                            },
+                            content: vec![tau_proto::ContentPart::Text {
+                                text: message.clone(),
+                            }],
+                            phase: None,
+                        })],
                     },
-                    content: vec![tau_proto::ContentPart::Text {
-                        text: message.clone(),
-                    }],
-                    phase: None,
-                }));
+                ));
             }
         }
     }
 
-    AssembledPromptContext { context_items }
+    AssembledPromptContext {
+        context: tau_proto::PromptContext { blocks },
+    }
 }
 
 /// Converts a CBOR value to human-readable text for tool results.

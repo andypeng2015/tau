@@ -278,8 +278,9 @@ mod tests {
         unsafe { std::env::set_var("TAU_SECRET_GOOGLE_CALENDAR_CLIENT_ID", "client") };
 
         let sources = load_secret_sources().expect("load sources");
-        let resolved = resolve_extension_secrets(&config, TempDir::new().unwrap().path(), &sources)
-            .expect("resolve secrets");
+        let tempdir = TempDir::new().expect("tempdir");
+        let resolved =
+            resolve_extension_secrets(&config, tempdir.path(), &sources).expect("resolve secrets");
 
         assert_eq!(
             resolved["std-email"]["GOOGLE_CALENDAR_CLIENT_ID"].expose_secret(),

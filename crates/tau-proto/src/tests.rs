@@ -165,7 +165,11 @@ fn representative_events() -> Vec<Event> {
             agent_id: "engineer_abcd1234".into(),
             session_id: "session_123".into(),
             system_prompt: "You are helpful.".to_owned(),
-            context_items: vec![user_text_item("hello")],
+            context: PromptContext {
+                blocks: vec![ContextBlock::UserInput(UserInputBlock {
+                    items: vec![user_text_item("hello")],
+                })],
+            },
             tools: vec![ToolDefinition {
                 name: ToolName::new("read"),
                 model_visible_name: None,
@@ -175,13 +179,12 @@ fn representative_events() -> Vec<Event> {
                 format: None,
             }],
             tools_ref: None,
-            model: None,
+            model: "test/model".parse().expect("model id"),
             model_params: ModelParams::default(),
             tool_choice: ToolChoice::default(),
             originator: PromptOriginator::User,
             ctx_id: None,
             compaction: None,
-            previous_response_candidate: None,
             share_user_cache_key: false,
         }),
         Event::AgentPromptTerminated(AgentPromptTerminated {

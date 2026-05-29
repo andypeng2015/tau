@@ -28,7 +28,8 @@ fn prompt_has_tool(prompt: &AgentPromptCreated, name: &str) -> bool {
 
 fn context_text_count(prompt: &AgentPromptCreated, text: &str) -> usize {
     prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter(|item| context_text(item) == Some(text))
         .count()
@@ -64,7 +65,8 @@ fn event_log_contains_source_event(
 
 fn prompt_context_contains(prompt: &AgentPromptCreated, needle: &str) -> bool {
     prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .filter_map(context_text)
         .any(|text| text.contains(needle))
@@ -581,7 +583,7 @@ fn provider_models_are_staged_until_ready_and_queued_prompt_waits() {
     let prompt = h
         .prompt_snapshots
         .values()
-        .find(|prompt| prompt.model.as_ref() == Some(&model_id))
+        .find(|prompt| prompt.model == model_id)
         .expect("queued prompt dispatched with staged model");
     assert!(prompt_context_contains(prompt, "wait for staged model"));
 
@@ -1203,12 +1205,14 @@ fn unregister_queues_unavailable_notice_for_next_user_prompt_only() {
 
     let prompt = read_prompt_created(&h, &AgentPromptId::from("sp-0"));
     let notice_pos = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| context_text(item) == Some(notice.as_str()))
         .expect("availability notice in prompt");
     let user_pos = prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| context_text(item) == Some("after unregister"))
         .expect("user prompt in prompt");
@@ -1270,12 +1274,14 @@ fn reregister_after_notice_delivery_queues_available_again_notice() {
 
     let second_prompt = read_prompt_created(&h, &AgentPromptId::from("sp-1"));
     let available_pos = second_prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| context_text(item) == Some(available.as_str()))
         .expect("available-again notice in prompt");
     let user_pos = second_prompt
-        .context_items
+        .context
+        .flatten()
         .iter()
         .position(|item| context_text(item) == Some("after reregister"))
         .expect("user prompt in prompt");
@@ -1382,7 +1388,8 @@ fn unavailable_tool_is_reported_without_crashing() {
     let followup_prompt = read_prompt_created(&h, &AgentPromptId::from("sp-0"));
     assert!(
         followup_prompt
-            .context_items
+            .context
+            .flatten()
             .iter()
             .any(|item| matches!(item, ContextItem::ToolResult(_))),
         "follow-up prompt should include the persisted tool error as a tool_result item"

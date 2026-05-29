@@ -208,13 +208,19 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
         agent_id: "main".into(),
         session_id: "session-1".into(),
         system_prompt: "You are helpful.".to_owned(),
-        context_items: vec![ContextItem::Message(MessageItem {
-            role: ContextRole::User,
-            content: vec![ContentPart::Text {
-                text: "hello".to_owned(),
-            }],
-            phase: None,
-        })],
+        context: tau_proto::PromptContext {
+            blocks: vec![tau_proto::ContextBlock::UserInput(
+                tau_proto::UserInputBlock {
+                    items: vec![ContextItem::Message(MessageItem {
+                        role: ContextRole::User,
+                        content: vec![ContentPart::Text {
+                            text: "hello".to_owned(),
+                        }],
+                        phase: None,
+                    })],
+                },
+            )],
+        },
         tools: vec![ToolDefinition {
             name: tau_proto::ToolName::new("echo"),
             model_visible_name: None,
@@ -224,13 +230,12 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
             format: None,
         }],
         tools_ref: None,
-        model: None,
+        model: "test/model".parse().expect("model id"),
         model_params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
         compaction: None,
-        previous_response_candidate: None,
         share_user_cache_key: false,
     };
     let _ = bus.send_to(
@@ -239,7 +244,8 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
         Frame::Event(Event::AgentPromptCreated(prompt)),
     );
 
-    // Without a model, the provider should close the turn without network I/O.
+    // Without a configured backend for the requested model, the provider should
+    // close the turn without network I/O.
     let response = loop {
         let frame = provider_reader
             .read_frame()
@@ -250,7 +256,10 @@ fn deterministic_provider_and_tool_complete_one_vertical_slice() {
         }
     };
     assert_eq!(response.stop_reason, tau_proto::ProviderStopReason::Error);
-    assert_eq!(response.error.as_deref(), Some("no model specified"));
+    assert_eq!(
+        response.error.as_deref(),
+        Some("cannot resolve provider backend for: test/model")
+    );
     assert!(response.output_items.is_empty());
     assert!(
         response

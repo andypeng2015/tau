@@ -552,6 +552,13 @@ fn cbor_to_text_puts_line_numbered_content_on_next_line() {
     assert_eq!(text, "1 only");
 }
 
+pub(crate) fn assemble_conversation_from(
+    tree: &tau_core::AgentTree,
+    head: Option<tau_core::NodeId>,
+) -> Vec<ContextItem> {
+    assemble_prompt_context_from(tree, head).context.flatten()
+}
+
 /// Tool errors must surface their `details` payload to the LLM,
 /// not just the bare `message`. The shell extension stuffs
 /// stdout/stderr/exit_code into `details` on failure; without

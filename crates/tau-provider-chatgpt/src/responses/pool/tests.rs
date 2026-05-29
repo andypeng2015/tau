@@ -4,11 +4,40 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
+use tau_proto::ContextItem;
 use tungstenite::Message;
 
 use super::*;
 use crate::common::PromptPayload;
 use crate::responses::ResponsesSurface;
+
+fn context(items: &[ContextItem]) -> &'static tau_proto::PromptContext {
+    Box::leak(Box::new(tau_proto::PromptContext {
+        blocks: vec![tau_proto::ContextBlock::UserInput(
+            tau_proto::UserInputBlock {
+                items: items.to_vec(),
+            },
+        )],
+    }))
+}
+
+fn context_after_response(
+    response_id: &str,
+    output_items: Vec<ContextItem>,
+    after: Vec<ContextItem>,
+) -> &'static tau_proto::PromptContext {
+    Box::leak(Box::new(tau_proto::PromptContext {
+        blocks: vec![
+            tau_proto::ContextBlock::AssistantResponse(tau_proto::AssistantResponseBlock {
+                provider_response_id: Some(response_id.to_owned()),
+                backend: None,
+                output_items,
+                usage: None,
+            }),
+            tau_proto::ContextBlock::UserInput(tau_proto::UserInputBlock { items: after }),
+        ],
+    }))
+}
 
 #[test]
 fn keys_distinguish_agents_under_same_account() {
@@ -72,12 +101,11 @@ fn pool_routes_each_thread_to_its_own_socket_and_reuses_them() {
         let agent_id = tau_proto::AgentId::new(agent);
         let request = PromptPayload {
             system_prompt: "sys",
-            context_items: &[],
+            context: context(&[]),
             tools: &[],
             params: tau_proto::ModelParams::default(),
             tool_choice: tau_proto::ToolChoice::default(),
             compaction: None,
-            previous_response: None,
             originator: &tau_proto::PromptOriginator::User,
             session_id: &session_id,
             agent_id: &agent_id,
@@ -226,12 +254,11 @@ fn shared_prewarm_skips_busy_same_key_without_waiting() {
             let originator = tau_proto::PromptOriginator::User;
             let request = PromptPayload {
                 system_prompt: "sys",
-                context_items: &[],
+                context: context(&[]),
                 tools: &[],
                 params: tau_proto::ModelParams::default(),
                 tool_choice: tau_proto::ToolChoice::default(),
                 compaction: None,
-                previous_response: None,
                 originator: &originator,
                 session_id: &session_id,
                 agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -394,12 +421,11 @@ fn ws_turn_captures_response_id_for_chain_continuation() {
     let session_id = tau_proto::SessionId::new("session-x");
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -439,12 +465,11 @@ fn ws_upgrade_thread_headers_match_prompt_cache_key() {
     let agent_id = tau_proto::AgentId::new("header-agent");
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &agent_id,
@@ -474,13 +499,11 @@ fn ws_upgrade_thread_headers_match_prompt_cache_key() {
     );
 }
 
-/// A `generate:false` prewarm is only useful if the next matching
-/// real turn chains off the prewarm's `response.id` and sends just
-/// the new input delta. Sending the full prompt again on the same
-/// socket leaves the prewarm as dead weight and misses the Codex
-/// stateful-cache fast path.
+/// A `generate:false` prewarm warms the provider cache for the prompt-cache
+/// key/thread-id. It no longer acts as a synthetic `previous_response_id` chain
+/// anchor; the next real turn sends a full prompt and relies on cache hits.
 #[test]
-fn prewarm_anchor_chains_next_matching_turn_as_delta() {
+fn prewarm_warms_cache_without_chaining_next_turn() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
@@ -491,12 +514,11 @@ fn prewarm_anchor_chains_next_matching_turn_as_delta() {
 
     let prewarm = PromptPayload {
         system_prompt: "sys",
-        context_items: &prewarmed_messages,
+        context: context(&prewarmed_messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -505,7 +527,7 @@ fn prewarm_anchor_chains_next_matching_turn_as_delta() {
     run_prewarm_through_pool(&mut pool, &config, "session-prewarm", &prewarm).expect("prewarm ok");
 
     let real = PromptPayload {
-        context_items: &real_messages,
+        context: context(&real_messages),
         ..prewarm
     };
     run_turn_through_pool(
@@ -527,17 +549,16 @@ fn prewarm_anchor_chains_next_matching_turn_as_delta() {
         warm.get("generate").and_then(serde_json::Value::as_bool),
         Some(false)
     );
-    assert_eq!(
-        turn.get("previous_response_id")
-            .and_then(serde_json::Value::as_str),
-        Some("resp_0_1")
+    assert!(
+        turn.get("previous_response_id").is_none(),
+        "prewarm is cache-only and must not become a synthetic chain anchor",
     );
     assert_eq!(
         turn.get("input")
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
-        Some(1),
-        "real turn should send only messages added after the prewarmed prefix",
+        Some(2),
+        "real turn should send the full prompt after cache-only prewarm",
     );
 }
 
@@ -556,16 +577,11 @@ fn fresh_open_with_previous_response_rebuilds_ws_warmth() {
     let session_id = tau_proto::SessionId::new("session-fresh");
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(crate::common::PreviousResponse {
-            id: "resp_from_a_dead_socket",
-            next_item_index: 0,
-            transport: Some(tau_proto::ProviderBackendTransport::Websocket),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -588,11 +604,6 @@ fn fresh_open_with_previous_response_rebuilds_ws_warmth() {
         s.requests[0].get("previous_response_id").is_none(),
         "fresh WS socket must not receive a stale chain id"
     );
-    assert_eq!(
-        pool.stats().chain_strips_on_fresh,
-        1,
-        "chain strip counter should report the cold WS rebuild"
-    );
 }
 
 #[test]
@@ -614,16 +625,11 @@ fn fresh_open_with_previous_response_preserves_compacted_items() {
     ];
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &messages,
+        context: context(&messages),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(crate::common::PreviousResponse {
-            id: "resp_from_a_dead_socket",
-            next_item_index: 0,
-            transport: Some(tau_proto::ProviderBackendTransport::Websocket),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -676,12 +682,11 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
     let session_id = tau_proto::SessionId::new("session-die");
     let req1 = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -703,16 +708,11 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
     // than sticky-disabling WS for the session.
     let req2 = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context_after_response(&prev_id, Vec::new(), vec![user_msg("second turn")]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: Some(crate::common::PreviousResponse {
-            id: &prev_id,
-            next_item_index: 0,
-            transport: Some(tau_proto::ProviderBackendTransport::Websocket),
-        }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &tau_proto::AgentId::new("test-agent"),
@@ -750,11 +750,6 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
         pool.stats().silent_reconnects,
         1,
         "stat counter should record the silent reconnect"
-    );
-    assert_eq!(
-        pool.stats().chain_strips_on_fresh,
-        1,
-        "stat counter should record the cold WS rebuild"
     );
 }
 
@@ -1016,12 +1011,11 @@ fn pool_key_for(
     let agent_id = tau_proto::AgentId::new(agent);
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &originator,
         session_id: &session_id,
         agent_id: &agent_id,
@@ -1060,12 +1054,11 @@ fn run_turn_for_agent(
     let agent_id = tau_proto::AgentId::new(agent);
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
         agent_id: &agent_id,
@@ -1095,12 +1088,11 @@ fn run_shared_turn_for_agent(
     let originator = tau_proto::PromptOriginator::User;
     let request = PromptPayload {
         system_prompt: "sys",
-        context_items: &[],
+        context: context(&[]),
         tools: &[],
         params: tau_proto::ModelParams::default(),
         tool_choice: tau_proto::ToolChoice::default(),
         compaction: None,
-        previous_response: None,
         originator: &originator,
         session_id: &session_id,
         agent_id: &agent_id,

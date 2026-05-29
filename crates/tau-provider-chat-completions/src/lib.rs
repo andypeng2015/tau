@@ -546,8 +546,8 @@ fn build_request(
         }));
     }
     let mut pending_reasoning = None;
-    for item in &prompt.context_items {
-        append_context_item(item, &mut messages, &mut pending_reasoning);
+    for item in prompt.context.flatten_iter() {
+        append_context_item(&item, &mut messages, &mut pending_reasoning);
     }
     let tools = prompt
         .tools
@@ -644,7 +644,7 @@ fn maybe_debug_write_provider_request(
         "transport": "http-sse",
         "backend": "chat_completions",
         "model": model.id,
-        "context_item_count": prompt.context_items.len(),
+        "context_item_count": prompt.context.flatten_iter().count(),
         "tool_count": prompt.tools.len(),
         "tool_choice": prompt.tool_choice,
         "body": body,

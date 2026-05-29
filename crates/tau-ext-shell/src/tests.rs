@@ -608,12 +608,9 @@ fn dir_lock_blocks_conflicting_write_until_unlock() {
     loop {
         match reader.read_event().expect("read") {
             Some(Event::ToolProgress(progress)) if progress.call_id.as_str() == "blocked-write" => {
-                assert!(
-                    progress
-                        .message
-                        .as_deref()
-                        .is_some_and(|message| message.contains(lock_dir.to_str().unwrap()))
-                );
+                assert!(progress.message.as_deref().is_some_and(|message| {
+                    message.contains(lock_dir.to_str().expect("lock dir path is UTF-8"))
+                }));
                 break;
             }
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-write" => {
