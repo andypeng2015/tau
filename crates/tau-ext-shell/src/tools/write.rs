@@ -59,7 +59,7 @@ pub(crate) fn write_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailur
         ..Default::default()
     };
     Ok(ToolOutput {
-        result: write_result_value(display_args, bytes_written, created, changed, symlink),
+        result: write_result_value(bytes_written, created, changed, symlink),
         display,
     })
 }
@@ -95,14 +95,12 @@ fn symlink_info(path: &Path) -> std::io::Result<SymlinkInfo> {
 }
 
 fn write_result_value(
-    path: String,
     bytes_written: usize,
     created: bool,
     changed: bool,
     symlink: Option<SymlinkInfo>,
 ) -> CborValue {
     let mut entries = vec![
-        (CborValue::Text("path".to_owned()), CborValue::Text(path)),
         (
             CborValue::Text("bytes_written".to_owned()),
             CborValue::Integer((bytes_written as i64).into()),

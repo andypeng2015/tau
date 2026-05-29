@@ -124,14 +124,7 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         let mut display = crate::display::ok_display(display_args.clone());
         display.stats.matches = Some(0);
         return Ok(ToolOutput {
-            result: grep_result_map(
-                &pattern,
-                search_path,
-                glob.as_deref(),
-                status,
-                0,
-                "no matches found".to_owned(),
-            ),
+            result: grep_result_map(status, 0, "no matches found".to_owned()),
             display,
         });
     }
@@ -171,14 +164,7 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
     display.stats = text_stats(&output_text);
     display.stats.matches = Some(match_count as u64);
     Ok(ToolOutput {
-        result: grep_result_map(
-            &pattern,
-            search_path,
-            glob.as_deref(),
-            status,
-            match_count,
-            output_text,
-        ),
+        result: grep_result_map(status, match_count, output_text),
         display,
     })
 }
@@ -363,26 +349,15 @@ fn strip_eol(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// Build the CBOR result map for `grep`. Echoes `pattern`/`path`/`glob`
-/// alongside the match count and output so UI renderers have enough
-/// context to label the call without re-reading the request arguments.
+/// Build the CBOR result map for `grep` without echoing request arguments.
+/// Call context such as `pattern`, `path`, and `glob` is already available to
+/// callers from the tool invocation; repeating it in the result wastes tokens.
 pub(crate) fn grep_result_map(
-    pattern: &str,
-    search_path: &str,
-    glob: Option<&str>,
     status: Option<i32>,
     matches: usize,
     output_text: String,
 ) -> CborValue {
-    let mut fields = vec![
-        (
-            CborValue::Text("pattern".to_owned()),
-            CborValue::Text(pattern.to_owned()),
-        ),
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(search_path.to_owned()),
-        ),
+    CborValue::Map(vec![
         (
             CborValue::Text("status".to_owned()),
             status
@@ -405,12 +380,5 @@ pub(crate) fn grep_result_map(
             CborValue::Text("output_bytes".to_owned()),
             CborValue::Integer((output_text.len() as i64).into()),
         ),
-    ];
-    if let Some(glob) = glob {
-        fields.push((
-            CborValue::Text("glob".to_owned()),
-            CborValue::Text(glob.to_owned()),
-        ));
-    }
-    CborValue::Map(fields)
+    ])
 }

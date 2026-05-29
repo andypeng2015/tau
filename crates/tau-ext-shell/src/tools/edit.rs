@@ -78,12 +78,12 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
             replacements.push((start, end, new_text.as_bytes()));
         }
         if replacements.len() == replacements_before {
-            return Err(no_matches_failure(&display_args, display_path.clone()));
+            return Err(no_matches_failure(&display_args));
         }
     }
 
     if replacements.is_empty() {
-        return Err(no_matches_failure(&display_args, display_path.clone()));
+        return Err(no_matches_failure(&display_args));
     }
 
     // Sort by start position (descending) so we can apply from end to start
@@ -136,7 +136,7 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
         ..Default::default()
     };
     Ok(ToolOutput {
-        result: edit_result_value(display_path, replacements.len(), changed, diff.as_ref()),
+        result: edit_result_value(replacements.len(), changed, diff.as_ref()),
         display,
     })
 }
@@ -235,9 +235,9 @@ fn with_display_args(args: &str, failure: ToolFailure) -> ToolFailure {
     failure.with_args(args.to_owned())
 }
 
-fn no_matches_failure(display_args: &str, path: String) -> ToolFailure {
+fn no_matches_failure(display_args: &str) -> ToolFailure {
     with_display_args(display_args, ToolFailure::new("no matches for edit"))
-        .with_details(edit_result_value(path, 0, false, None))
+        .with_details(edit_result_value(0, false, None))
 }
 
 fn edit_display_args(path: &str, ranges: &[String]) -> String {
@@ -285,13 +285,11 @@ fn byte_offset_for_line(line_starts: &[usize], line: usize, eof: usize) -> usize
 }
 
 fn edit_result_value(
-    path: String,
     replacements: usize,
     changed: bool,
     diff: Option<&tau_proto::DiffSummary>,
 ) -> CborValue {
     let mut entries = vec![
-        (CborValue::Text("path".to_owned()), CborValue::Text(path)),
         (
             CborValue::Text("replacements".to_owned()),
             CborValue::Integer((replacements as i64).into()),

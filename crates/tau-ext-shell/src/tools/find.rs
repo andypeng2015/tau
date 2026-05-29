@@ -76,14 +76,6 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         return Ok(ToolOutput {
             result: CborValue::Map(vec![
                 (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(search_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("pattern".to_owned()),
-                    CborValue::Text(pattern),
-                ),
-                (
                     CborValue::Text("matches".to_owned()),
                     CborValue::Integer(0.into()),
                 ),
@@ -125,14 +117,6 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
     display.stats = text_stats(&output_text);
     Ok(ToolOutput {
         result: CborValue::Map(vec![
-            (
-                CborValue::Text("path".to_owned()),
-                CborValue::Text(search_path.display().to_string()),
-            ),
-            (
-                CborValue::Text("pattern".to_owned()),
-                CborValue::Text(pattern),
-            ),
             (
                 CborValue::Text("matches".to_owned()),
                 CborValue::Integer((total_matches as i64).into()),

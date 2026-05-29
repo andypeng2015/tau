@@ -705,7 +705,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tx,
                     tool_result(
                         &invoke,
-                        dir_lock_result_value("update", &dir, Some(true)),
+                        dir_lock_result_value(&dir_arg, &dir, Some(true)),
                         dir_lock_display("update", &dir),
                     ),
                 ),
@@ -747,7 +747,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tx,
                     tool_result(
                         &invoke,
-                        dir_lock_result_value("unlock", &dir, Some(false)),
+                        dir_lock_result_value(&dir_arg, &dir, Some(false)),
                         dir_lock_display("unlock", &dir),
                     ),
                 ),
@@ -1003,17 +1003,19 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-fn dir_lock_result_value(command: &str, dir: &Path, locked: Option<bool>) -> CborValue {
-    let mut entries = vec![
-        (
-            CborValue::Text("command".to_owned()),
-            CborValue::Text(command.to_owned()),
-        ),
-        (
-            CborValue::Text("directory".to_owned()),
-            CborValue::Text(dir.display().to_string()),
-        ),
-    ];
+fn dir_lock_result_value(
+    input_directory: &str,
+    canonical_dir: &Path,
+    locked: Option<bool>,
+) -> CborValue {
+    let canonical_directory = canonical_dir.display().to_string();
+    let mut entries = Vec::new();
+    if canonical_directory != input_directory {
+        entries.push((
+            CborValue::Text("canonical_directory".to_owned()),
+            CborValue::Text(canonical_directory),
+        ));
+    }
     if let Some(locked) = locked {
         entries.push((
             CborValue::Text("locked".to_owned()),
@@ -1115,6 +1117,37 @@ mod tests {
                 }
                 _ => None,
             })
+    }
+
+    fn cbor_bool_field(value: &CborValue, key: &str) -> Option<bool> {
+        let CborValue::Map(entries) = value else {
+            return None;
+        };
+        entries
+            .iter()
+            .find_map(|(field, value)| match (field, value) {
+                (CborValue::Text(field), CborValue::Bool(value)) if field == key => Some(*value),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn dir_lock_result_omits_echoed_arguments() {
+        let unchanged = dir_lock_result_value("/repo/a", Path::new("/repo/a"), Some(true));
+        assert!(cbor_text_field(&unchanged, "command").is_none());
+        assert!(cbor_text_field(&unchanged, "directory").is_none());
+        assert!(cbor_text_field(&unchanged, "canonical_directory").is_none());
+        assert_eq!(cbor_bool_field(&unchanged, "locked"), Some(true));
+
+        let canonicalized =
+            dir_lock_result_value("repo/../repo/a", Path::new("/tmp/repo/a"), Some(false));
+        assert!(cbor_text_field(&canonicalized, "command").is_none());
+        assert!(cbor_text_field(&canonicalized, "directory").is_none());
+        assert_eq!(
+            cbor_text_field(&canonicalized, "canonical_directory"),
+            Some("/tmp/repo/a")
+        );
+        assert_eq!(cbor_bool_field(&canonicalized, "locked"), Some(false));
     }
 
     #[test]

@@ -1586,6 +1586,7 @@ fn write_result_reports_status_without_model_diff() {
     ]);
     let result = write_file(&args).expect("write").result;
 
+    assert!(cbor_map_field(&result, "path").is_none());
     assert_eq!(cbor_int_field(&result, "bytes_written"), Some(22));
     assert_eq!(cbor_bool_field(&result, "created"), Some(false));
     assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
@@ -1729,6 +1730,7 @@ fn edit_self_replacement_counts_without_diff() {
     ]);
     let result = edit_file(&args).expect("edit").result;
 
+    assert!(cbor_map_field(&result, "path").is_none());
     assert_eq!(cbor_int_field(&result, "replacements"), Some(1));
     assert_eq!(cbor_bool_field(&result, "changed"), Some(false));
     assert!(cbor_map_text(&result, "output").is_none());
@@ -1765,6 +1767,7 @@ fn edit_no_match_error_includes_unchanged_result_details() {
     let details = error.details.as_ref().expect("details");
 
     assert_eq!(error.message, "no matches for edit");
+    assert!(cbor_map_field(details, "path").is_none());
     assert_eq!(cbor_int_field(details, "replacements"), Some(0));
     assert_eq!(cbor_bool_field(details, "changed"), Some(false));
     assert_eq!(fs::read_to_string(&file_path).expect("read back"), "old\n");
@@ -1797,6 +1800,7 @@ fn edit_result_uses_output_payload_for_model_visible_diff() {
     ]);
     let result = edit_file(&args).expect("edit").result;
 
+    assert!(cbor_map_field(&result, "path").is_none());
     assert!(cbor_map_text(&result, "output").is_some());
     assert!(cbor_map_text(&result, "diff").is_none());
 }
@@ -3744,36 +3748,25 @@ fn mark_line_merges_existing_markers_when_truncating() {
 }
 
 #[test]
-fn grep_result_map_echoes_request_context_for_ui() {
-    // The CLI renders grep completions using fields read back from
-    // the tool result (pattern/path/glob/matches/output). Lock the
-    // wire contract so a future shape change doesn't silently
-    // regress the UI back to "grep: done".
-    let with_glob = grep_result_map(
-        "foo",
-        "src",
-        Some("*.rs"),
-        Some(0),
-        3,
-        "src/a.rs:1:foo".to_owned(),
-    );
-    assert_eq!(cbor_map_text(&with_glob, "pattern"), Some("foo"));
-    assert_eq!(cbor_map_text(&with_glob, "path"), Some("src"));
-    assert_eq!(cbor_map_text(&with_glob, "glob"), Some("*.rs"));
-    assert_eq!(cbor_int_field(&with_glob, "status"), Some(0));
-    assert_eq!(cbor_int_field(&with_glob, "matches"), Some(3));
-    assert_eq!(cbor_map_text(&with_glob, "output"), Some("src/a.rs:1:foo"));
-    assert_eq!(cbor_int_field(&with_glob, "output_lines"), Some(1));
-    assert_eq!(cbor_int_field(&with_glob, "output_bytes"), Some(14));
+fn grep_result_map_omits_request_context() {
+    // The agent already knows the grep request arguments it sent. Do not echo
+    // pattern/path/glob in the result headers; keep only execution outcome and
+    // payload metadata.
+    let result = grep_result_map(Some(0), 3, "src/a.rs:1:foo".to_owned());
+    assert!(cbor_map_text(&result, "pattern").is_none());
+    assert!(cbor_map_text(&result, "path").is_none());
+    assert!(cbor_map_text(&result, "glob").is_none());
+    assert_eq!(cbor_int_field(&result, "status"), Some(0));
+    assert_eq!(cbor_int_field(&result, "matches"), Some(3));
+    assert_eq!(cbor_map_text(&result, "output"), Some("src/a.rs:1:foo"));
+    assert_eq!(cbor_int_field(&result, "output_lines"), Some(1));
+    assert_eq!(cbor_int_field(&result, "output_bytes"), Some(14));
 
-    // No-glob form omits the field entirely rather than emitting
-    // an empty string.
-    let no_glob = grep_result_map("foo", ".", None, Some(1), 0, "no matches found".to_owned());
-    assert!(cbor_map_text(&no_glob, "glob").is_none());
-    assert_eq!(cbor_int_field(&no_glob, "status"), Some(1));
-    assert_eq!(cbor_int_field(&no_glob, "matches"), Some(0));
-    assert_eq!(cbor_int_field(&no_glob, "output_lines"), Some(1));
-    assert_eq!(cbor_int_field(&no_glob, "output_bytes"), Some(16));
+    let no_matches = grep_result_map(Some(1), 0, "no matches found".to_owned());
+    assert_eq!(cbor_int_field(&no_matches, "status"), Some(1));
+    assert_eq!(cbor_int_field(&no_matches, "matches"), Some(0));
+    assert_eq!(cbor_int_field(&no_matches, "output_lines"), Some(1));
+    assert_eq!(cbor_int_field(&no_matches, "output_bytes"), Some(16));
 }
 
 #[test]
@@ -3967,6 +3960,8 @@ fn run_grep_with_context_counts_only_match_lines() {
 
     // Two matches; surrounding context lines are present in output
     // but must not inflate the count.
+    assert!(cbor_map_field(&result, "path").is_none());
+    assert!(cbor_map_field(&result, "pattern").is_none());
     assert_eq!(cbor_int_field(&result, "matches"), Some(2));
     let output = cbor_map_text(&result, "output").expect("output");
     assert!(output.contains(":3:alpha"), "first match missing: {output}");
@@ -4456,6 +4451,8 @@ fn run_find_returns_matching_files() {
     ]);
     let result = run_find(&args).expect("find").result;
 
+    assert!(cbor_map_field(&result, "path").is_none());
+    assert!(cbor_map_field(&result, "pattern").is_none());
     assert_eq!(cbor_int_field(&result, "matches"), Some(2));
     let output = cbor_map_text(&result, "output").expect("output");
     assert!(output.contains("src/lib.rs"));
@@ -4485,6 +4482,8 @@ fn run_find_no_matches_uses_plain_ok_status() {
 
     assert_eq!(output.display.status_text, "ok");
     assert_eq!(output.display.stats.matches, Some(0));
+    assert!(cbor_map_field(&output.result, "path").is_none());
+    assert!(cbor_map_field(&output.result, "pattern").is_none());
     assert_eq!(cbor_int_field(&output.result, "matches"), Some(0));
 }
 
@@ -4501,6 +4500,7 @@ fn run_ls_lists_directory_contents() {
     )]);
     let result = run_ls(&args).expect("ls").result;
 
+    assert!(cbor_map_field(&result, "path").is_none());
     assert_eq!(cbor_int_field(&result, "entries"), Some(3));
     let output = cbor_map_text(&result, "output").expect("output");
     assert!(output.contains(".env"));

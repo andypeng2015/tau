@@ -56,6 +56,12 @@ for token efficiency. Keep tool output compact: include only non-default,
 non-redundant values that help the agent decide what to do next. Do not emit
 aliases or duplicate fields that carry the same information.
 
+Do not include headers that are straight copies of tool invocation arguments.
+The calling agent already knows the arguments it sent, so echoing them wastes
+context and makes the meaningful result harder to scan. Only report a requested
+path, query, command, or similar argument when the tool has transformed it into
+new information, such as a canonicalized path that differs from the input.
+
 ### Common patterns
 
 Range operations should use `<start-line>` and `<line-number>` (optional)
