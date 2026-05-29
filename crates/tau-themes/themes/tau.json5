@@ -9,7 +9,7 @@
     "user.prompt.queued":   { fg: "dark_grey" },
 
     // -- Agent responses --
-    "agent.response":       { fg: "blue", italic: true },
+    "agent.response":       { fg: "cyan", italic: true },
     "agent.pending":        { fg: "dark_grey" },
     "agent.thinking":       { fg: "dark_grey", italic: true },
 
