@@ -52,7 +52,7 @@
     // -- Status bar --
     "model.status":         { fg: "dark_grey" },
     "status.model":         { fg: "dark_grey" },
-    "status.role":          { fg: "dark_yellow" },
+    "status.role":          { fg: "magenta" },
     "status.session":       { fg: "grey" },
     "status.context":       { fg: "blue" },
     "status.effort":        { fg: "yellow" },
@@ -81,7 +81,7 @@
     "prompt.placeholder":      { fg: "dark_grey", italic: true },
     "prompt.marker.engineer":  { fg: "cyan", bold: true },
     "prompt.marker.assistant": { fg: "red", bold: true },
-    "prompt.marker.manager":   { fg: "dark_yellow", bold: true },
+    "prompt.marker.manager":   { fg: "magenta", bold: true },
     "prompt.marker.submitted": { bold: true },
 
     // -- Completion menu --
