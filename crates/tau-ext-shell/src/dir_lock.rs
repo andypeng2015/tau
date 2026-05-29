@@ -11,8 +11,8 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use tau_proto::{
-    AgentId, CborValue, Event, Frame, ToolCallId, ToolCancelled, ToolDisplay, ToolDisplayPayload,
-    ToolDisplayStatus, ToolError, ToolProgress, ToolResult, ToolResultKind, ToolStarted, ToolType,
+    AgentId, CborValue, Event, Frame, ToolCallId, ToolCancelled, ToolDisplay, ToolDisplayStatus,
+    ToolError, ToolProgress, ToolResult, ToolResultKind, ToolStarted, ToolType,
 };
 
 use crate::argument::{argument_text, optional_argument_text};
@@ -1024,11 +1024,7 @@ fn dir_lock_result_value(command: &str, dir: &Path, locked: Option<bool>) -> Cbo
 }
 
 fn dir_lock_display(dir: &Path) -> ToolDisplay {
-    let mut display = ok_display(dir.display().to_string());
-    display.payload = Some(ToolDisplayPayload::Text {
-        text: dir.display().to_string(),
-    });
-    display
+    ok_display(dir.display().to_string())
 }
 
 fn tool_result(invoke: &ToolStarted, result: CborValue, display: ToolDisplay) -> Event {

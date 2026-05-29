@@ -860,6 +860,7 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
                 let display = result.display.as_ref().expect("lock display");
                 assert_eq!(display.args, lock_dir.display().to_string());
                 assert_eq!(display.status_text, "ok");
+                assert!(display.payload.is_none());
                 break;
             }
             Some(_) => continue,
