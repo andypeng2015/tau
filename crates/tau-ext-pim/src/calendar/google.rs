@@ -450,7 +450,7 @@ impl GoogleBackend {
             .agent
             .delete(&url)
             .header("Authorization", format!("Bearer {token}"))
-            .header("If-Match", etag)
+            .header("If-Match", google_if_match_header(etag))
             .call()
             .map_err(|error| format!("Google Calendar API delete failed: {error}"))?;
         if !response.status().is_success() {
@@ -634,7 +634,7 @@ impl GoogleBackend {
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Accept", "application/json");
         if let Some(etag) = if_match {
-            request = request.header("If-Match", etag);
+            request = request.header("If-Match", google_if_match_header(etag));
         }
         let json_body = serde_json::to_string(body)
             .map_err(|error| format!("serializing Google Calendar request failed: {error}"))?;
@@ -1179,6 +1179,14 @@ fn encode_path_segment(value: &str) -> String {
     out
 }
 
+fn google_if_match_header(etag: &str) -> String {
+    if etag == "*" || etag.starts_with('"') || etag.starts_with("W/\"") {
+        etag.to_owned()
+    } else {
+        format!("\"{etag}\"")
+    }
+}
+
 fn is_path_segment_unreserved(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
@@ -1452,6 +1460,23 @@ mod tests {
     #[test]
     fn path_segments_encode_spaces_as_percent_twenty() {
         assert_eq!(encode_path_segment("a b/c"), "a%20b%2Fc");
+    }
+
+    #[test]
+    fn google_if_match_header_accepts_display_etags_without_quotes() {
+        // Google ETags are quoted in API responses, but agents can easily copy
+        // the visible numeric token without JSON-escaping the quotes. Preserve
+        // already-valid preconditions and repair the common stripped form.
+        assert_eq!(
+            google_if_match_header("3560073119029470"),
+            "\"3560073119029470\""
+        );
+        assert_eq!(
+            google_if_match_header("\"3560073119029470\""),
+            "\"3560073119029470\""
+        );
+        assert_eq!(google_if_match_header("W/\"weak\""), "W/\"weak\"");
+        assert_eq!(google_if_match_header("*"), "*");
     }
 
     fn google_account(allowed_calendars: Vec<&str>) -> ValidatedAccount {

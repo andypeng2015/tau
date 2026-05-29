@@ -427,6 +427,18 @@ impl StateStore {
         Ok(approval)
     }
 
+    /// Restore a claimed calendar change to pending after execution failed.
+    pub(crate) fn release_claimed_change(&self, id: &str) -> Result<(), String> {
+        let mut approval = self.load_change_approval("sending", id)?;
+        approval.status = "pending".to_owned();
+        let pending_path = self.change_path("pending", id)?;
+        match atomic_json_create_new(&pending_path, &approval) {
+            Ok(()) | Err(CreateNewJsonError::AlreadyExists) => {}
+            Err(CreateNewJsonError::Other(message)) => return Err(message),
+        }
+        fs::remove_file(self.change_path("sending", id)?).map_err(|error| error.to_string())
+    }
+
     /// Mark a claimed calendar change as approved after successful execution.
     pub(crate) fn complete_change(
         &self,
@@ -1000,6 +1012,39 @@ mod tests {
                     .join("state/approvals/calendar-change/pending/1.json")
             ),
             0o600
+        );
+    }
+
+    #[test]
+    fn claimed_calendar_change_can_be_released_after_provider_failure() {
+        // Provider failures, including stale Google ETags, happen after the
+        // approval record is claimed. The failed approval must become pending
+        // again so the user can retry or deny it instead of requiring manual
+        // filesystem recovery.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let state = StateStore::open(temp.path().join("state")).expect("state");
+        let mut change = CalendarChangeApproval::pending("update_event", "google", "primary");
+        change.event_id = Some("evt".to_owned());
+        change.etag = Some("3560073119029470".to_owned());
+        change.start = Some("2026-05-29T15:00:00Z".to_owned());
+
+        let id = state.pending_change(&change).expect("pending change");
+        let claimed = state.claim_change(&id).expect("claim");
+        assert_eq!(claimed.status, "pending");
+        assert!(state.change_sending_exists(&id).expect("sending exists"));
+
+        state
+            .release_claimed_change(&id)
+            .expect("release claimed change");
+
+        assert!(state.change_pending_exists(&id).expect("pending exists"));
+        assert!(!state.change_sending_exists(&id).expect("sending gone"));
+        assert_eq!(
+            state
+                .pending_change_by_id(&id)
+                .expect("pending loaded")
+                .status,
+            "pending"
         );
     }
 

@@ -323,7 +323,17 @@ impl Engine {
             self.validate_persisted_change(&pending)?;
             let change = self.state.claim_change(id)?;
             self.validate_persisted_change(&change)?;
-            let result = self.execute_change(&change)?;
+            let result = match self.execute_change(&change) {
+                Ok(result) => result,
+                Err(error) => {
+                    return match self.state.release_claimed_change(id) {
+                        Ok(()) => Err(error),
+                        Err(recovery_error) => Err(format!(
+                            "{error}; additionally failed to restore approval to pending: {recovery_error}"
+                        )),
+                    };
+                }
+            };
             let result_event_id = result.event_id();
             return match self.state.complete_change(id, result_event_id) {
                 Ok(()) => Ok(format_mutation_result("Applied", id, &change, &result)),
@@ -650,6 +660,7 @@ impl Engine {
         args: &CalendarArgs,
     ) -> Result<CborValue, String> {
         let change = self.build_change(command, args)?;
+        self.validate_change_etag_is_current(&change)?;
         if self.config.policy.write.require_approval {
             let id = self.state.pending_change(&change)?;
             return Ok(format_change_queued(&id, &change));
@@ -747,6 +758,50 @@ impl Engine {
             | CalendarCommand::FreeBusy => unreachable!("read commands are not calendar changes"),
         }
         Ok(change)
+    }
+
+    fn validate_change_etag_is_current(
+        &self,
+        change: &CalendarChangeApproval,
+    ) -> Result<(), String> {
+        if !matches!(
+            change.command.as_str(),
+            "update_event" | "delete_event" | "respond_invite"
+        ) {
+            return Ok(());
+        }
+        let account = self.account_by_id(&change.account)?;
+        let Some(ValidatedBackendConfig::Google { .. }) = &account.backend else {
+            return Ok(());
+        };
+        let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
+        let requested_etag = required_change_field(change.etag.as_deref(), "etag")?;
+        if requested_etag == "*" {
+            return Err(
+                "Google calendar writes require the exact current event etag; `*` is not accepted"
+                    .to_owned(),
+            );
+        }
+        let stored_refresh_token = self.google_refresh_token(account)?;
+        let current = self.google.read_event(
+            account,
+            stored_refresh_token.as_deref(),
+            &change.calendar,
+            event_id,
+        )?;
+        let current_etag = current
+            .etag
+            .as_deref()
+            .ok_or_else(|| "Google Calendar event response was missing etag".to_owned())?;
+        if google_etag_compare_value(requested_etag) == google_etag_compare_value(current_etag) {
+            return Ok(());
+        }
+        Err(format!(
+            "stale Google Calendar etag for event `{}`: requested `{}`, current `{}`; re-read the event and retry",
+            safe_display_line(event_id),
+            safe_display_line(requested_etag),
+            safe_display_line(current_etag)
+        ))
     }
 
     fn validate_persisted_change(&self, change: &CalendarChangeApproval) -> Result<(), String> {
@@ -1053,6 +1108,14 @@ fn required_text(value: Option<&str>, name: &str) -> Result<String, String> {
     let value = required_arg(value, name)?;
     validate_line(value, name, false)?;
     Ok(value.to_owned())
+}
+
+fn google_etag_compare_value(etag: &str) -> String {
+    if etag.starts_with('"') || etag.starts_with("W/\"") {
+        etag.to_owned()
+    } else {
+        format!("\"{etag}\"")
+    }
 }
 
 fn required_change_field<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, String> {
@@ -2397,6 +2460,20 @@ mod tests {
         assert_eq!(
             engine.action_change_deny("1"),
             Ok("Denied calendar change 1.".to_owned())
+        );
+    }
+
+    #[test]
+    fn google_etag_compare_value_accepts_agent_stripped_quotes() {
+        // The request-time freshness check compares Google API ETags with the
+        // common agent-written form where the wire quotes were stripped.
+        assert_eq!(
+            google_etag_compare_value("3560073119029470"),
+            google_etag_compare_value("\"3560073119029470\"")
+        );
+        assert_ne!(
+            google_etag_compare_value("3560073119029470"),
+            google_etag_compare_value("\"3560073119029471\"")
         );
     }
 
