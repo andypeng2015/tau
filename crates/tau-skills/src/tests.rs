@@ -508,6 +508,7 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
             "tau-self-knowledge-architecture",
             "tau-self-knowledge-config",
             "tau-self-knowledge-email",
+            "tau-self-knowledge-pim",
             "tau-self-knowledge-source-code",
             "tau-self-knowledge-community",
             "tau-self-knowledge-debugging",
@@ -533,6 +534,7 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
     assert!(skill.content.contains("tau-self-knowledge-architecture"));
     assert!(skill.content.contains("tau-self-knowledge-config"));
     assert!(skill.content.contains("tau-self-knowledge-email"));
+    assert!(skill.content.contains("tau-self-knowledge-pim"));
     assert!(skill.content.contains("tau-self-knowledge-source-code"));
     assert!(skill.content.contains("tau-self-knowledge-community"));
     assert!(skill.content.contains("tau-self-knowledge-debugging"));
@@ -559,6 +561,14 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
     assert!(email.content.contains("std-email"));
     assert!(email.content.contains("trusted_authserv_ids"));
     assert!(email.content.contains("Authentication-Results"));
+
+    let pim = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-pim")
+        .expect("built-in pim skill");
+    assert!(!pim.add_to_prompt);
+    assert!(pim.content.contains("__TAU_SELF_KNOWLEDGE_PIM_CONFIG__"));
+    assert!(pim.content.contains("Google Calendar authorization"));
 
     let source_code = skills
         .iter()

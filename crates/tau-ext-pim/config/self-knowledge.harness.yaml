@@ -1,0 +1,85 @@
+extensions:
+  std-pim:
+    enable: true
+    secrets:
+      mail_password: {}
+      personal_calendar_ics_url: {}
+      google_calendar_client_id: {}
+      google_calendar_client_secret: {}
+    config:
+      email:
+        enable: true
+        accounts:
+          - id: work
+            enable: true
+            display_name: Work mail
+            from: Alice Example <alice@example.com>
+            imap:
+              host: imap.example.com
+              port: 993
+              tls: required
+              login: alice@example.com
+            smtp:
+              host: smtp.example.com
+              port: 587
+              tls: start_tls
+              login: alice@example.com
+            auth:
+              method: password
+              password_secret: mail_password
+            folders:
+              allow:
+                - INBOX
+        policy:
+          incoming_allow:
+            - alice@example.com
+            - "*@trusted.example"
+          incoming_auth:
+            require: true
+            trusted_authserv_ids:
+              - mx.example.com
+            allow_dmarc_only: false
+          outgoing_allow:
+            - alice@example.com
+            - "*@trusted.example"
+          allow_state_policy_extensions: true
+      calendar:
+        enable: true
+        accounts:
+          - id: personal-ics
+            enable: true
+            display_name: Personal ICS calendar
+            backend:
+              type: ics_feed
+              url_secret: personal_calendar_ics_url
+            calendars:
+              default: main
+              allow:
+                - main
+          - id: google
+            enable: true
+            display_name: Google Calendar
+            backend:
+              type: google
+              client_id_secret: google_calendar_client_id
+              client_secret_secret: google_calendar_client_secret
+              # Omit refresh_token_secret and authorize with:
+              #   /calendar auth google start google
+              #   /calendar auth google finish google
+              # Or set refresh_token_secret for a manually provisioned token.
+            calendars:
+              default: primary
+              allow:
+                - primary
+        policy:
+          read:
+            private_events: busy_only
+            descriptions: approved_only
+          write:
+            require_approval: true
+            max_attendees: 50
+roleGroups:
+  user:
+    roles:
+      assistant:
+        enableTools: [email, calendar]

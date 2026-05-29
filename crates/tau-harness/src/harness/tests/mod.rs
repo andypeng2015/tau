@@ -140,13 +140,16 @@ fn minting_agent_ids_skips_persisted_agent_dirs() {
 #[test]
 fn render_self_knowledge_content_inserts_config_defaults() {
     let rendered = crate::harness::render_self_knowledge_content(std::borrow::Cow::Borrowed(
-        "__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__\n__TAU_SELF_KNOWLEDGE_UI_CONFIG__",
+        "__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__\n__TAU_SELF_KNOWLEDGE_UI_CONFIG__\n__TAU_SELF_KNOWLEDGE_PIM_CONFIG__",
     ));
 
     assert!(!rendered.contains("__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__"));
     assert!(!rendered.contains("__TAU_SELF_KNOWLEDGE_UI_CONFIG__"));
+    assert!(!rendered.contains("__TAU_SELF_KNOWLEDGE_PIM_CONFIG__"));
     assert!(rendered.contains("session_retention_days: 60"));
     assert!(rendered.contains("show_thinking: true"));
+    assert!(rendered.contains("std-pim:"));
+    assert!(rendered.contains("calendar:"));
 }
 
 fn agent_tree_for_conversation<'a>(h: &'a Harness, cid: &AgentId) -> &'a AgentTree {

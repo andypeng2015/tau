@@ -77,9 +77,12 @@ const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";
 const SELF_KNOWLEDGE_BUILD_DATE_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_BUILD_DATE__";
 const SELF_KNOWLEDGE_HARNESS_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HARNESS_CONFIG__";
 const SELF_KNOWLEDGE_UI_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_UI_CONFIG__";
+const SELF_KNOWLEDGE_PIM_CONFIG_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_PIM_CONFIG__";
 const SELF_KNOWLEDGE_HARNESS_CONFIG: &str =
     include_str!("../../tau-config/config/built-in.harness.yaml");
 const SELF_KNOWLEDGE_UI_CONFIG: &str = include_str!("../../tau-config/config/built-in.cli.yaml");
+const SELF_KNOWLEDGE_PIM_CONFIG: &str =
+    include_str!("../../tau-ext-pim/config/self-knowledge.harness.yaml");
 
 pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
     format!(
@@ -523,7 +526,8 @@ fn render_self_knowledge_content(
                 SELF_KNOWLEDGE_HARNESS_CONFIG_TOKEN,
                 SELF_KNOWLEDGE_HARNESS_CONFIG,
             )
-            .replace(SELF_KNOWLEDGE_UI_CONFIG_TOKEN, SELF_KNOWLEDGE_UI_CONFIG),
+            .replace(SELF_KNOWLEDGE_UI_CONFIG_TOKEN, SELF_KNOWLEDGE_UI_CONFIG)
+            .replace(SELF_KNOWLEDGE_PIM_CONFIG_TOKEN, SELF_KNOWLEDGE_PIM_CONFIG),
     )
 }
 

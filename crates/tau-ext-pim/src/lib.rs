@@ -197,9 +197,43 @@ fn ack_log_event<W: Write>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use serde::Deserialize;
     use tau_proto::{EventName, EventSelector, ToolName};
 
     use super::*;
+
+    #[test]
+    fn self_knowledge_pim_example_matches_extension_config_shape() {
+        #[derive(Deserialize)]
+        struct HarnessExample {
+            extensions: BTreeMap<String, ExtensionExample>,
+        }
+
+        #[derive(Deserialize)]
+        struct ExtensionExample {
+            config: PimExtensionConfig,
+        }
+
+        let mut harness: HarnessExample =
+            serde_yaml_ng::from_str(include_str!("../config/self-knowledge.harness.yaml"))
+                .expect("self-knowledge PIM example parses as YAML");
+        let pim = harness
+            .extensions
+            .remove("std-pim")
+            .expect("std-pim example exists")
+            .config;
+
+        pim.email
+            .expect("email example")
+            .validate()
+            .expect("email config validates");
+        pim.calendar
+            .expect("calendar example")
+            .validate()
+            .expect("calendar config validates");
+    }
 
     #[test]
     fn action_schema_contains_email_and_calendar_roots() {
