@@ -45,10 +45,10 @@ const ACCESS_PREVIEW: &str = "preview";
 const ACCESS_NONE: &str = "none";
 
 use tau_proto::{
-    ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionCommand, ActionError, ActionInvoke,
-    ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event, EventLogSeq, Frame,
-    FrameReader, FrameWriter, Message, PromptFragment, PromptPriority, ToolDisplay,
-    ToolDisplayStats, ToolDisplayStatus, ToolError, ToolResult, ToolSpec, ToolStarted,
+    ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionChoice, ActionCommand, ActionError,
+    ActionInvoke, ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event,
+    EventLogSeq, Frame, FrameReader, FrameWriter, Message, PromptFragment, PromptPriority,
+    ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolResult, ToolSpec, ToolStarted,
 };
 
 /// `tracing` target for events emitted from this extension.
@@ -3795,17 +3795,13 @@ impl<B: EmailBackend> Engine<B> {
         match action_id {
             "email.out.list" => require_no_args(argv).and_then(|()| self.action_out_list()),
             "email.out.open" => require_one_arg(argv).and_then(|id| self.action_out_open(id)),
-            "email.out.approve" => {
-                require_approval_ids(argv).and_then(|ids| self.action_out_approve_many(&ids))
-            }
+            "email.out.approve" => self.action_out_approve_args(argv),
             "email.out.whitelist" => {
                 require_one_arg(argv).and_then(|pattern| self.action_out_whitelist(pattern))
             }
             "email.in.list" => require_no_args(argv).and_then(|()| self.action_in_list()),
             "email.in.open" => require_one_arg(argv).and_then(|id| self.action_in_open(id)),
-            "email.in.approve" => {
-                require_approval_ids(argv).and_then(|ids| self.action_in_approve_many(&ids))
-            }
+            "email.in.approve" => self.action_in_approve_args(argv),
             "email.in.deny" => {
                 require_approval_ids(argv).and_then(|ids| self.action_in_deny_many(&ids))
             }
@@ -3876,6 +3872,22 @@ impl<B: EmailBackend> Engine<B> {
             safe_display_line(&approval.reason),
             safe_display_text(&approval.body_text)
         ))
+    }
+
+    fn action_out_approve_args(&mut self, argv: &[String]) -> Result<String, String> {
+        if require_all_arg(argv)? {
+            let ids = self
+                .state
+                .list_pending_outgoing()?
+                .into_iter()
+                .map(|approval| approval.id)
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Ok("No pending outgoing email approvals to approve.".to_owned());
+            }
+            return self.action_out_approve_many(&ids);
+        }
+        require_approval_ids(argv).and_then(|ids| self.action_out_approve_many(&ids))
     }
 
     fn action_out_approve_many(&mut self, ids: &[String]) -> Result<String, String> {
@@ -4019,6 +4031,22 @@ impl<B: EmailBackend> Engine<B> {
             reason = safe_display_line(&approval.reason),
             body = safe_display_text(&truncate.body_text),
         ))
+    }
+
+    fn action_in_approve_args(&mut self, argv: &[String]) -> Result<String, String> {
+        if require_all_arg(argv)? {
+            let ids = self
+                .state
+                .list_pending_incoming()?
+                .into_iter()
+                .map(|approval| approval.id)
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Ok("No pending incoming email reads to approve.".to_owned());
+            }
+            return self.action_in_approve_many(&ids);
+        }
+        require_approval_ids(argv).and_then(|ids| self.action_in_approve_many(&ids))
     }
 
     fn action_in_approve_many(&mut self, ids: &[String]) -> Result<String, String> {
@@ -4287,6 +4315,20 @@ fn require_one_arg(argv: &[String]) -> Result<&str, String> {
         [] => Err("missing required action argument".to_owned()),
         _ => Err("too many action arguments".to_owned()),
     }
+}
+
+fn require_all_arg(argv: &[String]) -> Result<bool, String> {
+    let values = argv
+        .iter()
+        .flat_map(|value| value.split_whitespace())
+        .collect::<Vec<_>>();
+    if values == ["all"] {
+        return Ok(true);
+    }
+    if values.contains(&"all") {
+        return Err("`all` must be the only action argument".to_owned());
+    }
+    Ok(false)
 }
 
 fn require_approval_ids(argv: &[String]) -> Result<Vec<String>, String> {
@@ -4565,6 +4607,7 @@ pub fn email_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::String,
         }
     }
@@ -4573,6 +4616,7 @@ pub fn email_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::RestString,
         }
     }
@@ -4581,6 +4625,7 @@ pub fn email_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: false,
+            suggestions: Vec::new(),
             kind: ActionArgKind::Integer,
         }
     }
@@ -4605,6 +4650,16 @@ pub fn email_action_schema() -> ActionSchema {
 
     let id_arg = || string_arg("id", "approval id");
     let ids_arg = || rest_string_arg("ids", "one or more approval ids");
+    let approve_ids_arg = || ActionArg {
+        name: "ids".to_owned(),
+        description: "one or more approval ids, or all".to_owned(),
+        required: true,
+        suggestions: vec![ActionChoice {
+            value: "all".to_owned(),
+            description: "All pending approvals".to_owned(),
+        }],
+        kind: ActionArgKind::RestString,
+    };
     let pattern_arg = || string_arg("pattern", "glob or email address");
     let limit_arg =
         || optional_integer_arg("number", "number of recent log entries; defaults to 20");
@@ -4636,7 +4691,7 @@ pub fn email_action_schema() -> ActionSchema {
                             "approve",
                             "email.out.approve",
                             "Approve one or more outgoing drafts",
-                            vec![ids_arg()],
+                            vec![approve_ids_arg()],
                         ),
                         leaf(
                             "whitelist",
@@ -4676,7 +4731,7 @@ pub fn email_action_schema() -> ActionSchema {
                             "approve",
                             "email.in.approve",
                             "Approve one or more incoming reads",
-                            vec![ids_arg()],
+                            vec![approve_ids_arg()],
                         ),
                         leaf(
                             "deny",

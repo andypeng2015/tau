@@ -1,4 +1,6 @@
-use tau_proto::{ACTION_SCHEMA_VERSION, ActionArg, ActionArgKind, ActionCommand, ActionSchema};
+use tau_proto::{
+    ACTION_SCHEMA_VERSION, ActionArg, ActionArgKind, ActionChoice, ActionCommand, ActionSchema,
+};
 
 /// Return the `/calendar` action schema.
 pub fn calendar_action_schema() -> ActionSchema {
@@ -7,6 +9,7 @@ pub fn calendar_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::String,
         }
     }
@@ -15,6 +18,7 @@ pub fn calendar_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::RestString,
         }
     }
@@ -23,7 +27,20 @@ pub fn calendar_action_schema() -> ActionSchema {
             name: name.to_owned(),
             description: description.to_owned(),
             required: false,
+            suggestions: Vec::new(),
             kind: ActionArgKind::Integer,
+        }
+    }
+    fn approval_ids_arg(description: &str) -> ActionArg {
+        ActionArg {
+            name: "ids".to_owned(),
+            description: description.to_owned(),
+            required: true,
+            suggestions: vec![ActionChoice {
+                value: "all".to_owned(),
+                description: "All pending approvals".to_owned(),
+            }],
+            kind: ActionArgKind::RestString,
         }
     }
 
@@ -104,7 +121,7 @@ pub fn calendar_action_schema() -> ActionSchema {
                             name: "approve".to_owned(),
                             description: "Approve one or more pending calendar changes".to_owned(),
                             action_id: Some("calendar.change.approve".to_owned()),
-                            args: vec![rest_string_arg("ids", "Pending change id(s)")],
+                            args: vec![approval_ids_arg("Pending change id(s), or all")],
                             children: Vec::new(),
                         },
                         ActionCommand {

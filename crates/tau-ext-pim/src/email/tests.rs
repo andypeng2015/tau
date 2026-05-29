@@ -1780,6 +1780,41 @@ fn outgoing_approve_accepts_multiple_ids() {
 }
 
 #[test]
+fn outgoing_approve_all_accepts_every_pending_id() {
+    // `/email out approve all` is a convenience for approving every item from
+    // the current pending list without copying each generated id.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    for subject in ["proposal one", "proposal two"] {
+        let _queued = engine.dispatch(EmailCommand::Send {
+            account: Some("work".to_owned()),
+            from: None,
+            to: vec!["external@example.net".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.to_owned(),
+            body_text: "body".to_owned(),
+            reply_to: None,
+            in_reply_to: None,
+        });
+    }
+
+    let approved = engine
+        .dispatch_action("email.out.approve", &["all".to_owned()])
+        .expect("approve all");
+
+    assert!(approved.contains("Approving 2 outgoing email(s):"));
+    assert_eq!(engine.backend.sent.borrow().len(), 2);
+    assert!(
+        engine
+            .state
+            .list_pending_outgoing()
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+#[test]
 fn incoming_approve_and_deny_accept_multiple_ids() {
     // Incoming approval and denial use the same slash parser shape as outgoing
     // approval, so verify both actions split whitespace ids safely.
@@ -1856,6 +1891,64 @@ fn incoming_approve_and_deny_accept_multiple_ids() {
     assert!(denied.contains("Denying 2 incoming email read(s):"));
     assert!(engine.state.denied_incoming_by_id(&first_id).is_ok());
     assert!(engine.state.denied_incoming_by_id(&second_id).is_ok());
+}
+
+#[test]
+fn incoming_approve_all_accepts_every_pending_id() {
+    // `/email in approve all` approves every current read request from the
+    // pending list while leaving future requests unaffected.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    engine.backend.messages.insert(
+        ("work".to_owned(), "INBOX".to_owned()),
+        [
+            (
+                "10",
+                "Mallory <mallory@evil.test>",
+                "secret one",
+                "body one",
+            ),
+            ("11", "Eve <eve@evil.test>", "secret two", "body two"),
+        ]
+        .into_iter()
+        .map(|(uid, from, subject, body_text)| BackendMessage {
+            uid: uid.to_owned(),
+            uidvalidity: "uv1".to_owned(),
+            date: "2026-05-24T00:00:00Z".to_owned(),
+            from: from.to_owned(),
+            to: vec!["alice@company.com".to_owned()],
+            cc: Vec::new(),
+            subject: subject.to_owned(),
+            source_truncated: false,
+            body_text: body_text.to_owned(),
+            flags: Vec::new(),
+            has_attachments: false,
+            attachments: Vec::new(),
+            message_id: None,
+            auth_results: Vec::new(),
+        })
+        .collect(),
+    );
+    for uid in ["10", "11"] {
+        let _queued = engine.dispatch(EmailCommand::RequestFull {
+            account: "work".to_owned(),
+            folder: "INBOX".to_owned(),
+            uid: uid.to_owned(),
+        });
+    }
+
+    let approved = engine
+        .dispatch_action("email.in.approve", &["all".to_owned()])
+        .expect("approve all");
+
+    assert!(approved.contains("Approving 2 incoming email read(s):"));
+    assert!(
+        engine
+            .state
+            .list_pending_incoming()
+            .expect("pending")
+            .is_empty()
+    );
 }
 
 #[test]

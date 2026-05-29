@@ -221,7 +221,7 @@ fn complete_action_args(
         tau_actions::ActionArgKind::Enum { values } => complete_choices(values, partial),
         tau_actions::ActionArgKind::String
         | tau_actions::ActionArgKind::Integer
-        | tau_actions::ActionArgKind::RestString => Vec::new(),
+        | tau_actions::ActionArgKind::RestString => complete_choices(&arg.suggestions, partial),
     }
 }
 
@@ -319,18 +319,37 @@ mod tests {
                         description: "Incoming approvals".to_owned(),
                         action_id: None,
                         args: Vec::new(),
-                        children: vec![ActionCommand {
-                            name: "open".to_owned(),
-                            description: "Open incoming approval".to_owned(),
-                            action_id: Some("email.in.open".to_owned()),
-                            args: vec![ActionArg {
-                                name: "id".to_owned(),
-                                description: "Approval id".to_owned(),
-                                required: true,
-                                kind: ActionArgKind::String,
-                            }],
-                            children: Vec::new(),
-                        }],
+                        children: vec![
+                            ActionCommand {
+                                name: "open".to_owned(),
+                                description: "Open incoming approval".to_owned(),
+                                action_id: Some("email.in.open".to_owned()),
+                                args: vec![ActionArg {
+                                    name: "id".to_owned(),
+                                    description: "Approval id".to_owned(),
+                                    required: true,
+                                    suggestions: Vec::new(),
+                                    kind: ActionArgKind::String,
+                                }],
+                                children: Vec::new(),
+                            },
+                            ActionCommand {
+                                name: "approve".to_owned(),
+                                description: "Approve incoming approvals".to_owned(),
+                                action_id: Some("email.in.approve".to_owned()),
+                                args: vec![ActionArg {
+                                    name: "ids".to_owned(),
+                                    description: "Approval ids".to_owned(),
+                                    required: true,
+                                    suggestions: vec![ActionChoice {
+                                        value: "all".to_owned(),
+                                        description: "All approvals".to_owned(),
+                                    }],
+                                    kind: ActionArgKind::RestString,
+                                }],
+                                children: Vec::new(),
+                            },
+                        ],
                     },
                     ActionCommand {
                         name: "out".to_owned(),
@@ -345,6 +364,7 @@ mod tests {
                                 name: "mode".to_owned(),
                                 description: "Mode".to_owned(),
                                 required: true,
+                                suggestions: Vec::new(),
                                 kind: ActionArgKind::Enum {
                                     values: vec![
                                         ActionChoice {
@@ -409,7 +429,11 @@ mod tests {
 
         assert_eq!(labels("/email "), vec!["in".to_owned(), "out".to_owned()]);
         assert_eq!(labels("/email i"), vec!["in".to_owned()]);
-        assert_eq!(labels("/email in "), vec!["open".to_owned()]);
+        assert_eq!(
+            labels("/email in "),
+            vec!["open".to_owned(), "approve".to_owned()]
+        );
+        assert_eq!(labels("/email in approve "), vec!["all".to_owned()]);
         assert_eq!(labels("/email out "), vec!["mode".to_owned()]);
         assert_eq!(
             labels("/email out mode "),

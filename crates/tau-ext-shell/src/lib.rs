@@ -674,6 +674,7 @@ fn shell_action_schema() -> tau_actions::ActionSchema {
                 description: "Existing directory whose overlapping manual locks should be released"
                     .to_owned(),
                 required: true,
+                suggestions: Vec::new(),
                 kind: tau_actions::ActionArgKind::RestString,
             }],
             children: Vec::new(),

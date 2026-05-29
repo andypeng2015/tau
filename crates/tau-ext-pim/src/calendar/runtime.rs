@@ -197,9 +197,7 @@ impl Engine {
             "calendar.change.open" => {
                 require_one_arg(argv).and_then(|id| self.action_change_open(id))
             }
-            "calendar.change.approve" => {
-                require_change_ids(argv).and_then(|ids| self.action_change_approve_many(&ids))
-            }
+            "calendar.change.approve" => self.action_change_approve_args(argv),
             "calendar.change.deny" => {
                 require_change_ids(argv).and_then(|ids| self.action_change_deny_many(&ids))
             }
@@ -289,6 +287,22 @@ impl Engine {
     fn action_change_open(&self, id: &str) -> Result<String, String> {
         let change = self.state.pending_change_by_id(id)?;
         Ok(format_change_detail(&change))
+    }
+
+    fn action_change_approve_args(&self, argv: &[String]) -> Result<String, String> {
+        if require_all_arg(argv)? {
+            let ids = self
+                .state
+                .list_pending_changes()?
+                .into_iter()
+                .map(|change| change.id)
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Ok("No pending calendar changes to approve.".to_owned());
+            }
+            return self.action_change_approve_many(&ids);
+        }
+        require_change_ids(argv).and_then(|ids| self.action_change_approve_many(&ids))
     }
 
     fn action_change_approve_many(&self, ids: &[String]) -> Result<String, String> {
@@ -1434,6 +1448,20 @@ fn require_one_arg(argv: &[String]) -> Result<&str, String> {
     }
 }
 
+fn require_all_arg(argv: &[String]) -> Result<bool, String> {
+    let values = argv
+        .iter()
+        .flat_map(|value| value.split_whitespace())
+        .collect::<Vec<_>>();
+    if values == ["all"] {
+        return Ok(true);
+    }
+    if values.contains(&"all") {
+        return Err("`all` must be the only action argument".to_owned());
+    }
+    Ok(false)
+}
+
 fn require_change_ids(argv: &[String]) -> Result<Vec<String>, String> {
     let raw = require_one_arg(argv)?;
     let ids = raw
@@ -2397,6 +2425,20 @@ mod tests {
         assert!(log.contains("account=feed"), "{log}");
         assert!(log.contains("calendar=main"), "{log}");
         assert!(!log.contains("private title"), "{log}");
+    }
+
+    #[test]
+    fn calendar_approve_all_accepts_empty_pending_list() {
+        // `/calendar change approve all` should be a valid convenience command
+        // even when there is nothing queued.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let engine = test_engine(temp.path());
+
+        let output = engine
+            .action_change_approve_args(&["all".to_owned()])
+            .expect("approve all");
+
+        assert_eq!(output, "No pending calendar changes to approve.");
     }
 
     #[test]

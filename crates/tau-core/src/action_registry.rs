@@ -308,6 +308,7 @@ mod tests {
                             name: "id".to_owned(),
                             description: "Approval id".to_owned(),
                             required: true,
+                            suggestions: Vec::new(),
                             kind: ActionArgKind::String,
                         }],
                         children: Vec::new(),

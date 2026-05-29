@@ -82,6 +82,9 @@ pub struct ActionArg {
     /// Whether the argument must be present.
     #[serde(default, skip_serializing_if = "is_false")]
     pub required: bool,
+    /// Static completion suggestions for open-ended arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<ActionChoice>,
     /// Argument value kind.
     pub kind: ActionArgKind,
 }
@@ -349,6 +352,9 @@ fn validate_args(args: &[ActionArg], path: &str) -> Result<(), ValidationError> 
                 "required argument `{}` follows an optional argument in {path}",
                 arg.name
             )));
+        }
+        if !arg.suggestions.is_empty() {
+            validate_choices(&arg.suggestions, &arg.name, path)?;
         }
         match &arg.kind {
             ActionArgKind::RestString if index + 1 != args.len() => {
@@ -633,6 +639,7 @@ mod tests {
             name: name.to_owned(),
             description: format!("{name} value"),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::String,
         }
     }
@@ -642,6 +649,7 @@ mod tests {
             name: name.to_owned(),
             description: format!("{name} value"),
             required: true,
+            suggestions: Vec::new(),
             kind: ActionArgKind::RestString,
         }
     }
