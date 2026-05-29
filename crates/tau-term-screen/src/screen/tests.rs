@@ -116,6 +116,20 @@ fn layout_exact_width_is_one_line() {
     assert_eq!(line_chars(&lines), vec!["abc"]);
 }
 
+/// Emoji presentation sequences such as `⚠️` occupy two terminal columns even
+/// though the base warning-sign scalar has width one. The renderer must account
+/// for that when padding block rows, otherwise exact-width rows enter pending
+/// wrap and later differential updates repaint at the wrong physical row.
+#[test]
+fn layout_counts_emoji_variation_selector_as_wide() {
+    let lines = layout_lines()
+        .content(&StyledText::from("- ⚠️  …"))
+        .width(7)
+        .call();
+    assert_eq!(line_chars(&lines), vec!["- ⚠️  …"]);
+    assert_eq!(cols(&lines[0]), 7);
+}
+
 /// Guards the style-to-cell conversion path so styled spans keep their
 /// attributes after layout.
 #[test]
@@ -192,6 +206,15 @@ fn layout_block_center_alignment() {
     let text: String = lines[0].iter().map(|c| c.ch).collect();
     // "hi" is 2 chars, padding = 8, left = 4, right = 4.
     assert_eq!(text, "    hi    ");
+}
+
+/// Block padding must be based on terminal columns, including emoji variation
+/// sequences, so rows padded to full width do not overrun the terminal.
+#[test]
+fn layout_block_pads_emoji_variation_selector_to_width() {
+    let lines = layout_block(&StyledBlock::new("- ⚠️  …"), 10);
+    assert_eq!(line_chars(&lines), vec!["- ⚠️  …   "]);
+    assert_eq!(cols(&lines[0]), 10);
 }
 
 /// Right-side block content is an inline adornment when both left and right

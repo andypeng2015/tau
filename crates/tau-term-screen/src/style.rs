@@ -8,6 +8,17 @@
 pub use crossterm::style::Color;
 use unicode_width::UnicodeWidthChar;
 
+const EMOJI_VARIATION_SELECTOR: char = '\u{fe0f}';
+
+pub(crate) fn push_cell_with_context(cells: &mut Vec<Cell>, ch: char, style: Style) {
+    if ch == EMOJI_VARIATION_SELECTOR {
+        if let Some(prev) = cells.last_mut() {
+            prev.width = prev.width.max(2);
+        }
+    }
+    cells.push(Cell::new(ch, style));
+}
+
 /// Visual attributes for a single character cell.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Style {
@@ -45,29 +56,44 @@ impl Style {
     }
 }
 
-/// A character cell: one character plus its visual style.
+/// A terminal cell: one character, its visual style, and display width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
+    /// Character emitted for this cell.
     pub ch: char,
+    /// Visual style applied while emitting this cell.
     pub style: Style,
+    /// Display width in terminal columns.
+    pub width: usize,
 }
 
 impl Cell {
     pub fn new(ch: char, style: Style) -> Self {
-        Self { ch, style }
+        Self {
+            ch,
+            style,
+            width: ch.width().unwrap_or(0),
+        }
     }
 
     pub fn plain(ch: char) -> Self {
         Self {
             ch,
             style: Style::default(),
+            width: ch.width().unwrap_or(0),
         }
+    }
+
+    /// Returns a copy of this cell with an explicit display width.
+    pub fn with_width(mut self, width: usize) -> Self {
+        self.width = width;
+        self
     }
 
     /// Display width in terminal columns (1 for ASCII, 2 for wide
     /// chars like emoji/CJK, 0 for zero-width combiners).
     pub fn col_width(&self) -> usize {
-        self.ch.width().unwrap_or(0)
+        self.width
     }
 }
 
@@ -138,7 +164,7 @@ impl StyledText {
         for span in &self.spans {
             for ch in span.text.chars() {
                 if ch != '\n' {
-                    cells.push(Cell::new(ch, span.style));
+                    push_cell_with_context(&mut cells, ch, span.style);
                 }
             }
         }

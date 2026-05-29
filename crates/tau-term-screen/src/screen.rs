@@ -27,7 +27,7 @@ use crossterm::cursor::{MoveToColumn, MoveUp};
 use crossterm::style::{Attribute, Print, SetAttribute, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{self, ClearType};
 
-use crate::style::{Align, Cell, Style, StyledBlock, StyledText};
+use crate::style::{Align, Cell, Style, StyledBlock, StyledText, push_cell_with_context};
 
 /// Column width of a cell slice (sum of individual display widths).
 fn cols(cells: &[Cell]) -> usize {
@@ -458,10 +458,10 @@ pub fn layout_lines(
             if ch == '\n' {
                 logical_lines.push(Vec::new());
             } else {
-                logical_lines
+                let line = logical_lines
                     .last_mut()
-                    .expect("logical_lines always has at least one entry")
-                    .push(Cell::new(ch, span.style));
+                    .expect("logical_lines always has at least one entry");
+                push_cell_with_context(line, ch, span.style);
             }
         }
     }
