@@ -178,21 +178,35 @@
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.25rem 0.5rem 0.65rem;
+      padding: 0.35rem 0.6rem 0.75rem;
       color: var(--base01);
       font-size: 0.8rem;
     }
 
     .terminal-dot {
-      width: 0.65rem;
-      height: 0.65rem;
+      width: 0.68rem;
+      height: 0.68rem;
       border-radius: 999px;
-      background: var(--base01);
-      opacity: 0.55;
+      opacity: 0.85;
+    }
+
+    .terminal-dot:nth-child(1) {
+      background: #dc322f;
+    }
+
+    .terminal-dot:nth-child(2) {
+      background: #b58900;
+    }
+
+    .terminal-dot:nth-child(3) {
+      background: #859900;
     }
 
     .terminal-title {
       margin-left: 0.75rem;
+      color: var(--base2);
+      font-size: 0.9rem;
+      font-weight: 700;
     }
 
     .terminal-body {
