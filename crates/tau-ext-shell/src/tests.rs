@@ -858,7 +858,7 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
         match reader.read_event().expect("read") {
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => {
                 let display = result.display.as_ref().expect("lock display");
-                assert_eq!(display.args, lock_dir.display().to_string());
+                assert_eq!(display.args, format!("update {}", lock_dir.display()));
                 assert_eq!(display.status_text, "ok");
                 assert!(display.payload.is_none());
                 break;
@@ -906,7 +906,7 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
                     )
                 );
                 let display = error.display.as_ref().expect("error display");
-                assert_eq!(display.args, child_dir.display().to_string());
+                assert_eq!(display.args, format!("update {}", child_dir.display()));
                 assert_eq!(display.status_text, "dir_lock failed");
                 break;
             }

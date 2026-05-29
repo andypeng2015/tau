@@ -706,7 +706,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tool_result(
                         &invoke,
                         dir_lock_result_value("update", &dir, Some(true)),
-                        dir_lock_display(&dir),
+                        dir_lock_display("update", &dir),
                     ),
                 ),
                 Err(ManualLockAcquireError::Cancelled) => {
@@ -722,7 +722,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                             &held_dir,
                             &dir,
                         )),
-                        Some(dir.display().to_string()),
+                        Some(dir_lock_display_args("update", &dir)),
                     ),
                 ),
                 Err(ManualLockAcquireError::Abandoned(lock)) => send_event(
@@ -731,7 +731,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                         &invoke,
                         lock.message(),
                         Some(lock.details()),
-                        Some(lock.dir.display().to_string()),
+                        Some(dir_lock_display_args("update", &lock.dir)),
                     ),
                 ),
             }
@@ -748,7 +748,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                     tool_result(
                         &invoke,
                         dir_lock_result_value("unlock", &dir, Some(false)),
-                        dir_lock_display(&dir),
+                        dir_lock_display("unlock", &dir),
                     ),
                 ),
                 Err(message) => send_event(
@@ -757,7 +757,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                         &invoke,
                         message,
                         Some(invoke.arguments.clone()),
-                        Some(dir.display().to_string()),
+                        Some(dir_lock_display_args("unlock", &dir)),
                     ),
                 ),
             }
@@ -768,7 +768,7 @@ pub(crate) fn dispatch_dir_lock_tool(
                 &invoke,
                 "argument `command` must be `update` or `unlock`".to_owned(),
                 Some(invoke.arguments.clone()),
-                Some(dir.display().to_string()),
+                Some(dir_lock_display_args(command.as_str(), &dir)),
             ),
         ),
     }
@@ -1023,8 +1023,12 @@ fn dir_lock_result_value(command: &str, dir: &Path, locked: Option<bool>) -> Cbo
     CborValue::Map(entries)
 }
 
-fn dir_lock_display(dir: &Path) -> ToolDisplay {
-    ok_display(dir.display().to_string())
+fn dir_lock_display_args(command: &str, dir: &Path) -> String {
+    format!("{command} {}", dir.display())
+}
+
+fn dir_lock_display(command: &str, dir: &Path) -> ToolDisplay {
+    ok_display(dir_lock_display_args(command, dir))
 }
 
 fn tool_result(invoke: &ToolStarted, result: CborValue, display: ToolDisplay) -> Event {
