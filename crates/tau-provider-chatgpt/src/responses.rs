@@ -620,6 +620,21 @@ fn build_request(
             match block {
                 tau_proto::ContextBlock::AssistantResponse(response) => {
                     if response.provider_response_id.as_deref() == Some(id) {
+                        // workaround for server side bug:
+                        // server incorrectly build history if previous response id from
+                        // compaction
+                        //
+                        // we solve by sending entire request in this case.
+                        //
+                        // this is pretty cheap, only happens for request after that normal
+                        // previous_response_id should continue
+                        if response
+                            .output_items
+                            .iter()
+                            .any(|x| matches!(x, ContextItem::Compaction(_)))
+                        {
+                            return None;
+                        }
                         return Some((id, next_item_index));
                     }
                     next_item_index = next_item_index.saturating_sub(response.output_items.len());
