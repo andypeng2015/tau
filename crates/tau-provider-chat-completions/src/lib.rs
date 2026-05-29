@@ -545,9 +545,8 @@ fn build_request(
             "content": prompt.system_prompt,
         }));
     }
-    let mut pending_reasoning = None;
-    for item in prompt.context.flatten_iter() {
-        append_context_item(&item, &mut messages, &mut pending_reasoning);
+    for block in &prompt.context.blocks {
+        append_context_block(block, &mut messages);
     }
     let tools = prompt
         .tools
@@ -742,127 +741,87 @@ fn output_token_cap_fields(provider: &ResolvedProvider) -> (Option<u32>, Option<
     }
 }
 
-fn append_context_item(
-    item: &ContextItem,
-    messages: &mut Vec<serde_json::Value>,
-    pending_reasoning: &mut Option<String>,
-) {
-    match item {
-        ContextItem::Message(message) => {
-            let text = message_text(message);
-            if message.role == ContextRole::User && text.trim().is_empty() {
+fn append_context_block(block: &tau_proto::ContextBlock, messages: &mut Vec<serde_json::Value>) {
+    match block {
+        tau_proto::ContextBlock::UserInput(block) => {
+            for item in &block.items {
+                let ContextItem::Message(message) = item else {
+                    continue;
+                };
+                let text = message_text(message);
+                if text.is_empty() || message.role == ContextRole::User && text.trim().is_empty() {
+                    continue;
+                }
+                messages.push(serde_json::json!({
+                    "role": role_wire(&message.role),
+                    "content": text,
+                }));
+            }
+        }
+        tau_proto::ContextBlock::AssistantResponse(block) => {
+            let mut reasoning = String::new();
+            let mut text = String::new();
+            let mut tool_calls = Vec::new();
+            for item in &block.output_items {
+                match item {
+                    ContextItem::Reasoning(item) => {
+                        if let Some(part) = chat_completions_reasoning_text(item) {
+                            reasoning.push_str(&part);
+                        }
+                    }
+                    ContextItem::Message(message) if message.role == ContextRole::Assistant => {
+                        text.push_str(&message_text(message));
+                    }
+                    ContextItem::ToolCall(call) => {
+                        tool_calls.push(serde_json::json!({
+                            "id": call.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": cbor_to_json(&call.arguments).to_string(),
+                            }
+                        }));
+                    }
+                    ContextItem::Message(_)
+                    | ContextItem::ToolResult(_)
+                    | ContextItem::CompactionTrigger
+                    | ContextItem::Compaction(_)
+                    | ContextItem::UnknownProviderItem(_) => {}
+                }
+            }
+            if text.is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
                 return;
             }
-            if text.is_empty() {
-                return;
+            #[derive(Serialize)]
+            struct AssistantReplayMessage {
+                role: &'static str,
+                content: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                reasoning_content: Option<String>,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                tool_calls: Vec<serde_json::Value>,
             }
-            let role = role_wire(&message.role);
-            let mut item = serde_json::json!({
-                "role": role,
-                "content": text,
-            });
-            if role == "assistant" {
-                attach_pending_reasoning(&mut item, pending_reasoning);
-            }
-            messages.push(item);
+
+            messages.push(
+                serde_json::to_value(AssistantReplayMessage {
+                    role: "assistant",
+                    content: (!text.is_empty()).then_some(text),
+                    reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+                    tool_calls,
+                })
+                .expect("assistant replay message serializes"),
+            );
         }
-        ContextItem::ToolCall(call) => {
-            append_tool_call_message(messages, pending_reasoning, call);
-        }
-        ContextItem::ToolResult(result) => {
-            messages.push(serde_json::json!({
-                "role": "tool",
-                "tool_call_id": result.call_id,
-                "content": tool_result_text(result.status.clone(), &result.output),
-            }));
-        }
-        ContextItem::Reasoning(item) => {
-            if let Some(reasoning) = chat_completions_reasoning_text(item) {
-                append_pending_reasoning(pending_reasoning, reasoning);
+        tau_proto::ContextBlock::ToolResults(block) => {
+            for result in &block.items {
+                messages.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": result.call_id,
+                    "content": tool_result_text(result.status.clone(), &result.output),
+                }));
             }
         }
-        ContextItem::CompactionTrigger
-        | ContextItem::Compaction(_)
-        | ContextItem::UnknownProviderItem(_) => {}
     }
-}
-
-fn append_tool_call_message(
-    messages: &mut Vec<serde_json::Value>,
-    pending_reasoning: &mut Option<String>,
-    call: &ToolCallItem,
-) {
-    let tool_call = serde_json::json!({
-        "id": call.call_id,
-        "type": "function",
-        "function": {
-            "name": call.name,
-            "arguments": cbor_to_json(&call.arguments).to_string(),
-        }
-    });
-    if let Some(last) = messages.last_mut()
-        && last.get("role").and_then(|value| value.as_str()) == Some("assistant")
-        && last.get("tool_call_id").is_none()
-        && let Some(object) = last.as_object_mut()
-    {
-        attach_pending_reasoning_to_object(object, pending_reasoning);
-        let entry = object
-            .entry("tool_calls".to_owned())
-            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        if let Some(tool_calls) = entry.as_array_mut() {
-            tool_calls.push(tool_call);
-            return;
-        }
-    }
-    let mut item = serde_json::json!({
-        "role": "assistant",
-        "content": null,
-        "tool_calls": [tool_call]
-    });
-    attach_pending_reasoning(&mut item, pending_reasoning);
-    messages.push(item);
-}
-
-fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: String) {
-    if reasoning.is_empty() {
-        return;
-    }
-    if let Some(existing) = pending_reasoning {
-        existing.push_str(&reasoning);
-    } else {
-        *pending_reasoning = Some(reasoning);
-    }
-}
-
-fn attach_pending_reasoning(
-    message: &mut serde_json::Value,
-    pending_reasoning: &mut Option<String>,
-) {
-    let Some(reasoning) = pending_reasoning
-        .take()
-        .filter(|reasoning| !reasoning.is_empty())
-    else {
-        return;
-    };
-    if let Some(object) = message.as_object_mut() {
-        attach_pending_reasoning_to_object(object, &mut Some(reasoning));
-    }
-}
-
-fn attach_pending_reasoning_to_object(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    pending_reasoning: &mut Option<String>,
-) {
-    let Some(reasoning) = pending_reasoning
-        .take()
-        .filter(|reasoning| !reasoning.is_empty())
-    else {
-        return;
-    };
-    object.insert(
-        "reasoning_content".to_owned(),
-        serde_json::Value::String(reasoning),
-    );
 }
 
 fn chat_completions_reasoning_text(item: &OpaqueProviderItem) -> Option<String> {
