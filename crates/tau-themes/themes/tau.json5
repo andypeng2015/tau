@@ -53,7 +53,7 @@
     "model.status":         { fg: "dark_grey" },
     "status.model":         { fg: "dark_grey" },
     "status.role":          { fg: "dark_yellow" },
-    "status.session":       { fg: "cyan" },
+    "status.session":       { fg: "grey" },
     "status.context":       { fg: "blue" },
     "status.effort":        { fg: "yellow" },
     "status.verbosity":     { fg: "magenta" },
