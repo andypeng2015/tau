@@ -191,6 +191,7 @@ pub enum OutputItemAccumulator {
     Message(MessageAccumulator),
     ToolCall(ToolCallAccumulator),
     Reasoning(OpaqueProviderItem),
+    Compaction(OpaqueProviderItem),
 }
 
 /// Accumulates one assistant message item across text deltas.
@@ -219,9 +220,6 @@ pub struct StreamState {
     /// populated by the Responses backend; the Chat Completions
     /// backend leaves this `None`.
     pub response_id: Option<String>,
-    /// Opaque Responses-API input items returned by a standalone
-    /// compaction call.
-    pub compacted_input_items: Vec<String>,
     /// Raw terminal provider event for Responses streams (`response.completed`
     /// / `response.done`), retained for per-session debug captures. Other
     /// backends leave this empty.
@@ -290,7 +288,6 @@ impl StreamState {
             output_tokens: None,
             thinking: None,
             response_id: None,
-            compacted_input_items: Vec::new(),
             provider_terminal_event: None,
             stale_chain_fallback: false,
             chat_message_item_index: None,
@@ -379,6 +376,13 @@ impl StreamState {
         }
     }
 
+    pub fn set_compaction_item_json_at(&mut self, output_index: usize, item: &str) {
+        if let Some(item) = opaque_item_from_json(item) {
+            self.ensure_output_len(output_index);
+            self.output_items[output_index] = OutputItemAccumulator::Compaction(item);
+        }
+    }
+
     fn refresh_text(&mut self) {
         self.text.clear();
         for item in &self.output_items {
@@ -413,17 +417,14 @@ impl StreamState {
                     }
                 }
                 OutputItemAccumulator::Reasoning(item) => items.push(ContextItem::Reasoning(item)),
+                OutputItemAccumulator::Compaction(item) => {
+                    items.push(ContextItem::Compaction(item));
+                }
             }
         }
 
         if items.is_empty() && !self.text.is_empty() {
             items.push(assistant_text_item(self.text));
-        }
-
-        for item in self.compacted_input_items {
-            if let Some(item) = opaque_item_from_json(&item) {
-                items.push(ContextItem::Compaction(item));
-            }
         }
 
         items

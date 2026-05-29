@@ -470,6 +470,11 @@ pub fn apply_event(
                 {
                     state.set_reasoning_item_json_at(output_index, &item.to_string());
                 }
+                if event_type == "response.output_item.done"
+                    && item["type"].as_str() == Some("compaction")
+                {
+                    state.set_compaction_item_json_at(output_index, &item.to_string());
+                }
             }
         }
         "response.completed" | "response.done" => {

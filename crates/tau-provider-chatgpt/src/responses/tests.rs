@@ -1255,6 +1255,62 @@ fn apply_event_captures_reasoning_only_on_output_item_done() {
     assert_eq!(parsed["encrypted_content"], "SEALED");
 }
 
+/// Server-side compaction is returned as an ordinary Responses output item.
+/// Keep it in the same ordered item accumulator as messages, reasoning, and
+/// tool calls so a compaction item is durable transcript output rather than a
+/// side channel that can be lost.
+#[test]
+fn apply_event_captures_compaction_output_item_in_order() {
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &str, _: Option<&str>| {};
+
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "before",
+                }],
+            },
+        }),
+        &mut on_update,
+    )
+    .expect("message done");
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 1,
+            "item": {
+                "type": "compaction",
+                "summary": "old history",
+                "input_items": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": "compacted",
+                }],
+            },
+        }),
+        &mut on_update,
+    )
+    .expect("compaction done");
+
+    let items = state.into_output_items();
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], tau_proto::ContextItem::Message(_)));
+    let tau_proto::ContextItem::Compaction(item) = &items[1] else {
+        panic!("expected compaction item");
+    };
+    let parsed = crate::common::cbor_to_json(&item.0);
+    assert_eq!(parsed["type"], "compaction");
+    assert_eq!(parsed["summary"], "old history");
+}
+
 // -----------------------------------------------------------------------
 // WebSocket envelope wrapping
 // -----------------------------------------------------------------------
