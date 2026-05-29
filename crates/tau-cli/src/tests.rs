@@ -1014,6 +1014,7 @@ fn delegate_progress_routes_to_hidden_tool_owner() {
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
         call_id: "worker-delegate".into(),
         task_name: "nested".into(),
+        agent_id: Some("engineer_1".to_owned()),
         role: Some("engineer".to_owned()),
         ctx_percent: None,
         ctx_input_tokens: None,
@@ -2221,6 +2222,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
         call_id: "delegate-call".into(),
         task_name: "probe".into(),
+        agent_id: Some("engineer_1".to_owned()),
         role: Some("engineer".to_owned()),
         ctx_percent: None,
         ctx_input_tokens: None,
@@ -3200,6 +3202,7 @@ fn delegate_progress_redraws_live_parent_block() {
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
         call_id: "call-delegate".into(),
         task_name: "probe".into(),
+        agent_id: Some("engineer_1".to_owned()),
         role: Some("engineer".to_owned()),
         ctx_percent: None,
         ctx_input_tokens: None,
@@ -3221,8 +3224,8 @@ fn delegate_progress_redraws_live_parent_block() {
     }));
 
     assert!(
-        eventually_screen_contains(&vt, 100, "+engineer"),
-        "delegate progress should repaint the role suffix without an explicit test redraw: {:?}",
+        eventually_screen_contains(&vt, 100, "@engineer_1"),
+        "delegate progress should repaint the agent id suffix without an explicit test redraw: {:?}",
         vt.screen_text(100)
     );
     assert!(
@@ -4095,13 +4098,17 @@ fn render_delegate_display_pulls_legacy_role_args_into_first_suffix() {
         ..Default::default()
     };
 
-    let rendered = render_delegate_display(&display, Some("engineer"));
+    let rendered = render_delegate_display(&display, Some("senior-engineer_a8"), Some("engineer"));
     assert_eq!(rendered.tool_name, "delegate");
     assert_eq!(rendered.args, "[probe]");
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(
         texts,
-        vec!["+engineer", "%3/3", tau_proto::PROGRESS_INDICATOR_TEXT]
+        vec![
+            "@senior-engineer_a8",
+            "%3/3",
+            tau_proto::PROGRESS_INDICATOR_TEXT,
+        ]
     );
     assert!(matches!(rendered.suffixes[0].status, ToolStatus::Role));
 }
@@ -4123,7 +4130,7 @@ fn render_delegate_display_marks_input_and_output_stats() {
         status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
         ..Default::default()
     };
-    let rendered = render_delegate_display(&input, None);
+    let rendered = render_delegate_display(&input, None, None);
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(texts, vec!["↘︎2L, 12B", tau_proto::PROGRESS_INDICATOR_TEXT]);
 
@@ -4145,17 +4152,17 @@ fn render_delegate_display_marks_input_and_output_stats() {
         info_chips: vec!["↘︎2L, 12B".into()],
         ..Default::default()
     };
-    let rendered = render_delegate_display(&output, None);
+    let rendered = render_delegate_display(&output, None, None);
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(texts, vec!["↘︎2L, 12B", "↖︎3L, 24B", "%2/2", "ok"]);
 }
 
 #[test]
-fn render_delegate_display_styles_role_like_status_bar() {
+fn render_delegate_display_styles_agent_id_like_status_bar() {
     use tau_proto::{ToolDisplay, ToolDisplayStatus};
 
-    // Regression: the delegate role is visually the same semantic chip as the
-    // bottom status-bar role, not part of the free-form tool args string.
+    // Regression: the delegated agent id is visually the same semantic chip as
+    // the bottom status-bar agent id, not part of the free-form tool args string.
     let theme = tau_themes::Theme::builtin();
     let display = ToolDisplay {
         args: "[probe]".into(),
@@ -4164,17 +4171,17 @@ fn render_delegate_display_styles_role_like_status_bar() {
         ..Default::default()
     };
 
-    let rendered = render_delegate_display(&display, Some("engineer"));
+    let rendered = render_delegate_display(&display, Some("senior-engineer_a8"), Some("engineer"));
     let block = render_tool_block(&theme, &rendered);
-    let role_span = block
+    let agent_span = block
         .content
         .spans()
         .iter()
-        .find(|span| span.text == "+engineer")
-        .expect("delegate role span");
+        .find(|span| span.text == "@senior-engineer_a8")
+        .expect("delegate agent id span");
 
     assert_eq!(
-        role_span.style,
+        agent_span.style,
         tau_cli_term::resolve::resolve(&theme, tau_themes::names::STATUS_ROLE)
     );
 }

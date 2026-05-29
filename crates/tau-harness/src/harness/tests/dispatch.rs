@@ -7102,6 +7102,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     let initial = pop_delegate_progress(&sink, "delegate-call")
         .expect("initial DelegateProgress on side conv spawn");
     assert_eq!(initial.task_name, "look it up");
+    assert!(initial.agent_id.is_some());
     assert_eq!(initial.role.as_deref(), Some("senior-engineer"));
     assert_eq!(initial.tools_in_flight, 0);
     assert_eq!(initial.tools_total, 0);
@@ -7155,6 +7156,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .pop()
         .expect("at least one DelegateProgress after side response");
     assert_eq!(latest.task_name, "look it up");
+    assert_eq!(latest.agent_id.as_deref(), initial.agent_id.as_deref());
     assert_eq!(latest.role.as_deref(), Some("senior-engineer"));
     assert_eq!(latest.tools_in_flight, 1, "websearch is in flight");
     assert_eq!(latest.tools_total, 1, "websearch counts toward total");

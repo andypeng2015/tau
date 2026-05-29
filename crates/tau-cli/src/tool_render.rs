@@ -242,7 +242,7 @@ pub(crate) enum ToolStatus {
     Progress,
     DiffAdded,
     DiffRemoved,
-    /// Agent role suffix, painted like the status-bar role chip.
+    /// Agent id or legacy role suffix, painted like the status-bar role chip.
     Role,
     Context,
     Tools,
@@ -468,14 +468,15 @@ fn abbreviate_inline_text(text: &str) -> String {
     format!("{head}┄{tail}")
 }
 
-/// Render a `delegate` display with a dedicated suffix for the agent role.
+/// Render a `delegate` display with a dedicated suffix for the delegated agent.
 /// Completed delegates show input stats (`↘︎`) before output stats (`↖︎`), then
 /// progress counters and the final status. Cached descriptors may still have
-/// ` +role` embedded in `args`; strip that copy so the line does not render the
-/// role twice.
+/// ` +role` embedded in `args`; strip that legacy copy so the line does not
+/// render both the old role chip and the new agent chip.
 pub(crate) fn render_delegate_display(
     display: &ToolDisplay,
-    role: Option<&str>,
+    agent_id: Option<&str>,
+    legacy_role: Option<&str>,
 ) -> ToolCallDisplay {
     let mut rendered = render_tool_display("delegate", display);
     let stats_chip = format_tool_display_stats(&display.stats);
@@ -501,11 +502,18 @@ pub(crate) fn render_delegate_display(
         move_delegate_completion_stats_first(&mut rendered.suffixes, &stats_chip);
     }
 
-    if let Some(role) = role.filter(|role| !role.is_empty()) {
+    if let Some(role) = legacy_role.filter(|role| !role.is_empty()) {
         let legacy_suffix = format!(" +{role}");
         if let Some(args) = rendered.args.strip_suffix(&legacy_suffix) {
             rendered.args = args.to_owned();
         }
+    }
+
+    if let Some(agent_id) = agent_id.filter(|agent_id| !agent_id.is_empty()) {
+        rendered
+            .suffixes
+            .insert(0, tool_suffix(format!("@{agent_id}"), ToolStatus::Role));
+    } else if let Some(role) = legacy_role.filter(|role| !role.is_empty()) {
         rendered
             .suffixes
             .insert(0, tool_suffix(format!("+{role}"), ToolStatus::Role));

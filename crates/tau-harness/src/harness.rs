@@ -5626,6 +5626,7 @@ impl Harness {
             return;
         };
         let role = conv.role.clone();
+        let agent_id = conv.agent_id.clone();
         let ctx_window = conv.context_input_tokens.and_then(|_| {
             self.model_for_agent_role(conv)
                 .as_ref()
@@ -5643,6 +5644,7 @@ impl Harness {
         let progress = tau_proto::DelegateProgress {
             call_id,
             task_name,
+            agent_id,
             role,
             ctx_percent: conv.context_percent_used,
             ctx_input_tokens: conv.context_input_tokens,
@@ -9134,9 +9136,9 @@ fn shell_command_payload(command: &str) -> Option<tau_proto::ToolDisplayPayload>
 
 /// Build the [`ToolDisplay`] descriptor the renderer paints for a
 /// running `delegate` tool block. Carries the sub-task name as the
-/// args label and two progress counters (tools and context); the role stays on
-/// [`tau_proto::DelegateProgress`] so the UI can paint it as a dedicated chip.
-/// The tools counter is completed/total so
+/// args label and two progress counters (tools and context); the agent id stays
+/// on [`tau_proto::DelegateProgress`] so the UI can paint it as a dedicated
+/// chip. The tools counter is completed/total so
 /// users can infer the currently running count as `total - completed`.
 /// The trailing chip is set to
 /// [`ToolDisplayStatus::InProgress`] so the renderer paints

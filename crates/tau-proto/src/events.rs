@@ -1282,6 +1282,9 @@ pub struct DelegateProgress {
     pub call_id: ToolCallId,
     /// Display name the parent agent provided for the sub-task.
     pub task_name: String,
+    /// Agent id assigned to the delegated sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// Role used by the delegated sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
