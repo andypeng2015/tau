@@ -1705,7 +1705,7 @@ impl EventRenderer {
                 &mut themed,
                 session_style,
                 &mut needs_space,
-                format!("@{session_id}"),
+                format!("&{session_id}"),
             );
         }
         match (

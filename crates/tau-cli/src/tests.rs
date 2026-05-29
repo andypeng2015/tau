@@ -399,7 +399,7 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
             .as_deref(),
         Some("engineer_abc12345")
     );
-    assert!(vt.screen_contains(80, "@s1 @engineer_abc12345"));
+    assert!(vt.screen_contains(80, "&s1 @engineer_abc12345"));
 
     renderer.handle(&Event::SessionStarted(SessionStarted {
         session_id: "s2".into(),
@@ -432,7 +432,7 @@ fn initial_session_started_renders_session_status_without_role_placeholder() {
     }));
     sync(&handle);
 
-    assert!(vt.screen_contains(80, "@tau-agent-test"));
+    assert!(vt.screen_contains(80, "&tau-agent-test"));
     assert!(!vt.screen_contains(80, "no role selected"));
 }
 
@@ -1626,7 +1626,7 @@ fn new_session_clears_session_ui_state() {
     assert!(!vt.screen_contains(80, "old prompt"));
     assert!(!vt.screen_contains(80, "old response"));
     assert!(!vt.screen_contains(80, "read src/lib.rs"));
-    assert!(vt.screen_contains(80, "@s2"));
+    assert!(vt.screen_contains(80, "&s2"));
     assert!(!vt.screen_contains(80, "no role selected"));
 }
 
@@ -1684,7 +1684,7 @@ fn new_session_preserves_role_status() {
     sync(&handle);
 
     assert!(vt.screen_contains(80, "+engineer"));
-    assert!(vt.screen_contains(80, "@s2"));
+    assert!(vt.screen_contains(80, "&s2"));
     assert!(!vt.screen_contains(80, "no role selected"));
 }
 
@@ -1725,7 +1725,7 @@ fn model_status_uses_symbol_prefixed_chips() {
         .into_iter()
         .find(|row| row.contains("+engineer"))
         .expect("status row");
-    assert!(status_row.starts_with("@tau-agent-test +engineer ~high"));
+    assert!(status_row.starts_with("&tau-agent-test +engineer ~high"));
     assert!(status_row.ends_with("#12k/200k"));
     assert!(!vt.screen_contains(80, "=test/model"));
     assert!(!vt.screen_contains(80, "v=high"));
@@ -1759,9 +1759,9 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("@s1"))
+        .find(|row| row.contains("&s1"))
         .expect("status row before agent selection");
-    assert!(status_row.starts_with("@s1 +engineer"));
+    assert!(status_row.starts_with("&s1 +engineer"));
     assert!(!status_row.contains("@engineer_abc"));
 
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
@@ -1778,9 +1778,9 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("@s1"))
+        .find(|row| row.contains("&s1"))
         .expect("status row after agent selection");
-    assert!(status_row.starts_with("@s1 @engineer_abc"));
+    assert!(status_row.starts_with("&s1 @engineer_abc"));
     assert!(!status_row.contains("+engineer"));
 
     renderer.clear_selected_agent();
@@ -1789,9 +1789,9 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
     let status_row = vt
         .screen_text(100)
         .into_iter()
-        .find(|row| row.contains("@s1"))
+        .find(|row| row.contains("&s1"))
         .expect("status row after clearing agent selection");
-    assert!(status_row.starts_with("@s1 +engineer"));
+    assert!(status_row.starts_with("&s1 +engineer"));
     assert!(!status_row.contains("@engineer_abc"));
 }
 
@@ -2341,7 +2341,7 @@ fn role_default_knobs_are_hidden_and_overrides_follow_role() {
     }));
     sync(&handle);
 
-    assert!(vt.screen_contains(80, "@s2 +engineer"));
+    assert!(vt.screen_contains(80, "&s2 +engineer"));
     assert!(!vt.screen_contains(80, "^medium"));
     assert!(!vt.screen_contains(80, "~medium"));
 
@@ -2364,7 +2364,7 @@ fn role_default_knobs_are_hidden_and_overrides_follow_role() {
     }));
     sync(&handle);
 
-    assert!(vt.screen_contains(80, "@s2 +engineer ~high"));
+    assert!(vt.screen_contains(80, "&s2 +engineer ~high"));
 }
 
 #[test]
@@ -2411,7 +2411,7 @@ fn role_state_overrides_are_compared_to_role_baseline() {
     }));
     sync(&handle);
 
-    assert!(vt.screen_contains(80, "@s3 +engineer ^low ~high !off"));
+    assert!(vt.screen_contains(80, "&s3 +engineer ^low ~high !off"));
 }
 
 #[test]
