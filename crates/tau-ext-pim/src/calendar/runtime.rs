@@ -686,7 +686,8 @@ impl Engine {
             CalendarCommand::CreateEvent => {
                 reject_read_only_write_target(args)?;
                 change.title = Some(required_text(args.title.as_deref(), "title")?);
-                let (start, end) = required_time_pair(args.start.as_deref(), args.end.as_deref())?;
+                let (start, end) =
+                    create_event_time_pair(args.start.as_deref(), args.end.as_deref())?;
                 change.start = Some(start);
                 change.end = Some(end);
                 change.description = optional_description(args.description.as_deref())?;
@@ -1132,6 +1133,35 @@ fn validate_attendee(value: &str) -> Result<(), String> {
         return Err("attendee email address is invalid".to_owned());
     }
     Ok(())
+}
+
+fn create_event_time_pair(
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<(String, String), String> {
+    let start = required_text(start, "start")?;
+    let end = match end {
+        Some(end) if !end.trim().is_empty() => end.to_owned(),
+        _ => default_create_event_end(&start)?,
+    };
+    validate_time_pair(&start, &end)?;
+    Ok((start, end))
+}
+
+fn default_create_event_end(start: &str) -> Result<String, String> {
+    if let Some(date) = parse_tool_date(start) {
+        let end = date
+            .next_day()
+            .ok_or_else(|| "default event end is out of range".to_owned())?;
+        return Ok(end.to_string());
+    }
+    let start = time::OffsetDateTime::parse(start, &time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("start must be RFC3339 or YYYY-MM-DD: {error}"))?;
+    let end = start
+        .checked_add(time::Duration::hours(1))
+        .ok_or_else(|| "default event end is out of range".to_owned())?;
+    end.format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("default event end could not be formatted: {error}"))
 }
 
 fn required_time_pair(start: Option<&str>, end: Option<&str>) -> Result<(String, String), String> {
@@ -2368,6 +2398,72 @@ mod tests {
             engine.action_change_deny("1"),
             Ok("Denied calendar change 1.".to_owned())
         );
+    }
+
+    #[test]
+    fn create_event_defaults_missing_end() {
+        // Small local models often omit `end` even when they identified a
+        // concrete start. Queueing a safe default prevents an avoidable retry
+        // loop while keeping the pending change visible for user approval.
+        let (start, end) = create_event_time_pair(Some("2026-05-28T12:00:00Z"), None)
+            .expect("default date-time end");
+        assert_eq!(start, "2026-05-28T12:00:00Z");
+        assert_eq!(end, "2026-05-28T13:00:00Z");
+
+        let (start, end) =
+            create_event_time_pair(Some("2026-05-28"), None).expect("default all-day end");
+        assert_eq!(start, "2026-05-28");
+        assert_eq!(end, "2026-05-29");
+    }
+
+    #[test]
+    fn google_create_event_queues_pending_change_with_default_end() {
+        // Calendar writes are still queued for approval; this only fills in a
+        // low-risk default duration when the model omits `end`.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let cfg = CalendarExtensionConfig {
+            enable: true,
+            accounts: vec![CalendarAccountConfig {
+                id: "google".to_owned(),
+                enable: true,
+                backend: Some(CalendarBackendConfig::Google {
+                    client_id_secret: "client".to_owned(),
+                    client_secret_secret: None,
+                    refresh_token_secret: Some("refresh".to_owned()),
+                    api_base: None,
+                }),
+                calendars: CalendarSelectionConfig {
+                    default: Some("primary".to_owned()),
+                    allow: vec!["primary".to_owned()],
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let engine = Engine {
+            config: cfg.validate().expect("valid config"),
+            state: StateStore::open(temp.path().join("state")).expect("state"),
+            google: GoogleBackend::new(BTreeMap::new()),
+            ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+        };
+
+        let output = engine.dispatch(&command_args(
+            "create_event",
+            vec![
+                ("title", CborValue::Text("Team Sync".to_owned())),
+                ("start", CborValue::Text("2026-05-28T12:00:00Z".to_owned())),
+            ],
+        ));
+        let data = cbor_field(&output, "data").expect("data");
+
+        assert_eq!(
+            cbor_text_field(&output, "status"),
+            Some("approval_required")
+        );
+        assert_eq!(cbor_text_field(data, "approval_id"), Some("1"));
+        let open = engine.action_change_open("1").expect("change open");
+        assert!(open.contains("start: 2026-05-28T12:00:00Z"), "{open}");
+        assert!(open.contains("end: 2026-05-28T13:00:00Z"), "{open}");
     }
 
     #[test]

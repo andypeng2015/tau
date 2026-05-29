@@ -81,7 +81,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
-        description: Some("Controlled calendar access through configured accounts. Commands: list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, respond_invite. Results use the email-style ok/command/status/data envelope; list/detail data includes a format field and sanitized line arrays. Google calendar mutations are queued for user approval by default and require explicit account/calendar targets plus etag for existing events. ICS feed accounts are read-only. Use explicit RFC3339 timestamps or YYYY-MM-DD all-day dates and IANA timezones; do not pass natural-language dates.".to_owned()),
+        description: Some("Controlled calendar access through configured accounts. Commands: list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, respond_invite. Results use the email-style ok/command/status/data envelope; list/detail data includes a format field and sanitized line arrays. Google calendar mutations are queued for user approval by default and require explicit account/calendar targets plus etag for existing events. ICS feed accounts are read-only. Use explicit RFC3339 timestamps or YYYY-MM-DD all-day dates and IANA timezones; do not pass natural-language dates. For create_event, omit end only when the intended default duration is one hour for date-times or one day for all-day dates.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -107,7 +107,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
                         "description": {"type": "string"},
                         "location": {"type": "string"},
                         "start": {"type": "string", "description": "RFC3339 date-time or YYYY-MM-DD all-day start."},
-                        "end": {"type": "string", "description": "RFC3339 date-time or YYYY-MM-DD all-day exclusive end."},
+                        "end": {"type": "string", "description": "RFC3339 date-time or YYYY-MM-DD all-day exclusive end. create_event may omit this to default to start plus one hour for date-times or plus one day for all-day dates."},
                         "timezone": {"type": "string"},
                         "attendees": {"type": "array", "items": {"type": "string"}},
                         "response": {"type": "string", "enum": ["accepted", "tentative", "declined"]}
