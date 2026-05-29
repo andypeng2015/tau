@@ -401,6 +401,8 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
         }
 
         let command = command.unwrap_or(cli::Command::Run(run));
+        tau_harness::validate_cli_overrides(&role_cli_overrides, &extension_cli_overrides)
+            .map_err(|error| CliError::Participant(error.to_string()))?;
 
         match command {
             cli::Command::Run(cli::RunArgs {

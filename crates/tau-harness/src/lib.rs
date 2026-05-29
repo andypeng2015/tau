@@ -61,5 +61,5 @@ pub use crate::harness::{AgentToolCall, Harness};
 pub use crate::internal_tools::{InternalToolHandler, InternalToolHandlers, InternalToolHost};
 pub use crate::settings::{
     EXTENSION_CLI_OVERRIDES_ENV, ROLE_CLI_OVERRIDES_ENV, STARTUP_ROLE_ENV, builtin_extensions,
-    default_config,
+    default_config, validate_cli_overrides,
 };

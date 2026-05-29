@@ -524,6 +524,25 @@ fn harness_settings_role_cli_disable_all_leaves_no_effective_roles() {
 }
 
 #[test]
+fn harness_settings_role_cli_unknown_role_errors() {
+    // CLI role typos must fail startup instead of silently leaving the effective
+    // role set unchanged.
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+
+    let error = load_harness_settings_with_role_overrides_in(
+        &dirs_with_config(dir),
+        &[RoleCliOverride::Enable("missing".to_owned())],
+    )
+    .expect_err("unknown role should fail");
+
+    assert!(matches!(
+        error,
+        SettingsError::UnknownRoleCliOverride(role) if role == "missing"
+    ));
+}
+
+#[test]
 fn cli_settings_drop_in_layers_on_top_of_base() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();

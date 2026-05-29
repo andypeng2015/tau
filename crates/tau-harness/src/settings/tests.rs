@@ -200,18 +200,23 @@ fn resolve_extensions_cli_can_enable_disabled_user_extension() {
 }
 
 #[test]
-fn resolve_extensions_cli_enable_unknown_extension_is_ignored() {
+fn resolve_extensions_cli_enable_unknown_extension_errors() {
+    // A typo in `--enable-extension` must fail startup instead of being silently
+    // ignored, otherwise users cannot tell why their intended extension is missing.
     let s = HarnessSettings::built_in();
-    let resolved = resolve_extensions_with_cli_overrides(
+    let err = resolve_extensions_with_cli_overrides(
         &s,
         builtins(),
         &[tau_config::settings::ExtensionCliOverride::Enable(
             "missing".to_owned(),
         )],
     )
-    .expect("resolve");
+    .expect_err("unknown extension should fail");
 
-    assert!(resolved.iter().all(|extension| extension.name != "missing"));
+    assert_eq!(
+        err,
+        super::ResolveExtensionsError::UnknownCliOverride("missing".to_owned())
+    );
 }
 
 #[test]
@@ -319,9 +324,10 @@ fn resolve_extensions_user_extension_without_command_errors() {
         },
     );
     let err = resolve_extensions(&s, builtins()).expect_err("must err");
-    match err {
-        ResolveExtensionsError::EmptyCommand(name) => assert_eq!(name, "broken"),
-    }
+    assert_eq!(
+        err,
+        ResolveExtensionsError::EmptyCommand("broken".to_owned())
+    );
 }
 
 #[test]

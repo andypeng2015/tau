@@ -605,18 +605,25 @@ impl HarnessSettings {
         Ok(())
     }
 
-    fn apply_role_cli_overrides(&mut self, overrides: &[RoleCliOverride]) {
+    fn apply_role_cli_overrides(
+        &mut self,
+        overrides: &[RoleCliOverride],
+    ) -> Result<(), SettingsError> {
         for override_ in overrides {
             match override_ {
                 RoleCliOverride::Enable(role_name) => {
-                    if let Some(role) = self.roles.get_mut(role_name) {
-                        role.enable = Some(true);
-                    }
+                    let role = self
+                        .roles
+                        .get_mut(role_name)
+                        .ok_or_else(|| SettingsError::UnknownRoleCliOverride(role_name.clone()))?;
+                    role.enable = Some(true);
                 }
                 RoleCliOverride::Disable(role_name) => {
-                    if let Some(role) = self.roles.get_mut(role_name) {
-                        role.enable = Some(false);
-                    }
+                    let role = self
+                        .roles
+                        .get_mut(role_name)
+                        .ok_or_else(|| SettingsError::UnknownRoleCliOverride(role_name.clone()))?;
+                    role.enable = Some(false);
                 }
                 RoleCliOverride::DisableAll => {
                     for role in self.roles.values_mut() {
@@ -625,6 +632,7 @@ impl HarnessSettings {
                 }
             }
         }
+        Ok(())
     }
 
     fn remove_disabled_roles(&mut self) {
@@ -923,6 +931,7 @@ pub enum SettingsError {
         first_group: String,
         second_group: String,
     },
+    UnknownRoleCliOverride(String),
 }
 
 impl fmt::Display for SettingsError {
@@ -937,6 +946,9 @@ impl fmt::Display for SettingsError {
                 f,
                 "role `{role}` appears in multiple roleGroups (`{first_group}` and `{second_group}`)"
             ),
+            Self::UnknownRoleCliOverride(role) => {
+                write!(f, "unknown role in CLI override: `{role}`")
+            }
         }
     }
 }
@@ -945,7 +957,7 @@ impl std::error::Error for SettingsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(source) => Some(source),
-            Self::DuplicateGroupedRole { .. } => None,
+            Self::DuplicateGroupedRole { .. } | Self::UnknownRoleCliOverride(_) => None,
         }
     }
 }
@@ -1123,7 +1135,7 @@ pub fn load_harness_settings_with_role_overrides_in(
         role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
         role_settings.apply_role_group_overrides(overrides.role_groups)?;
     }
-    role_settings.apply_role_cli_overrides(role_overrides);
+    role_settings.apply_role_cli_overrides(role_overrides)?;
     role_settings.remove_disabled_roles();
     role_settings.apply_global_prompt_fragments_to_roles();
     settings.prompt_fragments = role_settings.prompt_fragments;

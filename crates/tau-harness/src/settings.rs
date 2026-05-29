@@ -81,6 +81,8 @@ pub enum ResolveExtensionsError {
     /// A user-added extension entry has no `command` (and therefore
     /// no executable to spawn).
     EmptyCommand(String),
+    /// A CLI override named an extension absent from built-ins and user config.
+    UnknownCliOverride(String),
 }
 
 impl fmt::Display for ResolveExtensionsError {
@@ -90,6 +92,9 @@ impl fmt::Display for ResolveExtensionsError {
                 f,
                 "extension {name:?} has no `command` set; user-added entries must specify the executable",
             ),
+            Self::UnknownCliOverride(name) => {
+                write!(f, "unknown extension in CLI override: `{name}`")
+            }
         }
     }
 }
@@ -214,18 +219,19 @@ pub fn resolve_extensions_with_cli_overrides(
     }
 
     // Pass 3: apply command-line availability overrides in argument order.
-    // Unknown named extensions are ignored, matching role CLI override behavior.
     for override_ in cli_overrides {
         match override_ {
             ExtensionCliOverride::Enable(extension_name) => {
-                if let Some(entry) = entries.get_mut(extension_name) {
-                    entry.enable = true;
-                }
+                let entry = entries.get_mut(extension_name).ok_or_else(|| {
+                    ResolveExtensionsError::UnknownCliOverride(extension_name.clone())
+                })?;
+                entry.enable = true;
             }
             ExtensionCliOverride::Disable(extension_name) => {
-                if let Some(entry) = entries.get_mut(extension_name) {
-                    entry.enable = false;
-                }
+                let entry = entries.get_mut(extension_name).ok_or_else(|| {
+                    ResolveExtensionsError::UnknownCliOverride(extension_name.clone())
+                })?;
+                entry.enable = false;
             }
             ExtensionCliOverride::EnableAll => {
                 for entry in entries.values_mut() {
@@ -434,6 +440,32 @@ pub fn default_config() -> Config {
     }
 }
 
+pub fn validate_cli_overrides(
+    role_overrides: &[RoleCliOverride],
+    extension_overrides: &[ExtensionCliOverride],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let settings = load_settings_for_cli_overrides(role_overrides)?;
+    resolve_extensions_with_cli_overrides(&settings, builtin_extensions(), extension_overrides)?;
+    Ok(())
+}
+
+fn load_settings_for_cli_overrides(
+    role_overrides: &[RoleCliOverride],
+) -> Result<HarnessSettings, Box<dyn std::error::Error>> {
+    let dirs = tau_config::settings::TauDirs::default();
+    match tau_config::settings::load_harness_settings_with_role_overrides_in(&dirs, role_overrides)
+    {
+        Ok(settings) => Ok(apply_startup_role_override(settings)),
+        Err(tau_config::settings::SettingsError::UnknownRoleCliOverride(role)) => Err(Box::new(
+            tau_config::settings::SettingsError::UnknownRoleCliOverride(role),
+        )),
+        Err(error) => {
+            eprintln!("tau: harness.yaml failed to parse — ignored.\n{error}");
+            Ok(apply_startup_role_override(HarnessSettings::built_in()))
+        }
+    }
+}
+
 pub(crate) fn resolve_config(
     _explicit_path: Option<&std::path::Path>,
 ) -> Result<Config, Box<dyn std::error::Error>> {
@@ -443,7 +475,8 @@ pub(crate) fn resolve_config(
     // to defaults rather than failing the whole startup, but we warn
     // on stderr so the user can see why their config is being
     // ignored.
-    let (settings, _) = load_harness_settings_or_warn(&tau_config::settings::TauDirs::default());
+    let role_overrides = role_cli_overrides_from_env();
+    let settings = load_settings_for_cli_overrides(&role_overrides)?;
     let extension_overrides = extension_cli_overrides_from_env();
     let extensions = resolve_extensions_with_cli_overrides(
         &settings,
