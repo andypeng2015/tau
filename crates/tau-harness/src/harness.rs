@@ -5719,24 +5719,43 @@ impl Harness {
         self.dispatch_prompt_after_publish_idle(&cid);
     }
 
-    fn compaction_threshold_for_agent(&self, cid: &AgentId) -> Option<u64> {
-        let role_name = self.role_name_for_agent_id(cid);
-        self.available_roles
-            .get(&role_name)
-            .and_then(|role| role.compaction_threshold)
-    }
-
     fn compaction_context_for_agent(
         &self,
         cid: &AgentId,
         model: Option<&ModelId>,
+        force_compaction: bool,
     ) -> Option<tau_proto::PromptCompactionContext> {
         let supports_compaction = model
             .and_then(|model| self.provider_model_info.get(model))
             .is_some_and(|info| info.supports_compaction);
-        supports_compaction.then(|| tau_proto::PromptCompactionContext {
-            compact_threshold: self.compaction_threshold_for_agent(cid),
-        })
+        if !supports_compaction {
+            return None;
+        }
+
+        let role_name = self.role_name_for_agent_id(cid);
+        let role_compaction = self
+            .available_roles
+            .get(&role_name)
+            .and_then(|role| role.compaction)
+            .unwrap_or(tau_config::settings::RoleCompaction::ProviderDefault);
+        match role_compaction {
+            tau_config::settings::RoleCompaction::ProviderDefault => {
+                Some(tau_proto::PromptCompactionContext {
+                    compact_threshold: None,
+                })
+            }
+            tau_config::settings::RoleCompaction::Threshold(compact_threshold) => {
+                Some(tau_proto::PromptCompactionContext {
+                    compact_threshold: Some(compact_threshold),
+                })
+            }
+            tau_config::settings::RoleCompaction::Disabled if force_compaction => {
+                Some(tau_proto::PromptCompactionContext {
+                    compact_threshold: None,
+                })
+            }
+            tau_config::settings::RoleCompaction::Disabled => None,
+        }
     }
 
     fn agent_model_supports_compaction(&self, cid: &AgentId) -> bool {
@@ -5808,7 +5827,10 @@ impl Harness {
             tau_proto::UiRoleUpdateAction::SetCompactionThreshold {
                 compaction_threshold,
             } => {
-                next_role.compaction_threshold = compaction_threshold;
+                next_role.compaction = Some(match compaction_threshold {
+                    Some(threshold) => tau_config::settings::RoleCompaction::Threshold(threshold),
+                    None => tau_config::settings::RoleCompaction::ProviderDefault,
+                });
             }
             tau_proto::UiRoleUpdateAction::SetTools { tools } => {
                 next_role.tools = tools;
@@ -7404,7 +7426,8 @@ impl Harness {
             .ensure_agent_id_for_agent(cid)
             .expect("agent has durable id")
             .into();
-        let compaction = self.compaction_context_for_agent(cid, model.as_ref());
+        let force_compaction = context_items.contains(&ContextItem::CompactionTrigger);
+        let compaction = self.compaction_context_for_agent(cid, model.as_ref(), force_compaction);
         let prompt = AgentPromptCreated {
             agent_prompt_id: agent_prompt_id.clone(),
             agent_id,

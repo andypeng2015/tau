@@ -20,9 +20,10 @@
 # Optional grouped role defaults. Role names are globally unique across all
 # groups. Tab cycles between groups; Shift-Tab cycles within the selected
 # role's group. Group-level fields are defaults for every role in `roles`.
-# `description` is shown in `/role ...` completions. `compactionThreshold`
-# sets the token threshold where server-side automatic compaction starts
-# (minimum 1000). Omit it to use the provider/server default behavior.
+# `description` is shown in `/role ...` completions. `compaction` controls
+# provider-side automatic compaction: omit it or set `providerDefault` for the
+# provider's model-specific default, `disabled` to turn it off, or `{ threshold:
+# 200000 }` for an explicit token threshold.
 # Per-role `promptFragments` add instructions only for that role.
 # `promptOverride` selects a system prompt template. `tools` and `disableTools`
 # customize internal tool availability for the role.
@@ -38,7 +39,7 @@
 #       senior-engineer:
 #         description: Balanced coding engineer.
 #         model: chatgpt/gpt-5.5
-#         compactionThreshold: 200000
+#         compaction: { threshold: 200000 }
 #         tools: [read, grep]
 #         disableTools: [shell]
 #       staff-engineer:

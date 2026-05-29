@@ -4374,7 +4374,7 @@ fn manual_compact_appends_trigger_and_dispatches_normal_prompt() {
     h.available_roles
         .get_mut(&selected_role)
         .expect("selected role")
-        .compaction_threshold = Some(1200);
+        .compaction = Some(tau_config::settings::RoleCompaction::Threshold(1200));
 
     h.handle_compact_request("s1".into(), Some(&target_agent_id));
 

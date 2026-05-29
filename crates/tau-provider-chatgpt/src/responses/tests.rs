@@ -13,6 +13,7 @@ fn build_request_includes_prompt_cache_key_when_supported() {
         base_url: "https://chatgpt.com/backend-api".into(),
         api_key: "test".into(),
         model_id: "gpt-5-codex".into(),
+        context_window: 258400,
         account_id: None,
         supports_reasoning_effort: false,
         supports_verbosity: false,
@@ -50,6 +51,7 @@ fn build_request_includes_service_tier_when_configured() {
         base_url: "https://chatgpt.com/backend-api".into(),
         api_key: "test".into(),
         model_id: "gpt-5-codex".into(),
+        context_window: 258400,
         account_id: None,
         supports_reasoning_effort: false,
         supports_verbosity: false,
@@ -117,6 +119,7 @@ fn build_request_omits_prompt_cache_key_without_seed() {
         base_url: "https://chatgpt.com/backend-api".into(),
         api_key: "test".into(),
         model_id: "gpt-5-codex".into(),
+        context_window: 258400,
         account_id: None,
         supports_reasoning_effort: false,
         supports_verbosity: false,
@@ -658,11 +661,7 @@ fn build_request_trims_full_replay_before_latest_compaction_item() {
     assert_eq!(input.len(), 2);
     assert_eq!(input[0]["type"], "compaction");
     assert_eq!(input[1]["content"][0]["text"], "new");
-    assert!(
-        body["context_management"][0]
-            .get("compact_threshold")
-            .is_none()
-    );
+    assert_eq!(body["context_management"][0]["compact_threshold"], 232560);
 }
 
 fn chain_test_config() -> ResponsesConfig {
@@ -671,6 +670,7 @@ fn chain_test_config() -> ResponsesConfig {
         base_url: "https://chatgpt.com/backend-api".into(),
         api_key: "test".into(),
         model_id: "gpt-5-codex".into(),
+        context_window: 258400,
         account_id: None,
         supports_reasoning_effort: false,
         supports_verbosity: false,

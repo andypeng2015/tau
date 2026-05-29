@@ -1124,6 +1124,7 @@ fn make_config(base_url: &str, account_id: Option<&str>) -> ResponsesConfig {
         base_url: base_url.into(),
         api_key: "test".into(),
         model_id: "gpt-5-codex".into(),
+        context_window: 258400,
         account_id: account_id.map(str::to_owned),
         supports_reasoning_effort: false,
         supports_reasoning_summary: false,

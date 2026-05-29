@@ -313,6 +313,7 @@ pub fn config_for_model(
         base_url: DEFAULT_BASE_URL.to_owned(),
         api_key: access_token,
         model_id: model_id.to_owned(),
+        context_window: CONTEXT_WINDOW,
         account_id,
         supports_reasoning_effort: true,
         supports_reasoning_summary: true,

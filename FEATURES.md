@@ -145,8 +145,8 @@ Roles can include a `description` shown after the model/knob summary in
 `/role ...` completions. Top-level `promptFragments` apply to every role;
 group-level fields apply as defaults to that group's roles; per-role
 `promptFragments` apply only to that role. Roles can set
-`compactionThreshold` to choose a token threshold for server-side automatic
-compaction, and can also
+`compaction` to use provider-default automatic compaction, disable it, or set
+an explicit token threshold, and can also
 use `tools`, `enableTools`, and `disableTools` to customize internal tool availability. `tools` overrides the default set when present, `enableTools` adds to the selected set, and `disableTools` removes from it.
 
 `defaultRole` selects the startup role; if it is omitted Tau starts on the

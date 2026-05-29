@@ -255,7 +255,7 @@ fn harness_settings_load_role_tool_lists() {
 }
 
 #[test]
-fn harness_settings_load_role_compaction_threshold() {
+fn harness_settings_load_role_compaction() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
     std::fs::write(
@@ -263,10 +263,11 @@ fn harness_settings_load_role_compaction_threshold() {
         r#"{
             roleGroups: {
                 engineer: {
-                    compactionThreshold: 70000,
+                    compaction: { threshold: 70000 },
                     roles: {
-                        engineer: { compactionThreshold: 80000 },
+                        engineer: { compaction: { threshold: 80000 } },
                         reviewer: {},
+                        disabled: { compaction: "disabled" },
                     },
                 },
             },
@@ -275,33 +276,17 @@ fn harness_settings_load_role_compaction_threshold() {
     .expect("write");
 
     let s = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
-    assert_eq!(s.roles["engineer"].compaction_threshold, Some(80000));
-    assert_eq!(s.roles["reviewer"].compaction_threshold, Some(70000));
-}
-
-#[test]
-fn harness_settings_rejects_invalid_role_compaction_threshold() {
-    let td = TempDir::new().expect("tempdir");
-    let dir = td.path();
-    std::fs::write(
-        dir.join("harness.yaml"),
-        r#"{
-            roleGroups: {
-                engineer: {
-                    roles: {
-                        engineer: { compactionThreshold: 999 },
-                    },
-                },
-            },
-        }"#,
-    )
-    .expect("write");
-
-    let error = load_harness_settings_in(&dirs_with_config(dir))
-        .expect_err("reject invalid compaction threshold");
-    assert!(
-        error.to_string().contains("at least 1000"),
-        "error should mention minimum token threshold: {error}"
+    assert_eq!(
+        s.roles["engineer"].compaction,
+        Some(RoleCompaction::Threshold(80000))
+    );
+    assert_eq!(
+        s.roles["reviewer"].compaction,
+        Some(RoleCompaction::Threshold(70000))
+    );
+    assert_eq!(
+        s.roles["disabled"].compaction,
+        Some(RoleCompaction::Disabled)
     );
 }
 

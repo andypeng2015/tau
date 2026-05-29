@@ -10,7 +10,7 @@ A role can set:
 - `verbosity`: `low`, `medium`, or `high`
 - `thinkingSummary`: `off`, `auto`, `concise`, or `detailed`
 - `serviceTier`: `fast` or `flex`
-- `compactionThreshold`: token threshold (minimum 1000) to pass to provider/server-side automatic compaction for the role; omit it to use the provider/server default
+- `compaction`: provider-side automatic compaction policy: `providerDefault`, `disabled`, or `{ threshold: 200000 }`
 - `promptFragments`: role-specific prompt fragments
 - `promptOverride`: system prompt template name
 - `tools`: explicit internal tools enabled for this role
@@ -45,7 +45,7 @@ Roles live in `harness.yaml` under globally unique `roleGroups`. Each group has 
           description: "Balanced coding engineer",
           model: "chatgpt/gpt-5.3-codex",
           effort: "medium",
-          compactionThreshold: 200000,
+          compaction: { threshold: 200000 },
           tools: ["read", "grep"],
           enableTools: ["web_search"],
         },
@@ -71,7 +71,7 @@ Roles live in `harness.yaml` under globally unique `roleGroups`. Each group has 
 }
 ```
 
-Missing fields use group defaults first, then provider-published fallback knobs for the role's resolved model. Tool filtering starts with `tools` when set, otherwise with each tool's default enablement; then `enableTools` adds tools, and `disableTools` removes tools. When `compactionThreshold` is omitted, Tau asks supported providers to use their server-side compaction default. Set `enable: false` on a role in a higher-precedence config layer to remove it from the effective role list and role-group cycling after all layers merge.
+Missing fields use group defaults first, then provider-published fallback knobs for the role's resolved model. Tool filtering starts with `tools` when set, otherwise with each tool's default enablement; then `enableTools` adds tools, and `disableTools` removes tools. When `compaction` is omitted, Tau asks supported providers to use their model-specific compaction default. Set `enable: false` on a role in a higher-precedence config layer to remove it from the effective role list and role-group cycling after all layers merge.
 
 Tau ships built-in `junior-engineer`, `senior-engineer`, `staff-engineer`, and `manager` roles, with `defaultRole: senior-engineer`. `junior-engineer` uses lower reasoning for straightforward engineering work, `senior-engineer` uses balanced individual-contributor defaults, and `staff-engineer` is the maximum-reasoning engineering variant. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
 

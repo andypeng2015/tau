@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use serde::de::{Error as _, Unexpected};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Serialize};
 use tau_proto::{ModelId, PromptContent, PromptPriority, ToolName};
 
 // ---------------------------------------------------------------------------
@@ -497,11 +497,7 @@ struct RawRoleGroup {
     thinking_summary: Option<tau_proto::ThinkingSummary>,
     #[serde(rename = "serviceTier")]
     service_tier: Option<tau_proto::ServiceTier>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_compaction_threshold"
-    )]
-    compaction_threshold: Option<u64>,
+    compaction: Option<RoleCompaction>,
     prompt_fragments: Vec<RolePromptFragment>,
     #[serde(rename = "promptOverride")]
     prompt_override: Option<String>,
@@ -523,7 +519,7 @@ impl RawRoleGroup {
             verbosity: self.verbosity,
             thinking_summary: self.thinking_summary,
             service_tier: self.service_tier,
-            compaction_threshold: self.compaction_threshold,
+            compaction: self.compaction,
             prompt_fragments: self.prompt_fragments.clone(),
             prompt_override: self.prompt_override.clone(),
             tools: self.tools.clone(),
@@ -801,15 +797,11 @@ pub struct AgentRole {
     /// Provider service tier preferred by this role.
     #[serde(skip_serializing_if = "Option::is_none", rename = "serviceTier")]
     pub service_tier: Option<tau_proto::ServiceTier>,
-    /// Token threshold at which server-side automatic compaction should start.
-    /// Missing values use the provider/server default behavior.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "compactionThreshold",
-        deserialize_with = "deserialize_optional_compaction_threshold"
-    )]
-    pub compaction_threshold: Option<u64>,
+    /// Automatic provider-side compaction policy for this role. Missing values
+    /// inherit from lower-precedence role settings; effective roles default to
+    /// [`RoleCompaction::ProviderDefault`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<RoleCompaction>,
     /// Prompt fragments contributed by this role. Fragments are rendered as
     /// Handlebars templates and ordered together with tool/extension fragments.
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "promptFragments")]
@@ -837,24 +829,16 @@ pub struct AgentRole {
     pub disable_tools: Vec<ToolName>,
 }
 
-fn deserialize_optional_compaction_threshold<'de, D>(
-    deserializer: D,
-) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    const MIN_COMPACTION_THRESHOLD: u64 = 1000;
-
-    let value = Option::<u64>::deserialize(deserializer)?;
-    if let Some(threshold) = value
-        && threshold < MIN_COMPACTION_THRESHOLD
-    {
-        return Err(D::Error::invalid_value(
-            Unexpected::Unsigned(threshold),
-            &"a token threshold of at least 1000",
-        ));
-    }
-    Ok(value)
+/// Automatic provider-side compaction policy for a harness role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoleCompaction {
+    /// Ask the provider to use its model-specific default threshold.
+    ProviderDefault,
+    /// Do not request provider-side automatic compaction.
+    Disabled,
+    /// Ask the provider to compact at an explicit token threshold.
+    Threshold(u64),
 }
 
 impl AgentRole {
@@ -880,8 +864,8 @@ impl AgentRole {
         if let Some(service_tier) = override_role.service_tier {
             self.service_tier = Some(service_tier);
         }
-        if let Some(compaction_threshold) = override_role.compaction_threshold {
-            self.compaction_threshold = Some(compaction_threshold);
+        if let Some(compaction) = override_role.compaction {
+            self.compaction = Some(compaction);
         }
         for prompt_fragment in &override_role.prompt_fragments {
             if !self.prompt_fragments.contains(prompt_fragment) {

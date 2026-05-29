@@ -54,6 +54,8 @@ pub struct ResponsesConfig {
     pub api_key: String,
     /// Upstream model id without the Tau provider namespace.
     pub model_id: String,
+    /// Total context window for the selected upstream model, in tokens.
+    pub context_window: u64,
     /// `chatgpt-account-id` header extracted from JWT.
     pub account_id: Option<String>,
     /// Whether the provider's API accepts a `reasoning.effort` field.
@@ -728,12 +730,15 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
     } else {
         Vec::new()
     };
-    let context_management = request.compaction.map(|compaction| {
-        vec![ContextManagementRequest {
-            ty: "compaction",
-            compact_threshold: compaction.compact_threshold,
-        }]
-    });
+    let context_management =
+        request.compaction.map(|compaction| {
+            vec![ContextManagementRequest {
+                ty: "compaction",
+                compact_threshold: Some(compaction.compact_threshold.unwrap_or_else(|| {
+                    provider_default_compaction_threshold(config.context_window)
+                })),
+            }]
+        });
 
     ResponsesRequest {
         model: config.model_id.clone(),
@@ -758,6 +763,10 @@ fn build_request(config: &ResponsesConfig, request: &PromptPayload<'_>) -> Respo
         context_management,
         previous_response_id,
     }
+}
+
+fn provider_default_compaction_threshold(context_window: u64) -> u64 {
+    (context_window * 9 / 10).max(1000)
 }
 
 fn build_input_items(
