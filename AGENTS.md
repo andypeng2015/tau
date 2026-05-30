@@ -38,7 +38,7 @@
 - `cargo check --workspace --all-targets` or `just check` — check Rust code
 - `cargo nextest run` or `just test` — run tests
 - `treefmt` or `just format` — format code
-- `selfci check` — full local CI verification; WARNING: slow, but independent of working copy state, so it can run safely in parallel, even while modifying other files; prefer to run in parallel and/or only as a final verification step
+- `selfci check` — full local CI verification; WARNING: slow, but independent of working copy state, so it can run safely in parallel, and working copy files can be modified without affecting; prefer to run in parallel and/or only as a final verification step
 
 ## Definition of done
 
@@ -46,3 +46,7 @@
 - Relevant tests pass.
 - Run `selfci check` after every major change.
 - Update `FEATURES.md` after editing any new major features.
+
+## Rules
+
+- ALWAYS consult `tau-commit` skill before making commits
