@@ -91,11 +91,29 @@ fn reply_result(reply: WaitReply) -> CborValue {
     }
 }
 
+fn reply_result_with_display(reply: WaitReply) -> (CborValue, Option<ToolDisplay>) {
+    match reply.kind {
+        WaitReplyKind::Result { result, display } => (result, display),
+        other => panic!("expected result reply, got {other:?}"),
+    }
+}
+
 fn reply_error(reply: WaitReply) -> (String, Option<CborValue>) {
     match reply.kind {
         WaitReplyKind::Error {
             message, details, ..
         } => (message, details),
+        other => panic!("expected error reply, got {other:?}"),
+    }
+}
+
+fn reply_error_with_display(reply: WaitReply) -> (String, Option<CborValue>, Option<ToolDisplay>) {
+    match reply.kind {
+        WaitReplyKind::Error {
+            message,
+            details,
+            display,
+        } => (message, details, display),
         other => panic!("expected error reply, got {other:?}"),
     }
 }
@@ -180,6 +198,63 @@ fn wait_tool_schema_does_not_require_tool_call_id() {
             .iter()
             .all(|item| item.as_str() != Some("tool_call_id"))
     }));
+}
+
+/// `wait` returns the original background result to the model, but its UI
+/// descriptor must describe the `wait` call itself. The source tool name is
+/// useful context; source args/payload/stats are not, because rendering those
+/// under the `wait` name made the transcript claim e.g. `wait cargo test`.
+#[test]
+fn wait_result_display_uses_wait_descriptor_with_source_tool_name() {
+    let owner = conv("main");
+    let mut tracker = WaitTracker::default();
+    let source_display = ToolDisplay {
+        args: "cargo test".to_owned(),
+        stats: tau_proto::ToolDisplayStats {
+            matches: None,
+            lines: Some(10),
+            bytes: Some(200),
+        },
+        status: ToolDisplayStatus::Error,
+        status_text: "1".to_owned(),
+        payload: Some(tau_proto::ToolDisplayPayload::Text {
+            text: "cargo test".to_owned(),
+        }),
+        ..Default::default()
+    };
+    assert!(
+        tracker
+            .record_background_result(
+                ToolBackgroundResult {
+                    call_id: "bg-shell".into(),
+                    tool_name: ToolName::new("shell"),
+                    tool_type: ToolType::Function,
+                    result: CborValue::Text("done".to_owned()),
+                    display: Some(source_display),
+                    originator: tau_proto::PromptOriginator::User,
+                },
+                owner.clone()
+            )
+            .is_empty()
+    );
+
+    let (result, display) = reply_result_with_display(start_reply(start_wait_any(
+        &mut tracker,
+        &owner,
+        "wait-shell",
+    )));
+    assert_eq!(
+        cbor_map_text(&result, ORIGINAL_TOOL_CALL_ID_HEADER),
+        Some("bg-shell")
+    );
+    assert_eq!(cbor_map_text(&result, "output"), Some("done"));
+
+    let display = display.expect("wait display");
+    assert_eq!(display.args, "shell");
+    assert_eq!(display.status, ToolDisplayStatus::Error);
+    assert_eq!(display.status_text, "1");
+    assert!(display.stats.is_empty());
+    assert!(display.payload.is_none());
 }
 
 /// `wait({})` is now the shorthand for waiting on any background
@@ -295,6 +370,49 @@ fn no_arg_wait_blocks_on_running_background_call_and_resolves() {
     assert_eq!(cbor_map_text(&result, "output"), Some("done"));
 }
 
+/// If a no-arg wait is active while its only background call is canceled, the
+/// cancellation is the completion it was waiting for. It must reply immediately
+/// instead of parking the waiter behind the newly stored cancellation result.
+#[test]
+fn no_arg_wait_resolves_when_running_background_call_is_cancelled() {
+    let owner = conv("main");
+    let mut tracker = WaitTracker::default();
+    tracker.record_tool_invoke("bg-cancel-any".into(), slow_tool_name(), owner.clone());
+    assert!(
+        tracker
+            .record_tool_result(background_placeholder("bg-cancel-any"), owner.clone())
+            .is_empty()
+    );
+    assert!(
+        start_wait_any(&mut tracker, &owner, "wait-cancel-any")
+            .reply
+            .is_none()
+    );
+
+    let cancelled =
+        tracker.record_tool_cancelled(&HashSet::from([ToolCallId::from("bg-cancel-any")]));
+    assert_eq!(
+        cancelled
+            .suppress_call_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["bg-cancel-any"]
+    );
+    assert_eq!(cancelled.replies.len(), 1);
+    let (message, details, display) =
+        reply_error_with_display(cancelled.replies.into_iter().next().expect("wait reply"));
+    assert_eq!(message, "Tool call canceled");
+    let details = details.expect("original call id details");
+    assert_eq!(
+        cbor_map_text(&details, ORIGINAL_TOOL_CALL_ID_HEADER),
+        Some("bg-cancel-any")
+    );
+    let display = display.expect("wait cancellation display");
+    assert_eq!(display.args, "slow");
+    assert_eq!(display.status, ToolDisplayStatus::Error);
+}
+
 /// Background errors are completions too. A no-arg wait must return the
 /// error and include the original background id in provider-visible
 /// details.
@@ -359,6 +477,54 @@ fn explicit_waiter_wins_over_any_waiter_for_same_completion() {
         reply.wait_call_id.as_str() != "wait-any"
             || matches!(reply.kind, WaitReplyKind::Error { .. })
     }));
+}
+
+/// Cancellation follows the same arbitration as a normal completion: an exact
+/// waiter for the canceled call consumes the cancellation result, and a no-arg
+/// waiter must not receive a duplicate copy with original-call details.
+#[test]
+fn explicit_waiter_wins_over_any_waiter_for_same_cancelled_completion() {
+    let owner = conv("main");
+    let mut tracker = WaitTracker::default();
+    tracker.record_tool_invoke("bg-cancel-race".into(), slow_tool_name(), owner.clone());
+    assert!(
+        tracker
+            .record_tool_result(background_placeholder("bg-cancel-race"), owner.clone())
+            .is_empty()
+    );
+    assert!(
+        start_wait_any(&mut tracker, &owner, "wait-any-cancel")
+            .reply
+            .is_none()
+    );
+    assert!(
+        start_wait_exact(&mut tracker, &owner, "wait-exact-cancel", "bg-cancel-race")
+            .reply
+            .is_none()
+    );
+
+    let cancelled =
+        tracker.record_tool_cancelled(&HashSet::from([ToolCallId::from("bg-cancel-race")]));
+    assert_eq!(cancelled.replies.len(), 2);
+    assert!(cancelled.replies.iter().any(|reply| {
+        reply.wait_call_id.as_str() == "wait-exact-cancel"
+            && matches!(
+                &reply.kind,
+                WaitReplyKind::Error { message, details, .. }
+                    if message == "Tool call `bg-cancel-race` was cancelled"
+                        && details.is_none()
+            )
+    }));
+    assert!(cancelled.replies.iter().any(|reply| {
+        reply.wait_call_id.as_str() == "wait-any-cancel"
+            && matches!(
+                &reply.kind,
+                WaitReplyKind::Error { message, details, .. }
+                    if message == "background tool call in this conversation was cancelled"
+                        && details.is_none()
+            )
+    }));
+    assert!(cancelled.suppress_call_ids.is_empty());
 }
 
 /// Parallel duplicate no-arg waits in one conversation would be ambiguous:

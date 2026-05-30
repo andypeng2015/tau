@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tau_proto::{
     AgentContextKey, AgentContextValue, AgentId, AgentMessageReceived, AgentMessageSent, CborValue,
-    Event, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolDisplay, ToolError, ToolName,
-    ToolResult, ToolResultKind, ToolType,
+    Event, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolDisplay, ToolDisplayStatus,
+    ToolError, ToolName, ToolResult, ToolResultKind, ToolType,
 };
 
 use crate::error::HarnessError;
@@ -166,6 +166,9 @@ impl Harness {
         let cancelled = self.subagents.wait_tracker.record_tool_cancelled(call_ids);
         for call_id in cancelled.unsuppress_call_ids {
             self.unsuppress_background_completion_prompt(call_id);
+        }
+        for call_id in cancelled.suppress_call_ids {
+            self.suppress_background_completion_prompt(call_id);
         }
         self.publish_wait_replies(cancelled.replies);
     }
@@ -643,6 +646,7 @@ struct WaitStart {
 struct WaitCancel {
     replies: Vec<WaitReply>,
     unsuppress_call_ids: Vec<ToolCallId>,
+    suppress_call_ids: Vec<ToolCallId>,
 }
 
 #[derive(Default)]
@@ -651,12 +655,15 @@ struct WaitTracker {
     waiters: HashMap<ToolCallId, WaitRequest>,
     any_waiters: HashMap<AgentId, WaitRequest>,
     call_owners: HashMap<ToolCallId, AgentId>,
+    call_tool_names: HashMap<ToolCallId, ToolName>,
     completion_order: VecDeque<ToolCallId>,
 }
 
 impl WaitTracker {
     fn record_tool_invoke(&mut self, call_id: ToolCallId, tool_name: ToolName, owner: AgentId) {
         if tool_name.as_str() != WAIT_TOOL_NAME {
+            self.call_tool_names
+                .insert(call_id.clone(), tool_name.clone());
             self.call_owners.insert(call_id.clone(), owner);
             self.calls.entry(call_id).or_insert(WaitCallState::Pending);
         }
@@ -711,36 +718,54 @@ impl WaitTracker {
             }
             Some(WaitCallState::NormalReturned) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
-                WaitStart::reply(wait_error_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    format!("Tool call {target} returned normally, not backgrounded"),
-                    None,
-                ))
+                let source_tool_name = self.call_tool_names.get(&target).cloned();
+                WaitStart::reply(
+                    wait_error_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        format!("Tool call {target} returned normally, not backgrounded"),
+                        None,
+                    )
+                    .with_source_display(source_tool_name, None),
+                )
             }
             Some(WaitCallState::BackgroundResult(result)) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
                 self.remove_completed(&target);
+                let source_tool_name = Some(result.tool_name.clone());
                 WaitStart::reply_with_suppress(
-                    wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display),
+                    wait_result_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        source_tool_name,
+                        result.result,
+                        result.display,
+                    ),
                     target,
                 )
             }
             Some(WaitCallState::BackgroundError(error)) => {
                 self.calls.insert(target.clone(), WaitCallState::Consumed);
                 self.remove_completed(&target);
+                let source_tool_name = Some(error.tool_name.clone());
                 WaitStart::reply_with_suppress(
                     wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
-                        .with_display(error.display),
+                        .with_source_display(source_tool_name, error.display),
                     target,
                 )
             }
-            Some(WaitCallState::Consumed) => WaitStart::reply(wait_error_reply(
-                wait.call_id,
-                wait.tool_name,
-                format!("result for tool call `{target}` already consumed"),
-                None,
-            )),
+            Some(WaitCallState::Consumed) => {
+                let source_tool_name = self.call_tool_names.get(&target).cloned();
+                WaitStart::reply(
+                    wait_error_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        format!("result for tool call `{target}` already consumed"),
+                        None,
+                    )
+                    .with_source_display(source_tool_name, None),
+                )
+            }
             None => WaitStart::reply(wait_error_reply(
                 wait.call_id,
                 wait.tool_name,
@@ -787,33 +812,44 @@ impl WaitTracker {
         self.calls.insert(target.clone(), WaitCallState::Consumed);
         self.remove_completed(&target);
         match state {
-            WaitCallState::BackgroundResult(result) => WaitStart::reply_with_suppress(
-                wait_result_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    result_with_original_tool_call_id(&target, result.result),
-                    result.display,
-                ),
-                target,
-            ),
-            WaitCallState::BackgroundError(error) => WaitStart::reply_with_suppress(
-                wait_error_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    error.message,
-                    details_with_original_tool_call_id(&target, error.details),
+            WaitCallState::BackgroundResult(result) => {
+                let source_tool_name = Some(result.tool_name.clone());
+                WaitStart::reply_with_suppress(
+                    wait_result_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        source_tool_name,
+                        result_with_original_tool_call_id(&target, result.result),
+                        result.display,
+                    ),
+                    target,
                 )
-                .with_display(error.display),
-                target,
-            ),
+            }
+            WaitCallState::BackgroundError(error) => {
+                let source_tool_name = Some(error.tool_name.clone());
+                WaitStart::reply_with_suppress(
+                    wait_error_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        error.message,
+                        details_with_original_tool_call_id(&target, error.details),
+                    )
+                    .with_source_display(source_tool_name, error.display),
+                    target,
+                )
+            }
             other => {
                 self.calls.insert(target.clone(), other);
-                WaitStart::reply(wait_error_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    format!("tool call `{target}` has no completed background result"),
-                    None,
-                ))
+                let source_tool_name = self.call_tool_names.get(&target).cloned();
+                WaitStart::reply(
+                    wait_error_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        format!("tool call `{target}` has no completed background result"),
+                        None,
+                    )
+                    .with_source_display(source_tool_name, None),
+                )
             }
         }
     }
@@ -823,6 +859,8 @@ impl WaitTracker {
             return Vec::new();
         }
         let call_id = result.call_id.clone();
+        self.call_tool_names
+            .insert(call_id.clone(), result.tool_name.clone());
         self.call_owners.insert(call_id.clone(), owner);
         if self.is_consumed(&call_id) || self.is_backgrounded(&call_id) {
             return Vec::new();
@@ -833,9 +871,11 @@ impl WaitTracker {
         }
         if let Some(wait) = self.waiters.remove(&call_id) {
             self.calls.insert(call_id, WaitCallState::Consumed);
+            let source_tool_name = Some(result.tool_name.clone());
             return vec![wait_result_reply(
                 wait.call_id,
                 wait.tool_name,
+                source_tool_name,
                 result.result,
                 result.display,
             )];
@@ -849,15 +889,18 @@ impl WaitTracker {
             return Vec::new();
         }
         let call_id = error.call_id.clone();
+        self.call_tool_names
+            .insert(call_id.clone(), error.tool_name.clone());
         self.call_owners.insert(call_id.clone(), owner);
         if self.is_consumed(&call_id) {
             return Vec::new();
         }
         if let Some(wait) = self.waiters.remove(&call_id) {
             self.calls.insert(call_id, WaitCallState::Consumed);
+            let source_tool_name = Some(error.tool_name.clone());
             return vec![
                 wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
-                    .with_display(error.display),
+                    .with_source_display(source_tool_name, error.display),
             ];
         }
         self.calls.insert(call_id, WaitCallState::NormalReturned);
@@ -873,6 +916,8 @@ impl WaitTracker {
             return Vec::new();
         }
         let call_id = result.call_id.clone();
+        self.call_tool_names
+            .insert(call_id.clone(), result.tool_name.clone());
         self.call_owners.insert(call_id.clone(), owner.clone());
         if self.is_consumed(&call_id) {
             return Vec::new();
@@ -880,9 +925,16 @@ impl WaitTracker {
         if let Some(wait) = self.waiters.remove(&call_id) {
             self.calls.insert(call_id.clone(), WaitCallState::Consumed);
             self.remove_completed(&call_id);
+            let source_tool_name = Some(result.tool_name.clone());
             let mut replies = vec![
-                wait_result_reply(wait.call_id, wait.tool_name, result.result, result.display)
-                    .with_suppress(call_id.clone()),
+                wait_result_reply(
+                    wait.call_id,
+                    wait.tool_name,
+                    source_tool_name,
+                    result.result,
+                    result.display,
+                )
+                .with_suppress(call_id.clone()),
             ];
             replies.extend(self.finish_any_waiter_if_no_candidates(&owner));
             return replies;
@@ -894,6 +946,7 @@ impl WaitTracker {
                 wait_result_reply(
                     wait.call_id,
                     wait.tool_name,
+                    Some(result.tool_name.clone()),
                     result_with_original_tool_call_id(&call_id, result.result),
                     result.display,
                 )
@@ -915,6 +968,8 @@ impl WaitTracker {
             return Vec::new();
         }
         let call_id = error.call_id.clone();
+        self.call_tool_names
+            .insert(call_id.clone(), error.tool_name.clone());
         self.call_owners.insert(call_id.clone(), owner.clone());
         if self.is_consumed(&call_id) {
             return Vec::new();
@@ -922,9 +977,10 @@ impl WaitTracker {
         if let Some(wait) = self.waiters.remove(&call_id) {
             self.calls.insert(call_id.clone(), WaitCallState::Consumed);
             self.remove_completed(&call_id);
+            let source_tool_name = Some(error.tool_name.clone());
             let mut replies = vec![
                 wait_error_reply(wait.call_id, wait.tool_name, error.message, error.details)
-                    .with_display(error.display)
+                    .with_source_display(source_tool_name, error.display)
                     .with_suppress(call_id.clone()),
             ];
             replies.extend(self.finish_any_waiter_if_no_candidates(&owner));
@@ -933,6 +989,7 @@ impl WaitTracker {
         if let Some(wait) = self.any_waiters.remove(&owner) {
             self.calls.insert(call_id.clone(), WaitCallState::Consumed);
             self.remove_completed(&call_id);
+            let source_tool_name = Some(error.tool_name.clone());
             return vec![
                 wait_error_reply(
                     wait.call_id,
@@ -940,7 +997,7 @@ impl WaitTracker {
                     error.message,
                     details_with_original_tool_call_id(&call_id, error.details),
                 )
-                .with_display(error.display)
+                .with_source_display(source_tool_name, error.display)
                 .with_suppress(call_id),
             ];
         }
@@ -959,6 +1016,7 @@ impl WaitTracker {
             .iter()
             .filter_map(|call_id| self.call_owners.get(call_id).cloned())
             .collect();
+        let mut exact_consumed_cancelled = HashSet::new();
         let mut cancelled = WaitCancel::default();
         let waiters = std::mem::take(&mut self.waiters);
         for (target, wait) in waiters {
@@ -973,15 +1031,18 @@ impl WaitTracker {
                 continue;
             }
             if target_cancelled {
+                let source_tool_name = self.call_tool_names.get(&target).cloned();
                 let mut reply = wait_error_reply(
                     wait.call_id,
                     wait.tool_name,
                     format!("Tool call `{target}` was cancelled"),
                     None,
-                );
+                )
+                .with_source_display(source_tool_name, None);
                 if target_was_backgrounded {
                     reply = reply.with_unsuppress(target.clone());
                 }
+                exact_consumed_cancelled.insert(target.clone());
                 cancelled.replies.push(reply);
             } else {
                 self.waiters.insert(target, wait);
@@ -989,12 +1050,19 @@ impl WaitTracker {
         }
 
         for call_id in call_ids {
-            if self.is_backgrounded(call_id) {
+            if exact_consumed_cancelled.contains(call_id) {
+                self.calls.insert(call_id.clone(), WaitCallState::Consumed);
+                self.remove_completed(call_id);
+            } else if self.is_backgrounded(call_id) {
                 self.calls.insert(
                     call_id.clone(),
                     WaitCallState::BackgroundError(ToolBackgroundError {
                         call_id: call_id.clone(),
-                        tool_name: ToolName::new("cancelled"),
+                        tool_name: self
+                            .call_tool_names
+                            .get(call_id)
+                            .cloned()
+                            .unwrap_or_else(|| ToolName::new("cancelled")),
                         tool_type: ToolType::Function,
                         message: "Tool call canceled".to_owned(),
                         details: None,
@@ -1014,17 +1082,31 @@ impl WaitTracker {
             if call_ids.contains(&wait.call_id) {
                 continue;
             }
-            if self.oldest_completed_for_owner(&owner).is_some()
-                || self.has_running_background_for_owner(&owner)
-            {
+            if let Some(target) = self.oldest_completed_for_owner(&owner) {
+                let start = self.consume_completed_for_any(target, wait);
+                if let Some(call_id) = start.suppress_call_id {
+                    cancelled.suppress_call_ids.push(call_id);
+                }
+                cancelled.replies.extend(start.reply);
+            } else if self.has_running_background_for_owner(&owner) {
                 self.any_waiters.insert(owner, wait);
             } else if cancelled_owners.contains(&owner) {
-                cancelled.replies.push(wait_error_reply(
-                    wait.call_id,
-                    wait.tool_name,
-                    "background tool call in this conversation was cancelled".to_owned(),
-                    None,
-                ));
+                let source_tool_name = call_ids.iter().find_map(|call_id| {
+                    if self.call_owners.get(call_id) == Some(&owner) {
+                        self.call_tool_names.get(call_id).cloned()
+                    } else {
+                        None
+                    }
+                });
+                cancelled.replies.push(
+                    wait_error_reply(
+                        wait.call_id,
+                        wait.tool_name,
+                        "background tool call in this conversation was cancelled".to_owned(),
+                        None,
+                    )
+                    .with_source_display(source_tool_name, None),
+                );
             } else {
                 self.any_waiters.insert(owner, wait);
             }
@@ -1038,7 +1120,9 @@ impl WaitTracker {
         let mut replies: Vec<WaitReply> = waiters
             .into_iter()
             .map(|(target, wait)| {
-                let mut reply = wait_interrupted_reply(wait.call_id, wait.tool_name, &target);
+                let source_tool_name = self.call_tool_names.get(&target).cloned();
+                let mut reply =
+                    wait_interrupted_reply(wait.call_id, wait.tool_name, source_tool_name, &target);
                 if self.is_backgrounded(&target) {
                     reply = reply.with_unsuppress(target);
                 }
@@ -1068,6 +1152,7 @@ impl WaitTracker {
     fn discard_call_owner(&mut self, call_id: &ToolCallId, source: &AgentId) {
         if self.call_owners.get(call_id) == Some(source) {
             self.call_owners.remove(call_id);
+            self.call_tool_names.remove(call_id);
         }
         if self.calls.get(call_id) == Some(&WaitCallState::Backgrounded) {
             self.calls.remove(call_id);
@@ -1144,9 +1229,23 @@ impl WaitTracker {
 }
 
 impl WaitReply {
-    fn with_display(mut self, display: Option<ToolDisplay>) -> Self {
-        if let WaitReplyKind::Error { display: dst, .. } = &mut self.kind {
-            *dst = display;
+    fn with_source_display(
+        mut self,
+        source_tool_name: Option<ToolName>,
+        display: Option<ToolDisplay>,
+    ) -> Self {
+        if let WaitReplyKind::Error {
+            message,
+            display: dst,
+            ..
+        } = &mut self.kind
+        {
+            *dst = Some(wait_display_from_source(
+                source_tool_name,
+                display,
+                ToolDisplayStatus::Error,
+                wait_error_status_text(message),
+            ));
         }
         self
     }
@@ -1188,16 +1287,70 @@ impl WaitStart {
 fn wait_result_reply(
     wait_call_id: ToolCallId,
     wait_tool_name: ToolName,
+    source_tool_name: Option<ToolName>,
     result: CborValue,
     display: Option<ToolDisplay>,
 ) -> WaitReply {
     WaitReply {
         wait_call_id,
         wait_tool_name,
-        kind: WaitReplyKind::Result { result, display },
+        kind: WaitReplyKind::Result {
+            result,
+            display: Some(wait_display_from_source(
+                source_tool_name,
+                display,
+                ToolDisplayStatus::Success,
+                "ok".to_owned(),
+            )),
+        },
         suppress_call_id: None,
         unsuppress_call_id: None,
     }
+}
+
+fn wait_display_from_source(
+    source_tool_name: Option<ToolName>,
+    display: Option<ToolDisplay>,
+    default_status: ToolDisplayStatus,
+    default_status_text: String,
+) -> ToolDisplay {
+    // The waited tool's descriptor describes the payload returned to the model.
+    // Rendering that descriptor under the `wait` tool makes the UI surface
+    // arbitrary command/path labels when the source tool happened to provide
+    // them. Keep the source tool name plus completion severity for the `wait`
+    // call itself.
+    let (status, status_text) = display
+        .map(|display| (display.status, display.status_text))
+        .unwrap_or((default_status, default_status_text));
+    ToolDisplay {
+        args: source_tool_name
+            .map(|tool_name| tool_name.to_string())
+            .unwrap_or_default(),
+        status,
+        status_text: wait_display_status_text(status, status_text),
+        ..Default::default()
+    }
+}
+
+fn wait_display_status_text(status: ToolDisplayStatus, status_text: String) -> String {
+    if !status_text.trim().is_empty() {
+        return status_text;
+    }
+    match status {
+        ToolDisplayStatus::Success => "ok".to_owned(),
+        ToolDisplayStatus::Warning => "warning".to_owned(),
+        ToolDisplayStatus::Error => "err".to_owned(),
+        ToolDisplayStatus::InProgress => tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+    }
+}
+
+fn wait_error_status_text(message: &str) -> String {
+    message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("err")
+        .to_owned()
 }
 
 fn wait_error_reply(
@@ -1222,11 +1375,13 @@ fn wait_error_reply(
 fn wait_interrupted_reply(
     wait_call_id: ToolCallId,
     wait_tool_name: ToolName,
+    source_tool_name: Option<ToolName>,
     target_call_id: &ToolCallId,
 ) -> WaitReply {
     wait_result_reply(
         wait_call_id,
         wait_tool_name,
+        source_tool_name,
         CborValue::Text(format!(
             "{}: true\n\nWaiting for tool call `{target_call_id}` was interrupted because user input is queued. Try again later.",
             tau_proto::TAU_INTERNAL_HEADER_NAME
@@ -1239,6 +1394,7 @@ fn wait_interrupted_any_reply(wait_call_id: ToolCallId, wait_tool_name: ToolName
     wait_result_reply(
         wait_call_id,
         wait_tool_name,
+        None,
         CborValue::Text(format!(
             "{}: true\n\nWaiting for a background tool call in this conversation was interrupted because user input is queued. Try again later.",
             tau_proto::TAU_INTERNAL_HEADER_NAME
