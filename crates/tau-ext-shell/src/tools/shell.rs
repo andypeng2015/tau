@@ -13,6 +13,33 @@ use crate::truncate::{MAX_OUTPUT_LINES, mark_line, truncate_line_oriented_lines}
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(crate) const SLOW_COMMAND_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 
+/// Agent-declared filesystem access intent for a shell command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShellAccessMode {
+    /// Command promises to only read filesystem state.
+    ReadOnly,
+    /// Command may modify filesystem state and must take update locks.
+    ReadWrite,
+}
+
+/// Parse the shell command access mode.
+pub(crate) fn parse_access_mode(arguments: &CborValue) -> Result<ShellAccessMode, String> {
+    match arguments {
+        CborValue::Map(entries) => entries
+            .iter()
+            .find_map(|(key, value)| match key {
+                CborValue::Text(key) if key == "mode" => Some(match value {
+                    CborValue::Text(mode) if mode == "ro" => Ok(ShellAccessMode::ReadOnly),
+                    CborValue::Text(mode) if mode == "rw" => Ok(ShellAccessMode::ReadWrite),
+                    _ => Err("argument `mode` must be `ro` or `rw`".to_owned()),
+                }),
+                _ => None,
+            })
+            .unwrap_or(Ok(ShellAccessMode::ReadWrite)),
+        _ => Ok(ShellAccessMode::ReadWrite),
+    }
+}
+
 /// Execute a `shell` tool call.
 ///
 /// **Process outcome semantics.** Commands that start successfully always
@@ -41,6 +68,7 @@ pub(crate) fn run_command_cancellable(
     shell_config: &ShellConfig,
     cancel_rx: Option<mpsc::Receiver<()>>,
 ) -> Result<CommandOutcome, ToolFailure> {
+    parse_access_mode(arguments).map_err(ToolFailure::from)?;
     let command = argument_text(arguments, "command").map_err(ToolFailure::from)?;
     let cwd = optional_argument_text(arguments, "cwd");
     let display_args = command_display_args(&command);

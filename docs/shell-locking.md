@@ -40,11 +40,11 @@ When `dir_lock.enable` is true (the default), these mutating tools acquire autom
 - `write`: locks the target file parent. If parents are missing, it locks the deepest existing ancestor so existing `write` behavior remains intact.
 - `edit`: locks the canonical parent of the existing file, following a final symlink to the real edited file.
 - `apply_patch`: parses the patch and locks all touched source and destination directories as one FIFO request.
-- `shell` and `gpt_shell`: lock the canonical `cwd`, or the extension process cwd when `cwd` is omitted.
+- `shell` and `gpt_shell` with `mode: "rw"`: lock the canonical `cwd`, or the extension process cwd when `cwd` is omitted. `mode: "ro"` declares a read-only command and skips automatic update locking.
 
 Automatic locks are held only for the tool invocation duration. They serialize with manual locks and with other automatic mutating calls. When the calling agent already owns a covering manual lock, automatic calls under that lock reenter the same writer section and do not wait on same-owner automatic calls; other agents remain blocked until the manual lock is released and all active automatic calls finish. Lock waiters do not consume the ext-shell worker semaphore; the semaphore is acquired only after the lock is granted.
 
-`read`, `grep`, `find`, and `ls` remain free to run while update locks are held. User `!` shell commands are UI commands, not agent tool calls, and are intentionally excluded.
+`read`, `grep`, `find`, `ls`, and `shell`/`gpt_shell` calls with `mode: "ro"` remain free to run while update locks are held. User `!` shell commands are UI commands, not agent tool calls, and are intentionally excluded.
 
 
 ## UI behavior
@@ -54,7 +54,7 @@ Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` updat
 
 ## Caveats
 
-- Shell locking is advisory. A shell command can mutate paths outside its `cwd` using absolute paths or command-specific flags.
+- Shell locking is advisory. A `mode: "ro"` shell command is trusted to avoid mutations for now, and a `mode: "rw"` shell command can mutate paths outside its `cwd` using absolute paths or command-specific flags.
 - `write` to missing parents is safe but less precise because the exact final parent does not exist yet.
 - Same-owner reentry can keep other agents waiting for as long as the owner keeps a manual lock. That is intentional manual-lock behavior, not starvation inside the FIFO queue.
 - Out-of-tree non-shell tools no longer get harness update/exclusive serialization. They need their own coordination if they mutate shared state.

@@ -354,7 +354,8 @@ where
             name: tau_proto::ToolName::new(SHELL_TOOL_NAME),
             model_visible_name: None,
             description: Some(
-                "Execute a shell command via `sh -c`. Non-zero exits and timeouts \
+                "Execute a shell command via `sh -c`. Set `mode` to `rw` for commands \
+                 that may modify files, or `ro` for read-only commands. Non-zero exits and timeouts \
                  are tool errors with output details. Output is capped at 2000 lines / \
                  50 KB; truncated output keeps the first 1000 and last 1000 lines \
                  separated by a literal `...` line. Output lines are prefixed with `out ` \
@@ -370,6 +371,11 @@ where
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["ro", "rw"],
+                        "description": "Filesystem access intent: `ro` for read-only commands, `rw` for commands that may modify files"
+                    },
                     "command": {
                         "type": "string",
                         "description": "The shell command to execute"
@@ -384,7 +390,7 @@ where
                         "description": "Optional working directory for the command"
                     }
                 },
-                "required": ["command"],
+                "required": ["mode", "command"],
                 "additionalProperties": false
             })),
             format: None,
@@ -395,7 +401,8 @@ where
             name: tau_proto::ToolName::new(GPT_SHELL_TOOL_NAME),
             model_visible_name: Some(tau_proto::ToolName::new("shell_command")),
             description: Some(
-                "Run a shell command. Non-zero exits and timeouts are returned as structured \
+                "Run a shell command. Set `mode` to `rw` for commands that may modify files, \
+                 or `ro` for read-only commands. Non-zero exits and timeouts are returned as structured \
                  command results with output details. Output is capped at 2000 lines / 50 KB; \
                  truncated output keeps the first 1000 and last 1000 lines separated by `...`. \
                  Output lines are prefixed with `out ` for stdout or `err ` for stderr; missing \
@@ -410,6 +417,11 @@ where
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["ro", "rw"],
+                        "description": "Filesystem access intent: `ro` for read-only commands, `rw` for commands that may modify files"
+                    },
                     "command": {
                         "type": "string",
                         "description": "The shell command to execute"
@@ -424,7 +436,7 @@ where
                         "description": "Optional working directory for the command"
                     }
                 },
-                "required": ["command"],
+                "required": ["mode", "command"],
                 "additionalProperties": false
             })),
             format: None,

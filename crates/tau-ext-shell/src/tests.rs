@@ -956,6 +956,84 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
 }
 
 #[test]
+fn shell_ro_bypasses_directory_update_lock() {
+    // Read-only shell commands should behave like read tools for advisory
+    // directory locking: they may run while another agent holds an update lock.
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "lock-root",
+            DIR_LOCK_TOOL_NAME,
+            cbor_text_map(vec![
+                ("command", "update"),
+                ("directory", &lock_dir.display().to_string()),
+            ]),
+            "agent-a",
+        ))
+        .expect("dir_lock update");
+    writer.flush().expect("flush lock");
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "lock-root" => break,
+            Some(_) => continue,
+            None => panic!("extension closed before lock result"),
+        }
+    }
+
+    writer
+        .write_event(&tool_started(
+            "read-only-shell",
+            SHELL_TOOL_NAME,
+            cbor_text_map(vec![
+                ("mode", "ro"),
+                ("command", "printf ro-ok"),
+                ("cwd", &lock_dir.display().to_string()),
+            ]),
+            "agent-b",
+        ))
+        .expect("ro shell");
+    writer.flush().expect("flush shell");
+
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolProgress(progress))
+                if progress.call_id.as_str() == "read-only-shell" =>
+            {
+                assert_ne!(
+                    progress.message.as_deref(),
+                    Some("waiting for directory lock")
+                );
+                assert!(
+                    !progress
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.starts_with("waiting for directory lock")),
+                    "ro shell unexpectedly waited on directory lock: {progress:?}"
+                );
+            }
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "read-only-shell" => {
+                assert_eq!(
+                    optional_argument_text(&result.result, "output"),
+                    Some("out(no_nl) ro-ok".to_owned())
+                );
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before ro shell result"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
 fn same_agent_write_reenters_manual_lock_while_shell_auto_lock_is_active() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();
@@ -1102,8 +1180,13 @@ fn startup_registers_shell_schemas_with_cwd_and_timeout_minimum() {
         if register.tool.name == SHELL_TOOL_NAME || register.tool.name == GPT_SHELL_TOOL_NAME {
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let properties = &parameters["properties"];
+            assert_eq!(properties["mode"]["enum"], serde_json::json!(["ro", "rw"]));
             assert_eq!(properties["cwd"]["type"], serde_json::json!("string"));
             assert_eq!(properties["timeout"]["minimum"], serde_json::json!(0));
+            assert_eq!(
+                parameters["required"],
+                serde_json::json!(["mode", "command"])
+            );
             found_shell |= register.tool.name == SHELL_TOOL_NAME;
             found_gpt_shell |= register.tool.name == GPT_SHELL_TOOL_NAME;
         }
@@ -3606,6 +3689,25 @@ fn shell_tool_rejects_negative_timeout() {
 
     let error = run_command(&args, &crate::config::ShellConfig::default()).expect_err("timeout");
     assert_eq!(error.message, "argument `timeout` must be non-negative");
+}
+
+#[test]
+fn shell_tool_rejects_wrong_type_mode() {
+    // A present-but-non-string access mode should not silently fall back to
+    // the write-locking default, because that hides malformed tool calls.
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("mode".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text("printf should-not-run".to_owned()),
+        ),
+    ]);
+
+    let error = run_command(&args, &crate::config::ShellConfig::default()).expect_err("mode");
+    assert_eq!(error.message, "argument `mode` must be `ro` or `rw`");
 }
 
 #[test]

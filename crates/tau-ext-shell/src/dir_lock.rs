@@ -17,6 +17,7 @@ use tau_proto::{
 
 use crate::argument::{argument_text, optional_argument_text};
 use crate::display::{ToolFailure, ok_display};
+use crate::tools::shell::ShellAccessMode;
 use crate::tools::{
     APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, GPT_SHELL_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME,
 };
@@ -790,7 +791,12 @@ pub(crate) fn automatic_lock_dirs_for_tool(
                 &path,
             ))?]))
         }
-        SHELL_TOOL_NAME | GPT_SHELL_TOOL_NAME => Ok(Some(vec![canonical_shell_cwd(arguments)?])),
+        SHELL_TOOL_NAME | GPT_SHELL_TOOL_NAME => {
+            match crate::tools::shell::parse_access_mode(arguments).map_err(ToolFailure::from)? {
+                ShellAccessMode::ReadOnly => Ok(None),
+                ShellAccessMode::ReadWrite => Ok(Some(vec![canonical_shell_cwd(arguments)?])),
+            }
+        }
         APPLY_PATCH_TOOL_NAME => Ok(Some(crate::tools::apply_patch::lock_directories(
             arguments,
         )?)),

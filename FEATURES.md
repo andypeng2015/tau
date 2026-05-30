@@ -252,9 +252,10 @@ an `echo` tool for testing. The shell command and any wrapper prefix are configu
 ```
 
 When `dir_lock.enable` is true (the default), the `dir_lock` tool can manually
-lock an existing directory for updates, and `write`, `edit`, `apply_patch`,
-`shell`, and `gpt_shell` acquire matching automatic locks before mutating. Reads
-remain unblocked; user `!` commands are outside this agent-tool lock path. The
+lock an existing directory for updates, and `write`, `edit`, `apply_patch`, plus
+`shell`/`gpt_shell` calls with `mode: "rw"`, acquire matching automatic locks
+before mutating. Reads and `shell`/`gpt_shell` calls with `mode: "ro"` remain
+unblocked; user `!` commands are outside this agent-tool lock path. The
 extension also injects `/shell-dir-force-unlock DIRECTORY` so the user can clear
 manual locks that overlap a displayed waiting directory.
 
