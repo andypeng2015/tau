@@ -2,14 +2,19 @@
   description = "tau";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+
     flake-utils.url = "github:numtide/flake-utils";
-    flakebox.url = "github:rustshop/flakebox";
+    flakebox = {
+      url = "github:rustshop/flakebox?rev=cf89db7a3ac6b1431693d17276225ba352e48a5c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     selfci = {
       url = "github:dpc/selfci";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.flakebox.follows = "flakebox";
+      # TODO: temporarily broken because of wild 0.9.0 hackery
+      # inputs.flakebox.follows = "flakebox";
     };
   };
 
@@ -20,11 +25,20 @@
       flake-utils,
       flakebox,
       selfci,
-    }:
+      ...
+    }@inputs:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # TODO: get rid of custom stuff
+        # pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            flakebox.overlays.default
+          ];
+        };
+
         projectName = "tau";
         cargoCrap = pkgs.callPackage ./nix/pkgs/cargo-crap.nix { };
         selfciPkg = selfci.packages.${system}.default;
