@@ -139,6 +139,15 @@ fn immediate_idle_agent_summary_config_frame() -> Frame {
     })))
 }
 
+fn bell_mode_config_frame() -> Frame {
+    configure_frame(tau_proto::json_to_cbor(&serde_json::json!({
+        "mode": "bell",
+        "idle_seconds": 0,
+        "idle_agent_summary": true,
+        "idle_command": ["must-not-run-in-bell-mode"],
+    })))
+}
+
 fn assistant_finished_response(
     agent_prompt_id: &str,
     text: &str,
@@ -279,6 +288,46 @@ fn emits_start_and_end_user_var_in_order() {
         }
         other => panic!("expected Osc1337SetUserVar, got {other:?}"),
     }
+}
+
+/// Bell mode is an intentionally narrow transport: it only asks the
+/// terminal to ring when the agent turn is complete. It must not emit
+/// prompt-start bells, OSC user-var sound events, arm the idle text
+/// notification, request an agent summary, or run `idle_command`.
+#[test]
+fn bell_mode_emits_only_completion_bell() {
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&bell_mode_config_frame())
+        .expect("write config");
+    writer
+        .write_event(&user_prompt_submitted(
+            "hello",
+            tau_proto::PromptOriginator::User,
+        ))
+        .expect("write");
+    writer
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
+        .expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_millis(1)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    drain_lifecycle(&mut reader);
+
+    let end = reader.read_event().expect("read").expect("end event");
+    assert!(matches!(end, Event::TermBell(_)));
+
+    let extra = reader.read_event().expect("read");
+    assert!(
+        extra.is_none(),
+        "bell mode emitted unexpected event: {extra:?}"
+    );
 }
 
 /// Mid-turn `ProviderResponseFinished` events (those carrying

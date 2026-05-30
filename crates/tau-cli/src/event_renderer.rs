@@ -4312,6 +4312,10 @@ impl EventRenderer {
                 self.handle.print_terminal_escape(seq);
                 true
             }
+            Event::TermBell(_) => {
+                self.handle.print_terminal_escape("\x07".to_owned());
+                true
+            }
             _ => false,
         }
     }

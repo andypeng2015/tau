@@ -40,6 +40,8 @@ pub enum Event {
     CancelPrompt,
     /// The terminal was resized.
     Resize { width: u16, height: u16 },
+    /// The terminal reported focus gained or lost.
+    FocusChanged { focused: bool },
     /// The input buffer changed (or the completion menu cycled,
     /// opened, or closed). Caller should redraw any prompt-derived
     /// UI.
@@ -243,6 +245,8 @@ impl HighTerm {
                     return Ok(Event::Resize { width, height });
                 }
 
+                RawEvent::FocusChanged { focused } => return Ok(Event::FocusChanged { focused }),
+
                 RawEvent::Notice(message) => {
                     self.sync_menu_block();
                     self.print_local(&message);
@@ -395,6 +399,7 @@ impl HighTerm {
             RawEvent::Eof
             | RawEvent::CancelPrompt
             | RawEvent::Resize { .. }
+            | RawEvent::FocusChanged { .. }
             | RawEvent::BackTab
             | RawEvent::Escape
             | RawEvent::Binding(_)

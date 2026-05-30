@@ -16,7 +16,7 @@ notification.
 
 ## What it does
 
-Three classes of event are emitted via the
+In the default `mode: "osc1337"`, three classes of event are emitted via the
 [`term.osc1337_set_user_var`][var] protocol event:
 
 | Trigger | User-var | Value |
@@ -102,6 +102,12 @@ surface typos to the user.
     "std-notifications": {
       enable: true,
       config: {
+        // Notification transport. "osc1337" is the default. "bell"
+        // emits only terminal BEL events when a turn completes and
+        // disables idle text notifications, idle summaries, and
+        // idle_command.
+        mode: "osc1337",
+
         // Idle window (seconds) before the extension nudges the
         // user. Default: 60.
         idle_seconds: 60,
@@ -155,6 +161,24 @@ idle_command: [
   "body=$(cat); notify-send --app-name=tau \"$1\" \"$body\"",
   "_tau",
 ]
+```
+
+### Bell-only mode
+
+Set `mode: "bell"` to avoid all OSC user-vars, idle text notifications,
+agent idle-summary requests, and `idle_command` execution. In this mode the
+extension emits only `term.bell` when the agent turn is complete, which the UI
+renders as ASCII BEL (`\x07`). Terminal behavior then depends on the user's
+terminal bell settings.
+
+```json5
+{
+  extensions: {
+    "std-notifications": {
+      config: { mode: "bell" },
+    },
+  },
+}
 ```
 
 ## Tracing

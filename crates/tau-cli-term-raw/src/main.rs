@@ -128,6 +128,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handle.redraw();
             }
             Event::BufferChanged | Event::CompletionAccept => {}
+            Event::FocusChanged { focused } => {
+                handle.print_output("demo-focus", format!("focus: {focused}"));
+            }
             Event::Notice(message) => {
                 handle.print_output("demo-notice", message);
             }

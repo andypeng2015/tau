@@ -3,7 +3,7 @@
 //! `notification-sounds.ts` and `user-text-notification.sh` Pi
 //! extensions.
 //!
-//! Events emitted (all via `Osc1337SetUserVar`):
+//! Events emitted in the default `osc1337` mode:
 //! - `ui.prompt_submitted` → `user-notification = protoss-probe-ack`
 //! - final `provider.response_finished` (only when `stop_reason` does not
 //!   request tools and no backgrounded main-agent tools remain active) →
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use tau_proto::{
     ConfigError, Event, Frame, FrameReader, FrameWriter, Message, Osc1337SetUserVar,
-    StartAgentRequest,
+    StartAgentRequest, TermBell,
 };
 
 /// `tracing` target for events emitted from this extension. Matches
@@ -150,6 +150,9 @@ impl IdleState {
 #[derive(serde::Deserialize, Debug, Default, Clone)]
 #[serde(default, deny_unknown_fields)]
 struct ExtConfig {
+    /// Notification transport to use. `Osc1337` preserves the existing
+    /// user-var based integration; `Bell` emits only terminal BEL events.
+    mode: NotificationMode,
     /// Idle window, in seconds, before the extension nudges the
     /// user. `None` keeps the [`DEFAULT_IDLE_SECONDS`] default. The
     /// wire format is integer seconds; for sub-second test windows
@@ -176,6 +179,14 @@ struct ExtConfig {
     /// silently discarded. A failing command logs at `warn` and is
     /// otherwise ignored.
     idle_command: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize, Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum NotificationMode {
+    #[default]
+    Osc1337,
+    Bell,
 }
 
 impl ExtConfig {
@@ -349,6 +360,7 @@ where
                                     idle_seconds = idle_duration.as_secs(),
                                     has_idle_command = cfg.idle_command.is_some(),
                                     idle_agent_summary = cfg.idle_agent_summary,
+                                    mode = ?cfg.mode,
                                     "applied config",
                                 );
                                 config = cfg;
@@ -416,8 +428,13 @@ where
                             turn_end_emitted = false;
                         }
                         if !waiting_for_final_response {
-                            writer.write_frame(&Frame::Event(sound_event(VALUE_AGENT_START)))?;
-                            writer.flush()?;
+                            if config.mode == NotificationMode::Osc1337 {
+                                writer.write_frame(&Frame::Event(sound_event(
+                                    config.mode,
+                                    VALUE_AGENT_START,
+                                )))?;
+                                writer.flush()?;
+                            }
                             waiting_for_final_response = true;
                             turn_end_emitted = false;
                         }
@@ -479,6 +496,7 @@ where
                                 &mut turn_end_emitted,
                                 &mut idle,
                                 idle_duration,
+                                config.mode,
                             )?;
                             completed_response_prompts.insert(finished.agent_prompt_id);
                         } else {
@@ -513,6 +531,7 @@ where
                                 &mut final_response_pending_background_tools,
                                 &mut idle,
                                 idle_duration,
+                                config.mode,
                                 &active_background_tools,
                             )? && let Some(prompt_id) = pending_final_response_prompt.take()
                             {
@@ -530,6 +549,7 @@ where
                                 &mut final_response_pending_background_tools,
                                 &mut idle,
                                 idle_duration,
+                                config.mode,
                                 &active_background_tools,
                             )? && let Some(prompt_id) = pending_final_response_prompt.take()
                             {
@@ -670,22 +690,26 @@ fn emit_agent_end<W: Write>(
     turn_end_emitted: &mut bool,
     idle: &mut Option<IdleState>,
     idle_duration: Duration,
+    mode: NotificationMode,
 ) -> Result<(), Box<dyn Error>> {
-    writer.write_frame(&Frame::Event(sound_event(VALUE_AGENT_END)))?;
+    writer.write_frame(&Frame::Event(sound_event(mode, VALUE_AGENT_END)))?;
     writer.flush()?;
     *waiting_for_final_response = false;
     *turn_end_emitted = true;
-    *idle = Some(IdleState::WaitingIdle {
-        deadline: Instant::now() + idle_duration,
-    });
-    tracing::debug!(
-        target: LOG_TARGET,
-        seconds = idle_duration.as_secs(),
-        "idle deadline armed",
-    );
+    if mode == NotificationMode::Osc1337 {
+        *idle = Some(IdleState::WaitingIdle {
+            deadline: Instant::now() + idle_duration,
+        });
+        tracing::debug!(
+            target: LOG_TARGET,
+            seconds = idle_duration.as_secs(),
+            "idle deadline armed",
+        );
+    }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn maybe_emit_deferred_agent_end<W: Write>(
     writer: &mut FrameWriter<BufWriter<W>>,
     waiting_for_final_response: &mut bool,
@@ -693,6 +717,7 @@ fn maybe_emit_deferred_agent_end<W: Write>(
     final_response_pending_background_tools: &mut bool,
     idle: &mut Option<IdleState>,
     idle_duration: Duration,
+    mode: NotificationMode,
     active_background_tools: &HashSet<tau_proto::ToolCallId>,
 ) -> Result<bool, Box<dyn Error>> {
     if *final_response_pending_background_tools && active_background_tools.is_empty() {
@@ -703,17 +728,21 @@ fn maybe_emit_deferred_agent_end<W: Write>(
             turn_end_emitted,
             idle,
             idle_duration,
+            mode,
         )?;
         return Ok(true);
     }
     Ok(false)
 }
 
-fn sound_event(value: &str) -> Event {
-    Event::Osc1337SetUserVar(Osc1337SetUserVar {
-        name: SOUND_VAR_NAME.to_owned(),
-        value: value.to_owned(),
-    })
+fn sound_event(mode: NotificationMode, value: &str) -> Event {
+    match mode {
+        NotificationMode::Osc1337 => Event::Osc1337SetUserVar(Osc1337SetUserVar {
+            name: SOUND_VAR_NAME.to_owned(),
+            value: value.to_owned(),
+        }),
+        NotificationMode::Bell => Event::TermBell(TermBell {}),
+    }
 }
 
 /// True when `event` belongs to a side conversation spawned by an

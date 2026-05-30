@@ -277,12 +277,14 @@ impl EventName {
     pub const UI_NAVIGATE_TREE: Self = Self::from_static(EventCategory::Ui, "navigate_tree");
     pub const UI_COMPACT_REQUEST: Self = Self::from_static(EventCategory::Ui, "compact_request");
     pub const UI_PROMPT_DRAFT: Self = Self::from_static(EventCategory::Ui, "prompt_draft");
+    pub const UI_FOCUS_CHANGED: Self = Self::from_static(EventCategory::Ui, "focus_changed");
     pub const UI_CANCEL_PROMPT: Self = Self::from_static(EventCategory::Ui, "cancel_prompt");
     pub const UI_RECALL_QUEUED_PROMPT: Self =
         Self::from_static(EventCategory::Ui, "recall_queued_prompt");
 
     pub const TERM_OSC1337_SET_USER_VAR: Self =
         Self::from_static(EventCategory::Term, "osc1337_set_user_var");
+    pub const TERM_BELL: Self = Self::from_static(EventCategory::Term, "bell");
 
     pub const SHELL_COMMAND_PROGRESS: Self =
         Self::from_static(EventCategory::Shell, "command_progress");

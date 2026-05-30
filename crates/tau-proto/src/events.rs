@@ -1703,6 +1703,17 @@ pub struct UiPromptDraft {
     pub text: String,
 }
 
+/// The UI terminal focus state changed. Emitted when the terminal supports
+/// focus-in/focus-out reporting and the user moves focus into or away from the
+/// Tau terminal window.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UiFocusChanged {
+    /// Session whose attached UI observed the focus change.
+    pub session_id: SessionId,
+    /// Whether the terminal reported focus gained (`true`) or lost (`false`).
+    pub focused: bool,
+}
+
 /// The UI is detaching and wants the daemon to stay alive after it
 /// leaves, so a later `tau --attach` can pick up the same
 /// session. The harness flips its `exit_on_disconnect` flag to
@@ -1998,6 +2009,12 @@ pub struct Osc1337SetUserVar {
     /// UI base64-encodes before transmission.
     pub value: String,
 }
+
+/// Ask the UI to write an ASCII BEL (`\x07`) to its terminal. Terminal
+/// behavior depends on the user's terminal settings: it may play a sound,
+/// flash, raise a desktop notification, or do nothing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TermBell {}
 
 // ---------------------------------------------------------------------------
 // Agent transcript/runtime events
@@ -2633,6 +2650,8 @@ pub enum Event {
     UiPromptSubmitted(UiPromptSubmitted),
     #[serde(rename = "ui.prompt_draft")]
     UiPromptDraft(UiPromptDraft),
+    #[serde(rename = "ui.focus_changed")]
+    UiFocusChanged(UiFocusChanged),
     #[serde(rename = "ui.role_select")]
     UiRoleSelect(UiRoleSelect),
     #[serde(rename = "ui.role_update")]
@@ -2659,6 +2678,8 @@ pub enum Event {
     // Term (terminal-output side effects)
     #[serde(rename = "term.osc1337_set_user_var")]
     Osc1337SetUserVar(Osc1337SetUserVar),
+    #[serde(rename = "term.bell")]
+    TermBell(TermBell),
 
     // Shell (user-initiated)
     #[serde(rename = "shell.command_progress")]
@@ -2771,6 +2792,7 @@ impl Event {
             }
             Self::UiPromptSubmitted(_) => EventName::UI_PROMPT_SUBMITTED,
             Self::UiPromptDraft(_) => EventName::UI_PROMPT_DRAFT,
+            Self::UiFocusChanged(_) => EventName::UI_FOCUS_CHANGED,
             Self::UiRoleSelect(_) => EventName::UI_ROLE_SELECT,
             Self::UiRoleUpdate(_) => EventName::UI_ROLE_UPDATE,
             Self::UiDetachRequest(_) => EventName::UI_DETACH_REQUEST,
@@ -2783,6 +2805,7 @@ impl Event {
             Self::UiCancelPrompt(_) => EventName::UI_CANCEL_PROMPT,
             Self::UiRecallQueuedPrompt(_) => EventName::UI_RECALL_QUEUED_PROMPT,
             Self::Osc1337SetUserVar(_) => EventName::TERM_OSC1337_SET_USER_VAR,
+            Self::TermBell(_) => EventName::TERM_BELL,
             Self::ShellCommandProgress(_) => EventName::SHELL_COMMAND_PROGRESS,
             Self::ShellCommandFinished(_) => EventName::SHELL_COMMAND_FINISHED,
             Self::AgentPromptSubmitted(_) => EventName::AGENT_PROMPT_SUBMITTED,
@@ -2833,6 +2856,7 @@ impl Event {
                 | Self::UiCompactRequest(_)
                 | Self::UiCreateAgent(_)
                 | Self::UiPromptDraft(_)
+                | Self::UiFocusChanged(_)
         )
     }
 }

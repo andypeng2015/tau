@@ -597,6 +597,8 @@ pub enum Event {
     CancelPrompt,
     /// The terminal was resized.
     Resize { width: u16, height: u16 },
+    /// The terminal reported focus gained or lost.
+    FocusChanged { focused: bool },
     /// The input buffer or completion menu state changed. Fires for
     /// keystrokes that mutate the buffer and for completion menu
     /// open/close/cycle. Caller should re-render anything that
@@ -1031,6 +1033,9 @@ impl TermHandle {
 pub enum RawEvent {
     Key(KeyEvent),
     Resize(u16, u16),
+    FocusChanged {
+        focused: bool,
+    },
     /// One bracketed paste. The whole pasted string is delivered
     /// atomically so a multi-line paste doesn't trigger Enter on
     /// embedded newlines.
@@ -1112,6 +1117,7 @@ impl Term {
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::event::EnableBracketedPaste,
+            crossterm::event::EnableFocusChange,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
             cursor_shape.crossterm_style()
         );
@@ -1234,6 +1240,9 @@ impl Term {
                         height: h,
                     });
                 }
+                RawEvent::FocusChanged { focused } => {
+                    return Ok(Event::FocusChanged { focused });
+                }
                 RawEvent::Paste(text) => {
                     // Insert the whole paste at the cursor in one go.
                     // Going through the per-char path would re-trigger
@@ -1286,9 +1295,11 @@ impl Term {
                 Some(RawEvent::Key(key))
             }
             CtEvent::Resize(w, h) => Some(RawEvent::Resize(w, h)),
+            CtEvent::FocusGained => Some(RawEvent::FocusChanged { focused: true }),
+            CtEvent::FocusLost => Some(RawEvent::FocusChanged { focused: false }),
             CtEvent::Paste(text) => Some(RawEvent::Paste(text)),
-            // Mouse / focus events: skip and recurse so the caller
-            // still observes the channel/stdin as "blocking".
+            // Mouse events: skip and recurse so the caller still
+            // observes the channel/stdin as "blocking".
             _ => self.next_raw(),
         }
     }
@@ -1937,6 +1948,7 @@ impl Drop for Term {
             let _ = crossterm::execute!(
                 io::stdout(),
                 PopKeyboardEnhancementFlags,
+                crossterm::event::DisableFocusChange,
                 crossterm::event::DisableBracketedPaste,
             );
             let _ = terminal::disable_raw_mode();

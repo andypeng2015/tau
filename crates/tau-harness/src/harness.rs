@@ -778,8 +778,8 @@ pub struct Harness {
     /// `invocation_id` → action provider/requester pair for UI-directed
     /// action result routing and source validation.
     pending_action_invocations: HashMap<ActionInvocationId, PendingActionInvocation>,
-    /// Append-only ring of recent protocol events. Client follower
-    /// threads tail this log on connect to replay state and stay live.
+    /// Runtime event sequencer. Replay for reconnecting clients is rebuilt from
+    /// semantic state instead of retained event payloads.
     pub(crate) event_log: std::sync::Arc<EventLog>,
     /// Writer channels for socket clients, keyed by connection ID.
     /// Used to start follower threads for log-based replay + delivery.
@@ -936,11 +936,6 @@ pub struct Harness {
     /// still absent from the registry. A later registration uses this to queue
     /// the matching available-again notice.
     unavailable_tool_notices_delivered: BTreeMap<String, ToolName>,
-    /// Agent prompt IDs that have already been completed by the agent.
-    /// Used to dedupe duplicate `ProviderResponseFinished` events that can
-    /// arise under at-least-once delivery (e.g. an agent that reconnects
-    /// after a crash and replays its last prompt).
-    pub(crate) completed_prompts: std::collections::HashSet<AgentPromptId>,
     /// Pure scheduler state for queued and in-flight tool invocations.
     pub(crate) tool_turn: ToolTurnMachine,
     /// Backgrounded calls whose real completion should not enqueue an internal
@@ -1345,7 +1340,6 @@ impl Harness {
             pending_restore_background_notices: HashMap::new(),
             pending_tool_availability_notices: BTreeMap::new(),
             unavailable_tool_notices_delivered: BTreeMap::new(),
-            completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
@@ -1584,7 +1578,6 @@ impl Harness {
             pending_restore_background_notices: HashMap::new(),
             pending_tool_availability_notices: BTreeMap::new(),
             unavailable_tool_notices_delivered: BTreeMap::new(),
-            completed_prompts: std::collections::HashSet::new(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
@@ -6318,10 +6311,14 @@ impl Harness {
         self.tool_turn.clear();
         self.tool_agents.clear();
         self.pending_tools.clear();
+        self.completed_tool_calls.clear();
         self.pending_tool_providers.clear();
         self.pending_action_invocations.clear();
         self.prompt_agents.clear();
         self.pending_provider_prompts.clear();
+        self.suppressed_background_completion_prompts.clear();
+        self.background_completion_targets.clear();
+        self.canceled_prompts.clear();
         self.pending_restore_notice_sessions.clear();
         self.pending_restore_background_notices.clear();
         self.pending_tool_availability_notices.clear();
@@ -7676,8 +7673,6 @@ impl Harness {
             self.pending_provider_prompts
                 .remove(&response.agent_prompt_id);
             self.prompt_models.remove(&response.agent_prompt_id);
-            self.completed_prompts
-                .insert(response.agent_prompt_id.clone());
             return Ok(());
         }
         // Save the model that ran this turn before the
@@ -7788,8 +7783,6 @@ impl Harness {
             conv.in_flight_prompt = None;
             conv.turn_state = AgentTurnState::Idle;
         }
-        self.completed_prompts
-            .insert(response.agent_prompt_id.clone());
 
         // Side-conversation handling: if this prompt originated from
         // an extension via StartAgentRequest, route the final text back

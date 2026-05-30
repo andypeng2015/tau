@@ -11,8 +11,8 @@ use tau_config::settings::CliBindingAction;
 use tau_harness::SessionLaunchStatus;
 use tau_proto::{
     CborValue, ClientKind, Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter,
-    Hello, Message, PROTOCOL_VERSION, Subscribe, UiCreateAgent, UiPromptDraft, UiPromptSubmitted,
-    UnixMicros,
+    Hello, Message, PROTOCOL_VERSION, Subscribe, UiCreateAgent, UiFocusChanged, UiPromptDraft,
+    UiPromptSubmitted, UnixMicros,
 };
 
 use crate::action_commands::ActionCommandState;
@@ -976,6 +976,7 @@ impl<'a> TerminalInputSession<'a> {
             TermEvent::Resize { .. } => {
                 tracing::debug!(target: "tau_cli::ui", "terminal resized");
             }
+            TermEvent::FocusChanged { focused } => self.send_focus_changed(focused),
             TermEvent::BufferChanged => self.update_draft(),
             TermEvent::FastToggle => self.toggle_fast_service_tier(),
             TermEvent::CycleRole => self.cycle_role_inner(),
@@ -983,6 +984,16 @@ impl<'a> TerminalInputSession<'a> {
             TermEvent::Escape => self.recall_queued_prompt(),
             TermEvent::Line(_) | TermEvent::Eof | TermEvent::CancelPrompt => {}
         }
+    }
+
+    fn send_focus_changed(&self, focused: bool) {
+        let _ = send_event(
+            self.writer,
+            &Event::UiFocusChanged(UiFocusChanged {
+                session_id: self.session_id.as_str().into(),
+                focused,
+            }),
+        );
     }
 
     fn recall_queued_prompt(&self) {
