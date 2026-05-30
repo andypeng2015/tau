@@ -608,8 +608,7 @@ fn execution_events_use_provider_wire_family() {
         (
             Event::ProviderResponseUpdated(ProviderResponseUpdated {
                 agent_prompt_id: "sp-1".into(),
-                text: "hello".to_owned(),
-                thinking: None,
+                items: Vec::new(),
                 originator: PromptOriginator::User,
             }),
             "provider.response_updated",
@@ -632,6 +631,24 @@ fn execution_events_use_provider_wire_family() {
         let json = serde_json::to_value(&event).expect("serialize");
         assert_eq!(json["event"], expected);
     }
+}
+
+#[test]
+fn provider_response_updated_requires_item_snapshots() {
+    // The provider streaming payload is item-based only. Legacy text/thinking
+    // snapshots must fail instead of silently decoding as empty item updates.
+    let value = serde_json::json!({
+        "agent_prompt_id": "sp-1",
+        "text": "legacy assistant text",
+        "thinking": "legacy reasoning text"
+    });
+
+    let error = serde_json::from_value::<ProviderResponseUpdated>(value)
+        .expect_err("legacy streaming payload should not decode");
+    assert!(
+        error.to_string().contains("items"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -766,8 +783,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
     let transient = [
         Event::ProviderResponseUpdated(ProviderResponseUpdated {
             agent_prompt_id: "sp-1".into(),
-            text: "partial".to_owned(),
-            thinking: None,
+            items: Vec::new(),
             originator: PromptOriginator::User,
         }),
         Event::ToolProgress(ToolProgress {

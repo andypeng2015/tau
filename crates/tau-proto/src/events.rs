@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActionInvocationId, AgentContextKey, AgentId, AgentMessageId, AgentPromptId, CborValue,
     ContextItem, DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId,
-    PromptContext, PromptFragment, ProviderTokenUsage, SessionId, SkillName, ToolCallId,
-    ToolDefinition, ToolName,
+    PromptContext, PromptFragment, ProviderResponseItem, ProviderTokenUsage, SessionId, SkillName,
+    ToolCallId, ToolDefinition, ToolName,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -2382,20 +2382,19 @@ pub struct ProviderPromptSubmitted {
     pub originator: PromptOriginator,
 }
 
-/// The provider has new accumulated response text for a prompt.
-/// Each update carries the full text so far (replace, not delta).
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// The provider has new accumulated response output for a prompt.
+///
+/// Each update is a replace-style ordered item snapshot, not a delta. Consumers
+/// should render `items` in order; completed entries are still transient until
+/// [`ProviderResponseFinished`] commits final `output_items`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderResponseUpdated {
     /// Prompt id whose accumulated response changed.
     pub agent_prompt_id: AgentPromptId,
-    /// Full response text accumulated so far.
-    pub text: String,
-    /// Accumulated provider-supplied reasoning summary so far, if the
-    /// provider exposed one. Replace, not delta. Persisted with the
-    /// final assistant turn but never replayed back into later
-    /// prompts (see `assemble_conversation`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
+    /// Ordered live provider output items. Completed entries are stable within
+    /// the live snapshot but are not durable transcript facts until the
+    /// matching [`ProviderResponseFinished`] commits final `output_items`.
+    pub items: Vec<ProviderResponseItem>,
     /// Echo of [`AgentPromptCreated::originator`]. UIs filter on
     /// `originator.is_user()` so the streaming text from a side
     /// conversation doesn't paint into the user's chat window.

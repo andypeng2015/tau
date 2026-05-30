@@ -182,10 +182,8 @@ fn debug_write_provider_request(
 
 /// Calls the Codex Responses API with SSE streaming.
 ///
-/// `on_update` is invoked on each visible delta with `(text,
-/// thinking)`, where `thinking` is the accumulated reasoning summary
-/// the provider has streamed so far (or `None` if no summary
-/// content has arrived yet).
+/// `on_update` is invoked on each visible output change with the current
+/// accumulated stream state snapshot.
 ///
 /// HTTP+SSE requests always send the full prompt. The Codex endpoint is called
 /// with `store: false`, so `previous_response_id` chaining is intentionally a
@@ -194,7 +192,7 @@ pub fn responses_stream(
     agent_prompt_id: &str,
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&StreamState),
 ) -> Result<StreamState, LlmError> {
     let url = config.surface.responses_url(&config.base_url);
 
@@ -268,7 +266,7 @@ pub fn responses_stream(
 pub fn apply_event(
     state: &mut StreamState,
     event: &serde_json::Value,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&StreamState),
 ) -> Result<bool, LlmError> {
     let event_type = event["type"].as_str().unwrap_or("");
 
@@ -277,35 +275,29 @@ pub fn apply_event(
             if let Some(delta) = event["delta"].as_str() {
                 let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                 state.append_message_delta_at(output_index, delta);
-                on_update(&state.text, state.thinking.as_deref());
+                on_update(state);
             }
         }
         "response.output_text.done" => {
             if let Some(text) = event["text"].as_str() {
                 let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
                 state.set_message_text_at(output_index, text);
-                on_update(&state.text, state.thinking.as_deref());
+                on_update(state);
             }
         }
         "response.reasoning_summary_text.delta" => {
             if let Some(delta) = event["delta"].as_str() {
-                state
-                    .thinking
-                    .get_or_insert_with(String::new)
-                    .push_str(delta);
-                on_update(&state.text, state.thinking.as_deref());
+                let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
+                state.append_reasoning_summary_delta_at(output_index, delta);
+                on_update(state);
             }
         }
         "response.reasoning_summary_part.added" => {
             // Each summary part is a separate paragraph. Insert a
             // blank line between parts so consecutive paragraphs
             // are visually separated.
-            if let Some(thinking) = state.thinking.as_mut()
-                && !thinking.is_empty()
-                && !thinking.ends_with("\n\n")
-            {
-                thinking.push_str("\n\n");
-            }
+            let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
+            state.start_reasoning_summary_part_at(output_index);
         }
         "response.function_call_arguments.delta" => {
             let output_index = event["output_index"].as_u64().unwrap_or(0) as usize;
@@ -314,6 +306,7 @@ pub fn apply_event(
                     .tool_call_at_mut(output_index, tau_proto::ToolType::Function)
                     .arguments_json
                     .push_str(delta);
+                on_update(state);
             }
         }
         "response.function_call_arguments.done" => {
@@ -322,6 +315,7 @@ pub fn apply_event(
                 state
                     .tool_call_at_mut(output_index, tau_proto::ToolType::Function)
                     .arguments_json = arguments.to_owned();
+                on_update(state);
             }
         }
         "response.custom_tool_call_input.delta" => {
@@ -331,6 +325,7 @@ pub fn apply_event(
                     .tool_call_at_mut(output_index, tau_proto::ToolType::Custom)
                     .arguments_json
                     .push_str(delta);
+                on_update(state);
             }
         }
         "response.custom_tool_call_input.done" => {
@@ -339,10 +334,12 @@ pub fn apply_event(
                 state
                     .tool_call_at_mut(output_index, tau_proto::ToolType::Custom)
                     .arguments_json = input.to_owned();
+                on_update(state);
             }
         }
         "response.output_item.added" | "response.output_item.done" => {
             if let Some(item) = event.get("item") {
+                let mut changed = false;
                 let tool_type = match item["type"].as_str() {
                     Some("function_call") => Some(tau_proto::ToolType::Function),
                     Some("custom_tool_call") => Some(tau_proto::ToolType::Custom),
@@ -353,9 +350,11 @@ pub fn apply_event(
                     let call = state.tool_call_at_mut(output_index, tool_type);
                     if let Some(id) = item["call_id"].as_str() {
                         call.id = id.to_owned();
+                        changed = true;
                     }
                     if let Some(name) = item["name"].as_str() {
                         call.name = name.to_owned();
+                        changed = true;
                     }
                     if call.arguments_json.is_empty() {
                         let final_input = match tool_type {
@@ -364,19 +363,19 @@ pub fn apply_event(
                         };
                         if let Some(final_input) = final_input {
                             call.arguments_json = final_input.to_owned();
+                            changed = true;
                         }
                     }
                 }
                 if item["type"].as_str() == Some("message") {
                     state.set_message_phase_at(output_index, parse_phase_from_item(item));
+                    changed = true;
                     if event_type == "response.output_item.done"
                         && let Some(text) = message_text_from_output_item(item)
                     {
                         let previous_text = state.text.clone();
                         state.set_message_text_at(output_index, &text);
-                        if state.text != previous_text {
-                            on_update(&state.text, state.thinking.as_deref());
-                        }
+                        changed |= state.text != previous_text;
                     }
                 }
                 // Capture reasoning items only on `output_item.done`,
@@ -403,11 +402,23 @@ pub fn apply_event(
                     && item["encrypted_content"].is_string()
                 {
                     state.set_reasoning_item_json_at(output_index, &item.to_string());
+                    changed = true;
                 }
-                if event_type == "response.output_item.done"
-                    && item["type"].as_str() == Some("compaction")
-                {
-                    state.set_compaction_item_json_at(output_index, &item.to_string());
+                if item["type"].as_str() == Some("compaction") {
+                    if event_type == "response.output_item.added" {
+                        state.start_compaction_item_at(output_index);
+                        changed = true;
+                    } else if event_type == "response.output_item.done" {
+                        state.set_compaction_item_json_at(output_index, &item.to_string());
+                        changed = true;
+                    }
+                }
+                if event_type == "response.output_item.done" {
+                    state.mark_output_item_done(output_index);
+                    changed = true;
+                }
+                if changed {
+                    on_update(state);
                 }
             }
         }
@@ -1061,6 +1072,7 @@ fn convert_context_item(
                 "output": output,
             }));
         }
+        ContextItem::ReasoningText(_) => {}
         ContextItem::Reasoning(item) => {
             out.push(cbor_to_json(&item.0));
         }

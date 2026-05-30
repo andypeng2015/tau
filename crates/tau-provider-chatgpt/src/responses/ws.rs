@@ -213,7 +213,7 @@ impl WsConn {
         agent_prompt_id: &str,
         request: &PromptPayload<'_>,
         should_abort: &mut impl FnMut() -> bool,
-        on_update: &mut impl FnMut(&str, Option<&str>),
+        on_update: &mut impl FnMut(&StreamState),
     ) -> Result<StreamState, LlmError> {
         let cached_response_id = self.cached_response_id.as_deref();
         let envelope = build_ws_envelope(config, request, cached_response_id, None);
@@ -238,14 +238,14 @@ impl WsConn {
         request: &PromptPayload<'_>,
     ) -> Result<StreamState, LlmError> {
         let envelope = build_ws_envelope(config, request, None, Some(false));
-        self.run_envelope(envelope, None::<&mut fn() -> bool>, &mut |_, _| {})
+        self.run_envelope(envelope, None::<&mut fn() -> bool>, &mut |_| {})
     }
 
     fn run_envelope(
         &mut self,
         envelope: super::WsResponseCreate,
         mut should_abort: Option<&mut impl FnMut() -> bool>,
-        on_update: &mut impl FnMut(&str, Option<&str>),
+        on_update: &mut impl FnMut(&StreamState),
     ) -> Result<StreamState, LlmError> {
         let text = serde_json::to_string(&envelope).map_err(LlmError::Json)?;
         self.outbound_tx

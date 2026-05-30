@@ -1,10 +1,13 @@
 //! Types shared by the ChatGPT/Codex Responses transports.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tau_proto::{
-    CborValue, ContentPart, ContextItem, ContextRole, MessageItem, OpaqueProviderItem,
-    PromptContext, PromptOriginator, ProviderTokenUsage, SessionId, ToolCallItem, ToolDefinition,
+    CborValue, ContentPart, ContextItem, ContextRole, InProgressCompactionStatus,
+    InProgressOutputItem, MessageItem, OpaqueProviderItem, PromptContext, PromptOriginator,
+    ProviderResponseItem, ProviderTokenUsage, ReasoningTextItem, ReasoningTextKind, SessionId,
+    ToolCallItem, ToolDefinition,
 };
 use uuid::Uuid;
 
@@ -175,7 +178,7 @@ pub enum OutputItemAccumulator {
     Message(MessageAccumulator),
     ToolCall(ToolCallAccumulator),
     Reasoning(OpaqueProviderItem),
-    Compaction(OpaqueProviderItem),
+    Compaction(Option<OpaqueProviderItem>),
 }
 
 /// Accumulates one assistant message item across text deltas.
@@ -187,9 +190,8 @@ pub struct MessageAccumulator {
 
 /// Accumulated streaming state shared by both backends.
 pub struct StreamState {
-    /// Concatenated visible assistant text, kept for the existing
-    /// `ProviderResponseUpdated.text` wire shape. The durable final output
-    /// is assembled from `output_items` instead.
+    /// Concatenated visible assistant text, kept for backend validation and
+    /// tests. The durable final output is assembled from `output_items`.
     pub text: String,
     pub output_items: Vec<OutputItemAccumulator>,
     pub input_tokens: Option<u64>,
@@ -199,6 +201,8 @@ pub struct StreamState {
     /// when the provider hasn't emitted any summary content (or when
     /// summaries weren't requested).
     pub thinking: Option<String>,
+    /// Output item index the displayable reasoning summary belongs to.
+    thinking_output_index: Option<usize>,
     /// Provider-supplied `response.id`, used by the harness to chain
     /// the next turn off this one via `previous_response_id`. Only
     /// populated by the Responses backend; the Chat Completions
@@ -213,6 +217,10 @@ pub struct StreamState {
     pub stale_chain_fallback: bool,
     /// Synthesized item slot for plain assistant text content.
     chat_message_item_index: Option<usize>,
+    /// Output item indices the upstream stream has marked done. Live updates
+    /// expose only the completed prefix from this set; final output is still
+    /// committed exclusively by `ProviderResponseFinished`.
+    completed_output_indices: BTreeSet<usize>,
 }
 
 /// Accumulates one tool call across streaming chunks.
@@ -234,7 +242,7 @@ impl ToolCallAccumulator {
         }
     }
 
-    fn into_context_item(self) -> Option<ContextItem> {
+    fn context_item(&self) -> Option<ContextItem> {
         if self.name.is_empty() {
             return None;
         }
@@ -244,15 +252,58 @@ impl ToolCallAccumulator {
                     serde_json::from_str(&self.arguments_json).unwrap_or(serde_json::Value::Null);
                 json_to_cbor(&args)
             }
-            tau_proto::ToolType::Custom => CborValue::Text(self.arguments_json),
+            tau_proto::ToolType::Custom => CborValue::Text(self.arguments_json.clone()),
         };
-        let name = tau_proto::ToolName::try_new(self.name)?;
+        let name = tau_proto::ToolName::try_new(self.name.clone())?;
         Some(ContextItem::ToolCall(ToolCallItem {
-            call_id: self.id.into(),
+            call_id: self.id.clone().into(),
             name,
             tool_type: self.tool_type,
             arguments,
         }))
+    }
+
+    fn in_progress_item(&self) -> InProgressOutputItem {
+        InProgressOutputItem::ToolCall {
+            call_id: (!self.id.is_empty()).then(|| self.id.clone().into()),
+            name: (!self.name.is_empty()).then(|| self.name.clone()),
+            tool_type: self.tool_type,
+            arguments: self.arguments_json.clone(),
+        }
+    }
+}
+
+impl OutputItemAccumulator {
+    fn context_item(&self) -> Option<ContextItem> {
+        match self {
+            OutputItemAccumulator::Empty => None,
+            OutputItemAccumulator::Message(message) => (!message.text.is_empty())
+                .then(|| assistant_text_item_with_phase(message.text.clone(), message.phase)),
+            OutputItemAccumulator::ToolCall(call) => call.context_item(),
+            OutputItemAccumulator::Reasoning(item) => Some(ContextItem::Reasoning(item.clone())),
+            OutputItemAccumulator::Compaction(Some(item)) => {
+                Some(ContextItem::Compaction(item.clone()))
+            }
+            OutputItemAccumulator::Compaction(None) => None,
+        }
+    }
+
+    fn in_progress_item(&self) -> Option<InProgressOutputItem> {
+        match self {
+            OutputItemAccumulator::Empty => None,
+            OutputItemAccumulator::Message(message) => {
+                (!message.text.is_empty()).then(|| InProgressOutputItem::Message {
+                    text: message.text.clone(),
+                    phase: message.phase,
+                })
+            }
+            OutputItemAccumulator::ToolCall(call) => Some(call.in_progress_item()),
+            OutputItemAccumulator::Reasoning(_) => None,
+            OutputItemAccumulator::Compaction(Some(_)) => None,
+            OutputItemAccumulator::Compaction(None) => Some(InProgressOutputItem::Compaction {
+                status: InProgressCompactionStatus::Started,
+            }),
+        }
     }
 }
 
@@ -271,10 +322,12 @@ impl StreamState {
             cached_tokens: None,
             output_tokens: None,
             thinking: None,
+            thinking_output_index: None,
             response_id: None,
             provider_terminal_event: None,
             stale_chain_fallback: false,
             chat_message_item_index: None,
+            completed_output_indices: BTreeSet::new(),
         }
     }
 
@@ -360,11 +413,46 @@ impl StreamState {
         }
     }
 
+    pub fn start_compaction_item_at(&mut self, output_index: usize) {
+        self.ensure_output_len(output_index);
+        if !matches!(
+            self.output_items[output_index],
+            OutputItemAccumulator::Compaction(_)
+        ) {
+            self.output_items[output_index] = OutputItemAccumulator::Compaction(None);
+        }
+    }
+
     pub fn set_compaction_item_json_at(&mut self, output_index: usize, item: &str) {
         if let Some(item) = opaque_item_from_json(item) {
             self.ensure_output_len(output_index);
-            self.output_items[output_index] = OutputItemAccumulator::Compaction(item);
+            self.output_items[output_index] = OutputItemAccumulator::Compaction(Some(item));
         }
+    }
+
+    /// Appends displayable reasoning-summary text at the provider output index
+    /// it belongs to.
+    pub fn append_reasoning_summary_delta_at(&mut self, output_index: usize, delta: &str) {
+        self.thinking_output_index.get_or_insert(output_index);
+        self.thinking
+            .get_or_insert_with(String::new)
+            .push_str(delta);
+    }
+
+    /// Starts a new reasoning-summary paragraph at the provider output index
+    /// it belongs to.
+    pub fn start_reasoning_summary_part_at(&mut self, output_index: usize) {
+        self.thinking_output_index.get_or_insert(output_index);
+        if let Some(thinking) = self.thinking.as_mut()
+            && !thinking.is_empty()
+            && !thinking.ends_with("\n\n")
+        {
+            thinking.push_str("\n\n");
+        }
+    }
+
+    pub fn mark_output_item_done(&mut self, output_index: usize) {
+        self.completed_output_indices.insert(output_index);
     }
 
     fn refresh_text(&mut self) {
@@ -373,6 +461,73 @@ impl StreamState {
             if let OutputItemAccumulator::Message(message) = item {
                 self.text.push_str(&message.text);
             }
+        }
+    }
+
+    /// Returns the ordered live response snapshot for a transient update.
+    ///
+    /// Completed entries are stable for the rest of the stream but remain
+    /// non-durable until `ProviderResponseFinished` commits final output.
+    pub fn response_items(&self) -> Vec<ProviderResponseItem> {
+        let mut items = Vec::new();
+        let thinking_index = self.thinking_output_index.unwrap_or(0);
+        let thinking_len = self
+            .thinking
+            .as_deref()
+            .filter(|thinking| !thinking.is_empty())
+            .map(|_| thinking_index + 1)
+            .unwrap_or(0);
+        let len = self.output_items.len().max(thinking_len);
+        for index in 0..len {
+            self.push_reasoning_response_item(index, &mut items);
+            if let Some(item) = self.output_items.get(index) {
+                self.push_output_response_item(index, item, &mut items);
+            }
+        }
+        items
+    }
+
+    fn push_reasoning_response_item(&self, index: usize, items: &mut Vec<ProviderResponseItem>) {
+        let Some(thinking) = self
+            .thinking
+            .as_deref()
+            .filter(|thinking| !thinking.is_empty())
+        else {
+            return;
+        };
+        if self.thinking_output_index.unwrap_or(0) != index {
+            return;
+        }
+        let kind = ReasoningTextKind::Summary;
+        if self.completed_output_indices.contains(&index) {
+            items.push(ProviderResponseItem::Completed(ContextItem::ReasoningText(
+                ReasoningTextItem {
+                    kind,
+                    text: thinking.to_owned(),
+                },
+            )));
+        } else {
+            items.push(ProviderResponseItem::InProgress(
+                InProgressOutputItem::ReasoningText {
+                    kind,
+                    text: thinking.to_owned(),
+                },
+            ));
+        }
+    }
+
+    fn push_output_response_item(
+        &self,
+        index: usize,
+        item: &OutputItemAccumulator,
+        items: &mut Vec<ProviderResponseItem>,
+    ) {
+        if self.completed_output_indices.contains(&index) {
+            if let Some(item) = item.context_item() {
+                items.push(ProviderResponseItem::Completed(item));
+            }
+        } else if let Some(item) = item.in_progress_item() {
+            items.push(ProviderResponseItem::InProgress(item));
         }
     }
 
@@ -386,24 +541,27 @@ impl StreamState {
     /// harness even though the model never committed a valid call.
     pub fn into_output_items(self) -> Vec<ContextItem> {
         let mut items = Vec::new();
+        let thinking_index = self.thinking_output_index.unwrap_or(0);
+        let thinking = self.thinking.filter(|thinking| !thinking.is_empty());
+        let output_items = self
+            .output_items
+            .into_iter()
+            .map(|item| item.context_item())
+            .collect::<Vec<_>>();
+        let thinking_len = thinking.as_ref().map(|_| thinking_index + 1).unwrap_or(0);
+        let len = output_items.len().max(thinking_len);
 
-        for item in self.output_items {
-            match item {
-                OutputItemAccumulator::Empty => {}
-                OutputItemAccumulator::Message(message) => {
-                    if !message.text.is_empty() {
-                        items.push(assistant_text_item_with_phase(message.text, message.phase));
-                    }
-                }
-                OutputItemAccumulator::ToolCall(call) => {
-                    if let Some(item) = call.into_context_item() {
-                        items.push(item);
-                    }
-                }
-                OutputItemAccumulator::Reasoning(item) => items.push(ContextItem::Reasoning(item)),
-                OutputItemAccumulator::Compaction(item) => {
-                    items.push(ContextItem::Compaction(item));
-                }
+        for index in 0..len {
+            if index == thinking_index
+                && let Some(thinking) = &thinking
+            {
+                items.push(ContextItem::ReasoningText(ReasoningTextItem {
+                    kind: ReasoningTextKind::Summary,
+                    text: thinking.clone(),
+                }));
+            }
+            if let Some(item) = output_items.get(index).and_then(Option::as_ref) {
+                items.push(item.clone());
             }
         }
 

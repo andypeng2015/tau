@@ -122,7 +122,7 @@ fn reasoning_content_is_persisted_and_replayed_with_tool_call() {
                 "finish_reason": null
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
     apply_event(
         &mut state,
@@ -139,10 +139,10 @@ fn reasoning_content_is_persisted_and_replayed_with_tool_call() {
                 "finish_reason": "tool_calls"
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
     let items = state.output_items();
-    assert!(matches!(items[0], ContextItem::Reasoning(_)));
+    assert!(matches!(items[0], ContextItem::ReasoningText(_)));
     assert!(matches!(items[1], ContextItem::ToolCall(_)));
 
     let mut replay = prompt();
@@ -189,7 +189,7 @@ fn replay_coalesces_assistant_text_and_tool_calls_in_stream_order() {
                 "finish_reason": null
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
     apply_event(
         &mut state,
@@ -211,10 +211,10 @@ fn replay_coalesces_assistant_text_and_tool_calls_in_stream_order() {
                 "finish_reason": "tool_calls"
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
     let items = state.output_items();
-    assert!(matches!(items[0], ContextItem::Reasoning(_)));
+    assert!(matches!(items[0], ContextItem::ReasoningText(_)));
     assert!(matches!(items[1], ContextItem::Message(_)));
     assert!(matches!(items[2], ContextItem::ToolCall(_)));
     assert!(matches!(items[3], ContextItem::ToolCall(_)));
@@ -256,10 +256,10 @@ fn think_tags_are_persisted_as_reasoning_content() {
                 "finish_reason": "stop"
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
     let items = state.output_items();
-    assert!(matches!(items[0], ContextItem::Reasoning(_)));
+    assert!(matches!(items[0], ContextItem::ReasoningText(_)));
     let ContextItem::Message(message) = &items[1] else {
         panic!("expected visible assistant message");
     };
@@ -368,7 +368,7 @@ fn length_finish_reason_maps_to_length_stop_reason() {
                 "finish_reason": "length"
             }]
         }),
-        &mut |_, _| {},
+        &mut |_| {},
     );
 
     assert_eq!(state.stop_reason, ProviderStopReason::Length);

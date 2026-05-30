@@ -355,7 +355,7 @@ pub fn run_turn_through_pool(
     session_id: &str,
     agent_prompt_id: &str,
     request: &crate::common::PromptPayload<'_>,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&crate::common::StreamState),
 ) -> Result<crate::common::StreamState, WsTurnError> {
     let key = PoolKey::for_request(config, request);
 
@@ -416,7 +416,7 @@ pub fn run_turn_through_shared_pool(
     agent_prompt_id: &str,
     request: &crate::common::PromptPayload<'_>,
     should_abort: &mut impl FnMut() -> bool,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&crate::common::StreamState),
 ) -> Result<crate::common::StreamState, WsTurnError> {
     let session_id = request.session_id.as_str();
     let key = PoolKey::for_request(config, request);

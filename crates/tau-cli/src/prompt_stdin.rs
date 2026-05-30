@@ -196,17 +196,14 @@ impl OneShotOutput {
             return;
         }
         let prompt_id = update.agent_prompt_id.to_string();
-        if let Some(thinking) = update
-            .thinking
-            .as_ref()
-            .filter(|thinking| !thinking.is_empty())
-        {
+        let thinking = reasoning_text_from_update(update);
+        if let Some(thinking) = thinking.filter(|thinking| !thinking.is_empty()) {
             self.thinking_by_prompt
                 .insert(prompt_id.clone(), thinking.clone());
         }
-        if !update.text.is_empty() {
-            self.response_by_prompt
-                .insert(prompt_id, update.text.clone());
+        let text = assistant_text_from_update(update).unwrap_or_default();
+        if !text.is_empty() {
+            self.response_by_prompt.insert(prompt_id, text);
         }
     }
 
@@ -214,9 +211,11 @@ impl OneShotOutput {
         if !finished.originator.is_user() {
             return false;
         }
-        if let Some(thinking) = self
-            .thinking_by_prompt
-            .remove(finished.agent_prompt_id.as_str())
+        if let Some(thinking) =
+            reasoning_text_from_output_items(&finished.output_items).or_else(|| {
+                self.thinking_by_prompt
+                    .remove(finished.agent_prompt_id.as_str())
+            })
         {
             self.thinking_blocks.push(thinking);
         }
@@ -256,23 +255,73 @@ fn write_text_block(stdout: &mut impl Write, wrote_block: &mut bool, text: &str)
     Ok(())
 }
 
-fn assistant_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
+fn assistant_text_from_update(update: &ProviderResponseUpdated) -> Option<String> {
+    let mut text = String::new();
+    for item in &update.items {
+        match item {
+            tau_proto::ProviderResponseItem::Completed(item) => {
+                if let Some(part) = assistant_text_from_context_item(item) {
+                    text.push_str(&part);
+                }
+            }
+            tau_proto::ProviderResponseItem::InProgress(
+                tau_proto::InProgressOutputItem::Message { text: part, .. },
+            ) => text.push_str(part),
+            tau_proto::ProviderResponseItem::InProgress(_) => {}
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn reasoning_text_from_update(update: &ProviderResponseUpdated) -> Option<String> {
+    let mut text = String::new();
+    for item in &update.items {
+        match item {
+            tau_proto::ProviderResponseItem::Completed(ContextItem::ReasoningText(reasoning)) => {
+                text.push_str(&reasoning.text);
+            }
+            tau_proto::ProviderResponseItem::Completed(_) => {}
+            tau_proto::ProviderResponseItem::InProgress(
+                tau_proto::InProgressOutputItem::ReasoningText { text: part, .. },
+            ) => text.push_str(part),
+            tau_proto::ProviderResponseItem::InProgress(_) => {}
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn reasoning_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
     let text = output_items
         .iter()
         .filter_map(|item| match item {
-            ContextItem::Message(message) if message.role == ContextRole::Assistant => Some(
-                message
-                    .content
-                    .iter()
-                    .map(|part| match part {
-                        ContentPart::Text { text } => text.as_str(),
-                    })
-                    .collect::<String>(),
-            ),
+            ContextItem::ReasoningText(reasoning) => Some(reasoning.text.as_str()),
             _ => None,
         })
         .collect::<String>();
     (!text.is_empty()).then_some(text)
+}
+
+fn assistant_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
+    let text = output_items
+        .iter()
+        .filter_map(assistant_text_from_context_item)
+        .collect::<String>();
+    (!text.is_empty()).then_some(text)
+}
+
+fn assistant_text_from_context_item(item: &ContextItem) -> Option<String> {
+    match item {
+        ContextItem::Message(message) if message.role == ContextRole::Assistant => Some(
+            message
+                .content
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text } => text.as_str(),
+                })
+                .collect::<String>(),
+        ),
+        _ => None,
+    }
 }
 
 fn terminated_reason(terminated: &AgentPromptTerminated) -> &'static str {
@@ -289,10 +338,26 @@ mod tests {
     use super::*;
 
     fn user_update(spid: &str, text: &str, thinking: Option<&str>) -> ProviderResponseUpdated {
+        let mut items = Vec::new();
+        if let Some(thinking) = thinking.filter(|thinking| !thinking.is_empty()) {
+            items.push(tau_proto::ProviderResponseItem::InProgress(
+                tau_proto::InProgressOutputItem::ReasoningText {
+                    kind: tau_proto::ReasoningTextKind::Summary,
+                    text: thinking.to_owned(),
+                },
+            ));
+        }
+        if !text.is_empty() {
+            items.push(tau_proto::ProviderResponseItem::InProgress(
+                tau_proto::InProgressOutputItem::Message {
+                    text: text.to_owned(),
+                    phase: None,
+                },
+            ));
+        }
         ProviderResponseUpdated {
             agent_prompt_id: spid.into(),
-            text: text.to_owned(),
-            thinking: thinking.map(str::to_owned),
+            items,
             originator: PromptOriginator::User,
         }
     }

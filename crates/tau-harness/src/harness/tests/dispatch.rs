@@ -2432,8 +2432,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
         "provider-other",
         Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
             agent_prompt_id: spid.clone(),
-            text: "spoofed stream".to_owned(),
-            thinking: None,
+            items: Vec::new(),
             originator: tau_proto::PromptOriginator::User,
         })),
     )
@@ -2442,8 +2441,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
         "tool-impersonator",
         Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
             agent_prompt_id: spid.clone(),
-            text: "tool stream".to_owned(),
-            thinking: None,
+            items: Vec::new(),
             originator: tau_proto::PromptOriginator::User,
         })),
     )
@@ -2483,8 +2481,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
         "provider-owner",
         Frame::Event(Event::ProviderResponseUpdated(ProviderResponseUpdated {
             agent_prompt_id: spid.clone(),
-            text: "real stream".to_owned(),
-            thinking: None,
+            items: Vec::new(),
             originator: tau_proto::PromptOriginator::User,
         })),
     )

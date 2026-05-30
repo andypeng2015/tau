@@ -631,8 +631,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
         None,
         Event::ProviderResponseUpdated(ProviderResponseUpdated {
             agent_prompt_id: spid.clone(),
-            text: "partial".to_owned(),
-            thinking: None,
+            items: Vec::new(),
             originator: Default::default(),
         }),
     );

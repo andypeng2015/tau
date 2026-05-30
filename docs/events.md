@@ -97,9 +97,10 @@ Emitted by the provider backend that owns the selected model.
 - **`provider.prompt_submitted`** — The provider accepted an `agent.prompt_created`
   or `agent.compaction_requested` and started processing it. Echoes the
   originator. Transient.
-- **`provider.response_updated`** — Streaming update with the full text so
-  far (replace, not delta) and accumulated reasoning summary if any.
-  Transient by default.
+- **`provider.response_updated`** — Replace-style ordered item streaming
+  snapshot. Consumers render `items` in order; each entry is either a completed
+  non-durable context item or an in-progress message, reasoning text, tool-call,
+  or compaction lifecycle item. Transient by default.
 - **`provider.response_finished`** — Final assistant output in original
   item order via `output_items`, plus optional usage, provider
   response id, backend metadata, and echoed originator. Routed by the

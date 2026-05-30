@@ -1,6 +1,7 @@
 use tau_proto::{
-    AgentPromptId, Frame, ModelId, PromptOriginator, ProviderResponseFinished,
-    ProviderResponseUpdated, ProviderTokenUsage,
+    AgentPromptId, Frame, InProgressOutputItem, ModelId, PromptOriginator,
+    ProviderResponseFinished, ProviderResponseItem, ProviderResponseUpdated, ProviderTokenUsage,
+    ReasoningTextKind,
 };
 
 use super::*;
@@ -62,8 +63,16 @@ fn published_line_compacts_long_strings() {
     let mut log = DebugEventLog::open(td.path()).expect("open");
     let event = Event::ProviderResponseUpdated(ProviderResponseUpdated {
         agent_prompt_id: AgentPromptId::from("sp-0"),
-        text: "x".repeat(101),
-        thinking: Some(format!("{}{}{}", "α".repeat(30), "middle", "ω".repeat(30))),
+        items: vec![
+            ProviderResponseItem::InProgress(InProgressOutputItem::Message {
+                text: "x".repeat(101),
+                phase: None,
+            }),
+            ProviderResponseItem::InProgress(InProgressOutputItem::ReasoningText {
+                kind: ReasoningTextKind::Summary,
+                text: format!("{}{}{}", "α".repeat(30), "middle", "ω".repeat(30)),
+            }),
+        ],
         originator: PromptOriginator::User,
     });
 
@@ -73,10 +82,13 @@ fn published_line_compacts_long_strings() {
     assert_eq!(lines.len(), 1);
     let payload = &lines[0]["event"]["payload"];
     assert_eq!(
-        payload["text"],
+        payload["items"][0]["item"]["text"],
         "xxxxxxxxxxxxxxxxxxxx┄total 101┄xxxxxxxxxxxxxxxxxxxx"
     );
-    assert_eq!(payload["thinking"], "αααααααααα┄total 126┄ωωωωωωωωωω");
+    assert_eq!(
+        payload["items"][1]["item"]["text"],
+        "αααααααααα┄total 126┄ωωωωωωωωωω"
+    );
 }
 
 #[test]
@@ -90,8 +102,12 @@ fn transient_from_connection_events_are_not_logged_twice() {
     let mut log = DebugEventLog::open(td.path()).expect("open");
     let event = Event::ProviderResponseUpdated(ProviderResponseUpdated {
         agent_prompt_id: AgentPromptId::from("sp-0"),
-        text: "partial".to_owned(),
-        thinking: None,
+        items: vec![ProviderResponseItem::InProgress(
+            InProgressOutputItem::Message {
+                text: "partial".to_owned(),
+                phase: None,
+            },
+        )],
         originator: PromptOriginator::User,
     });
 

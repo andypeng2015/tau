@@ -1115,13 +1115,13 @@ fn apply_event_accumulates_custom_tool_input_deltas() {
             "name": "apply_patch",
         }
     });
-    apply_event(&mut state, &added, &mut |_, _| {}).expect("added");
+    apply_event(&mut state, &added, &mut |_| {}).expect("added");
     let delta = serde_json::json!({
         "type": "response.custom_tool_call_input.delta",
         "output_index": 0,
         "delta": "*** Begin Patch"
     });
-    apply_event(&mut state, &delta, &mut |_, _| {}).expect("delta");
+    apply_event(&mut state, &delta, &mut |_| {}).expect("delta");
     let done = serde_json::json!({
         "type": "response.output_item.done",
         "output_index": 0,
@@ -1132,7 +1132,7 @@ fn apply_event_accumulates_custom_tool_input_deltas() {
             "input": "*** Begin Patch"
         }
     });
-    apply_event(&mut state, &done, &mut |_, _| {}).expect("done");
+    apply_event(&mut state, &done, &mut |_| {}).expect("done");
 
     let items = state.into_output_items();
     assert_eq!(items.len(), 1);
@@ -1219,7 +1219,7 @@ fn apply_event_captures_reasoning_only_on_output_item_done() {
             "summary": [],
         }
     });
-    apply_event(&mut state, &added, &mut |_, _| {}).expect("added");
+    apply_event(&mut state, &added, &mut |_| {}).expect("added");
     assert!(
         state
             .output_items
@@ -1237,7 +1237,7 @@ fn apply_event_captures_reasoning_only_on_output_item_done() {
             "encrypted_content": "SEALED",
         }
     });
-    apply_event(&mut state, &done, &mut |_, _| {}).expect("done");
+    apply_event(&mut state, &done, &mut |_| {}).expect("done");
     let items = state.into_output_items();
     assert_eq!(items.len(), 1);
     let tau_proto::ContextItem::Reasoning(item) = &items[0] else {
@@ -1255,7 +1255,7 @@ fn apply_event_captures_reasoning_only_on_output_item_done() {
 #[test]
 fn apply_event_captures_compaction_output_item_in_order() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     apply_event(
         &mut state,
@@ -1389,8 +1389,8 @@ fn ws_prewarm_envelope_sets_generate_false_and_drops_previous_response() {
 fn apply_event_text_delta_accumulates_and_notifies() {
     let mut state = crate::common::StreamState::new();
     let mut updates: Vec<String> = Vec::new();
-    let mut on_update = |text: &str, _thinking: Option<&str>| {
-        updates.push(text.to_owned());
+    let mut on_update = |state: &crate::common::StreamState| {
+        updates.push(state.text.clone());
     };
 
     for chunk in ["hel", "lo, ", "world"] {
@@ -1406,9 +1406,115 @@ fn apply_event_text_delta_accumulates_and_notifies() {
 }
 
 #[test]
+fn response_items_preserve_reasoning_summary_output_index() {
+    // Live item snapshots must preserve provider order. Reasoning summaries are
+    // displayable, but they still belong at the output index reported by the
+    // provider rather than being forced before every other in-progress item.
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &crate::common::StreamState| {};
+
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "answer first",
+        }),
+        &mut on_update,
+    )
+    .expect("message delta");
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.reasoning_summary_text.delta",
+            "output_index": 1,
+            "delta": "then thinking",
+        }),
+        &mut on_update,
+    )
+    .expect("reasoning delta");
+
+    let items = state.response_items();
+    assert_eq!(items.len(), 2);
+    assert!(matches!(
+        &items[0],
+        tau_proto::ProviderResponseItem::InProgress(
+            tau_proto::InProgressOutputItem::Message { text, .. }
+        ) if text == "answer first"
+    ));
+    assert!(matches!(
+        &items[1],
+        tau_proto::ProviderResponseItem::InProgress(
+            tau_proto::InProgressOutputItem::ReasoningText { text, .. }
+        ) if text == "then thinking"
+    ));
+
+    let output_items = state.into_output_items();
+    assert!(matches!(
+        output_items[0],
+        tau_proto::ContextItem::Message(_)
+    ));
+    assert!(matches!(
+        &output_items[1],
+        tau_proto::ContextItem::ReasoningText(reasoning) if reasoning.text == "then thinking"
+    ));
+}
+
+#[test]
+fn response_items_allow_completed_items_after_in_progress_items() {
+    // A mixed ordered list can represent the provider finishing a later output
+    // item while an earlier item is still streaming. This would be impossible
+    // to render correctly with separate completed/in-progress vectors.
+    let mut state = crate::common::StreamState::new();
+    let mut on_update = |_: &crate::common::StreamState| {};
+
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "delta": "still streaming",
+        }),
+        &mut on_update,
+    )
+    .expect("message delta");
+    apply_event(
+        &mut state,
+        &serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 1,
+            "item": {
+                "type": "function_call",
+                "call_id": "call_read",
+                "name": "read",
+                "arguments": "{\"path\":\"Cargo.toml\"}",
+            },
+        }),
+        &mut on_update,
+    )
+    .expect("tool done");
+
+    let items = state.response_items();
+    assert_eq!(items.len(), 2);
+    assert!(matches!(
+        &items[0],
+        tau_proto::ProviderResponseItem::InProgress(
+            tau_proto::InProgressOutputItem::Message { text, .. }
+        ) if text == "still streaming"
+    ));
+    let tau_proto::ProviderResponseItem::Completed(tau_proto::ContextItem::ToolCall(call)) =
+        &items[1]
+    else {
+        panic!("expected completed tool call after in-progress message: {items:?}");
+    };
+    assert_eq!(call.call_id.as_str(), "call_read");
+    assert_eq!(call.name.as_str(), "read");
+}
+
+#[test]
 fn apply_event_preserves_incremental_output_item_order() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     apply_event(
         &mut state,
@@ -1503,7 +1609,11 @@ fn apply_event_preserves_incremental_output_item_order() {
 fn apply_event_output_item_done_hydrates_message_text_before_tool_call() {
     let mut state = crate::common::StreamState::new();
     let mut updates: Vec<String> = Vec::new();
-    let mut on_update = |text: &str, _: Option<&str>| updates.push(text.to_owned());
+    let mut on_update = |state: &crate::common::StreamState| {
+        if updates.last() != Some(&state.text) {
+            updates.push(state.text.clone());
+        }
+    };
 
     apply_event(
         &mut state,
@@ -1560,7 +1670,7 @@ fn apply_event_output_item_done_hydrates_message_text_before_tool_call() {
 #[test]
 fn apply_event_completed_does_not_harvest_response_output() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     let done = apply_event(
         &mut state,
@@ -1592,7 +1702,7 @@ fn apply_event_completed_does_not_harvest_response_output() {
 #[test]
 fn apply_event_completed_terminates_and_captures_response_id() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "response.completed",
         "response": {
@@ -1615,7 +1725,7 @@ fn apply_event_completed_terminates_and_captures_response_id() {
 #[test]
 fn apply_event_function_call_assembles_tool_call() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     apply_event(
         &mut state,
@@ -1661,7 +1771,7 @@ fn apply_event_function_call_assembles_tool_call() {
 #[test]
 fn apply_event_failed_returns_error() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "response.failed",
         "response": {
@@ -1686,7 +1796,7 @@ fn apply_event_failed_returns_error() {
 #[test]
 fn apply_event_error_top_level_code_is_propagated() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "error",
         "code": "rate_limit_exceeded",
@@ -1715,7 +1825,7 @@ fn apply_event_error_top_level_code_is_propagated() {
 #[test]
 fn apply_event_error_nested_code_is_propagated() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "error",
         "error": {
@@ -1741,7 +1851,7 @@ fn apply_event_error_nested_code_is_propagated() {
 #[test]
 fn apply_event_error_nested_type_fallback_is_propagated() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "error",
         "error": {
@@ -1767,7 +1877,7 @@ fn apply_event_error_nested_type_fallback_is_propagated() {
 #[test]
 fn apply_event_error_without_code_omits_suffix() {
     let mut state = crate::common::StreamState::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let ev = serde_json::json!({
         "type": "error",
         "message": "something broke",

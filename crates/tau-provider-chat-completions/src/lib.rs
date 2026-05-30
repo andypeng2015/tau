@@ -9,11 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tau_proto::{
-    AgentPromptId, ContentPart, ContextItem, ContextRole, Event, Frame, FrameWriter, ModelId,
-    ModelName, OpaqueProviderItem, ProviderBackend, ProviderBackendKind, ProviderBackendTransport,
-    ProviderModelInfo, ProviderName, ProviderResponseFinished, ProviderResponseUpdated,
-    ProviderStopReason, ProviderTokenUsage, ThinkingSummary, ToolCallItem, ToolChoice,
-    ToolDefinition, ToolResponseHeader, ToolResultStatus, ToolType,
+    AgentPromptId, ContentPart, ContextItem, ContextRole, Event, Frame, FrameWriter,
+    InProgressOutputItem, ModelId, ModelName, OpaqueProviderItem, ProviderBackend,
+    ProviderBackendKind, ProviderBackendTransport, ProviderModelInfo, ProviderName,
+    ProviderResponseFinished, ProviderResponseItem, ProviderResponseUpdated, ProviderStopReason,
+    ProviderTokenUsage, ReasoningTextItem, ReasoningTextKind, ThinkingSummary, ToolCallItem,
+    ToolChoice, ToolDefinition, ToolResponseHeader, ToolResultStatus, ToolType,
 };
 
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
@@ -154,12 +155,11 @@ fn run_prompt<W: Write>(
     let mut empty_response_retries = 0_usize;
     loop {
         let result = {
-            let mut on_update = |text: &str, thinking: Option<&str>| {
+            let mut on_update = |state: &StreamState| {
                 let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
                     ProviderResponseUpdated {
                         agent_prompt_id: agent_prompt_id.clone(),
-                        text: text.to_owned(),
-                        thinking: thinking.map(str::to_owned),
+                        items: state.response_items(),
                         originator: prompt.originator.clone(),
                     },
                 )));
@@ -195,8 +195,9 @@ fn emit_empty_response_retry_update<W: Write>(
     let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
         ProviderResponseUpdated {
             agent_prompt_id: agent_prompt_id.clone(),
-            text,
-            thinking: None,
+            items: vec![ProviderResponseItem::InProgress(
+                InProgressOutputItem::Message { text, phase: None },
+            )],
             originator: prompt.originator.clone(),
         },
     )));
@@ -330,6 +331,14 @@ impl StreamState {
             .collect()
     }
 
+    fn response_items(&self) -> Vec<ProviderResponseItem> {
+        self.output_items
+            .iter()
+            .filter_map(OutputItemAccumulator::in_progress_item)
+            .map(ProviderResponseItem::InProgress)
+            .collect()
+    }
+
     fn append_assistant_text_delta(&mut self, delta: &str) {
         if delta.is_empty() {
             return;
@@ -413,8 +422,24 @@ impl OutputItemAccumulator {
     fn context_item(&self) -> Option<ContextItem> {
         match self {
             Self::Message(text) => (!text.is_empty()).then(|| assistant_text_item(text.clone())),
-            Self::Reasoning(reasoning) => reasoning_context_item(reasoning),
+            Self::Reasoning(reasoning) => reasoning_text_context_item(reasoning),
             Self::ToolCall(call) => call.context_item(),
+        }
+    }
+
+    fn in_progress_item(&self) -> Option<InProgressOutputItem> {
+        match self {
+            Self::Message(text) => (!text.is_empty()).then(|| InProgressOutputItem::Message {
+                text: text.clone(),
+                phase: None,
+            }),
+            Self::Reasoning(reasoning) => {
+                (!reasoning.is_empty()).then(|| InProgressOutputItem::ReasoningText {
+                    kind: ReasoningTextKind::Full,
+                    text: reasoning.clone(),
+                })
+            }
+            Self::ToolCall(call) => Some(call.in_progress_item()),
         }
     }
 }
@@ -440,13 +465,21 @@ impl ToolCallAccumulator {
                 .unwrap_or(tau_proto::CborValue::Null),
         }))
     }
+    fn in_progress_item(&self) -> InProgressOutputItem {
+        InProgressOutputItem::ToolCall {
+            call_id: (!self.id.is_empty()).then(|| self.id.clone().into()),
+            name: (!self.name.is_empty()).then(|| self.name.clone()),
+            tool_type: ToolType::Function,
+            arguments: self.arguments.clone(),
+        }
+    }
 }
 
 fn chat_completions_stream(
     provider: &ResolvedProvider,
     model: &ChatCompletionsModel,
     prompt: &tau_proto::AgentPromptCreated,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&StreamState),
 ) -> Result<StreamState, LlmError> {
     let url = format!(
         "{}/chat/completions",
@@ -714,17 +747,13 @@ fn maybe_debug_write_provider_http_error(
     }
 }
 
-fn reasoning_context_item(reasoning: &str) -> Option<ContextItem> {
-    if reasoning.is_empty() {
-        return None;
-    }
-    let item = serde_json::json!({
-        "type": "chat_completions_reasoning",
-        "reasoning_content": reasoning,
-    });
-    Some(ContextItem::Reasoning(OpaqueProviderItem(json_to_cbor(
-        &item,
-    ))))
+fn reasoning_text_context_item(reasoning: &str) -> Option<ContextItem> {
+    (!reasoning.is_empty()).then(|| {
+        ContextItem::ReasoningText(ReasoningTextItem {
+            kind: ReasoningTextKind::Full,
+            text: reasoning.to_owned(),
+        })
+    })
 }
 
 fn output_token_cap_fields(provider: &ResolvedProvider) -> (Option<u32>, Option<u32>) {
@@ -764,6 +793,10 @@ fn append_context_block(block: &tau_proto::ContextBlock, messages: &mut Vec<serd
             let mut tool_calls = Vec::new();
             for item in &block.output_items {
                 match item {
+                    ContextItem::ReasoningText(item) if item.kind == ReasoningTextKind::Full => {
+                        reasoning.push_str(&item.text);
+                    }
+                    ContextItem::ReasoningText(_) => {}
                     ContextItem::Reasoning(item) => {
                         if let Some(part) = chat_completions_reasoning_text(item) {
                             reasoning.push_str(&part);
@@ -898,7 +931,7 @@ fn convert_tool_definition(tool: &ToolDefinition) -> Option<serde_json::Value> {
 fn apply_event(
     state: &mut StreamState,
     event: &serde_json::Value,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&StreamState),
 ) {
     if let Some(usage) = event.get("usage") {
         capture_usage(state, usage);
@@ -913,7 +946,7 @@ fn apply_event(
         text.push_str(&format!("[OpenRouter Stream Error: {message}]"));
         state.append_assistant_text_delta(&text);
         state.stop_reason = ProviderStopReason::Error;
-        on_update(&state.text, thinking_for_update(state));
+        on_update(state);
         return;
     }
     let Some(choice) = event["choices"]
@@ -938,9 +971,10 @@ fn apply_event(
         changed |= append_content_delta(state, content);
     }
     if changed {
-        on_update(&state.text, thinking_for_update(state));
+        on_update(state);
     }
     if let Some(tool_calls) = delta["tool_calls"].as_array() {
+        let mut changed_tools = false;
         for tool_call in tool_calls {
             let index = tool_call["index"].as_u64().unwrap_or(0) as usize;
             let entry = state.tool_call_at_mut(index);
@@ -948,16 +982,22 @@ fn apply_event(
                 && !id.is_empty()
             {
                 entry.id = id.to_owned();
+                changed_tools = true;
             }
             let function = &tool_call["function"];
             if let Some(name) = function["name"].as_str()
                 && !name.is_empty()
             {
                 entry.name = name.to_owned();
+                changed_tools = true;
             }
             if let Some(arguments) = function["arguments"].as_str() {
                 entry.arguments.push_str(arguments);
+                changed_tools = true;
             }
+        }
+        if changed_tools {
+            on_update(state);
         }
     }
     match choice["finish_reason"].as_str() {
@@ -1025,7 +1065,7 @@ fn partial_tag_suffix_len(text: &str, tag: &str) -> usize {
     keep
 }
 
-fn flush_pending_content(state: &mut StreamState, on_update: &mut impl FnMut(&str, Option<&str>)) {
+fn flush_pending_content(state: &mut StreamState, on_update: &mut impl FnMut(&StreamState)) {
     if state.pending_content.is_empty() {
         return;
     }
@@ -1037,11 +1077,7 @@ fn flush_pending_content(state: &mut StreamState, on_update: &mut impl FnMut(&st
         state.append_assistant_text_delta(&text);
     }
     state.pending_content.clear();
-    on_update(&state.text, thinking_for_update(state));
-}
-
-fn thinking_for_update(state: &StreamState) -> Option<&str> {
-    (!state.thinking.is_empty()).then_some(state.thinking.as_str())
+    on_update(state);
 }
 
 fn capture_usage(state: &mut StreamState, usage: &serde_json::Value) {

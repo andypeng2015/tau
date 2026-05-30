@@ -255,6 +255,7 @@ pub(crate) enum ToolStatus {
 #[derive(Clone, Copy)]
 pub(crate) enum CompactionStatus {
     Success,
+    Progress,
 }
 
 #[derive(Clone)]
@@ -814,6 +815,7 @@ pub(crate) fn render_compaction_block(
     let spacer = themed.add_style(names::TOOL_ARGS);
     let status_style = themed.add_style(match status {
         CompactionStatus::Success => names::TOOL_STATUS_SUCCESS,
+        CompactionStatus::Progress => names::PROGRESS_INDICATOR,
     });
     let context_style = themed.add_style(names::STATUS_CONTEXT);
     let mut children = vec![

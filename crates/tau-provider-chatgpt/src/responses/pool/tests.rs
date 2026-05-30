@@ -92,7 +92,7 @@ fn pool_routes_each_thread_to_its_own_socket_and_reuses_them() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     // Two turns on cache bucket A, interleaved with one on cache bucket B.
     // Expected: 2 upgrades total (one per prompt-cache bucket), 3 turns.
@@ -353,7 +353,7 @@ fn pool_evicts_lru_when_capacity_exceeded() {
     let mut pool = WsPool::new();
     pool.conns
         .resize(NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN));
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     // A → B → C: three different agents/cache buckets, cap=2.
     // After C: A (LRU) is evicted, pool holds {B, C}.
@@ -377,7 +377,7 @@ fn pool_reopens_aged_out_connections_on_checkout() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     // First turn opens connection #1.
     run_turn(&mut pool, &config, "session-aged", &mut on_update);
@@ -414,8 +414,8 @@ fn ws_turn_captures_response_id_for_chain_continuation() {
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
     let mut last_text = String::new();
-    let mut on_update = |text: &str, _thinking: Option<&str>| {
-        last_text = text.to_owned();
+    let mut on_update = |state: &crate::common::StreamState| {
+        last_text = state.text.clone();
     };
 
     let session_id = tau_proto::SessionId::new("session-x");
@@ -459,7 +459,7 @@ fn ws_upgrade_thread_headers_match_prompt_cache_key() {
     let mut config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     config.supports_prompt_cache_key = true;
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     let session_id = tau_proto::SessionId::new("session-headers");
     let agent_id = tau_proto::AgentId::new("header-agent");
@@ -507,7 +507,7 @@ fn prewarm_warms_cache_without_chaining_next_turn() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let session_id = tau_proto::SessionId::new("session-prewarm");
     let prewarmed_messages = vec![user_msg("AGENTS.md context")];
     let real_messages = vec![user_msg("AGENTS.md context"), user_msg("actual request")];
@@ -572,7 +572,7 @@ fn fresh_open_with_previous_response_rebuilds_ws_warmth() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     let session_id = tau_proto::SessionId::new("session-fresh");
     let request = PromptPayload {
@@ -611,7 +611,7 @@ fn fresh_open_with_previous_response_preserves_compacted_items() {
     let (addr, server) = spawn_fake_codex_server();
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     let session_id = tau_proto::SessionId::new("session-compacted");
     let messages = vec![
         tau_proto::ContextItem::Compaction(tau_proto::OpaqueProviderItem(
@@ -675,7 +675,7 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
     });
     let config = make_config(&format!("http://{addr}/backend-api"), Some("acc"));
     let mut pool = WsPool::new();
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
 
     // Turn 1: opens conn-0, returns a `response_id` the harness
     // would chain off for turn 2.
@@ -1038,7 +1038,7 @@ fn run_turn(
     pool: &mut WsPool,
     config: &ResponsesConfig,
     session: &str,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&crate::common::StreamState),
 ) {
     run_turn_for_agent(pool, config, session, "test-agent", on_update);
 }
@@ -1048,7 +1048,7 @@ fn run_turn_for_agent(
     config: &ResponsesConfig,
     session: &str,
     agent: &str,
-    on_update: &mut impl FnMut(&str, Option<&str>),
+    on_update: &mut impl FnMut(&crate::common::StreamState),
 ) {
     let session_id = tau_proto::SessionId::new(session);
     let agent_id = tau_proto::AgentId::new(agent);
@@ -1098,7 +1098,7 @@ fn run_shared_turn_for_agent(
         agent_id: &agent_id,
         share_user_cache_key: false,
     };
-    let mut on_update = |_: &str, _: Option<&str>| {};
+    let mut on_update = |_: &crate::common::StreamState| {};
     run_turn_through_shared_pool(
         pool,
         config,

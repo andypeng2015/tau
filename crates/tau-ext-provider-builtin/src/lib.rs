@@ -16,10 +16,11 @@ use backon::BackoffBuilder;
 use dialoguer::Input;
 use serde::{Deserialize, Serialize};
 use tau_proto::{
-    Ack, ClientKind, ContextItem, Event, EventName, Frame, FrameReader, FrameWriter, Message,
-    ModelId, ModelName, ProviderBackend, ProviderBackendKind, ProviderBackendTransport,
-    ProviderCacheMissDiagnostic, ProviderModelInfo, ProviderModelsUpdated, ProviderName,
-    ProviderPromptSubmitted, ProviderResponseFinished, ProviderResponseUpdated, ProviderStopReason,
+    Ack, ClientKind, ContextItem, Event, EventName, Frame, FrameReader, FrameWriter,
+    InProgressOutputItem, Message, ModelId, ModelName, ProviderBackend, ProviderBackendKind,
+    ProviderBackendTransport, ProviderCacheMissDiagnostic, ProviderModelInfo,
+    ProviderModelsUpdated, ProviderName, ProviderPromptSubmitted, ProviderResponseFinished,
+    ProviderResponseItem, ProviderResponseUpdated, ProviderStopReason,
 };
 use tau_provider::storage::{AuthFile, ProviderStore};
 use tau_provider_chat_completions::openrouter::{OpenRouterProfile, fetch_openrouter_models};
@@ -1350,8 +1351,12 @@ fn emit_retry_banner<W: Write>(
     let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
         ProviderResponseUpdated {
             agent_prompt_id: agent_prompt_id.into(),
-            text: banner,
-            thinking: None,
+            items: vec![ProviderResponseItem::InProgress(
+                InProgressOutputItem::Message {
+                    text: banner,
+                    phase: None,
+                },
+            )],
             originator: originator.clone(),
         },
     )));
@@ -1480,12 +1485,11 @@ where
         writer,
         retry_ctx,
         |writer, retry_ctx| {
-            let mut on_update = |text_so_far: &str, thinking_so_far: Option<&str>| {
+            let mut on_update = |state: &common::StreamState| {
                 let _ = writer.write_frame(&Frame::Event(Event::ProviderResponseUpdated(
                     ProviderResponseUpdated {
                         agent_prompt_id: agent_prompt_id.into(),
-                        text: text_so_far.to_owned(),
-                        thinking: thinking_so_far.map(str::to_owned),
+                        items: state.response_items(),
                         originator: originator.clone(),
                     },
                 )));

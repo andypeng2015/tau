@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tau_proto::{
-    CborValue, ContentPart, ContextItem, ContextRole, Event, MessageItem, ToolCallItem, UnixMicros,
+    CborValue, ContentPart, ContextItem, ContextRole, Event, InProgressCompactionStatus,
+    InProgressOutputItem, MessageItem, ProviderResponseItem, ToolCallItem, UnixMicros,
 };
 
 use crate::action_commands::ActionCommandState;
@@ -614,8 +615,11 @@ struct PromptState {
     thinking_block_id: Option<tau_cli_term::BlockId>,
     /// Latest captured thinking text. Held so `ProviderResponseFinished`
     /// can render it into history even when the finish event doesn't
-    /// carry its own `thinking` payload.
+    /// carry displayable reasoning text.
     thinking_text: Option<String>,
+    /// Live provider-side compaction block. Created only while a provider emits
+    /// an in-progress compaction item, then removed on completion/cancel.
+    compaction_block_id: Option<tau_cli_term::BlockId>,
     /// Dispatch timestamp, used to compute end-to-end latency on
     /// `ProviderResponseFinished`.
     started_at: Option<Instant>,
@@ -760,26 +764,90 @@ fn push_status_chip(
     *needs_space = true;
 }
 
-fn assistant_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
+fn update_compaction_status(
+    update: &tau_proto::ProviderResponseUpdated,
+) -> Option<InProgressCompactionStatus> {
+    update.items.iter().find_map(|item| match item {
+        ProviderResponseItem::InProgress(InProgressOutputItem::Compaction { status }) => {
+            Some(*status)
+        }
+        _ => None,
+    })
+}
+
+fn assistant_text_from_update(update: &tau_proto::ProviderResponseUpdated) -> Option<String> {
+    let mut text = String::new();
+    for item in &update.items {
+        match item {
+            ProviderResponseItem::Completed(item) => {
+                if let Some(part) = assistant_text_from_context_item(item) {
+                    text.push_str(&part);
+                }
+            }
+            ProviderResponseItem::InProgress(InProgressOutputItem::Message {
+                text: part, ..
+            }) => {
+                text.push_str(part);
+            }
+            ProviderResponseItem::InProgress(_) => {}
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn reasoning_text_from_update(update: &tau_proto::ProviderResponseUpdated) -> Option<String> {
+    let mut text = String::new();
+    for item in &update.items {
+        match item {
+            ProviderResponseItem::Completed(ContextItem::ReasoningText(reasoning)) => {
+                text.push_str(&reasoning.text);
+            }
+            ProviderResponseItem::Completed(_) => {}
+            ProviderResponseItem::InProgress(InProgressOutputItem::ReasoningText {
+                text: part,
+                ..
+            }) => text.push_str(part),
+            ProviderResponseItem::InProgress(_) => {}
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn reasoning_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
     let text = output_items
         .iter()
         .filter_map(|item| match item {
-            ContextItem::Message(MessageItem {
-                role: ContextRole::Assistant,
-                content,
-                ..
-            }) => Some(
-                content
-                    .iter()
-                    .map(|part| match part {
-                        ContentPart::Text { text } => text.as_str(),
-                    })
-                    .collect::<String>(),
-            ),
+            ContextItem::ReasoningText(reasoning) => Some(reasoning.text.as_str()),
             _ => None,
         })
         .collect::<String>();
     (!text.is_empty()).then_some(text)
+}
+
+fn assistant_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
+    let text = output_items
+        .iter()
+        .filter_map(assistant_text_from_context_item)
+        .collect::<String>();
+    (!text.is_empty()).then_some(text)
+}
+
+fn assistant_text_from_context_item(item: &ContextItem) -> Option<String> {
+    match item {
+        ContextItem::Message(MessageItem {
+            role: ContextRole::Assistant,
+            content,
+            ..
+        }) => Some(
+            content
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text } => text.as_str(),
+                })
+                .collect::<String>(),
+        ),
+        _ => None,
+    }
 }
 
 fn assistant_text_from_message_item(message: &MessageItem) -> Option<String> {
@@ -2892,6 +2960,9 @@ impl EventRenderer {
         if let Some(block_id) = prompt_state.thinking_block_id {
             self.handle.remove_block(block_id);
         }
+        if let Some(block_id) = prompt_state.compaction_block_id {
+            self.handle.remove_block(block_id);
+        }
         if let Some(block_id) = prompt_state.response_block_id {
             self.handle.remove_block(block_id);
         }
@@ -2951,19 +3022,26 @@ impl EventRenderer {
 
     fn handle_provider_response_updated(&mut self, update: &tau_proto::ProviderResponseUpdated) {
         let spid = update.agent_prompt_id.as_str();
-        self.update_editor_active_prompt(update);
-        self.update_live_thinking_block(spid, update.thinking.as_deref());
-        self.update_live_response_block(spid, &update.text);
+        let text = assistant_text_from_update(update).unwrap_or_default();
+        let thinking = reasoning_text_from_update(update);
+        self.update_editor_active_prompt(update, &text);
+        self.update_live_thinking_block(spid, thinking.as_deref());
+        self.update_live_compaction_block(spid, update_compaction_status(update));
+        self.update_live_response_block(spid, &text);
     }
 
-    fn update_editor_active_prompt(&mut self, update: &tau_proto::ProviderResponseUpdated) {
+    fn update_editor_active_prompt(
+        &mut self,
+        update: &tau_proto::ProviderResponseUpdated,
+        text: &str,
+    ) {
         if update.originator.is_user()
             && let Ok(mut context) = self.editor_context.lock()
         {
-            context.active_prompt = if update.text.is_empty() {
+            context.active_prompt = if text.is_empty() {
                 None
             } else {
-                Some(update.text.clone())
+                Some(text.to_owned())
             };
         }
     }
@@ -3005,17 +3083,78 @@ impl EventRenderer {
             .handle
             .new_block(format!("agent-thinking-live:{spid}"), block);
         let response_bid = self.prompts.get(spid).and_then(|s| s.response_block_id);
+        let compaction_bid = self.prompts.get(spid).and_then(|s| s.compaction_block_id);
+        if let Some(compaction_bid) = compaction_bid {
+            self.handle.remove_above_active(compaction_bid);
+        }
         if let Some(response_bid) = response_bid {
             self.handle.remove_above_active(response_bid);
-            self.handle.push_above_active(tbid);
+        }
+        self.handle.push_above_active(tbid);
+        if let Some(compaction_bid) = compaction_bid {
+            self.handle.push_above_active(compaction_bid);
+        }
+        if let Some(response_bid) = response_bid {
             self.handle.push_above_active(response_bid);
-        } else {
-            self.handle.push_above_active(tbid);
         }
         self.prompts
             .entry(spid.to_owned())
             .or_default()
             .thinking_block_id = Some(tbid);
+    }
+
+    fn update_live_compaction_block(
+        &mut self,
+        spid: &str,
+        status: Option<InProgressCompactionStatus>,
+    ) {
+        let Some(status) = status else {
+            self.remove_live_compaction_block(spid);
+            return;
+        };
+        let text = match status {
+            InProgressCompactionStatus::Started => {
+                format!("compacting {}", tau_proto::PROGRESS_INDICATOR_TEXT)
+            }
+        };
+        let block = render_compaction_block(&self.theme, text, CompactionStatus::Progress);
+        let existing_id = self.prompts.get(spid).and_then(|s| s.compaction_block_id);
+        if let Some(block_id) = existing_id {
+            self.handle.set_block(block_id, block);
+        } else {
+            self.insert_live_compaction_block(spid, block);
+        }
+        self.handle.redraw();
+    }
+
+    fn remove_live_compaction_block(&mut self, spid: &str) {
+        let Some(block_id) = self
+            .prompts
+            .get_mut(spid)
+            .and_then(|state| state.compaction_block_id.take())
+        else {
+            return;
+        };
+        self.handle.remove_block(block_id);
+        self.handle.redraw();
+    }
+
+    fn insert_live_compaction_block(&mut self, spid: &str, block: tau_cli_term::StyledBlock) {
+        let block_id = self
+            .handle
+            .new_block(format!("agent-compaction-live:{spid}"), block);
+        let response_bid = self.prompts.get(spid).and_then(|s| s.response_block_id);
+        if let Some(response_bid) = response_bid {
+            self.handle.remove_above_active(response_bid);
+            self.handle.push_above_active(block_id);
+            self.handle.push_above_active(response_bid);
+        } else {
+            self.handle.push_above_active(block_id);
+        }
+        self.prompts
+            .entry(spid.to_owned())
+            .or_default()
+            .compaction_block_id = Some(block_id);
     }
 
     fn update_live_response_block(&mut self, spid: &str, text: &str) {
@@ -3033,10 +3172,10 @@ impl EventRenderer {
         finished: &tau_proto::ProviderResponseFinished,
     ) {
         let (prompt_state, turn_latency) = self.take_finished_prompt_state(finished);
-        self.finalize_finished_thinking_block(
-            prompt_state.thinking_block_id,
-            prompt_state.thinking_text,
-        );
+        let thinking =
+            reasoning_text_from_output_items(&finished.output_items).or(prompt_state.thinking_text);
+        self.finalize_finished_thinking_block(prompt_state.thinking_block_id, thinking);
+        self.finalize_finished_compaction_block(prompt_state.compaction_block_id);
         self.finalize_finished_response_block(prompt_state.response_block_id);
 
         let full_assistant_text = assistant_text_from_output_items(&finished.output_items);
@@ -3071,9 +3210,9 @@ impl EventRenderer {
         use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
 
-        // Finalize the thinking block above the response. The item-model finish
-        // event no longer carries a separate thinking string; use the latest
-        // streamed snapshot if one was captured.
+        // Finalize the thinking block above the response, using the final
+        // item-model reasoning text or the latest streamed snapshot if one was
+        // captured.
         if let Some(tbid) = thinking_block_id {
             self.handle.remove_block(tbid);
         }
@@ -3088,6 +3227,15 @@ impl EventRenderer {
                 block_id: bid,
                 text: thinking,
             });
+        }
+    }
+
+    fn finalize_finished_compaction_block(
+        &mut self,
+        compaction_block_id: Option<tau_cli_term::BlockId>,
+    ) {
+        if let Some(block_id) = compaction_block_id {
+            self.handle.remove_block(block_id);
         }
     }
 

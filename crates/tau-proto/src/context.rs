@@ -201,6 +201,95 @@ pub struct ToolResultItem {
     pub output: ToolResponse,
 }
 
+/// Whether displayable reasoning text is a provider-summarized view or the
+/// full reasoning text exposed by a compatible backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningTextKind {
+    /// Provider-supplied summary intended for user display, not provider
+    /// replay.
+    Summary,
+    /// Full reasoning text from a backend that expects it to be replayed as
+    /// reasoning content rather than normal assistant text.
+    Full,
+}
+
+/// Displayable reasoning text captured in an assistant output timeline.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningTextItem {
+    /// Whether this text is a summary or full backend reasoning content.
+    pub kind: ReasoningTextKind,
+    /// Accumulated reasoning text.
+    pub text: String,
+}
+
+/// Lifecycle state for provider-side compaction while it is still streaming.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InProgressCompactionStatus {
+    /// The provider has announced a compaction item but has not finished it.
+    Started,
+}
+
+/// One provisional provider output item in a live response update.
+///
+/// Unlike [`ContextItem`], these values are not durable transcript facts and
+/// must not be replayed into future provider prompts. Each
+/// [`crate::ProviderResponseUpdated`] carries these inside an ordered
+/// [`ProviderResponseItem`] snapshot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InProgressOutputItem {
+    /// Assistant-authored message text that is still being streamed.
+    Message {
+        /// Full assistant message text accumulated for this item so far.
+        text: String,
+        /// Optional assistant-message phase metadata seen so far.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<MessagePhase>,
+    },
+    /// Displayable reasoning text that is still being streamed.
+    ReasoningText {
+        /// Whether this text is a summary or full backend reasoning content.
+        kind: ReasoningTextKind,
+        /// Full reasoning text accumulated for this item so far.
+        text: String,
+    },
+    /// Assistant tool call that is still being assembled.
+    ToolCall {
+        /// Tool-call id if the provider has emitted it already.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<ToolCallId>,
+        /// Tool name if the provider has emitted it already.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Kind of tool call being assembled.
+        tool_type: ToolType,
+        /// Raw argument text accumulated so far.
+        arguments: String,
+    },
+    /// Provider-side compaction lifecycle item that has not committed yet.
+    Compaction {
+        /// Current provider-side compaction status.
+        status: InProgressCompactionStatus,
+    },
+}
+
+/// One ordered item in a live provider response snapshot.
+///
+/// A provider update is a replace-style snapshot of these values in the order
+/// they should be rendered. Completed items are stable for the rest of the
+/// stream but remain non-durable until [`crate::ProviderResponseFinished`]
+/// commits the final transcript output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "item", rename_all = "snake_case")]
+pub enum ProviderResponseItem {
+    /// A no-longer-streaming item in the live response snapshot.
+    Completed(ContextItem),
+    /// A provisional item that may still change or disappear in later updates.
+    InProgress(InProgressOutputItem),
+}
+
 /// One item in Tau's prompt/response timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
@@ -211,7 +300,9 @@ pub enum ContextItem {
     ToolCall(ToolCallItem),
     /// Tool result returned to the model.
     ToolResult(ToolResultItem),
-    /// Provider-specific reasoning item.
+    /// Displayable reasoning text captured from the provider.
+    ReasoningText(ReasoningTextItem),
+    /// Provider-specific reasoning item used for backend replay.
     Reasoning(OpaqueProviderItem),
     /// User- or harness-authored request for the provider to compact context.
     CompactionTrigger,

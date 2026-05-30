@@ -80,7 +80,8 @@ Provider execution should use provider-named events, not `agent.*` events:
 These should keep the semantics of the current agent execution events as much as possible:
 
 - submitted = the provider accepted the prompt and started work
-- updated = accumulated streamed response text/thinking so far
+- updated = replace-style ordered live item snapshot: `items` mixes completed
+  non-durable context items with in-progress items for streaming UI
 - finished = final response, tool calls, usage, stop reason, backend metadata
 
 Provider final responses may contain tool calls, but providers do not execute Tau tools.

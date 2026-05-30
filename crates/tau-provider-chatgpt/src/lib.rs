@@ -68,7 +68,7 @@ impl ChatGptRuntime {
         request: &common::PromptPayload<'_>,
         turn_state: &mut ChatGptTurnState,
         should_abort: &mut impl FnMut() -> bool,
-        on_update: &mut impl FnMut(&str, Option<&str>),
+        on_update: &mut impl FnMut(&common::StreamState),
     ) -> Result<StreamDispatchResult, common::LlmError> {
         let ws_pool_before = self.ws_pool.stats();
         let mut transport = ProviderBackendTransport::HttpSse;
