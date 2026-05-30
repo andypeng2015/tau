@@ -474,6 +474,8 @@ Supported actions:
   `{ action: "cycle-role" }`.
 - `cycle-role-group`: cycle to the first role in the next configured role group. For example:
   `{ action: "cycle-role-group" }`.
+- `agent-previous` / `agent-next`: switch between active agent transcripts. For example:
+  `{ action: "agent-next" }`.
 - `prompt-history-search`: feed indexed prompt-history rows to a picker command,
   expose original prompts under `$TAU_PROMPT_HISTORY_DIR/<index>` for previews,
   then replace the prompt with the selected original prompt. The draft active
@@ -499,6 +501,8 @@ bind: {
     command: "rg --files --hidden --glob '!.git' | fzf --height=100%",
     trim: true,
   },
+  "C-k": { action: "agent-previous" },
+  "C-j": { action: "agent-next" },
   Tab: { action: "cycle-role" },
   BackTab: { action: "cycle-role-group" },
   "C-r": {

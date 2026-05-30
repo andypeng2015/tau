@@ -89,6 +89,18 @@ fn parses_role_cycle() {
 }
 
 #[test]
+fn parses_agent_switching_actions() {
+    assert!(matches!(
+        PromptShellAction::parse("agent-previous"),
+        Some(PromptShellAction::AgentPrevious)
+    ));
+    assert!(matches!(
+        PromptShellAction::parse("agent-next"),
+        Some(PromptShellAction::AgentNext)
+    ));
+}
+
+#[test]
 fn unknown_action_returns_none() {
     assert!(PromptShellAction::parse("not-a-real-action").is_none());
     assert!(PromptShellAction::parse("shell-prompt-bogus:trim:cmd").is_none());

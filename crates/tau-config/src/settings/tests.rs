@@ -92,6 +92,10 @@ fn cli_settings_user_binding_keeps_built_in_chords() {
         s.bind.get("BackTab").expect("BackTab").action,
         "cycle-role-group"
     );
+    assert_eq!(s.bind.get("C-k").expect("C-k").action, "agent-previous");
+    assert_eq!(s.bind.get("C-j").expect("C-j").action, "agent-next");
+    assert_eq!(s.bind.get("C-p").expect("C-p").action, "prompt-previous");
+    assert_eq!(s.bind.get("C-n").expect("C-n").action, "prompt-next");
 }
 
 #[test]

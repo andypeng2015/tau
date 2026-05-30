@@ -152,12 +152,12 @@ impl CliShellCommand {
 pub struct CliBindingAction {
     /// Action name, e.g. `submit-prompt`, `insert-newline`,
     /// `shell-prompt-insert`, `shell-prompt-edit`, `fast-toggle`,
-    /// `cycle-role`, or `cycle-role-group`.
+    /// `cycle-role`, `cycle-role-group`, `agent-previous`, or `agent-next`.
     pub action: String,
     /// Shell command to execute. `None` for actions that don't shell
     /// out (e.g. `submit-prompt`, `insert-newline`,
-    /// `prompt-previous`, `prompt-next`, `fast-toggle`, `cycle-role`, or
-    /// `cycle-role-group`).
+    /// `prompt-previous`, `prompt-next`, `fast-toggle`, `cycle-role`,
+    /// `cycle-role-group`, `agent-previous`, or `agent-next`).
     pub command: Option<String>,
     /// Whether to trim command stdout before insertion.
     pub trim: bool,

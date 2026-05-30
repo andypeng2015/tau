@@ -981,6 +981,8 @@ impl<'a> TerminalInputSession<'a> {
             TermEvent::FastToggle => self.toggle_fast_service_tier(),
             TermEvent::CycleRole => self.cycle_role_inner(),
             TermEvent::CycleRoleGroup | TermEvent::BackTab => self.cycle_role_group(),
+            TermEvent::AgentPrevious => self.switch_agent_by_delta(-1),
+            TermEvent::AgentNext => self.switch_agent_by_delta(1),
             TermEvent::Escape => self.recall_queued_prompt(),
             TermEvent::Line(_) | TermEvent::Eof | TermEvent::CancelPrompt => {}
         }
@@ -1663,6 +1665,49 @@ impl<'a> TerminalInputSession<'a> {
         );
     }
 
+    fn switch_agent_by_delta(&self, delta: isize) {
+        let current = self.selected_agent_id();
+        let known_agents = self
+            .ctx
+            .known_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let live_agents = self
+            .ctx
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended_agents = self
+            .ctx
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let Some(next) = next_active_agent(
+            current.as_deref(),
+            &known_agents,
+            &live_agents,
+            &suspended_agents,
+            delta,
+        ) else {
+            self.output
+                .system_info("agent-switch: no active agents available yet");
+            return;
+        };
+        if current.as_deref() == Some(next.as_str()) {
+            return;
+        }
+        if let Ok(mut current) = self.ctx.current_agent_state.lock() {
+            *current = Some(next.clone());
+        }
+        let _ = self
+            .ctx
+            .renderer_tx
+            .send(RendererCmd::SwitchAgent { agent_id: next });
+    }
+
     fn cycle_role_group(&self) {
         if self.agent_is_selected() {
             return;
@@ -1728,6 +1773,38 @@ pub(crate) fn role_cycling_enabled(current_agent_state: &Arc<Mutex<Option<String
         .ok()
         .and_then(|agent| agent.clone())
         .is_none()
+}
+
+pub(crate) fn next_active_agent(
+    current: Option<&str>,
+    known_agents: &[String],
+    live_agents: &std::collections::HashSet<String>,
+    suspended_agents: &std::collections::HashSet<String>,
+    delta: isize,
+) -> Option<String> {
+    let active_agents = known_agents
+        .iter()
+        .filter(|agent| live_agents.contains(*agent) && !suspended_agents.contains(*agent))
+        .collect::<Vec<_>>();
+    if active_agents.is_empty() {
+        return None;
+    }
+    let len = active_agents.len() as isize;
+    let index = current
+        .and_then(|current| {
+            active_agents
+                .iter()
+                .position(|agent| agent.as_str() == current)
+        })
+        .map(|index| (index as isize + delta).rem_euclid(len) as usize)
+        .unwrap_or_else(|| {
+            if delta < 0 {
+                active_agents.len() - 1
+            } else {
+                0
+            }
+        });
+    Some(active_agents[index].to_string())
 }
 
 fn terminal_input_loop(

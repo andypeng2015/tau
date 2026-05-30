@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,7 @@ use tau_proto::{
 
 use super::chat::{
     DraftSlot, SUSPENDED_AGENT_PROMPT, agent_is_active_in_sets, invalidate_pending_draft,
-    is_local_slash_command, role_cycling_enabled, should_send_draft_snapshot,
+    is_local_slash_command, next_active_agent, role_cycling_enabled, should_send_draft_snapshot,
 };
 use super::event_renderer::EventRenderer;
 use super::tool_render::{
@@ -554,6 +555,57 @@ fn role_cycling_only_enabled_without_selected_agent() {
 
     *current_agent_state.lock().expect("current agent") = None;
     assert!(role_cycling_enabled(&current_agent_state));
+}
+
+#[test]
+fn agent_switching_cycles_active_agents_and_skips_suspended() {
+    // Ctrl-K/Ctrl-J should only target active agents. Suspended agents remain
+    // known for completion/resume, but switching to them would leave the prompt
+    // pointed at an agent that immediately refuses user prompts.
+    let known_agents = vec!["alpha".to_owned(), "bravo".to_owned(), "charlie".to_owned()];
+    let live_agents = HashSet::from(["alpha".to_owned(), "bravo".to_owned(), "charlie".to_owned()]);
+    let suspended_agents = HashSet::from(["bravo".to_owned()]);
+
+    assert_eq!(
+        next_active_agent(
+            Some("alpha"),
+            &known_agents,
+            &live_agents,
+            &suspended_agents,
+            1
+        )
+        .as_deref(),
+        Some("charlie")
+    );
+    assert_eq!(
+        next_active_agent(
+            Some("alpha"),
+            &known_agents,
+            &live_agents,
+            &suspended_agents,
+            -1
+        )
+        .as_deref(),
+        Some("charlie")
+    );
+}
+
+#[test]
+fn agent_switching_without_selection_starts_at_edge_for_direction() {
+    // When the user is at the no-agent prompt, the first switch should enter
+    // the active-agent ring from the side implied by the shortcut direction.
+    let known_agents = vec!["alpha".to_owned(), "bravo".to_owned()];
+    let live_agents = HashSet::from(["alpha".to_owned(), "bravo".to_owned()]);
+    let suspended_agents = HashSet::new();
+
+    assert_eq!(
+        next_active_agent(None, &known_agents, &live_agents, &suspended_agents, 1).as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(
+        next_active_agent(None, &known_agents, &live_agents, &suspended_agents, -1).as_deref(),
+        Some("bravo")
+    );
 }
 
 fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue) -> Event {

@@ -56,6 +56,10 @@ pub enum Event {
     CycleRole,
     /// A binding requested cycling to the next agent role group.
     CycleRoleGroup,
+    /// A binding requested switching to the previous active agent.
+    AgentPrevious,
+    /// A binding requested switching to the next active agent.
+    AgentNext,
 }
 
 /// Higher-level terminal prompt with completion support.
@@ -358,6 +362,12 @@ impl HighTerm {
             Ok(Some(PromptShellResult::CycleRoleGroup)) => {
                 return PromptActionOutcome::Return(Event::CycleRoleGroup);
             }
+            Ok(Some(PromptShellResult::AgentPrevious)) => {
+                return PromptActionOutcome::Return(Event::AgentPrevious);
+            }
+            Ok(Some(PromptShellResult::AgentNext)) => {
+                return PromptActionOutcome::Return(Event::AgentNext);
+            }
             Ok(Some(PromptShellResult::History(delta))) => {
                 self.term.trigger_history_step(delta);
                 self.sync_menu_block();
@@ -440,6 +450,8 @@ enum PromptShellAction {
     FastToggle,
     CycleRole,
     CycleRoleGroup,
+    AgentPrevious,
+    AgentNext,
     PromptNext,
     PromptPrevious,
     PromptUndo,
@@ -462,6 +474,8 @@ enum PromptShellResult {
     FastToggle,
     CycleRole,
     CycleRoleGroup,
+    AgentPrevious,
+    AgentNext,
     History(isize),
     Undo,
     Redo,
@@ -482,6 +496,8 @@ impl PromptShellAction {
             "fast-toggle" => return Some(Self::FastToggle),
             "cycle-role" => return Some(Self::CycleRole),
             "cycle-role-group" => return Some(Self::CycleRoleGroup),
+            "agent-previous" => return Some(Self::AgentPrevious),
+            "agent-next" => return Some(Self::AgentNext),
             "prompt-next" => return Some(Self::PromptNext),
             "prompt-previous" => return Some(Self::PromptPrevious),
             "prompt-undo" => return Some(Self::PromptUndo),
@@ -525,6 +541,8 @@ fn run_prompt_shell_action(
         PromptShellAction::CycleRoleGroup => {
             return Ok(Some(PromptShellResult::CycleRoleGroup));
         }
+        PromptShellAction::AgentPrevious => return Ok(Some(PromptShellResult::AgentPrevious)),
+        PromptShellAction::AgentNext => return Ok(Some(PromptShellResult::AgentNext)),
         PromptShellAction::SubmitPrompt => {
             return Ok(Some(PromptShellResult::RawEvent(
                 term.trigger_submit_or_accept_completion(),
@@ -552,6 +570,8 @@ fn run_prompt_shell_action(
         PromptShellAction::FastToggle
         | PromptShellAction::CycleRole
         | PromptShellAction::CycleRoleGroup
+        | PromptShellAction::AgentPrevious
+        | PromptShellAction::AgentNext
         | PromptShellAction::PromptNext
         | PromptShellAction::PromptPrevious
         | PromptShellAction::PromptUndo
@@ -677,6 +697,8 @@ fn run_prompt_shell_action(
         PromptShellAction::FastToggle
         | PromptShellAction::CycleRole
         | PromptShellAction::CycleRoleGroup
+        | PromptShellAction::AgentPrevious
+        | PromptShellAction::AgentNext
         | PromptShellAction::PromptNext
         | PromptShellAction::PromptPrevious
         | PromptShellAction::PromptUndo
