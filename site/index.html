@@ -60,7 +60,7 @@
       transition: color 0.2s;
     }
 
-    a:not(.btn-primary):not(.btn-secondary):not(.logo-link):not(.demo-link) {
+    a:not(.btn-primary):not(.btn-secondary):not(.logo-link):not(.demo-link):not(.contact-link) {
       background-image: linear-gradient(currentColor, currentColor);
       background-position: 0 100%;
       background-repeat: no-repeat;
@@ -72,7 +72,7 @@
       color: #b58900;
     }
 
-    a:not(.btn-primary):not(.btn-secondary):not(.logo-link):not(.demo-link):hover {
+    a:not(.btn-primary):not(.btn-secondary):not(.logo-link):not(.demo-link):not(.contact-link):hover {
       background-size: 100% 1px;
     }
 
@@ -467,7 +467,7 @@
     }
 
     .term-green {
-      color: #859900;
+      color: var(--base1);
     }
 
     .term-yellow {
@@ -490,12 +490,22 @@
     }
 
     .hero-cta a {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
       padding: 0.6rem 1.4rem;
       border-radius: 4px;
       font-size: 1rem;
       font-family: inherit;
       font-weight: 600;
       transition: background 0.2s, color 0.2s;
+    }
+
+    .hero-cta svg {
+      width: 1em;
+      height: 1em;
+      fill: currentColor;
+      flex: none;
     }
 
     .btn-primary {
@@ -689,13 +699,13 @@
       content: "○";
       position: absolute;
       left: 0;
-      color: var(--cyan);
+      color: #00ffff;
       font-weight: 400;
       line-height: inherit;
     }
 
     .philosophy-list .keyword {
-      color: var(--green);
+      color: #00ffff;
       font-weight: 700;
     }
 
@@ -707,7 +717,8 @@
       margin-top: 1rem;
     }
 
-    .contact-links a {
+    .contact-links a,
+    .hero-cta a {
       position: relative;
       overflow: hidden;
       display: inline-flex;
@@ -722,20 +733,30 @@
       border-radius: 5px;
       box-shadow: 0 12px 36px rgb(0 0 0 / 0.2);
       font-size: 1rem;
-      color: var(--base2);
+      color: var(--base1);
       transition: background 0.2s, border-color 0.2s, color 0.2s;
       -webkit-backdrop-filter: blur(14px) saturate(120%);
       backdrop-filter: blur(14px) saturate(120%);
     }
 
-    .contact-links a:hover {
+    .contact-links a,
+    .hero-cta a,
+    .contact-links a:hover,
+    .hero-cta a:hover {
+      background-image: none;
+      background-size: auto;
+    }
+
+    .contact-links a:hover,
+    .hero-cta a:hover {
       border-color: rgb(255 255 255 / 0.2);
       color: var(--base2);
     }
 
     .arch-diagram,
     .features .feature,
-    .contact-links a:nth-child(n) {
+    .contact-links a:nth-child(n),
+    .hero-cta a:nth-child(n) {
       --tile-blob-a: 42 161 152;
       --tile-blob-b: 38 139 210;
       isolation: isolate;
@@ -753,7 +774,9 @@
     .features .feature::before,
     .features .feature::after,
     .contact-links a::before,
-    .contact-links a::after {
+    .contact-links a::after,
+    .hero-cta a::before,
+    .hero-cta a::after {
       content: "";
       position: absolute;
       left: 50%;
@@ -767,7 +790,8 @@
 
     .arch-diagram::before,
     .features .feature::before,
-    .contact-links a::before {
+    .contact-links a::before,
+    .hero-cta a::before {
       width: 188%;
       height: 144%;
       background: radial-gradient(ellipse at center, rgb(var(--tile-blob-a) / 0.055) 0%, rgb(var(--tile-blob-a) / 0.037) 42%, rgb(var(--tile-blob-a) / 0.018) 70%, transparent 90%);
@@ -776,7 +800,8 @@
 
     .arch-diagram::after,
     .features .feature::after,
-    .contact-links a::after {
+    .contact-links a::after,
+    .hero-cta a::after {
       width: 198%;
       height: 156%;
       background: radial-gradient(ellipse at center, rgb(var(--tile-blob-b) / 0.052) 0%, rgb(var(--tile-blob-b) / 0.035) 42%, rgb(var(--tile-blob-b) / 0.018) 70%, transparent 90%);
@@ -818,17 +843,20 @@
       --tile-blob-b: 38 139 210;
     }
 
-    .contact-links a:nth-child(1) {
+    .contact-links a:nth-child(1),
+    .hero-cta a:nth-child(1) {
       --tile-blob-a: 42 161 152;
       --tile-blob-b: 38 139 210;
     }
 
-    .contact-links a:nth-child(2) {
+    .contact-links a:nth-child(2),
+    .hero-cta a:nth-child(2) {
       --tile-blob-a: 108 113 196;
       --tile-blob-b: 147 161 161;
     }
 
-    .contact-links a:nth-child(3) {
+    .contact-links a:nth-child(3),
+    .hero-cta a:nth-child(3) {
       --tile-blob-a: 133 153 0;
       --tile-blob-b: 42 161 152;
     }
@@ -840,18 +868,21 @@
 
     .arch-svg,
     .feature > *,
-    .contact-links a > * {
+    .contact-links a > *,
+    .hero-cta a > * {
       position: relative;
       z-index: 1;
     }
 
     .features .feature:nth-child(2)::before,
-    .contact-links a:nth-child(2)::before {
+    .contact-links a:nth-child(2)::before,
+    .hero-cta a:nth-child(2)::before {
       animation-delay: -2.5s;
     }
 
     .features .feature:nth-child(3)::before,
-    .contact-links a:nth-child(3)::before {
+    .contact-links a:nth-child(3)::before,
+    .hero-cta a:nth-child(3)::before {
       animation-delay: -5.5s;
     }
 
@@ -869,12 +900,14 @@
     }
 
     .features .feature:nth-child(2)::after,
-    .contact-links a:nth-child(2)::after {
+    .contact-links a:nth-child(2)::after,
+    .hero-cta a:nth-child(2)::after {
       animation-delay: -7s;
     }
 
     .features .feature:nth-child(3)::after,
-    .contact-links a:nth-child(3)::after {
+    .contact-links a:nth-child(3)::after,
+    .hero-cta a:nth-child(3)::after {
       animation-delay: -3s;
     }
 
@@ -1107,7 +1140,9 @@
       .features .feature::before,
       .features .feature::after,
       .contact-links a::before,
-      .contact-links a::after {
+      .contact-links a::after,
+      .hero-cta a::before,
+      .hero-cta a::after {
         animation: none;
         transform: translate(-50%, -50%);
         will-change: auto;
@@ -1170,6 +1205,12 @@
       tau
     </a>
     <div class="header-links">
+      <a href="https://app.radicle.xyz/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4" aria-label="Radicle">
+        <svg viewBox="0 0 44 44">
+          <path
+            d="M8 0h4v4H8zM32 0h4v4h-4zM12 4h4v4h-4zM28 4h4v4h-4zM12 8h4v4h-4zM16 8h4v4h-4zM20 8h4v4h-4zM24 8h4v4h-4zM28 8h4v4h-4zM8 12h4v4H8zM12 12h4v4h-4zM16 12h4v4h-4zM20 12h4v4h-4zM24 12h4v4h-4zM28 12h4v4h-4zM32 12h4v4h-4zM4 16h4v4H4zM8 16h4v4H8zM20 16h4v4h-4zM24 16h4v4h-4zM36 16h4v4h-4zM4 20h4v4H4zM8 20h4v4H8zM16 20h4v4h-4zM20 20h4v4h-4zM24 20h4v4h-4zM32 20h4v4h-4zM36 20h4v4h-4zM0 24h4v4H0zM4 24h4v4H4zM8 24h4v4H8zM12 24h4v4h-4zM16 24h4v4h-4zM20 24h4v4h-4zM24 24h4v4h-4zM28 24h4v4h-4zM32 24h4v4h-4zM36 24h4v4h-4zM40 24h4v4h-4zM8 28h4v4H8zM16 28h4v4h-4zM24 28h4v4h-4zM32 28h4v4h-4zM8 32h4v4H8zM16 32h4v4h-4zM24 32h4v4h-4zM32 32h4v4h-4zM16 36h4v4h-4zM24 36h4v4h-4zM12 40h4v4h-4zM16 40h4v4h-4zM24 40h4v4h-4zM28 40h4v4h-4z" />
+        </svg>
+      </a>
       <a href="https://github.com/dpc/tau" aria-label="GitHub">
         <svg viewBox="0 0 24 24">
           <path
@@ -1180,6 +1221,24 @@
         <svg viewBox="0 0 24 24">
           <path
             d="M.632.55v22.9H2.28V24H0V0h2.28v.55zm7.043 7.26v1.157h.033c.309-.443.683-.784 1.117-1.024.433-.245.936-.365 1.5-.365.54 0 1.033.107 1.488.32.45.214.773.553.96 1.016.293-.36.674-.67 1.143-.93a3.07 3.07 0 0 1 1.53-.406c.425 0 .82.06 1.185.183.365.12.685.303.96.553.27.249.48.558.63.928.15.373.22.8.22 1.29v5.6h-2.04v-4.63c0-.27-.015-.53-.038-.78a1.63 1.63 0 0 0-.2-.637.96.96 0 0 0-.45-.413c-.2-.1-.456-.149-.765-.149-.31 0-.563.06-.762.178a1.34 1.34 0 0 0-.468.46 1.81 1.81 0 0 0-.237.636 3.87 3.87 0 0 0-.06.674v4.66h-2.04v-4.63c0-.254-.004-.503-.013-.748a2.02 2.02 0 0 0-.147-.64.97.97 0 0 0-.404-.44c-.184-.11-.457-.166-.82-.166a1.56 1.56 0 0 0-.478.082 1.37 1.37 0 0 0-.5.298c-.16.14-.29.334-.39.58-.1.243-.15.57-.15.974v4.69h-2.04V7.81zm15.693 15.64V.55H21.72V0H24v24h-2.28v-.55z" />
+        </svg>
+      </a>
+      <a href="https://discord.gg/zens2jjA3U" aria-label="Discord">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.197.373.291a.077.077 0 0 1-.006.128 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.55-13.66a.061.061 0 0 0-.031-.03ZM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.955 2.418-2.157 2.418Zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.955 2.418-2.157 2.418Z" />
+        </svg>
+      </a>
+      <a href="https://rostra.me/profile/rse1okfyp4yj75i6riwbz86mpmbgna3f7qr66aj1njceqoigjabegy" aria-label="Rostra">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M5 21V3h8.2c3.8 0 6.1 2.1 6.1 5.3 0 2.2-1.1 3.9-3.1 4.7l3.8 8h-4.4l-3.2-7.2H9V21H5Zm4-10.5h3.7c1.6 0 2.5-.8 2.5-2.2s-.9-2.2-2.5-2.2H9v4.4Z" />
+        </svg>
+      </a>
+      <a href="https://github.com/dpc/tau/discussions" aria-label="GitHub Discussions">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M12 .3a12 12 0 0 0-3.8 23.38c.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.62-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.2.7.82.58A12 12 0 0 0 12 .3" />
         </svg>
       </a>
     </div>
@@ -1196,9 +1255,26 @@
       command&nbsp;line&nbsp;nerds and Linux&nbsp;hackers.
       Like <a href="https://shittycodingagent.ai/">Pi</a>, but twice as much.</p>
     <div class="hero-cta">
-      <a class="btn-primary" href="https://app.radicle.xyz/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4">View on Radicle</a>
-      <a class="btn-secondary" href="https://github.com/dpc/tau">View on GitHub</a>
-      <a class="btn-secondary" href="#architecture">Learn more</a>
+      <a class="btn-secondary" href="https://app.radicle.xyz/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4">
+        <svg viewBox="0 0 44 44" aria-hidden="true">
+          <path
+            d="M8 0h4v4H8zM32 0h4v4h-4zM12 4h4v4h-4zM28 4h4v4h-4zM12 8h4v4h-4zM16 8h4v4h-4zM20 8h4v4h-4zM24 8h4v4h-4zM28 8h4v4h-4zM8 12h4v4H8zM12 12h4v4h-4zM16 12h4v4h-4zM20 12h4v4h-4zM24 12h4v4h-4zM28 12h4v4h-4zM32 12h4v4h-4zM4 16h4v4H4zM8 16h4v4H8zM20 16h4v4h-4zM24 16h4v4h-4zM36 16h4v4h-4zM4 20h4v4H4zM8 20h4v4H8zM16 20h4v4h-4zM20 20h4v4h-4zM24 20h4v4h-4zM32 20h4v4h-4zM36 20h4v4h-4zM0 24h4v4H0zM4 24h4v4H4zM8 24h4v4H8zM12 24h4v4h-4zM16 24h4v4h-4zM20 24h4v4h-4zM24 24h4v4h-4zM28 24h4v4h-4zM32 24h4v4h-4zM36 24h4v4h-4zM40 24h4v4h-4zM8 28h4v4H8zM16 28h4v4h-4zM24 28h4v4h-4zM32 28h4v4h-4zM8 32h4v4H8zM16 32h4v4h-4zM24 32h4v4h-4zM32 32h4v4h-4zM16 36h4v4h-4zM24 36h4v4h-4zM12 40h4v4h-4zM16 40h4v4h-4zM24 40h4v4h-4zM28 40h4v4h-4z" />
+        </svg>
+        View on Radicle
+      </a>
+      <a class="btn-secondary" href="https://github.com/dpc/tau">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M12 .3a12 12 0 0 0-3.8 23.38c.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.62-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.2.7.82.58A12 12 0 0 0 12 .3" />
+        </svg>
+        View on GitHub
+      </a>
+      <a class="btn-secondary" href="#architecture">
+        <svg viewBox="0 0 800 800" aria-hidden="true">
+          <path d="M194.63 165.29H605.38V282.65H429.34V517.36H546.7V634.72H311.99V282.65H194.63Z" />
+        </svg>
+        Learn more
+      </a>
     </div>
     <div class="terminal-preview" aria-label="Tau terminal preview">
       <span class="terminal-blob terminal-blob-a" aria-hidden="true"></span>
@@ -1333,19 +1409,6 @@
 
   <hr class="divider">
 
-  <section id="sister-projects">
-    <h2>Sister-projects</h2>
-    <h3>Better review notes for agent feedback</h3>
-    <p><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3sP3WnHgo1UfwmfmFM9a5cZSSEZR">Patchmark</a>
-      is a diff-aware language server for Markdown and plain-text review notes.
-      It pairs nicely with Tau's prompt-editing flow: open the prompt in
-      <code style="color:var(--cyan)">$EDITOR</code>, review diffs with
-      language-server help, and leave precise feedback for agents from the editor
-      you already use.</p>
-  </section>
-
-  <hr class="divider">
-
   <section id="philosophy">
     <h2>Philosophy</h2>
     <h3>New tool for an old wizard</h3>
@@ -1371,6 +1434,47 @@
 
   <hr class="divider">
 
+  <section id="major-features">
+    <h2>Major features</h2>
+    <h3>What Tau can do today</h3>
+    <div class="features">
+      <div class="feature">
+        <div class="feature-title"><span class="icon">%</span> Durable sessions</div>
+        <p>Typed event logs preserve sessions, agent transcripts, branch trees,
+          rewinds, detach, and resume across restarts.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title"><span class="icon">@</span> Roles and model knobs</div>
+        <p>Configure roles, models, reasoning effort, verbosity, thinking summaries,
+          service tier, and per-role tool access.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title"><span class="icon">/</span> Terminal UI</div>
+        <p>Slash commands, path completion, prompt history, fzf-powered insertion,
+          custom key bindings, and editor-based prompt editing.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title"><span class="icon">$</span> Built-in extensions</div>
+        <p>Shell and filesystem tools, web search, notifications, provider backends,
+          and PIM extensions for controlled email and calendar access.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title"><span class="icon">&amp;</span> Multi-agent workflows</div>
+        <p>Agents can delegate to isolated sub-agents, message agents or users,
+          and keep long-running tool work in the background.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-title"><span class="icon">#</span> Review-friendly output</div>
+        <p>Inline diffs, reasoning rendering, cache stats, turn stats, policy gates,
+          approval logs, and shell/filesystem access locks keep agent work inspectable.</p>
+      </div>
+    </div>
+    <p style="margin-top:1.5rem">See the full <a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/FEATURES.md">FEATURES.md</a>
+      for details and configuration examples.</p>
+  </section>
+
+  <hr class="divider">
+
   <section id="credits">
     <h2>Inspiration</h2>
     <h3>Thank you, Pi</h3>
@@ -1383,9 +1487,14 @@
 
   <section id="status">
     <h2>Status</h2>
-    <h3>Just getting started</h3>
-    <p>Tau is in early development. The core architecture, event protocol,
-      and terminal UI are being actively built.</p>
+    <h3>Heavy development, daily use</h3>
+    <p>Tau is still under heavy development, but it has been a productive daily
+      driver for its developers for weeks. It already has features and design
+      choices that are stronger than those in popular coding agents, while the
+      Unix-centric UX keeps improving quickly.</p>
+    <p>There are many big plans ahead: more process-oriented integrations,
+      stronger multi-agent workflows, and Unix-native features no other coding
+      harness has today.</p>
     <a class="demo-link" href="https://asciinema.org/a/973826">
       <img src="https://asciinema.org/a/973826.svg" alt="asciicast"
         style="width:100%; max-width:720px; border-radius:6px; margin-top:1rem;">
@@ -1398,20 +1507,28 @@
     <h2>Community</h2>
     <h3>Get in touch</h3>
     <div class="contact-links">
-      <a href="https://discord.gg/zens2jjA3U">
-        Discord server
+      <a class="contact-link" href="https://discord.gg/zens2jjA3U">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path
+            d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.197.373.291a.077.077 0 0 1-.006.128 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.55-13.66a.061.061 0 0 0-.031-.03ZM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.955 2.418-2.157 2.418Zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.955 2.418-2.157 2.418Z" />
+        </svg>
+        Discord
       </a>
-      <a href="https://matrix.to/#/#support:dpc.pw">
+      <a class="contact-link" href="https://matrix.to/#/#support:dpc.pw">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
           <path
             d="M.632.55v22.9H2.28V24H0V0h2.28v.55zm7.043 7.26v1.157h.033c.309-.443.683-.784 1.117-1.024.433-.245.936-.365 1.5-.365.54 0 1.033.107 1.488.32.45.214.773.553.96 1.016.293-.36.674-.67 1.143-.93a3.07 3.07 0 0 1 1.53-.406c.425 0 .82.06 1.185.183.365.12.685.303.96.553.27.249.48.558.63.928.15.373.22.8.22 1.29v5.6h-2.04v-4.63c0-.27-.015-.53-.038-.78a1.63 1.63 0 0 0-.2-.637.96.96 0 0 0-.45-.413c-.2-.1-.456-.149-.765-.149-.31 0-.563.06-.762.178a1.34 1.34 0 0 0-.468.46 1.81 1.81 0 0 0-.237.636 3.87 3.87 0 0 0-.06.674v4.66h-2.04v-4.63c0-.254-.004-.503-.013-.748a2.02 2.02 0 0 0-.147-.64.97.97 0 0 0-.404-.44c-.184-.11-.457-.166-.82-.166a1.56 1.56 0 0 0-.478.082 1.37 1.37 0 0 0-.5.298c-.16.14-.29.334-.39.58-.1.243-.15.57-.15.974v4.69h-2.04V7.81zm15.693 15.64V.55H21.72V0H24v24h-2.28v-.55z" />
         </svg>
         Matrix chat
       </a>
-      <a href="https://rostra.me/profile/rse1okfyp4yj75i6riwbz86mpmbgna3f7qr66aj1njceqoigjabegy">
+      <a class="contact-link" href="https://rostra.me/profile/rse1okfyp4yj75i6riwbz86mpmbgna3f7qr66aj1njceqoigjabegy">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path
+            d="M5 21V3h8.2c3.8 0 6.1 2.1 6.1 5.3 0 2.2-1.1 3.9-3.1 4.7l3.8 8h-4.4l-3.2-7.2H9V21H5Zm4-10.5h3.7c1.6 0 2.5-.8 2.5-2.2s-.9-2.2-2.5-2.2H9v4.4Z" />
+        </svg>
         Rostra
       </a>
-      <a href="https://github.com/dpc/tau/discussions">
+      <a class="contact-link" href="https://github.com/dpc/tau/discussions">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
           <path
             d="M12 .3a12 12 0 0 0-3.8 23.38c.6.11.82-.26.82-.58v-2.02c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.62-5.48 5.92.42.36.81 1.1.81 2.22v3.29c0 .32.2.7.82.58A12 12 0 0 0 12 .3" />
@@ -1419,6 +1536,19 @@
         GitHub Discussions
       </a>
     </div>
+  </section>
+
+  <hr class="divider">
+
+  <section id="sister-projects">
+    <h2>Sister-projects</h2>
+    <h3>Better review notes for agent feedback</h3>
+    <p><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3sP3WnHgo1UfwmfmFM9a5cZSSEZR">Patchmark</a>
+      is a diff-aware language server for Markdown and plain-text review notes.
+      It pairs nicely with Tau's prompt-editing flow: open the prompt in
+      <code style="color:#00ffff">$EDITOR</code>, review diffs with
+      language-server help, and leave precise feedback for agents from the editor
+      you already use.</p>
   </section>
 
   <hr class="divider">

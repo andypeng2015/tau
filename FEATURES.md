@@ -5,6 +5,23 @@ philosophy and motivation see [README.md](README.md); for design notes see
 [DESIGN.md](DESIGN.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 
+## Highlights
+
+- **Unix-native process architecture:** every UI, provider, extension, and tool
+  integration is a replaceable process speaking the Tau protocol.
+- **Durable agent work:** event logs preserve sessions, transcripts, branch
+  trees, rewinds, detach, and resume.
+- **Multi-agent workflows:** agents can delegate to isolated sub-agents, exchange
+  messages, and collect background tool work without blocking the main flow.
+- **PIM extensions:** controlled email and calendar tools expose useful personal
+  information while keeping reads, writes, approvals, and logs explicit.
+- **Safe shell/filesystem access:** mutating shell and file tools acquire update
+  locks so concurrent agents do not trample the same working tree.
+- **Daily-driver terminal UX:** slash commands, role/model controls, prompt
+  history, fzf insertion, editor integration, diffs, thinking blocks, and status
+  telemetry are built into the terminal UI.
+
+
 ## Architecture
 
 ### Process-oriented components
@@ -256,12 +273,13 @@ apply only to that role. Fragments are ordered by priority with extension- and
 tool-provided fragments, so global style instructions, role guidance, and
 tool-specific instructions share one prompt assembly path.
 
-### `std-pim` — controlled email and calendar surface
+### `std-pim` — PIM (email and calendar) extension
 
-The PIM extension exposes the existing `email` tool for configured mail accounts. It can
-list folders, recent messages by IMAP internal date with `list_recent`, raw
-UID-ordered pages with `list_by_uid`, read approved or policy-allowed content,
-request full read approval with `request_full`, send mail through approval gates, and safely
+The PIM extension exposes controlled `email` and `calendar` tools for personal
+information workflows. Email accounts can list folders, recent messages by IMAP
+internal date with `list_recent`, raw UID-ordered pages with `list_by_uid`, read
+approved or policy-allowed content, request full read approval with
+`request_full`, send mail through approval gates, and safely
 manage message state with `mark_read`, `mark_unread`, `star`, `unstar`, and
 `trash`. Message listings include `access=full|preview|none`; `preview` reads
 return only a heavily stripped `body_preview` with HTML removed, links replaced
@@ -323,14 +341,17 @@ when a long task finishes while you're in another window. Set
 `config.idle_agent_summary: true` to restore the old behavior that asks the
 agent for a one-sentence idle summary before notifying.
 
-### Harness-owned `delegate` / `wait` — sub-task delegation
+### Harness-owned `delegate` / `wait` / `message` — multi-agent workflows
 
-The harness exposes a `delegate` tool that spawns a side conversation and returns
-its result to the caller, plus a `wait` tool for collecting background tool
-results. Unless the `delegate` call supplies `role`, delegated sub-agents default
-to the `engineer` role. The delegate placeholder and final result include
-`self_agent_id` and `sub_agent_id`; pass `sub_agent_id` to the `message` tool
-for live agent-to-agent notes. `message` can also target the special recipient `user`;
+The harness exposes a `delegate` tool that spawns an isolated side conversation
+and returns its result to the caller, plus a `wait` tool for collecting
+background tool results. Long-running background-capable tool calls return an
+immediate placeholder, stay visible in the UI, and deliver their real result or
+error later so the main turn can keep making progress. Unless the `delegate`
+call supplies `role`, delegated sub-agents default to the `engineer` role. The
+delegate placeholder and final result include `self_agent_id` and
+`sub_agent_id`; pass `sub_agent_id` to the `message` tool for live
+agent-to-agent notes. `message` can also target the special recipient `user`;
 all messages are rendered in the UI as `Message from <sender> to <recipient>:`.
 When `role` is supplied, or when the default `engineer` role is used, the
 sub-agent runs with that role's resolved model, model parameters, system prompt,
