@@ -4583,6 +4583,172 @@ fn no_arg_wait_after_background_completion_removes_queued_completion_prompt() {
     h.shutdown().expect("shutdown");
 }
 
+/// Agent-to-agent messages are real input for the recipient. If the recipient
+/// is blocked in `wait`, the wait must return immediately so the hidden message
+/// can be folded into the next prompt instead of being stuck behind a passive
+/// wait for background work.
+#[test]
+fn agent_message_interrupts_recipient_active_wait() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _tool_events = connect_test_tool(&mut h, "conn-msg-wait");
+    h.registry.register(
+        "conn-msg-wait",
+        instant_background_test_tool_spec("slow_msg_wait"),
+    );
+
+    let cid = ensure_test_user_agent(&mut h);
+    let recipient_id = h.agents[&cid].agent_id.clone().expect("recipient id");
+    let background_call_id: ToolCallId = "bg-msg-wait".into();
+    start_background_tool_and_finish_placeholder_turn(
+        &mut h,
+        &cid,
+        background_call_id.as_str(),
+        "slow_msg_wait",
+    );
+
+    let wait_call_id: ToolCallId = "wait-msg-interrupt".into();
+    let wait_call = AgentToolCall {
+        id: wait_call_id.clone(),
+        name: ToolName::new("wait"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("tool_call_id".to_owned()),
+            CborValue::Text(background_call_id.to_string()),
+        )]),
+        display: None,
+    };
+    h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
+        .expect("start wait");
+    seed_tools_running(&mut h, &cid, vec![wait_call_id.clone()]);
+
+    h.publish_event(
+        Some(HARNESS_CONNECTION_ID),
+        Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
+            message_id: "test-message-interrupts-wait".into(),
+            sender_id: "manager".to_owned().into(),
+            recipient_id: recipient_id.clone().into(),
+            message: "please stop waiting".to_owned(),
+        }),
+    );
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == wait_call_id.as_str()
+                && matches!(&result.result, CborValue::Text(text) if text.contains("interrupted because new input is queued"))
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::AgentPromptSteered(steered)
+            if steered.agent_id.as_str() == recipient_id.as_str()
+                && steered.text.contains("please stop waiting")
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Exact `wait` interruption is keyed by the waiting conversation, not by the
+/// owner of the background call being waited on. Otherwise a message to the
+/// target owner could unblock an unrelated waiter, while a message to the
+/// waiter would leave it parked.
+#[test]
+fn agent_message_interrupts_exact_wait_by_wait_owner() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+
+    let _tool_events = connect_test_tool(&mut h, "conn-cross-msg-wait");
+    h.registry.register(
+        "conn-cross-msg-wait",
+        instant_background_test_tool_spec("slow_cross_msg_wait"),
+    );
+
+    let target_cid = ensure_test_user_agent(&mut h);
+    let waiter_cid = h.create_durable_user_agent(
+        h.current_session_id.clone(),
+        &h.selected_role.clone(),
+        test_cwd(),
+    );
+    let target_agent_id = h.agents[&target_cid]
+        .agent_id
+        .clone()
+        .expect("target agent id");
+    let waiter_agent_id = h.agents[&waiter_cid]
+        .agent_id
+        .clone()
+        .expect("waiter agent id");
+    h.pending_agent_context_ready
+        .remove(&tau_proto::AgentId::from(waiter_agent_id.clone()));
+
+    let background_call_id: ToolCallId = "bg-cross-msg-wait".into();
+    start_background_tool_and_finish_placeholder_turn(
+        &mut h,
+        &target_cid,
+        background_call_id.as_str(),
+        "slow_cross_msg_wait",
+    );
+
+    let wait_call_id: ToolCallId = "wait-cross-msg-interrupt".into();
+    let wait_call = AgentToolCall {
+        id: wait_call_id.clone(),
+        name: ToolName::new("wait"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("tool_call_id".to_owned()),
+            CborValue::Text(background_call_id.to_string()),
+        )]),
+        display: None,
+    };
+    h.handle_wait_tool_call(&waiter_cid, &wait_call, ToolName::new("wait"))
+        .expect("start cross-owner wait");
+    seed_tools_running(&mut h, &waiter_cid, vec![wait_call_id.clone()]);
+
+    h.publish_event(
+        Some(HARNESS_CONNECTION_ID),
+        Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
+            message_id: "test-message-to-target-owner".into(),
+            sender_id: "manager".to_owned().into(),
+            recipient_id: target_agent_id.into(),
+            message: "target owner only".to_owned(),
+        }),
+    );
+
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result) if result.call_id.as_str() == wait_call_id.as_str()
+    )));
+
+    h.publish_event(
+        Some(HARNESS_CONNECTION_ID),
+        Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
+            message_id: "test-message-to-wait-owner".into(),
+            sender_id: "manager".to_owned().into(),
+            recipient_id: waiter_agent_id.clone().into(),
+            message: "waiter should resume".to_owned(),
+        }),
+    );
+
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolResult(result)
+            if result.call_id.as_str() == wait_call_id.as_str()
+                && matches!(&result.result, CborValue::Text(text) if text.contains("interrupted because new input is queued"))
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::AgentPromptSteered(steered)
+            if steered.agent_id.as_str() == waiter_agent_id.as_str()
+                && steered.text.contains("waiter should resume")
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
 /// While a parent's `delegate` tool call is in flight, the harness
 /// must still dispatch the spawned side conversation's prompt
 /// immediately — the parent's `ToolsRunning` turn state is logically

@@ -162,6 +162,14 @@ impl Harness {
         self.publish_wait_replies(replies);
     }
 
+    pub(crate) fn interrupt_active_waits_for(&mut self, owner: &AgentId) {
+        let replies = self
+            .subagents
+            .wait_tracker
+            .interrupt_active_waits_for(owner);
+        self.publish_wait_replies(replies);
+    }
+
     pub(crate) fn record_wait_tool_cancelled(&mut self, call_ids: &HashSet<ToolCallId>) {
         let cancelled = self.subagents.wait_tracker.record_tool_cancelled(call_ids);
         for call_id in cancelled.unsuppress_call_ids {
@@ -612,6 +620,7 @@ enum WaitCallState {
 struct WaitRequest {
     call_id: ToolCallId,
     tool_name: ToolName,
+    owner: AgentId,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -687,7 +696,11 @@ impl WaitTracker {
                 ));
             }
         };
-        let wait = WaitRequest { call_id, tool_name };
+        let wait = WaitRequest {
+            call_id,
+            tool_name,
+            owner: owner.clone(),
+        };
         match target {
             WaitTarget::Exact(target) => self.start_exact_wait(target, wait),
             WaitTarget::AnyBackground => self.start_any_wait(owner.clone(), wait),
@@ -1119,15 +1132,7 @@ impl WaitTracker {
         let waiters = std::mem::take(&mut self.waiters);
         let mut replies: Vec<WaitReply> = waiters
             .into_iter()
-            .map(|(target, wait)| {
-                let source_tool_name = self.call_tool_names.get(&target).cloned();
-                let mut reply =
-                    wait_interrupted_reply(wait.call_id, wait.tool_name, source_tool_name, &target);
-                if self.is_backgrounded(&target) {
-                    reply = reply.with_unsuppress(target);
-                }
-                reply
-            })
+            .map(|(target, wait)| self.interrupted_exact_wait_reply(target, wait))
             .collect();
         replies.extend(
             std::mem::take(&mut self.any_waiters)
@@ -1135,6 +1140,41 @@ impl WaitTracker {
                 .map(|wait| wait_interrupted_any_reply(wait.call_id, wait.tool_name)),
         );
         replies
+    }
+
+    fn interrupt_active_waits_for(&mut self, owner: &AgentId) -> Vec<WaitReply> {
+        let targets: Vec<ToolCallId> = self
+            .waiters
+            .keys()
+            .filter(|target| {
+                self.waiters
+                    .get(*target)
+                    .is_some_and(|wait| &wait.owner == owner)
+            })
+            .cloned()
+            .collect();
+        let mut replies: Vec<WaitReply> = targets
+            .into_iter()
+            .filter_map(|target| {
+                self.waiters
+                    .remove(&target)
+                    .map(|wait| self.interrupted_exact_wait_reply(target, wait))
+            })
+            .collect();
+        if let Some(wait) = self.any_waiters.remove(owner) {
+            replies.push(wait_interrupted_any_reply(wait.call_id, wait.tool_name));
+        }
+        replies
+    }
+
+    fn interrupted_exact_wait_reply(&self, target: ToolCallId, wait: WaitRequest) -> WaitReply {
+        let source_tool_name = self.call_tool_names.get(&target).cloned();
+        let mut reply =
+            wait_interrupted_reply(wait.call_id, wait.tool_name, source_tool_name, &target);
+        if self.is_backgrounded(&target) {
+            reply = reply.with_unsuppress(target);
+        }
+        reply
     }
 
     fn transfer_call_owner(&mut self, call_id: &ToolCallId, source: &AgentId, target: &AgentId) {
@@ -1383,7 +1423,7 @@ fn wait_interrupted_reply(
         wait_tool_name,
         source_tool_name,
         CborValue::Text(format!(
-            "{}: true\n\nWaiting for tool call `{target_call_id}` was interrupted because user input is queued. Try again later.",
+            "{}: true\n\nWaiting for tool call `{target_call_id}` was interrupted because new input is queued. Try again later.",
             tau_proto::TAU_INTERNAL_HEADER_NAME
         )),
         None,
@@ -1396,7 +1436,7 @@ fn wait_interrupted_any_reply(wait_call_id: ToolCallId, wait_tool_name: ToolName
         wait_tool_name,
         None,
         CborValue::Text(format!(
-            "{}: true\n\nWaiting for a background tool call in this conversation was interrupted because user input is queued. Try again later.",
+            "{}: true\n\nWaiting for a background tool call in this conversation was interrupted because new input is queued. Try again later.",
             tau_proto::TAU_INTERNAL_HEADER_NAME
         )),
         None,

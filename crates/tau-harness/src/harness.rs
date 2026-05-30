@@ -2277,6 +2277,7 @@ impl Harness {
                 conv.pending_prompts
                     .push_back(PendingPrompt::agent_message_received(text));
             }
+            self.interrupt_active_waits_for(&cid);
             self.preempt_queued_tool_calls_for_message_received(&cid);
             self.try_advance_queue();
             return;
