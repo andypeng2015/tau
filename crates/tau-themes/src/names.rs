@@ -103,9 +103,9 @@ pub const BANNER_PUN: &str = "banner.pun";
 
 // -- Diffs --
 //
-// File-mutation tools (`write`, `edit`) attach a structured
-// `DiffSummary` to their result. The renderer paints each hunk line
-// with a tag-specific style; intra-line `Modify` segments use the
+// File-mutation tools attach a structured `DiffSummary` to their result. The
+// renderer paints each hunk line with a tag-specific style; intra-line `Modify`
+// segments use the
 // inline variants so changed tokens pop out of the surrounding
 // (otherwise red/green) line.
 pub const DIFF_ADDED: &str = "diff.added";

@@ -1,7 +1,7 @@
 //! Structured diff payload returned by file-mutation tools.
 //!
-//! Tools that change file contents (`write`, `edit`) attach a
-//! [`DiffSummary`] to their result so UIs can render it however they
+//! Tools that change file contents attach a [`DiffSummary`] to their result so
+//! UIs can render it however they
 //! like — themed colors, expand/collapse, intra-line highlighting,
 //! jump-to-changed-line — instead of being handed a pre-formatted
 //! string.

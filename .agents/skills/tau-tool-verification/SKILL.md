@@ -2,15 +2,15 @@
 name: tau-tool-verification
 description: >
   Use this skill when asked to verify Tau harness tools or tool output behavior,
-  especially read, write, edit, shell, line-oriented output, truncation,
-  metadata headers, UTF-8 handling, diffs, timeouts, or skill/tool conformance.
+  especially read, edit, shell, line-oriented output, truncation, metadata
+  headers, UTF-8 handling, diffs, timeouts, or skill/tool conformance.
 ---
 
 # Tau Tool Verification
 
 Use when asked to verify Tau skills.
 
-If not explicitly stated, assume the user means `read`, `write`, `edit` and `shell` tools.
+If not explicitly stated, assume the user means `read`, `edit` and `shell` tools.
 
 ## Goal
 
@@ -64,8 +64,7 @@ new information, such as a canonicalized path that differs from the input.
 
 ### Common patterns
 
-Range operations should use `<start-line>` and `<line-number>` (optional)
-approach to range selection.
+Range operations should use `start_line` and `line_count` fields for range selection.
 
 Newlines are assumed to be `\n`, but other styles are supported
 and displayed as `crlf` (`\r\n`), `cr` (`\r`) or `no_nl` (missing trailing newline).
@@ -122,20 +121,11 @@ container policy does not support read-only bind mounts, `mode: ro` may degrade
 to a normal shell command; report that the ro-bind enforcement was unavailable
 instead of treating the shell invocation itself as broken.
 
-`edit` tool produces unified-diff like output for edits made in the payload, and
-allows at most 100 replacements per call, to limit amount of output it produces.
-Requests for more than 100 replacements must error out immediately before making
-any changes. If an edit finds no matches, the tool error should include structured
-details with `changed: false` and `replacements: 0`. Hunks that would be too large
-than some sanity threshold (both lines and bytes) or with invalid characters, will
-be replaced with:
+`edit` is line-oriented. Each edit entry must include `start_line`, `line_count`, and `newText`; it replaces that original line range with `newText` verbatim. All edit ranges use the original file numbering as if applied simultaneously, so the tool must reject overlapping ranges before changing the file. Ranges must fit within the current available line range. Line 1 is always available for an empty or missing file, and the line after a trailing newline is available for appends.
 
-```
-@@ -1,8 +1,8 @@
-<marker>
-```
+`edit` supports file creation: missing files are treated as empty, and missing parent directories are created only after the request validates. To create a file, replace `start_line: 1`, `line_count: 1` with the desired contents. The model-visible result should stay minimal: `replacements`, `changed`, `available_lines` (highest valid `start_line` after the edit), and `total_bytes`. Diff payloads belong in UI display state, not the model-visible result.
 
-Where marker is similar to ones used in tools like `read`, `shell` output.
+`edit` allows at most 100 edit entries per call. Requests with more entries must error out immediately before reading, writing, or creating parent directories. Invalid ranges, overlapping ranges, missing `newText`, and malformed line fields must leave the file unchanged.
 
 Other commands should adhere to pre-existing conventions and naming used in
 standard tools.
@@ -189,7 +179,7 @@ When locking is enabled, verify all of these behaviors:
 * Repeated `update` by the same agent on the same canonical directory, an ancestor, or a child is an error. It should return `error: dir_lock_duplicate` with details headers including `blocking_directory`, `requested_directory`, and `lock_owner_id`, plus a short text payload in `output`. Same-agent automatic writer reentry under a manual lock should still complete, including while another same-agent mutating tool under that lock is still running.
 * Ancestor and child directories conflict both ways. Sibling directories do not conflict unless a blocked FIFO waiter is ahead of them.
 * Reads stay free: `read`, `grep`, `find`, and `ls` complete while an update lock is held.
-* Mutating tools participate when enabled: `write`, `edit`, `apply_patch`, `shell`, and `gpt_shell` wait on conflicting locks.
+* Mutating tools participate when enabled: `edit`, `apply_patch`, `shell`, and `gpt_shell` wait on conflicting locks.
 * Lock waiters do not consume the ext-shell worker semaphore before their lock is available. A large number of blocked lock waiters should not prevent unrelated reads from running.
 * Waiting on an idle manual lock eventually returns an abandoned-lock error. It should return `error: dir_lock_abandoned` with details headers including `blocking_directory`, `lock_owner_id`, `idle_seconds`, and `held_seconds`, plus a clear text payload in `output`. Active same-owner mutating tools under the lock should prevent this abandoned-lock error.
 * Waiting tool UI/status includes the directory or directories being waited on. `dir_lock` success and failure UI/status should also include the relevant directory when known, and successful lock/unlock status should use the normal `ok` chip.
@@ -201,9 +191,9 @@ When locking is enabled, verify all of these behaviors:
 
 With default config or `dir_lock.enable` true, call `dir_lock update` on a relative path like `root/a/../a`. Expect success and a canonical absolute directory in the result/display. Call `dir_lock unlock` for the same path. Expect success.
 
-Call `dir_lock update` on a missing directory and on `root/a/file.txt`. Expect tool errors. Then call `dir_lock update` twice on `root/a` from the same agent. The second update should error and mention the already-held lock. Also call `dir_lock update root/a/child` and `dir_lock update root` from that same agent while `root/a` is held; both should error. Start a delegate that tries to `write` `root/a/child/blocked.txt` and reports to `user` after it succeeds. The delegate should wait. Call `dir_lock unlock` once from the original agent; the delegate should complete. A second `unlock` should error. Also verify that a different agent cannot unlock Agent A's lock without `owner_agent_id`, but can force-unlock it when `owner_agent_id` is Agent A.
+Call `dir_lock update` on a missing directory and on `root/a/file.txt`. Expect tool errors. Then call `dir_lock update` twice on `root/a` from the same agent. The second update should error and mention the already-held lock. Also call `dir_lock update root/a/child` and `dir_lock update root` from that same agent while `root/a` is held; both should error. Start a delegate that tries to create `root/a/child/blocked.txt` with `edit` and reports to `user` after it succeeds. The delegate should wait. Call `dir_lock unlock` once from the original agent; the delegate should complete. A second `unlock` should error. Also verify that a different agent cannot unlock Agent A's lock without `owner_agent_id`, but can force-unlock it when `owner_agent_id` is Agent A.
 
-Also verify same-owner reentry: while the original agent holds `root/a`, run a same-agent `write` or `edit` inside `root/a`. It should complete instead of deadlocking on its own manual lock. Then start a same-agent `shell` in `root/a` that sleeps briefly before exiting; while that shell is still running, run another same-agent `write` inside `root/a`. The write should complete before the shell exits and should not emit directory-lock waiting progress.
+Also verify same-owner reentry: while the original agent holds `root/a`, run a same-agent `edit` inside `root/a`. It should complete instead of deadlocking on its own manual lock. Then start a same-agent `shell` in `root/a` that sleeps briefly before exiting; while that shell is still running, run another same-agent `edit` inside `root/a`. The edit should complete before the shell exits and should not emit directory-lock waiting progress.
 
 #### Phase 2: reads remain unblocked
 
@@ -215,8 +205,7 @@ If the `shell` waits long enough to background, call `wait` after unlocking and 
 
 For each mutating tool, hold the relevant manual lock from one agent and run the tool from a different delegate. Confirm it waits until the lock is released:
 
-* `write`: lock the target file parent. Also test a missing-parent write like `root/a/new/dir/file.txt`; it should wait on the deepest existing ancestor and then create parents after unlock.
-* `edit`: lock the canonical parent of the existing file. If the edited path is a symlink to a file elsewhere in the scratch tree, the lock should follow the final symlink to the real edited file.
+* `edit`: lock the target file parent. Existing final symlinks should be followed to the real edited file. Missing-parent creates like `root/a/new/dir/file.txt` should wait on the deepest existing ancestor and then create parents after unlock.
 * `apply_patch`: use a patch that touches one file under `root/a` and one under `root/b`. If `root/a` is locked, neither change should be applied before the lock is granted. After unlock, both changes should appear together from the patch invocation.
 * `shell` and `gpt_shell`: lock the canonical `cwd`. A command with `cwd: root/a` should wait on a `root/a` lock.
 
@@ -243,7 +232,7 @@ Also test the reverse overlap: Agent A holds `root/a/child`, Agent B waits on `r
 
 Hold `root/a` from one agent. Start a delegate or shell call whose mutating `shell` invocation uses `cwd: root/a` and would create a sentinel file. Let it wait long enough to show the waiting directory in the UI; if it backgrounds, record the placeholder ID. Call `cancel` on the waiting shell tool call ID. Expected: cancel is accepted, the waiting lock request is removed, `wait` returns a canceled result if the call backgrounded, and the sentinel file is still absent after the lock is later released.
 
-Do not count cancellation of `write` or `edit` as required unless the harness exposes those call IDs as cancellable in that run. The important lock-specific behavior is that a waiting lock request can be canceled and does not run later after unlock.
+Do not count cancellation of `edit` as required unless the harness exposes those call IDs as cancellable in that run. The important lock-specific behavior is that a waiting lock request can be canceled and does not run later after unlock.
 
 #### Phase 7: agent lifecycle cleanup
 

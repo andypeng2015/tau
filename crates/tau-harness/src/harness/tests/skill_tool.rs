@@ -852,20 +852,16 @@ fn default_tool_use_state_formats_requested_line_ranges() {
                 CborValue::Text("edits".to_owned()),
                 CborValue::Array(vec![CborValue::Map(vec![
                     (
-                        CborValue::Text("oldText".to_owned()),
-                        CborValue::Text("old".to_owned()),
-                    ),
-                    (
-                        CborValue::Text("newText".to_owned()),
-                        CborValue::Text("new".to_owned()),
-                    ),
-                    (
                         CborValue::Text("start_line".to_owned()),
                         CborValue::Integer(2.into()),
                     ),
                     (
                         CborValue::Text("line_count".to_owned()),
                         CborValue::Integer(1.into()),
+                    ),
+                    (
+                        CborValue::Text("newText".to_owned()),
+                        CborValue::Text("new".to_owned()),
                     ),
                 ])]),
             ),

@@ -18,9 +18,7 @@ use tau_proto::{
 use crate::argument::{argument_text, optional_argument_text};
 use crate::display::{ToolFailure, ok_display};
 use crate::tools::shell::ShellAccessMode;
-use crate::tools::{
-    APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, GPT_SHELL_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME,
-};
+use crate::tools::{APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, GPT_SHELL_TOOL_NAME, SHELL_TOOL_NAME};
 
 /// Agent-facing name of the directory locking tool.
 pub(crate) const DIR_LOCK_TOOL_NAME: &str = "dir_lock";
@@ -781,15 +779,9 @@ pub(crate) fn automatic_lock_dirs_for_tool(
     arguments: &CborValue,
 ) -> Result<Option<Vec<PathBuf>>, ToolFailure> {
     match tool_name {
-        WRITE_TOOL_NAME => {
-            let path = argument_text(arguments, "path").map_err(ToolFailure::from)?;
-            Ok(Some(vec![canonical_write_lock_dir(Path::new(&path))?]))
-        }
         EDIT_TOOL_NAME => {
             let path = argument_text(arguments, "path").map_err(ToolFailure::from)?;
-            Ok(Some(vec![canonical_existing_file_parent(Path::new(
-                &path,
-            ))?]))
+            Ok(Some(vec![canonical_write_lock_dir(Path::new(&path))?]))
         }
         SHELL_TOOL_NAME | GPT_SHELL_TOOL_NAME => {
             match crate::tools::shell::parse_access_mode(arguments).map_err(ToolFailure::from)? {
@@ -846,7 +838,7 @@ pub(crate) fn display_dirs(dirs: &[PathBuf]) -> String {
 
 /// Canonical write-target lock directory, following a final symlink when the
 /// destination path is already a symlink. Missing parents lock the deepest
-/// existing ancestor so `write` can keep creating parent directories safely.
+/// existing ancestor so `edit` can keep creating parent directories safely.
 pub(crate) fn canonical_write_lock_dir(path: &Path) -> Result<PathBuf, ToolFailure> {
     let lock_path = match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {

@@ -1,7 +1,7 @@
 //! Filesystem and shell tool extension.
 //!
-//! Provides `read`, `write`, `edit`, `apply_patch`, `dir_lock`, `grep`,
-//! `find`, `ls`, `shell`, and `gpt_shell` tools.
+//! Provides `read`, `edit`, `apply_patch`, `dir_lock`, `grep`, `find`, `ls`,
+//! `shell`, and `gpt_shell` tools.
 //!
 //! The `echo` tool is available under `cfg(test)` or the
 //! `echo-agent` cargo feature for harness-side echo-agent tests.
@@ -43,7 +43,7 @@ use crate::semaphore::Semaphore;
 use crate::tools::ECHO_TOOL_NAME;
 use crate::tools::{
     APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, FIND_TOOL_NAME, GPT_SHELL_TOOL_NAME, GREP_TOOL_NAME,
-    LS_TOOL_NAME, READ_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME, execute_tool,
+    LS_TOOL_NAME, READ_TOOL_NAME, SHELL_TOOL_NAME, execute_tool,
 };
 
 const SHELL_DIR_FORCE_UNLOCK_ACTION_ID: &str = "shell.dir.force_unlock";
@@ -130,46 +130,19 @@ where
             background_support: None,
         },
         ToolSpec {
-            name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
-            model_visible_name: None,
-            description: Some(
-                "Write content to a file, creating it and any missing parent directories \
-                 if they do not exist. Follows symlinks and overwrites the symlink target \
-                 instead of replacing the symlink. Returns the path, bytes written, whether \
-                 the requested path was created, whether filesystem contents changed, and \
-                 symlink target metadata when the requested path was a symlink."
-                    .to_owned(),
-            ),
-            tool_type: tau_proto::ToolType::Function,
-            parameters: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File contents, written verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
-                    }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            })),
-            format: None,
-            enabled_by_default: true,
-            background_support: None,
-        },
-        ToolSpec {
             name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             model_visible_name: None,
             description: Some(
-                "Edit a file using exact text replacement. Each edit is matched against \
-                 the original file, optionally restricted to start_line and line_count, \
-                 and replaces the first matches in that range up to max_matches, capped \
-                 at 100 replacements per call. Replacement ranges from all edits must \
-                 not overlap. Returns the path, the number of replacements, and optional \
-                 unified diff-like output summarizing the change against the previous contents."
+                "Edit a file using line-oriented replacements. Each edit replaces \
+                 `line_count` original lines starting at 1-based `start_line` with \
+                 `newText`, and all edits use the original file's line numbering as if \
+                 applied simultaneously. Ranges must be non-overlapping and within the \
+                 file's available line range; line 1 is always available for an empty \
+                 or missing file, and the line after a trailing newline is available for \
+                 appends. Missing files are treated as empty and missing parent \
+                 directories are created, so use line 1 with line_count 1 to create a file. \
+                 Returns minimal status headers: replacements, changed, available_lines \
+                 (highest valid start_line after the edit), and total_bytes."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -182,35 +155,28 @@ where
                     },
                     "edits": {
                         "type": "array",
-                        "description": "One or more targeted replacements matched against the original file",
+                        "description": "One or more line ranges to replace in the original file",
+                        "minItems": 1,
+                        "maxItems": 100,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "oldText": {
-                                    "type": "string",
-                                    "description": "Exact text to find, matched verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
-                                },
-                                "newText": {
-                                    "type": "string",
-                                    "description": "Replacement text, written verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
-                                },
-                                "max_matches": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "Maximum number of matches to replace for this edit. Defaults to 1. Matches are replaced from the start of the selected range."
-                                },
                                 "start_line": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Optional 1-based inclusive start line for searching this edit. Defaults to line 1."
+                                    "description": "1-based inclusive start line to replace. Line 1 is valid for an empty or missing file, and the line after a trailing newline is valid for appending."
                                 },
                                 "line_count": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Optional number of lines to search starting at start_line. Defaults to the rest of the file."
+                                    "description": "Number of original lines to replace starting at start_line. Use 1 on an empty or append line."
+                                },
+                                "newText": {
+                                    "type": "string",
+                                    "description": "Replacement text, written verbatim. Embed real newlines directly — do NOT use backslash-n escape sequences."
                                 }
                             },
-                            "required": ["oldText", "newText"],
+                            "required": ["start_line", "line_count", "newText"],
                             "additionalProperties": false
                         }
                     }
@@ -962,7 +928,6 @@ fn is_shell_tool(name: &str) -> bool {
     matches!(
         name,
         READ_TOOL_NAME
-            | WRITE_TOOL_NAME
             | EDIT_TOOL_NAME
             | APPLY_PATCH_TOOL_NAME
             | GREP_TOOL_NAME
@@ -977,11 +942,7 @@ fn is_shell_tool(name: &str) -> bool {
 fn is_dir_lock_update_tool(name: &str) -> bool {
     matches!(
         name,
-        WRITE_TOOL_NAME
-            | EDIT_TOOL_NAME
-            | APPLY_PATCH_TOOL_NAME
-            | SHELL_TOOL_NAME
-            | GPT_SHELL_TOOL_NAME
+        EDIT_TOOL_NAME | APPLY_PATCH_TOOL_NAME | SHELL_TOOL_NAME | GPT_SHELL_TOOL_NAME
     )
 }
 

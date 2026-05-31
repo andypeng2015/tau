@@ -7214,9 +7214,9 @@ impl Harness {
         // Non-tool extension side agents (`std-notifications`'
         // idle summary, etc.) must not execute tools — their whole
         // job is to produce a one-line summary, and unfettered tool
-        // access has historically caused destructive `write`/`edit`
-        // calls. Do NOT enforce that by flipping the provider
-        // `tool_choice` to `none`: `tool_choice` is serialized on the
+        // access has historically caused destructive `edit` calls. Do NOT
+        // enforce that by flipping the provider `tool_choice` to `none`:
+        // `tool_choice` is serialized on the
         // wire and changing it breaks the request-body equivalence the
         // `previous_response_id` cache relies on. Keep the wire
         // request identical to the parent (`Auto`) and enforce the
@@ -8970,7 +8970,6 @@ fn build_tool_args_display(
             let path = cbor_text_field(arguments, "path").unwrap_or_default();
             format!("{path} {}", format_requested_line_range(arguments))
         }
-        "write" => cbor_text_field(arguments, "path").unwrap_or_default(),
         "edit" => {
             let path = cbor_text_field(arguments, "path").unwrap_or_default();
             let ranges = cbor_array_field(arguments, "edits")

@@ -1,7 +1,7 @@
 use std::io::{BufReader, BufWriter};
 use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
@@ -23,10 +23,9 @@ use crate::tools::grep::{RipgrepError, classify_ripgrep_stderr, grep_result_map,
 use crate::tools::ls::run_ls;
 use crate::tools::read::{format_read_range, read_file, slice_lines};
 use crate::tools::shell::{CommandDetails, command_details_value, run_command};
-use crate::tools::write::write_file;
 use crate::tools::{
     APPLY_PATCH_TOOL_NAME, EDIT_TOOL_NAME, FIND_TOOL_NAME, GPT_SHELL_TOOL_NAME, LS_TOOL_NAME,
-    READ_TOOL_NAME, SHELL_TOOL_NAME, WRITE_TOOL_NAME,
+    READ_TOOL_NAME, SHELL_TOOL_NAME,
 };
 use crate::truncate::{
     MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, mark_line, truncate_head, truncate_tail,
@@ -177,6 +176,21 @@ fn cbor_text_map(entries: Vec<(&str, &str)>) -> CborValue {
     )
 }
 
+fn edit_arguments(path: &Path, edits: Vec<CborValue>) -> CborValue {
+    cbor_map(vec![
+        ("path", CborValue::Text(path.display().to_string())),
+        ("edits", CborValue::Array(edits)),
+    ])
+}
+
+fn line_edit(start_line: i64, line_count: i64, new_text: &str) -> CborValue {
+    cbor_map(vec![
+        ("start_line", CborValue::Integer(start_line.into())),
+        ("line_count", CborValue::Integer(line_count.into())),
+        ("newText", CborValue::Text(new_text.to_owned())),
+    ])
+}
+
 fn send_dir_lock_config(writer: &mut EventWriter<BufWriter<UnixStream>>, enable: bool) {
     writer
         .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
@@ -221,7 +235,6 @@ fn drain_startup(reader: &mut EventReader<BufReader<UnixStream>>) {
     for expected in [
         EventName::TOOL_REGISTER,                       // echo
         EventName::TOOL_REGISTER,                       // read
-        EventName::TOOL_REGISTER,                       // write
         EventName::TOOL_REGISTER,                       // edit
         EventName::TOOL_REGISTER,                       // apply_patch
         EventName::TOOL_REGISTER,                       // dir_lock
@@ -248,7 +261,9 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
 
     let mut found_echo_disabled = false;
     let mut found_gpt_shell_visible_name = false;
-    for _ in 0..11 {
+    let mut found_edit_schema = false;
+    let mut found_write = false;
+    for _ in 0..10 {
         let event = reader
             .read_event()
             .expect("read")
@@ -267,12 +282,27 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             );
             found_gpt_shell_visible_name = true;
         }
+        if register.tool.name == EDIT_TOOL_NAME {
+            let parameters = register.tool.parameters.as_ref().expect("parameters");
+            let edit_item = &parameters["properties"]["edits"]["items"];
+            assert_eq!(
+                edit_item["required"],
+                serde_json::json!(["start_line", "line_count", "newText"])
+            );
+            assert_eq!(edit_item["properties"]["oldText"], serde_json::Value::Null);
+            found_edit_schema = true;
+        }
+        if register.tool.name == "write" {
+            found_write = true;
+        }
     }
     assert!(found_echo_disabled, "expected echo tool registration");
     assert!(
         found_gpt_shell_visible_name,
         "expected gpt_shell tool registration"
     );
+    assert!(found_edit_schema, "expected line-oriented edit schema");
+    assert!(!found_write, "write tool should not be registered");
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -339,7 +369,7 @@ fn startup_registers_dir_lock_enabled_by_default() {
     let (mut reader, mut writer) = spawn_extension();
 
     let mut found_dir_lock = false;
-    for _ in 0..11 {
+    for _ in 0..10 {
         let event = reader
             .read_event()
             .expect("read")
@@ -365,7 +395,7 @@ fn startup_publishes_shell_dir_force_unlock_action() {
     let (mut reader, mut writer) = spawn_extension();
 
     let mut found_schema = false;
-    for _ in 0..14 {
+    for _ in 0..13 {
         let event = reader
             .read_event()
             .expect("read")
@@ -406,7 +436,7 @@ fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
     let lock_dir = tempdir.path().join("root");
     let child_dir = lock_dir.join("child");
     fs::create_dir_all(&child_dir).expect("child dir");
-    let write_path = child_dir.join("file.txt");
+    let edit_path = child_dir.join("file.txt");
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
@@ -461,34 +491,31 @@ fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
 
     writer
         .write_event(&tool_started(
-            "write-after-force-unlock",
-            WRITE_TOOL_NAME,
-            cbor_text_map(vec![
-                ("path", &write_path.display().to_string()),
-                ("content", "hello"),
-            ]),
+            "edit-after-force-unlock",
+            EDIT_TOOL_NAME,
+            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
             "agent-b",
         ))
-        .expect("write");
-    writer.flush().expect("flush write");
+        .expect("edit");
+    writer.flush().expect("flush edit");
     loop {
         match reader.read_event().expect("read") {
             Some(Event::ToolResult(result))
-                if result.call_id.as_str() == "write-after-force-unlock" =>
+                if result.call_id.as_str() == "edit-after-force-unlock" =>
             {
                 break;
             }
             Some(Event::ToolProgress(progress))
-                if progress.call_id.as_str() == "write-after-force-unlock" =>
+                if progress.call_id.as_str() == "edit-after-force-unlock" =>
             {
-                panic!("write still waited after force unlock: {progress:?}");
+                panic!("edit still waited after force unlock: {progress:?}");
             }
             Some(_) => continue,
-            None => panic!("extension closed before write result"),
+            None => panic!("extension closed before edit result"),
         }
     }
     assert_eq!(
-        fs::read_to_string(&write_path).expect("written file"),
+        fs::read_to_string(&edit_path).expect("edited file"),
         "hello"
     );
 
@@ -569,10 +596,10 @@ fn dir_lock_tool_can_be_disabled_by_config() {
 }
 
 #[test]
-fn dir_lock_blocks_conflicting_write_until_unlock() {
+fn dir_lock_blocks_conflicting_edit_until_unlock() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();
-    let write_path = lock_dir.join("file.txt");
+    let edit_path = lock_dir.join("file.txt");
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
     writer
@@ -597,29 +624,26 @@ fn dir_lock_blocks_conflicting_write_until_unlock() {
 
     writer
         .write_event(&tool_started(
-            "blocked-write",
-            WRITE_TOOL_NAME,
-            cbor_text_map(vec![
-                ("path", &write_path.display().to_string()),
-                ("content", "hello"),
-            ]),
+            "blocked-edit",
+            EDIT_TOOL_NAME,
+            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
             "agent-b",
         ))
-        .expect("write");
-    writer.flush().expect("flush write");
+        .expect("edit");
+    writer.flush().expect("flush edit");
     loop {
         match reader.read_event().expect("read") {
-            Some(Event::ToolProgress(progress)) if progress.call_id.as_str() == "blocked-write" => {
+            Some(Event::ToolProgress(progress)) if progress.call_id.as_str() == "blocked-edit" => {
                 assert!(progress.message.as_deref().is_some_and(|message| {
                     message.contains(lock_dir.to_str().expect("lock dir path is UTF-8"))
                 }));
                 break;
             }
-            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-write" => {
-                panic!("write completed before conflicting lock was released: {result:?}");
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-edit" => {
+                panic!("edit completed before conflicting lock was released: {result:?}");
             }
             Some(_) => continue,
-            None => panic!("extension closed before write progress"),
+            None => panic!("extension closed before edit progress"),
         }
     }
 
@@ -637,26 +661,26 @@ fn dir_lock_blocks_conflicting_write_until_unlock() {
     writer.flush().expect("flush unlock");
 
     let mut saw_unlock = false;
-    let mut saw_write = false;
+    let mut saw_edit = false;
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !(saw_unlock && saw_write) {
+    while !(saw_unlock && saw_edit) {
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for unlock/write"
+            "timed out waiting for unlock/edit"
         );
         match reader.read_event().expect("read") {
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "unlock-root" => {
                 saw_unlock = true;
             }
-            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-write" => {
-                saw_write = true;
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "blocked-edit" => {
+                saw_edit = true;
             }
             Some(_) => continue,
-            None => panic!("extension closed before write result"),
+            None => panic!("extension closed before edit result"),
         }
     }
     assert_eq!(
-        fs::read_to_string(&write_path).expect("written file"),
+        fs::read_to_string(&edit_path).expect("edited file"),
         "hello"
     );
 
@@ -922,32 +946,29 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
 
     writer
         .write_event(&tool_started(
-            "same-agent-write",
-            WRITE_TOOL_NAME,
-            cbor_text_map(vec![
-                ("path", &child_dir.join("file.txt").display().to_string()),
-                ("content", "hello"),
-            ]),
+            "same-agent-edit",
+            EDIT_TOOL_NAME,
+            edit_arguments(&child_dir.join("file.txt"), vec![line_edit(1, 1, "hello")]),
             "agent-a",
         ))
-        .expect("same-agent write");
-    writer.flush().expect("flush same-agent write");
+        .expect("same-agent edit");
+    writer.flush().expect("flush same-agent edit");
     loop {
         match reader.read_event().expect("read") {
-            Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-write" => {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-edit" => {
                 assert_eq!(
-                    fs::read_to_string(child_dir.join("file.txt")).expect("same-agent write file"),
+                    fs::read_to_string(child_dir.join("file.txt")).expect("same-agent edit file"),
                     "hello"
                 );
                 break;
             }
             Some(Event::ToolProgress(progress))
-                if progress.call_id.as_str() == "same-agent-write" =>
+                if progress.call_id.as_str() == "same-agent-edit" =>
             {
-                panic!("same-agent automatic write waited on its own manual lock: {progress:?}");
+                panic!("same-agent automatic edit waited on its own manual lock: {progress:?}");
             }
             Some(_) => continue,
-            None => panic!("extension closed before same-agent write result"),
+            None => panic!("extension closed before same-agent edit result"),
         }
     }
 
@@ -1036,10 +1057,10 @@ fn shell_ro_bypasses_directory_update_lock() {
 }
 
 #[test]
-fn same_agent_write_reenters_manual_lock_while_shell_auto_lock_is_active() {
+fn same_agent_edit_reenters_manual_lock_while_shell_auto_lock_is_active() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();
-    let write_path = lock_dir.join("while-shell-runs.txt");
+    let edit_path = lock_dir.join("while-shell-runs.txt");
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
@@ -1083,7 +1104,7 @@ fn same_agent_write_reenters_manual_lock_while_shell_auto_lock_is_active() {
                 break;
             }
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-shell" => {
-                panic!("shell completed before test write could be issued: {result:?}");
+                panic!("shell completed before test edit could be issued: {result:?}");
             }
             Some(_) => continue,
             None => panic!("extension closed before shell progress"),
@@ -1092,36 +1113,33 @@ fn same_agent_write_reenters_manual_lock_while_shell_auto_lock_is_active() {
 
     writer
         .write_event(&tool_started(
-            "same-agent-write",
-            WRITE_TOOL_NAME,
-            cbor_text_map(vec![
-                ("path", &write_path.display().to_string()),
-                ("content", "hello"),
-            ]),
+            "same-agent-edit",
+            EDIT_TOOL_NAME,
+            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
             "agent-a",
         ))
-        .expect("same-agent write");
-    writer.flush().expect("flush write");
+        .expect("same-agent edit");
+    writer.flush().expect("flush edit");
 
     loop {
         match reader.read_event().expect("read") {
-            Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-write" => {
+            Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-edit" => {
                 assert_eq!(
-                    fs::read_to_string(&write_path).expect("same-agent write file"),
+                    fs::read_to_string(&edit_path).expect("same-agent edit file"),
                     "hello"
                 );
                 break;
             }
             Some(Event::ToolProgress(progress))
-                if progress.call_id.as_str() == "same-agent-write" =>
+                if progress.call_id.as_str() == "same-agent-edit" =>
             {
-                panic!("same-agent write waited on its own active automatic lock: {progress:?}");
+                panic!("same-agent edit waited on its own active automatic lock: {progress:?}");
             }
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-shell" => {
-                panic!("same-agent write was blocked until shell finished: {result:?}");
+                panic!("same-agent edit was blocked until shell finished: {result:?}");
             }
             Some(_) => continue,
-            None => panic!("extension closed before same-agent write result"),
+            None => panic!("extension closed before same-agent edit result"),
         }
     }
 
@@ -1171,7 +1189,7 @@ fn startup_registers_shell_schemas_with_cwd_and_timeout_minimum() {
 
     let mut found_shell = false;
     let mut found_gpt_shell = false;
-    for _ in 0..11 {
+    for _ in 0..10 {
         let event = reader
             .read_event()
             .expect("read")
@@ -1211,7 +1229,7 @@ fn startup_registers_shell_cwd_prompt_fragment() {
     let mut found_context_provider = false;
     let mut found_fragment = false;
     let mut saw_tool_fragment = false;
-    for _ in 0..14 {
+    for _ in 0..13 {
         let event = reader
             .read_event()
             .expect("read")
@@ -1656,138 +1674,28 @@ fn extension_read_missing_file_reports_error() {
 }
 
 #[test]
-fn write_result_reports_status_without_model_diff() {
+fn edit_result_reports_minimal_status_without_model_diff() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("output.txt");
     fs::write(&file_path, "alpha beta gamma\nsame\n").expect("write fixture");
 
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text("alpha BETA gamma\nsame\n".to_owned()),
-        ),
-    ]);
-    let result = write_file(&args).expect("write").result;
+    let output = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(1, 1, "alpha BETA gamma\n")],
+    ))
+    .expect("edit");
 
-    assert!(cbor_map_field(&result, "path").is_none());
-    assert_eq!(cbor_int_field(&result, "bytes_written"), Some(22));
-    assert_eq!(cbor_bool_field(&result, "created"), Some(false));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
-    assert!(cbor_map_text(&result, "output").is_none());
-}
-
-#[test]
-fn write_new_file_reports_created_without_model_diff() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("new.txt");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text("created\n".to_owned()),
-        ),
-    ]);
-    let result = write_file(&args).expect("write").result;
-
-    assert_eq!(cbor_int_field(&result, "bytes_written"), Some(8));
-    assert_eq!(cbor_bool_field(&result, "created"), Some(true));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
-    assert!(cbor_map_text(&result, "output").is_none());
-    assert!(cbor_map_field(&result, "symlink").is_none());
-}
-
-#[test]
-fn write_symlink_reports_target_metadata() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let target_path = tempdir.path().join("target.txt");
-    let link_path = tempdir.path().join("link.txt");
-    fs::write(&target_path, "old\n").expect("write fixture");
-    symlink("target.txt", &link_path).expect("symlink");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(link_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text("new\n".to_owned()),
-        ),
-    ]);
-    let result = write_file(&args).expect("write").result;
-    let symlink = cbor_map_field(&result, "symlink").expect("symlink metadata");
-
-    assert_eq!(cbor_bool_field(&result, "created"), Some(false));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
-    assert_eq!(cbor_map_text(symlink, "target"), Some("target.txt"));
-    assert_eq!(
-        cbor_map_text(symlink, "resolved_target_path"),
-        Some(target_path.to_string_lossy().as_ref())
-    );
-    assert_eq!(cbor_bool_field(symlink, "target_created"), Some(false));
-    assert_eq!(
-        fs::read_to_string(&target_path).expect("read target"),
-        "new\n"
-    );
-}
-
-#[test]
-fn write_dangling_symlink_reports_target_created() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let target_path = tempdir.path().join("target.txt");
-    let link_path = tempdir.path().join("link.txt");
-    symlink("target.txt", &link_path).expect("symlink");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(link_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text(String::new()),
-        ),
-    ]);
-    let result = write_file(&args).expect("write").result;
-    let symlink = cbor_map_field(&result, "symlink").expect("symlink metadata");
-
-    assert_eq!(cbor_bool_field(&result, "created"), Some(false));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
-    assert_eq!(cbor_bool_field(symlink, "target_created"), Some(true));
-    assert_eq!(fs::read_to_string(&target_path).expect("read target"), "");
-}
-
-#[test]
-fn write_invalid_utf8_original_reports_changed_without_ui_diff() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("invalid.bin");
-    fs::write(&file_path, [0xff, 0xfe, b'a']).expect("write fixture");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text(String::new()),
-        ),
-    ]);
-    let output = write_file(&args).expect("write");
-
-    assert_eq!(cbor_int_field(&output.result, "bytes_written"), Some(0));
-    assert_eq!(cbor_bool_field(&output.result, "created"), Some(false));
+    assert!(cbor_map_field(&output.result, "path").is_none());
+    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
     assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
-    assert!(output.display.payload.is_none());
-    assert_eq!(fs::read(&file_path).expect("read back"), b"");
+    assert_eq!(cbor_int_field(&output.result, "available_lines"), Some(3));
+    assert_eq!(cbor_int_field(&output.result, "total_bytes"), Some(22));
+    assert!(cbor_map_text(&output.result, "output").is_none());
+    assert!(cbor_map_text(&output.result, "diff").is_none());
+    assert!(matches!(
+        output.display.payload,
+        Some(ToolUsePayload::Diff(_))
+    ));
 }
 
 #[test]
@@ -1796,225 +1704,145 @@ fn edit_self_replacement_counts_without_diff() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "same\n").expect("write fixture");
 
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("same".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("same".to_owned()),
-                ),
-            ])]),
-        ),
-    ]);
-    let result = edit_file(&args).expect("edit").result;
+    let output =
+        edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "same\n")])).expect("edit");
 
-    assert!(cbor_map_field(&result, "path").is_none());
+    assert!(cbor_map_field(&output.result, "path").is_none());
+    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
+    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(false));
+    assert_eq!(cbor_int_field(&output.result, "available_lines"), Some(2));
+    assert_eq!(cbor_int_field(&output.result, "total_bytes"), Some(5));
+    assert!(cbor_map_text(&output.result, "output").is_none());
+    assert!(output.display.payload.is_none());
+}
+
+#[test]
+fn edit_new_file_reports_created_as_changed() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("new.txt");
+
+    let result = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(1, 1, "created\n")],
+    ))
+    .expect("edit")
+    .result;
+
     assert_eq!(cbor_int_field(&result, "replacements"), Some(1));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(false));
+    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
+    assert_eq!(cbor_int_field(&result, "available_lines"), Some(2));
+    assert_eq!(cbor_int_field(&result, "total_bytes"), Some(8));
     assert!(cbor_map_text(&result, "output").is_none());
-}
-
-#[test]
-fn edit_no_match_error_includes_unchanged_result_details() {
-    // No-match edit errors should expose the same result counters as successful
-    // edits so provider-facing output can reliably show no file was changed.
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "old\n").expect("write fixture");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("missing".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("new".to_owned()),
-                ),
-            ])]),
-        ),
-    ]);
-    let error = edit_file(&args).expect_err("edit should not match");
-    let details = error.details.as_ref().expect("details");
-
-    assert_eq!(error.message, "no matches for edit");
-    assert!(cbor_map_field(details, "path").is_none());
-    assert_eq!(cbor_int_field(details, "replacements"), Some(0));
-    assert_eq!(cbor_bool_field(details, "changed"), Some(false));
-    assert_eq!(fs::read_to_string(&file_path).expect("read back"), "old\n");
-}
-
-#[test]
-fn edit_result_uses_output_payload_for_model_visible_diff() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "old\n").expect("write fixture");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("old".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("new".to_owned()),
-                ),
-            ])]),
-        ),
-    ]);
-    let result = edit_file(&args).expect("edit").result;
-
-    assert!(cbor_map_field(&result, "path").is_none());
-    assert!(cbor_map_text(&result, "output").is_some());
-    assert!(cbor_map_text(&result, "diff").is_none());
-}
-
-#[test]
-fn edit_rejects_replacement_request_over_cap() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "x".repeat(150)).expect("write fixture");
-
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("x".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("y".to_owned()),
-                ),
-                (
-                    CborValue::Text("max_matches".to_owned()),
-                    CborValue::Integer(150.into()),
-                ),
-            ])]),
-        ),
-    ]);
-    let error = edit_file(&args).expect_err("edit should reject over-cap request");
-
-    assert_eq!(
-        error.message,
-        "requested replacement count exceeds limit of 100"
-    );
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "x".repeat(150)
+        "created\n"
     );
 }
 
 #[test]
-fn edit_rejects_replacement_request_over_cap_before_reading_file() {
-    let args = CborValue::Map(vec![
+fn edit_existing_symlink_updates_target() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let target_path = tempdir.path().join("target.txt");
+    let link_path = tempdir.path().join("link.txt");
+    fs::write(&target_path, "old\n").expect("write fixture");
+    symlink("target.txt", &link_path).expect("symlink");
+
+    let result = edit_file(&edit_arguments(&link_path, vec![line_edit(1, 1, "new\n")]))
+        .expect("edit")
+        .result;
+
+    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
+    assert_eq!(
+        fs::read_to_string(&target_path).expect("read target"),
+        "new\n"
+    );
+}
+
+#[test]
+fn edit_dangling_symlink_creates_target() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let target_path = tempdir.path().join("target.txt");
+    let link_path = tempdir.path().join("link.txt");
+    symlink("target.txt", &link_path).expect("symlink");
+
+    let result = edit_file(&edit_arguments(&link_path, vec![line_edit(1, 1, "")]))
+        .expect("edit")
+        .result;
+
+    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
+    assert_eq!(cbor_int_field(&result, "total_bytes"), Some(0));
+    assert_eq!(fs::read_to_string(&target_path).expect("read target"), "");
+}
+
+#[test]
+fn edit_invalid_utf8_original_reports_changed_without_ui_diff() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("invalid.bin");
+    fs::write(&file_path, [0xff, 0xfe, b'a']).expect("write fixture");
+
+    let output = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "")])).expect("edit");
+
+    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
+    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
+    assert_eq!(cbor_int_field(&output.result, "total_bytes"), Some(0));
+    assert!(cbor_map_text(&output.result, "output").is_none());
+    assert!(matches!(
+        output.display.payload,
+        Some(ToolUsePayload::Text { .. })
+    ));
+    assert_eq!(fs::read(&file_path).expect("read back"), b"");
+}
+
+#[test]
+fn edit_rejects_edit_request_over_cap() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    let edits = (0..=100).map(|_| line_edit(1, 1, "x")).collect::<Vec<_>>();
+
+    let error = edit_file(&edit_arguments(&file_path, edits))
+        .expect_err("edit should reject over-cap request");
+
+    assert_eq!(error.message, "requested edit count exceeds limit of 100");
+    assert!(!file_path.exists());
+}
+
+#[test]
+fn edit_rejects_edit_request_over_cap_before_reading_file() {
+    let edits = (0..=100).map(|_| line_edit(1, 1, "x")).collect::<Vec<_>>();
+    let args = cbor_map(vec![
         (
-            CborValue::Text("path".to_owned()),
+            "path",
             CborValue::Text("/definitely/missing/edit-target.txt".to_owned()),
         ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("x".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("y".to_owned()),
-                ),
-                (
-                    CborValue::Text("max_matches".to_owned()),
-                    CborValue::Integer(101.into()),
-                ),
-            ])]),
-        ),
+        ("edits", CborValue::Array(edits)),
     ]);
 
     let error = edit_file(&args).expect_err("edit should reject arguments first");
 
-    assert_eq!(
-        error.message,
-        "requested replacement count exceeds limit of 100"
-    );
+    assert_eq!(error.message, "requested edit count exceeds limit of 100");
 }
 
 #[test]
-fn edit_errors_when_any_requested_edit_has_no_matches() {
+fn edit_rejects_overlapping_ranges_without_partial_write() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "aa\nbb\n").expect("write fixture");
+    fs::write(&file_path, "aa\nbb\ncc\n").expect("write fixture");
 
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![
-                CborValue::Map(vec![
-                    (
-                        CborValue::Text("oldText".to_owned()),
-                        CborValue::Text("aa".to_owned()),
-                    ),
-                    (
-                        CborValue::Text("newText".to_owned()),
-                        CborValue::Text("AA".to_owned()),
-                    ),
-                ]),
-                CborValue::Map(vec![
-                    (
-                        CborValue::Text("oldText".to_owned()),
-                        CborValue::Text("missing".to_owned()),
-                    ),
-                    (
-                        CborValue::Text("newText".to_owned()),
-                        CborValue::Text("x".to_owned()),
-                    ),
-                ]),
-            ]),
-        ),
-    ]);
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(1, 2, "x\n"), line_edit(2, 1, "y\n")],
+    ))
+    .expect_err("overlap should fail");
 
-    let error = edit_file(&args).expect_err("missing edit should fail");
-    assert_eq!(error.message, "no matches for edit");
+    assert_eq!(error.message, "overlapping edits");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "aa\nbb\n"
+        "aa\nbb\ncc\n"
     );
 }
 
 #[test]
-fn extension_writes_file() {
+fn extension_edit_creates_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("output.txt");
 
@@ -2024,17 +1852,8 @@ fn extension_writes_file() {
     writer
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("content".to_owned()),
-                    CborValue::Text("written content".to_owned()),
-                ),
-            ]),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "written content")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2046,7 +1865,7 @@ fn extension_writes_file() {
     let Event::ToolResult(result) = result else {
         panic!("expected tool result");
     };
-    assert_eq!(result.tool_name, WRITE_TOOL_NAME);
+    assert_eq!(result.tool_name, EDIT_TOOL_NAME);
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "written content"
@@ -2059,7 +1878,7 @@ fn extension_writes_file() {
 }
 
 #[test]
-fn extension_write_missing_parent_reports_short_error() {
+fn extension_edit_missing_parent_reports_short_error() {
     let tempdir = TempDir::new().expect("tempdir");
     let missing_parent = tempdir.path().join("missing-parent");
     let file_path = missing_parent.join("child.txt");
@@ -2071,17 +1890,8 @@ fn extension_write_missing_parent_reports_short_error() {
     writer
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("content".to_owned()),
-                    CborValue::Text("x".to_owned()),
-                ),
-            ]),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "x")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2093,7 +1903,7 @@ fn extension_write_missing_parent_reports_short_error() {
     let Event::ToolError(error) = error else {
         panic!("expected tool error");
     };
-    assert_eq!(error.tool_name, WRITE_TOOL_NAME);
+    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
     assert!(!error.message.contains("failed to create directories"));
     assert!(!error.message.contains(file_path.to_string_lossy().as_ref()));
     assert!(error.message.contains("Not a directory"));
@@ -2105,24 +1915,15 @@ fn extension_write_missing_parent_reports_short_error() {
 }
 
 #[test]
-fn extension_write_directory_reports_short_error() {
+fn extension_edit_directory_reports_short_error() {
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
     writer
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text("/tmp".to_owned()),
-                ),
-                (
-                    CborValue::Text("content".to_owned()),
-                    CborValue::Text("x".to_owned()),
-                ),
-            ]),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: edit_arguments(Path::new("/tmp"), vec![line_edit(1, 1, "x")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2134,7 +1935,7 @@ fn extension_write_directory_reports_short_error() {
     let Event::ToolError(error) = error else {
         panic!("expected tool error");
     };
-    assert_eq!(error.tool_name, WRITE_TOOL_NAME);
+    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
     assert!(!error.message.contains("failed to write"));
     assert!(error.message.contains("Is a directory"));
 
@@ -2145,7 +1946,7 @@ fn extension_write_directory_reports_short_error() {
 }
 
 #[test]
-fn extension_writes_file_creates_directories() {
+fn extension_edit_creates_directories() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("a/b/c/deep.txt");
 
@@ -2155,17 +1956,8 @@ fn extension_writes_file_creates_directories() {
     writer
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(WRITE_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("content".to_owned()),
-                    CborValue::Text("deep content".to_owned()),
-                ),
-            ]),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "deep content")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2597,56 +2389,7 @@ fn extension_apply_patch_update_appends_trailing_newline() {
 }
 
 #[test]
-fn edit_read_failure_reports_short_reason() {
-    let (mut reader, mut writer) = spawn_extension();
-    drain_startup(&mut reader);
-
-    writer
-        .write_event(&Event::ToolStarted(ToolStarted {
-            call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text("/definitely/missing/file.txt".to_owned()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("a".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("b".to_owned()),
-                        ),
-                    ])]),
-                ),
-            ]),
-            display: None,
-            agent_id: Default::default(),
-            originator: tau_proto::PromptOriginator::User,
-        }))
-        .expect("invoke");
-    writer.flush().expect("flush");
-
-    let error = reader.read_event().expect("read").expect("error");
-    let Event::ToolError(error) = error else {
-        panic!("expected tool error");
-    };
-    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert!(!error.message.contains("failed to read"));
-    assert!(error.message.contains("No such file or directory"));
-
-    writer
-        .write_frame(&disconnect_frame(None))
-        .expect("disconnect");
-    writer.flush().expect("flush");
-}
-
-#[test]
-fn edit_rejects_empty_old_text() {
+fn edit_rejects_missing_new_text() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\nworld\n").expect("write");
@@ -2658,25 +2401,13 @@ fn edit_rejects_empty_old_text() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("x".to_owned()),
-                        ),
-                    ])]),
-                ),
-            ]),
+            arguments: edit_arguments(
+                &file_path,
+                vec![cbor_map(vec![
+                    ("start_line", CborValue::Integer(1.into())),
+                    ("line_count", CborValue::Integer(1.into())),
+                ])],
+            ),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2689,7 +2420,7 @@ fn edit_rejects_empty_old_text() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(error.message, "oldText must not be empty");
+    assert_eq!(error.message, "each edit must have a string newText");
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -2698,7 +2429,7 @@ fn edit_rejects_empty_old_text() {
 }
 
 #[test]
-fn edit_rejects_negative_max_matches_with_path_args() {
+fn edit_rejects_negative_start_line_with_path_args() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\nworld\n").expect("write");
@@ -2710,29 +2441,7 @@ fn edit_rejects_negative_max_matches_with_path_args() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("hello".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("x".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("max_matches".to_owned()),
-                            CborValue::Integer((-1).into()),
-                        ),
-                    ])]),
-                ),
-            ]),
+            arguments: edit_arguments(&file_path, vec![line_edit(-1, 1, "x")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2745,7 +2454,7 @@ fn edit_rejects_negative_max_matches_with_path_args() {
         panic!("expected tool error");
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert_eq!(error.message, "max_matches must be at least 1");
+    assert_eq!(error.message, "start_line must be at least 1");
     assert_eq!(
         error.display.expect("display").args,
         file_path.display().to_string()
@@ -2758,37 +2467,15 @@ fn edit_rejects_negative_max_matches_with_path_args() {
 }
 
 #[test]
-fn edit_rejects_zero_max_matches() {
+fn edit_rejects_zero_line_count() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\n").expect("write");
 
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("hello".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("x".to_owned()),
-                ),
-                (
-                    CborValue::Text("max_matches".to_owned()),
-                    CborValue::Integer(0.into()),
-                ),
-            ])]),
-        ),
-    ]);
+    let error = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 0, "x")]))
+        .expect_err("line_count=0 should fail");
 
-    let error = edit_file(&args).expect_err("max_matches=0 should fail");
-    assert_eq!(error.message, "max_matches must be at least 1");
+    assert_eq!(error.message, "line_count must be at least 1");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "hello\n"
@@ -2796,10 +2483,10 @@ fn edit_rejects_zero_max_matches() {
 }
 
 #[test]
-fn edit_can_replace_up_to_max_matches() {
+fn edit_uses_original_line_numbers_for_multiple_replacements() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "one fish two fish three fish\n").expect("write");
+    fs::write(&file_path, "a\nb\nc\n").expect("write");
 
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
@@ -2808,29 +2495,10 @@ fn edit_can_replace_up_to_max_matches() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("fish".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("cat".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("max_matches".to_owned()),
-                            CborValue::Integer(2.into()),
-                        ),
-                    ])]),
-                ),
-            ]),
+            arguments: edit_arguments(
+                &file_path,
+                vec![line_edit(1, 1, "x\ny\n"), line_edit(3, 1, "z\n")],
+            ),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2843,9 +2511,10 @@ fn edit_can_replace_up_to_max_matches() {
         panic!("expected tool result");
     };
     assert_eq!(cbor_map_int(&result.result, "replacements"), Some(2));
+    assert_eq!(cbor_map_int(&result.result, "available_lines"), Some(5));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "one cat two cat three fish\n"
+        "x\ny\nb\nz\n"
     );
 
     writer
@@ -2855,115 +2524,7 @@ fn edit_can_replace_up_to_max_matches() {
 }
 
 #[test]
-fn edit_defaults_to_replacing_first_match() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "one fish two fish\n").expect("write");
-
-    let (mut reader, mut writer) = spawn_extension();
-    drain_startup(&mut reader);
-
-    writer
-        .write_event(&Event::ToolStarted(ToolStarted {
-            call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("fish".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("cat".to_owned()),
-                        ),
-                    ])]),
-                ),
-            ]),
-            display: None,
-            agent_id: Default::default(),
-            originator: tau_proto::PromptOriginator::User,
-        }))
-        .expect("invoke");
-    writer.flush().expect("flush");
-
-    let result = reader.read_event().expect("read").expect("result");
-    assert!(matches!(result, Event::ToolResult(_)));
-    assert_eq!(
-        fs::read_to_string(&file_path).expect("read back"),
-        "one cat two fish\n"
-    );
-
-    writer
-        .write_frame(&disconnect_frame(None))
-        .expect("disconnect");
-    writer.flush().expect("flush");
-}
-
-#[test]
-fn edit_errors_for_no_matches() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "hello\n").expect("write");
-
-    let (mut reader, mut writer) = spawn_extension();
-    drain_startup(&mut reader);
-
-    writer
-        .write_event(&Event::ToolStarted(ToolStarted {
-            call_id: "call-1".into(),
-            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("missing".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("x".to_owned()),
-                        ),
-                    ])]),
-                ),
-            ]),
-            display: None,
-            agent_id: Default::default(),
-            originator: tau_proto::PromptOriginator::User,
-        }))
-        .expect("invoke");
-    writer.flush().expect("flush");
-
-    let error = reader.read_event().expect("read").expect("error");
-    let Event::ToolError(error) = error else {
-        panic!("expected tool error");
-    };
-    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
-    assert!(error.message.contains("no matches for edit"));
-    assert_eq!(
-        fs::read_to_string(&file_path).expect("read back"),
-        "hello\n"
-    );
-
-    writer
-        .write_frame(&disconnect_frame(None))
-        .expect("disconnect");
-    writer.flush().expect("flush");
-}
-
-#[test]
-fn edit_restricts_matches_to_line_range() {
+fn edit_replaces_exact_line_range() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "fish\nfish\nfish\n").expect("write");
@@ -2975,33 +2536,7 @@ fn edit_restricts_matches_to_line_range() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: CborValue::Map(vec![
-                (
-                    CborValue::Text("path".to_owned()),
-                    CborValue::Text(file_path.display().to_string()),
-                ),
-                (
-                    CborValue::Text("edits".to_owned()),
-                    CborValue::Array(vec![CborValue::Map(vec![
-                        (
-                            CborValue::Text("oldText".to_owned()),
-                            CborValue::Text("fish".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("newText".to_owned()),
-                            CborValue::Text("cat".to_owned()),
-                        ),
-                        (
-                            CborValue::Text("start_line".to_owned()),
-                            CborValue::Integer(2.into()),
-                        ),
-                        (
-                            CborValue::Text("line_count".to_owned()),
-                            CborValue::Integer(1.into()),
-                        ),
-                    ])]),
-                ),
-            ]),
+            arguments: edit_arguments(&file_path, vec![line_edit(2, 1, "cat\n")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -3028,6 +2563,120 @@ fn edit_restricts_matches_to_line_range() {
         .write_frame(&disconnect_frame(None))
         .expect("disconnect");
     writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_appends_to_line_after_trailing_newline() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "fish\n").expect("write");
+
+    let result = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 1, "cat\n")]))
+        .expect("edit")
+        .result;
+
+    assert_eq!(cbor_int_field(&result, "available_lines"), Some(3));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "fish\ncat\n"
+    );
+}
+
+#[test]
+fn edit_replaces_empty_file_line_one() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "").expect("write");
+
+    let result = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(1, 1, "hello\n")],
+    ))
+    .expect("edit")
+    .result;
+
+    assert_eq!(cbor_int_field(&result, "available_lines"), Some(2));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
+}
+
+#[test]
+fn edit_rejects_start_line_past_end() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello\n").expect("write");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&Event::ToolStarted(ToolStarted {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
+            arguments: edit_arguments(&file_path, vec![line_edit(3, 1, "x")]),
+            display: None,
+            agent_id: Default::default(),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, EDIT_TOOL_NAME);
+    assert!(error.message.contains("start_line 3 is past end of file"));
+    assert!(error.message.contains("available_lines: 2"));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
+fn edit_rejects_range_past_end_without_trailing_newline() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello").expect("write");
+
+    let error = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 2, "x")]))
+        .expect_err("range should fail");
+
+    assert!(
+        error
+            .message
+            .contains("line range 1..3 is past end of file")
+    );
+    assert!(error.message.contains("available_lines: 1"));
+    assert_eq!(fs::read_to_string(&file_path).expect("read back"), "hello");
+}
+
+#[test]
+fn edit_handles_crlf_line_ranges() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "one\r\ntwo\r\n").expect("write");
+
+    let result = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(2, 1, "TWO\r\n")],
+    ))
+    .expect("edit")
+    .result;
+
+    assert_eq!(cbor_int_field(&result, "available_lines"), Some(3));
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "one\r\nTWO\r\n"
+    );
 }
 
 #[test]
@@ -4564,34 +4213,17 @@ fn edit_file_handles_invalid_utf8_bytes_without_diff() {
     let file_path = tempdir.path().join("edit.bin");
     fs::write(&file_path, b"abc\xffdef\n").expect("write fixture");
 
-    let args = CborValue::Map(vec![
-        (
-            CborValue::Text("path".to_owned()),
-            CborValue::Text(file_path.display().to_string()),
-        ),
-        (
-            CborValue::Text("edits".to_owned()),
-            CborValue::Array(vec![CborValue::Map(vec![
-                (
-                    CborValue::Text("oldText".to_owned()),
-                    CborValue::Text("def".to_owned()),
-                ),
-                (
-                    CborValue::Text("newText".to_owned()),
-                    CborValue::Text("XYZ".to_owned()),
-                ),
-            ])]),
-        ),
-    ]);
-    let result = edit_file(&args).expect("edit").result;
+    let output =
+        edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "XYZ\n")])).expect("edit");
 
-    assert_eq!(fs::read(&file_path).expect("read back"), b"abc\xffXYZ\n");
-    assert_eq!(cbor_int_field(&result, "replacements"), Some(1));
-    assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
-    assert_eq!(
-        cbor_map_text(&result, "output"),
-        Some("[diff skipped: file is not valid UTF-8]")
-    );
+    assert_eq!(fs::read(&file_path).expect("read back"), b"XYZ\n");
+    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
+    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
+    assert!(cbor_map_text(&output.result, "output").is_none());
+    assert!(matches!(
+        output.display.payload,
+        Some(ToolUsePayload::Text { .. })
+    ));
 }
 
 #[test]

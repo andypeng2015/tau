@@ -37,8 +37,7 @@ Manual locks are released when ext-shell observes `agent.start_result` for a tra
 
 When `dir_lock.enable` is true (the default), these mutating tools acquire automatic update locks before running:
 
-- `write`: locks the target file parent. If parents are missing, it locks the deepest existing ancestor so existing `write` behavior remains intact.
-- `edit`: locks the canonical parent of the existing file, following a final symlink to the real edited file.
+- `edit`: locks the target file parent. Existing final symlinks are followed to the real edited file. If parents are missing, it locks the deepest existing ancestor so line-oriented create/overwrite behavior remains intact.
 - `apply_patch`: parses the patch and locks all touched source and destination directories as one FIFO request.
 - `shell` and `gpt_shell` with `mode: "rw"`: lock the canonical `cwd`, or the extension process cwd when `cwd` is omitted. `mode: "ro"` declares a read-only command and skips automatic update locking.
 
@@ -55,6 +54,6 @@ Blocked ext-shell tool calls emit `ToolProgress` with a live `ToolDisplay` updat
 ## Caveats
 
 - Shell locking is advisory. A `mode: "ro"` shell command is trusted to avoid mutations for now, and a `mode: "rw"` shell command can mutate paths outside its `cwd` using absolute paths or command-specific flags.
-- `write` to missing parents is safe but less precise because the exact final parent does not exist yet.
+- `edit` creates to missing parents are safe but less precise because the exact final parent does not exist yet.
 - Same-owner reentry can keep other agents waiting for as long as the owner keeps a manual lock. That is intentional manual-lock behavior, not starvation inside the FIFO queue.
 - Out-of-tree non-shell tools no longer get harness update/exclusive serialization. They need their own coordination if they mutate shared state.

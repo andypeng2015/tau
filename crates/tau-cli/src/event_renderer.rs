@@ -103,7 +103,7 @@ pub(crate) struct EventRenderer {
     model_status_block: Option<tau_cli_term::BlockId>,
     /// Current session id, rendered as the last status-bar element.
     current_session_id: Option<tau_proto::SessionId>,
-    /// Live history of completed write/edit blocks plus the data
+    /// Live history of completed diff-capable tool blocks plus the data
     /// needed to re-render them. `/set show-diff` flips
     /// `diffs_expanded` and walks this list calling `set_block` so
     /// the entire transcript switches mode at once.
@@ -828,7 +828,7 @@ fn tool_use_state_from_call(call: &ToolCallItem) -> tau_proto::ToolUseState {
     }
 
     let args = match call.name.as_str() {
-        "read" | "write" | "edit" | "ls" => cbor_text_field(&call.arguments, "path"),
+        "read" | "edit" | "ls" => cbor_text_field(&call.arguments, "path"),
         "grep" | "glob" => cbor_text_field(&call.arguments, "pattern"),
         "delegate" => cbor_text_field(&call.arguments, "task_name"),
         _ => cbor_text_field(&call.arguments, "path")

@@ -2530,21 +2530,34 @@ fn tool_turn_dispatches_provider_calls_without_global_locking() {
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid);
 
-    // A `read` of a nonexistent path returns a ToolError; `write` of a valid
-    // path creates the file and returns ToolResult. Harness dispatch no longer
-    // serializes them by execution mode; ext-shell owns update coordination.
+    // A `read` of a nonexistent path returns a ToolError; a valid mutating
+    // tool call returns ToolResult. Harness dispatch no longer serializes them
+    // by execution mode; ext-shell owns update coordination.
     let read_args = CborValue::Map(vec![(
         CborValue::Text("path".to_owned()),
         CborValue::Text("/nonexistent/tau-test-path".to_owned()),
     )]);
-    let write_args = CborValue::Map(vec![
+    let edit_args = CborValue::Map(vec![
         (
             CborValue::Text("path".to_owned()),
             CborValue::Text(td.path().join("w.txt").display().to_string()),
         ),
         (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text("hi".to_owned()),
+            CborValue::Text("edits".to_owned()),
+            CborValue::Array(vec![CborValue::Map(vec![
+                (
+                    CborValue::Text("start_line".to_owned()),
+                    CborValue::Integer(1.into()),
+                ),
+                (
+                    CborValue::Text("line_count".to_owned()),
+                    CborValue::Integer(1.into()),
+                ),
+                (
+                    CborValue::Text("newText".to_owned()),
+                    CborValue::Text("hi".to_owned()),
+                ),
+            ])]),
         ),
     ]);
     let response = ProviderResponseFinished {
@@ -2559,9 +2572,9 @@ fn tool_turn_dispatches_provider_calls_without_global_locking() {
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c2".into(),
-                name: tau_proto::ToolName::new("write"),
+                name: tau_proto::ToolName::new("edit"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: write_args,
+                arguments: edit_args,
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c3".into(),
@@ -2628,15 +2641,28 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid);
 
-    let write_args = |name: &str| {
+    let edit_args = |name: &str| {
         CborValue::Map(vec![
             (
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(td.path().join(name).display().to_string()),
             ),
             (
-                CborValue::Text("content".to_owned()),
-                CborValue::Text(name.to_owned()),
+                CborValue::Text("edits".to_owned()),
+                CborValue::Array(vec![CborValue::Map(vec![
+                    (
+                        CborValue::Text("start_line".to_owned()),
+                        CborValue::Integer(1.into()),
+                    ),
+                    (
+                        CborValue::Text("line_count".to_owned()),
+                        CborValue::Integer(1.into()),
+                    ),
+                    (
+                        CborValue::Text("newText".to_owned()),
+                        CborValue::Text(name.to_owned()),
+                    ),
+                ])]),
             ),
         ])
     };
@@ -2646,21 +2672,21 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
-                name: tau_proto::ToolName::new("write"),
+                name: tau_proto::ToolName::new("edit"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: write_args("a.txt"),
+                arguments: edit_args("a.txt"),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c2".into(),
-                name: tau_proto::ToolName::new("write"),
+                name: tau_proto::ToolName::new("edit"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: write_args("b.txt"),
+                arguments: edit_args("b.txt"),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c3".into(),
-                name: tau_proto::ToolName::new("write"),
+                name: tau_proto::ToolName::new("edit"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: write_args("c.txt"),
+                arguments: edit_args("c.txt"),
             }),
         ],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
@@ -2827,14 +2853,27 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
     seed_agent_thinking(&mut h, &cid, "sp-x");
     h.prompt_agents.insert("sp-x".into(), cid.clone());
 
-    let write_args = CborValue::Map(vec![
+    let edit_args = CborValue::Map(vec![
         (
             CborValue::Text("path".to_owned()),
             CborValue::Text(td.path().join("a.txt").display().to_string()),
         ),
         (
-            CborValue::Text("content".to_owned()),
-            CborValue::Text("a".to_owned()),
+            CborValue::Text("edits".to_owned()),
+            CborValue::Array(vec![CborValue::Map(vec![
+                (
+                    CborValue::Text("start_line".to_owned()),
+                    CborValue::Integer(1.into()),
+                ),
+                (
+                    CborValue::Text("line_count".to_owned()),
+                    CborValue::Integer(1.into()),
+                ),
+                (
+                    CborValue::Text("newText".to_owned()),
+                    CborValue::Text("a".to_owned()),
+                ),
+            ])]),
         ),
     ]);
     h.handle_provider_response_finished(ProviderResponseFinished {
@@ -2842,9 +2881,9 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
         agent_id: "main".into(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
-            name: tau_proto::ToolName::new("write"),
+            name: tau_proto::ToolName::new("edit"),
             tool_type: tau_proto::ToolType::Function,
-            arguments: write_args,
+            arguments: edit_args,
         })],
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         error: None,
@@ -6893,11 +6932,11 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
             background_support: None,
         },
     );
-    let _ = connect_test_tool(&mut h, "conn-write");
+    let _ = connect_test_tool(&mut h, "conn-mutate");
     h.registry.register(
-        "conn-write",
+        "conn-mutate",
         ToolSpec {
-            name: ToolName::new("write"),
+            name: ToolName::new("mutate"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -6923,8 +6962,8 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
                 arguments: CborValue::Map(Vec::new()),
             }),
             ContextItem::ToolCall(ToolCallItem {
-                call_id: "write-call".into(),
-                name: ToolName::new("write"),
+                call_id: "mutate-call".into(),
+                name: ToolName::new("mutate"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             }),
@@ -6943,7 +6982,7 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     assert_eq!(
         h.tool_turn.pending_len(),
         0,
-        "exclusive write must not remain queued behind the delegate launcher",
+        "mutating tool must not remain queued behind the delegate launcher",
     );
 
     h.shutdown().expect("shutdown");

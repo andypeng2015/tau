@@ -593,7 +593,7 @@ fn move_delegate_completion_stats_first(
 pub(crate) fn render_tool_use_state(tool_name: &str, display: &ToolUseState) -> ToolCallDisplay {
     let mut suffixes: Vec<ToolSuffixSegment> = Vec::new();
     // Diff `+N -M` chips (themed green/red) are derived from the
-    // payload so write/edit don't have to push them as info chips.
+    // payload so file-editing tools don't have to push them as info chips.
     if let Some(ToolUsePayload::Diff(summary)) = &display.payload
         && (summary.added > 0 || summary.removed > 0)
     {

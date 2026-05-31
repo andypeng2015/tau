@@ -12,12 +12,10 @@ pub(crate) mod grep;
 pub(crate) mod ls;
 pub(crate) mod read;
 pub(crate) mod shell;
-pub(crate) mod write;
 
 #[cfg(any(test, feature = "echo-agent"))]
 pub const ECHO_TOOL_NAME: &str = "echo";
 pub const READ_TOOL_NAME: &str = "read";
-pub const WRITE_TOOL_NAME: &str = "write";
 pub const EDIT_TOOL_NAME: &str = "edit";
 pub const APPLY_PATCH_TOOL_NAME: &str = "apply_patch";
 pub const SHELL_TOOL_NAME: &str = "shell";
@@ -48,9 +46,6 @@ pub(crate) fn execute_tool(
 
     if invoke.tool_name == READ_TOOL_NAME {
         return wrap_pure(invoke, error_details, read::read_file);
-    }
-    if invoke.tool_name == WRITE_TOOL_NAME {
-        return wrap_pure(invoke, error_details, write::write_file);
     }
     if invoke.tool_name == EDIT_TOOL_NAME {
         return wrap_pure(invoke, error_details, edit::edit_file);
@@ -152,8 +147,9 @@ fn wrap_pure(
 
 fn standard_tool_error_details(tool_name: &str, arguments: &CborValue) -> Option<CborValue> {
     match tool_name {
-        READ_TOOL_NAME | WRITE_TOOL_NAME | EDIT_TOOL_NAME | GREP_TOOL_NAME | FIND_TOOL_NAME
-        | LS_TOOL_NAME => Some(arguments.clone()),
+        READ_TOOL_NAME | EDIT_TOOL_NAME | GREP_TOOL_NAME | FIND_TOOL_NAME | LS_TOOL_NAME => {
+            Some(arguments.clone())
+        }
         _ => None,
     }
 }

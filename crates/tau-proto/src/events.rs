@@ -899,7 +899,7 @@ pub enum ActionOutput {
 /// non-tool extension-side queries (e.g. `std-notifications`' idle
 /// summary) so the cache prefix (tools + system_prompt) stays
 /// byte-identical to the parent conv's while still preventing the
-/// summarizer from accidentally calling `write` / `edit` / `delegate`.
+/// summarizer from accidentally calling `edit` / `delegate`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolChoice {
@@ -1129,7 +1129,7 @@ pub struct ToolBackgroundError {
 /// event log is the durable source of truth for replay, terminal rendering,
 /// compact summaries, future graphical UIs, and alternate clients. If a
 /// renderer has to know that `grep` uses `pattern`, `delegate` has a role, or
-/// `write` carries a diff, the abstraction has failed and the special case will
+/// `edit` carries a diff, the abstraction has failed and the special case will
 /// spread.
 ///
 /// Prefer extending this general-purpose structure when a new tool needs richer

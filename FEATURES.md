@@ -224,8 +224,8 @@ extensions: {
 ### `core-shell` — shell and filesystem tools
 
 Registers the everyday tools the agent uses to inspect and edit a project:
-`shell`, `read`, `write`, `edit`, `apply_patch`, `grep`, `find`, `ls`, plus
-an `echo` tool for testing. The shell command and any wrapper prefix are configurable:
+`shell`, `read`, `edit`, `apply_patch`, `grep`, `find`, `ls`, plus an `echo`
+tool for testing. The shell command and any wrapper prefix are configurable:
 
 ```json5
 "core-shell": {
@@ -252,7 +252,7 @@ an `echo` tool for testing. The shell command and any wrapper prefix are configu
 ```
 
 When `dir_lock.enable` is true (the default), the `dir_lock` tool can manually
-lock an existing directory for updates, and `write`, `edit`, `apply_patch`, plus
+lock an existing directory for updates, and `edit`, `apply_patch`, plus
 `shell`/`gpt_shell` calls with `mode: "rw"`, acquire matching automatic locks
 before mutating. Reads and `shell`/`gpt_shell` calls with `mode: "ro"` remain
 unblocked; user `!` commands are outside this agent-tool lock path. The
@@ -617,10 +617,10 @@ the provider as input — they remain provider-side context.
 
 ### Diff rendering
 
-File mutations made by `write` and `edit` render as inline diffs. By default
-they collapse to a compact `+N/-M` chip; `/set show-diff true` expands them to the
-full unified hunk view. The terminal renderer uses cell-level differential
-updates to avoid full repaints on each token.
+File mutations made by `edit` render as inline diffs. By default they collapse
+to a compact `+N/-M` chip; `/set show-diff true` expands them to the full
+unified hunk view. The terminal renderer uses cell-level differential updates to
+avoid full repaints on each token.
 
 ### Theming
 
