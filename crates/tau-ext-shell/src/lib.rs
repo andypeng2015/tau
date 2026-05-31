@@ -159,13 +159,14 @@ where
             model_visible_name: None,
             description: Some(
                 "Edit a file using line-oriented replacements. Each edit replaces \
-                 `line_count` original lines starting at 1-based `start_line` with \
+                 `line_count` lines starting at 1-based `start_line` with \
                  `newText`, and all edits use the original file's line numbering as if \
-                 applied simultaneously. Ranges must be non-overlapping and within the \
-                 file's valid start-line range; line 1 is always available for an empty \
-                 or missing file, and the line after a trailing newline is available for \
-                 appends. Missing files are treated as empty and missing parent \
-                 directories are created, so use line 1 with line_count 1 to create a file. \
+                 applied simultaneously. Ranges must be non-overlapping and may include \
+                 the single virtual empty line used for creation/appending, but must not \
+                 extend beyond it; line 1 is always available for an empty or missing file, \
+                 and the line after a trailing newline is available for appends. Missing files \
+                 are treated as empty and missing parent directories are created, so use line 1 \
+                 with line_count 1 to create a file. \
                  Optional per-edit `guard` must exactly match the first original line content, \
                  excluding the line ending, and must not include newline characters. On mismatch, \
                  the edit fails and returns the mismatched range contents. Returns minimal status \
@@ -197,7 +198,7 @@ where
                                 "line_count": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Number of original lines to replace starting at start_line. Use 1 on an empty or append line."
+                                    "description": "Number of lines to replace starting at start_line. This may include the single virtual empty line for creation/appending, but must not extend beyond it. Use 1 on an empty or append line."
                                 },
                                 "newText": {
                                     "type": "string",
