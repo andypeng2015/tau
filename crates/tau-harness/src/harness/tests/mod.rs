@@ -748,6 +748,47 @@ fn shell_command_args_keeps_short_first_line() {
 }
 
 #[test]
+fn started_read_tool_use_state_formats_multiple_ranges() {
+    let state = super::build_tool_args_display(
+        "read",
+        &CborValue::Map(vec![
+            (
+                CborValue::Text("path".to_owned()),
+                CborValue::Text("src/lib.rs".to_owned()),
+            ),
+            (
+                CborValue::Text("ranges".to_owned()),
+                CborValue::Array(vec![
+                    CborValue::Map(vec![
+                        (
+                            CborValue::Text("start_line".to_owned()),
+                            CborValue::Integer(2.into()),
+                        ),
+                        (
+                            CborValue::Text("line_count".to_owned()),
+                            CborValue::Integer(1.into()),
+                        ),
+                    ]),
+                    CborValue::Map(vec![
+                        (
+                            CborValue::Text("start_line".to_owned()),
+                            CborValue::Integer(5.into()),
+                        ),
+                        (
+                            CborValue::Text("line_count".to_owned()),
+                            CborValue::Integer(2.into()),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
+    )
+    .expect("known read display state");
+
+    assert_eq!(state.args, "src/lib.rs 2..3,5..7");
+}
+
+#[test]
 fn started_tool_use_state_is_generic_and_complete() {
     let state = super::build_tool_args_display(
         "grep",

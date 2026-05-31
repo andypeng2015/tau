@@ -8968,12 +8968,15 @@ fn build_tool_args_display(
         }
         "read" => {
             let path = cbor_text_field(arguments, "path").unwrap_or_default();
-            format!("{path} {}", format_requested_line_range(arguments))
+            let ranges = cbor_array_field(arguments, "ranges")
+                .map(format_requested_line_ranges)
+                .unwrap_or_else(|| format_requested_line_range(arguments));
+            format!("{path} {ranges}")
         }
         "edit" => {
             let path = cbor_text_field(arguments, "path").unwrap_or_default();
             let ranges = cbor_array_field(arguments, "edits")
-                .map(format_requested_edit_ranges)
+                .map(format_requested_line_ranges)
                 .unwrap_or_default();
             if ranges.is_empty() {
                 path
@@ -9024,10 +9027,10 @@ fn build_tool_args_display(
     })
 }
 
-fn format_requested_edit_ranges(edits: &[tau_proto::CborValue]) -> String {
+fn format_requested_line_ranges(items: &[tau_proto::CborValue]) -> String {
     let mut ranges: Vec<String> = Vec::new();
-    for edit in edits {
-        let range = format_requested_line_range(edit);
+    for item in items {
+        let range = format_requested_line_range(item);
         if ranges.iter().all(|existing| existing != &range) {
             ranges.push(range);
         }

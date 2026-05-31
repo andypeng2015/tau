@@ -191,6 +191,13 @@ fn line_edit(start_line: i64, line_count: i64, new_text: &str) -> CborValue {
     ])
 }
 
+fn read_range(start_line: i64, line_count: i64) -> CborValue {
+    cbor_map(vec![
+        ("start_line", CborValue::Integer(start_line.into())),
+        ("line_count", CborValue::Integer(line_count.into())),
+    ])
+}
+
 fn send_dir_lock_config(writer: &mut EventWriter<BufWriter<UnixStream>>, enable: bool) {
     writer
         .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
@@ -261,6 +268,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
 
     let mut found_echo_disabled = false;
     let mut found_gpt_shell_visible_name = false;
+    let mut found_read_schema = false;
     let mut found_edit_schema = false;
     let mut found_write = false;
     for _ in 0..10 {
@@ -282,6 +290,15 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             );
             found_gpt_shell_visible_name = true;
         }
+        if register.tool.name == READ_TOOL_NAME {
+            let parameters = register.tool.parameters.as_ref().expect("parameters");
+            let range_item = &parameters["properties"]["ranges"]["items"];
+            assert_eq!(
+                range_item["required"],
+                serde_json::json!(["start_line", "line_count"])
+            );
+            found_read_schema = true;
+        }
         if register.tool.name == EDIT_TOOL_NAME {
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let edit_item = &parameters["properties"]["edits"]["items"];
@@ -301,6 +318,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
         found_gpt_shell_visible_name,
         "expected gpt_shell tool registration"
     );
+    assert!(found_read_schema, "expected multi-range read schema");
     assert!(found_edit_schema, "expected line-oriented edit schema");
     assert!(!found_write, "write tool should not be registered");
 
@@ -3944,6 +3962,96 @@ fn read_file_honors_start_line_and_line_count() {
     assert!(cbor_map_field(&result, "total_lines").is_none());
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
     assert!(cbor_map_field(&result, "line_ending").is_none());
+}
+
+#[test]
+fn read_file_reads_multiple_disjoint_ranges_with_blank_separator() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("small.txt");
+    std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        ),
+        (
+            CborValue::Text("ranges".to_owned()),
+            CborValue::Array(vec![read_range(2, 2), read_range(5, 1)]),
+        ),
+    ]);
+    let output = read_file(&args).expect("read");
+    let result = output.result;
+
+    assert_eq!(output.display.args, format!("{} 2..4,5..6", path.display()));
+    assert_eq!(
+        cbor_map_text(&result, "line-numbered content"),
+        Some("2 two\n3 three\n\n5 five")
+    );
+    assert!(cbor_map_field(&result, "total_lines").is_none());
+}
+
+#[test]
+fn read_file_rejects_overlapping_ranges() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("small.txt");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        ),
+        (
+            CborValue::Text("ranges".to_owned()),
+            CborValue::Array(vec![read_range(1, 2), read_range(2, 1)]),
+        ),
+    ]);
+
+    let error = read_file(&args).expect_err("overlap should fail");
+    assert_eq!(error.message, "overlapping ranges");
+}
+
+#[test]
+fn read_file_rejects_range_request_over_cap_before_reading_file() {
+    let ranges = (0..=100).map(|_| read_range(1, 1)).collect::<Vec<_>>();
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text("/definitely/missing/read-target.txt".to_owned()),
+        ),
+        (
+            CborValue::Text("ranges".to_owned()),
+            CborValue::Array(ranges),
+        ),
+    ]);
+
+    let error = read_file(&args).expect_err("read should reject arguments first");
+    assert_eq!(error.message, "requested range count exceeds limit of 100");
+}
+
+#[test]
+fn read_file_rejects_ranges_combined_with_top_level_range() {
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text("x".to_owned()),
+        ),
+        (
+            CborValue::Text("start_line".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+        (
+            CborValue::Text("ranges".to_owned()),
+            CborValue::Array(vec![read_range(1, 1)]),
+        ),
+    ]);
+
+    let error = read_file(&args).expect_err("mixed range styles should fail");
+    assert_eq!(
+        error.message,
+        "ranges cannot be combined with start_line or line_count"
+    );
 }
 
 #[test]

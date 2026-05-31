@@ -96,8 +96,9 @@ where
                  output is capped at 2000 lines / 50 KB. Truncated output keeps \
                  the first 1000 and last 1000 lines separated by a literal `...` line. \
                  Prefer one full read. Pass `start_line`/`line_count` only to \
-                 fetch a specific known slice of a file you already know is large. \
-                 Returned content lines are prefixed by their 1-based line number and a space; \
+                 fetch one specific known slice, or `ranges` for up to 100 disjoint slices; \
+                 range chunks are separated by one empty line. Returned content lines are prefixed \
+                 by their 1-based line number and a space; \
                  CRLF, CR, and missing final line endings are marked after the number, e.g. \
                  `2(crlf)`, `3(cr)`, or `4(no_nl)`. Invalid UTF-8 and lines that would exceed \
                  the 50 KB output budget are marker-only, e.g. `1(invalid-utf8)` or \
@@ -120,6 +121,29 @@ where
                     "line_count": {
                         "type": "integer",
                         "description": "Optional. Omit to read to end of file (the default and preferred mode). Set this only to continue past a previous truncation, or to fetch a known specific slice of a large file — do NOT pre-slice an ordinary file you haven't already established is large."
+                    },
+                    "ranges": {
+                        "type": "array",
+                        "description": "Optional list of disjoint line ranges to read. Cannot be combined with top-level start_line or line_count. Each chunk is separated by one empty line in the output.",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start_line": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "1-based inclusive start line to read."
+                                },
+                                "line_count": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Number of lines to read starting at start_line."
+                                }
+                            },
+                            "required": ["start_line", "line_count"],
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "required": ["path"],

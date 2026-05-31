@@ -94,6 +94,8 @@ Tool description should be short but informative. They should mention the line p
 The output of `read` and `shell` is intentionally similar, and should support
 the same semantics. The meaning of the line prefix is different: line number vs stdout/stderr information
 
+`read` supports either one top-level `start_line`/`line_count` range or a `ranges` array of up to 100 disjoint `{ start_line, line_count }` objects. Multi-range output uses the same line-number prefixes as normal read output, with exactly one empty line between requested chunks. Verify that overlapping ranges and mixed `ranges` plus top-level range arguments are rejected.
+
 `shell` tool will add `duration_seconds: {number}` header for commands that took longer
 than 5s to execute. Whole-second precision is acceptable; finer precision is
 not needed. Reported durations are approximate, and can include overheads and
