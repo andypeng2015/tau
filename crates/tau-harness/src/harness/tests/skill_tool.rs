@@ -95,7 +95,6 @@ fn skill_tool_reads_file_content() {
             CborValue::Text("query".to_owned()),
             CborValue::Text("my-skill".to_owned()),
         )]),
-        display: None,
     };
     let cid = ensure_test_user_agent(&mut h);
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
@@ -129,7 +128,6 @@ fn skill_tool_returns_error_for_missing_query() {
             CborValue::Text("action".to_owned()),
             CborValue::Text("load".to_owned()),
         )]),
-        display: None,
     };
     let cid = ensure_test_user_agent(&mut h);
     h.handle_skill_tool_call(&cid, &call).expect("skill call");
@@ -162,7 +160,6 @@ fn skill_tool_rejects_malformed_search_content() {
                     CborValue::Text("true".to_owned()),
                 ),
             ]),
-            display: None,
         },
     )
     .expect("skill call");
@@ -264,7 +261,6 @@ fn skill_tool_search_matches_name_description_and_optional_content() {
                 CborValue::Bool(search_content),
             ),
         ]),
-        display: None,
     };
 
     let read_matches = |h: &Harness, call_id: &str| -> Vec<String> {
@@ -461,7 +457,6 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_matched_terms() {
             CborValue::Text("query".to_owned()),
             CborValue::Text(query.to_owned()),
         )]),
-        display: None,
     };
 
     let read_match_records = |h: &Harness, call_id: &str| -> Vec<(String, u64)> {
@@ -564,7 +559,6 @@ fn skill_tool_search_accepts_multiple_terms_and_ranks_by_matched_terms() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("   ".to_owned()),
             )]),
-            display: None,
         },
     )
     .expect("call");
@@ -737,7 +731,6 @@ fn skill_tool_loads_exact_single_term_match_even_with_other_hits() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("zqxexact".to_owned()),
             )]),
-            display: None,
         },
     )
     .expect("skill call");
@@ -797,78 +790,6 @@ fn skill_tool_search_result_includes_guidance_and_matched_fields() {
         matched_fields,
         vec![CborValue::Text("description".to_owned())]
     );
-}
-
-#[test]
-fn skill_tool_default_display_formats_query() {
-    let display = super::super::build_tool_args_display(
-        "skill",
-        &CborValue::Map(vec![
-            (
-                CborValue::Text("query".to_owned()),
-                CborValue::Text(" git,  commit. git ".to_owned()),
-            ),
-            (
-                CborValue::Text("search_content".to_owned()),
-                CborValue::Bool(true),
-            ),
-        ]),
-    )
-    .expect("display");
-
-    assert_eq!(display.args, "git commit [content]");
-}
-
-#[test]
-fn default_tool_use_state_formats_requested_line_ranges() {
-    let read_display = super::super::build_tool_args_display(
-        "read",
-        &CborValue::Map(vec![
-            (
-                CborValue::Text("path".to_owned()),
-                CborValue::Text("src/lib.rs".to_owned()),
-            ),
-            (
-                CborValue::Text("start_line".to_owned()),
-                CborValue::Integer(2.into()),
-            ),
-            (
-                CborValue::Text("end_line".to_owned()),
-                CborValue::Integer(4.into()),
-            ),
-        ]),
-    )
-    .expect("read display");
-    assert_eq!(read_display.args, "src/lib.rs 2..4");
-
-    let edit_display = super::super::build_tool_args_display(
-        "edit",
-        &CborValue::Map(vec![
-            (
-                CborValue::Text("path".to_owned()),
-                CborValue::Text("src/lib.rs".to_owned()),
-            ),
-            (
-                CborValue::Text("edits".to_owned()),
-                CborValue::Array(vec![CborValue::Map(vec![
-                    (
-                        CborValue::Text("start_line".to_owned()),
-                        CborValue::Integer(2.into()),
-                    ),
-                    (
-                        CborValue::Text("end_line".to_owned()),
-                        CborValue::Integer(2.into()),
-                    ),
-                    (
-                        CborValue::Text("newText".to_owned()),
-                        CborValue::Text("new".to_owned()),
-                    ),
-                ])]),
-            ),
-        ]),
-    )
-    .expect("edit display");
-    assert_eq!(edit_display.args, "src/lib.rs 2..2");
 }
 
 #[test]
@@ -1059,7 +980,6 @@ fn skill_call(query: &str, search_content: bool, id: &str) -> AgentToolCall {
                 CborValue::Bool(search_content),
             ),
         ]),
-        display: None,
     }
 }
 
@@ -1363,7 +1283,6 @@ fn aliased_tool_name_is_advertised_and_routed_via_internal_tool() {
             name: tau_proto::ToolName::new("shell"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
-            display: None,
         },
     )
     .expect("execute aliased tool call");

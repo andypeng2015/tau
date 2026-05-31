@@ -52,6 +52,14 @@ impl<R: std::io::Read> EventReader<R> {
                 Some(frame) => {
                     let (_log_id, peeled) = frame.peel_log();
                     match peeled {
+                        Frame::Event(Event::ToolProgress(progress))
+                            if progress.message.is_none()
+                                && progress.display.is_some()
+                                && progress.tool_name != SHELL_TOOL_NAME
+                                && progress.tool_name != GPT_SHELL_TOOL_NAME =>
+                        {
+                            continue;
+                        }
                         Frame::Event(event) => return Ok(Some(event)),
                         Frame::Message(_) => continue,
                     }
@@ -225,7 +233,6 @@ fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue, agent_id: 
         call_id: tau_proto::ToolCallId::new(call_id),
         tool_name: tau_proto::ToolName::new(tool_name),
         arguments,
-        display: None,
         agent_id: tau_proto::AgentId::new(agent_id),
         originator: tau_proto::PromptOriginator::User,
     })
@@ -354,7 +361,6 @@ fn shell_tool_cancel_request_stops_running_command_quickly() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("sleep 30".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1650,7 +1656,6 @@ fn extension_reads_file() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(file_path.display().to_string()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1686,7 +1691,6 @@ fn extension_read_missing_file_reports_error() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text("/definitely/missing/file.txt".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1899,7 +1903,6 @@ fn extension_edit_creates_file() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "written content")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1937,7 +1940,6 @@ fn extension_edit_missing_parent_reports_short_error() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "x")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1969,7 +1971,6 @@ fn extension_edit_directory_reports_short_error() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(Path::new("/tmp"), vec![line_edit(1, 1, "x")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2003,7 +2004,6 @@ fn extension_edit_creates_directories() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "deep content")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2041,7 +2041,6 @@ fn extension_apply_patch_updates_file() {
             call_id: "call-patch-1".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2089,7 +2088,6 @@ fn extension_apply_patch_reports_context_mismatch_without_writing() {
             call_id: "call-patch-2".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2137,7 +2135,6 @@ fn extension_apply_patch_move_renames_file() {
             call_id: "call-patch-3".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2178,7 +2175,6 @@ fn extension_apply_patch_applies_multiple_operations() {
             call_id: "call-patch-4".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2233,7 +2229,6 @@ fn extension_apply_patch_applies_multiple_chunks() {
             call_id: "call-patch-5".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2272,7 +2267,6 @@ fn extension_apply_patch_failure_after_partial_success_leaves_changes() {
             call_id: "call-patch-5b".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2328,7 +2322,6 @@ fn extension_apply_patch_requires_existing_file_for_update() {
             call_id: "call-patch-6".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2376,7 +2369,6 @@ fn extension_apply_patch_add_overwrites_existing_file() {
             call_id: "call-patch-7".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2414,7 +2406,6 @@ fn extension_apply_patch_update_appends_trailing_newline() {
             call_id: "call-patch-8".into(),
             tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             arguments: CborValue::Text(patch),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2453,7 +2444,6 @@ fn edit_rejects_missing_new_text() {
                     ("end_line", CborValue::Integer(1.into())),
                 ])],
             ),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2487,7 +2477,6 @@ fn edit_rejects_negative_start_line_with_path_args() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(-1, 1, "x")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2590,7 +2579,6 @@ fn edit_uses_original_line_numbers_for_multiple_replacements() {
                 &file_path,
                 vec![line_edit(1, 1, "x\ny\n"), line_edit(3, 3, "z\n")],
             ),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2631,7 +2619,6 @@ fn edit_replaces_exact_line_range() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(2, 2, "cat\n")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2710,7 +2697,6 @@ fn edit_rejects_start_line_past_end() {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(&file_path, vec![line_edit(3, 3, "x")]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2964,7 +2950,6 @@ fn extension_finds_files() {
                     CborValue::Text(tempdir.path().display().to_string()),
                 ),
             ]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3006,7 +2991,6 @@ fn extension_lists_directory_contents() {
                 CborValue::Text("path".to_owned()),
                 CborValue::Text(tempdir.path().display().to_string()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3043,7 +3027,6 @@ fn shell_tool_reports_progress_and_success() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf hello".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3082,7 +3065,6 @@ fn gpt_shell_tool_reports_progress_and_success() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf hello".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3146,7 +3128,6 @@ fn shell_tool_applies_configured_prefix_and_command() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("printf %s \"$TAU_SHELL_PREFIX_TEST\"".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3791,7 +3772,6 @@ fn shell_tool_reports_failures_with_details() {
                 CborValue::Text("command".to_owned()),
                 CborValue::Text("exit 7".to_owned()),
             )]),
-            display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))

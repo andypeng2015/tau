@@ -128,7 +128,9 @@ the agent requests calls, and the harness orchestrates dispatch.
   event.
 - **`tool.started`** *(harness)* — The harness accepted and routed a
   tool request. This runtime broadcast is the signal that the selected tool
-  provider should start the call, and that UIs can show the tool as running.
+  provider should start the call, and that UIs can show a generic pending tool
+  line. It intentionally carries no provider-owned display formatting; the tool
+  provider owns argument parsing and presentation.
 - **`tool.rejected`** *(harness)* — The harness rejected a tool request
   before any tool provider was asked to run it. UIs can display this as a tool
   call rejection.
@@ -144,9 +146,12 @@ the agent requests calls, and the harness orchestrates dispatch.
   The earlier synthetic placeholder is provider-facing only and is not
   emitted as `tool.result`.
 - **`tool.progress`** *(extension)* — In-flight progress update with an
-  optional message and current/total counters. Transient.
-- **`tool.cancel`** *(harness)* — The harness asks an extension to
-  cancel an in-flight call.
+  optional message, current/total counters, and/or complete display state.
+  Providers should usually emit an initial `tool.progress` immediately after
+  receiving `tool.started`, before expensive work, to replace the UI's generic
+  pending line with provider-owned formatting.
+- **`tool.cancel`** *(harness)* — The harness asks an extension to cancel an
+  in-flight call.
 - **`tool.cancelled`** *(extension)* — The extension acknowledges that a
   call has been cancelled. Operational only; transient.
 - **`tool.delegate_progress`** *(harness)* — Live snapshot of a sub-agent

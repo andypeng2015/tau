@@ -608,8 +608,9 @@ fn assemble_conversation_includes_tool_error_details() {
         tool_type: tau_proto::ToolType::Function,
         message: "command exited with status 1".to_owned(),
         details: Some(details),
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     }));
 
     let items = assemble_conversation_from(&tree, tree.head());

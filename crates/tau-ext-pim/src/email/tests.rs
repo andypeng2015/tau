@@ -397,7 +397,6 @@ fn tool_started(command: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
         call_id: tau_proto::ToolCallId::from("call-1"),
         tool_name: tau_proto::ToolName::new(TOOL_NAME),
         arguments: command_args(command, args),
-        display: None,
         agent_id: Default::default(),
         originator: tau_proto::PromptOriginator::User,
     }

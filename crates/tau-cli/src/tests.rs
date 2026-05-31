@@ -20,7 +20,7 @@ use super::chat::{
     DraftSlot, SUSPENDED_AGENT_PROMPT, agent_is_active_in_sets, invalidate_pending_draft,
     is_local_slash_command, next_active_agent, role_cycling_enabled, should_send_draft_snapshot,
 };
-use super::event_renderer::{EventRenderer, shell_tool_use_state_from_command};
+use super::event_renderer::EventRenderer;
 use super::tool_render::{
     CompactionStatus, ToolStatus, build_delegate_completion_display, build_osc1337_set_user_var,
     cache_hit_percent, format_turn_stats_line, render_action_error_block,
@@ -613,12 +613,26 @@ fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue) -> Event {
         call_id: call_id.into(),
         tool_name: tau_proto::ToolName::new(tool_name),
         arguments,
-        display: None,
         agent_id: Default::default(),
         originator: tau_proto::PromptOriginator::User,
     })
 }
 
+fn initial_tool_progress(call_id: &str, tool_name: &str, args: &str, mode: &str) -> Event {
+    Event::ToolProgress(tau_proto::ToolProgress {
+        call_id: call_id.into(),
+        tool_name: tau_proto::ToolName::new(tool_name),
+        message: None,
+        progress: None,
+        display: Some(tau_proto::ToolUseState {
+            args: args.to_owned(),
+            mode: mode.to_owned(),
+            status: tau_proto::ToolUseStatus::InProgress,
+            status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+            ..Default::default()
+        }),
+    })
+}
 fn provider_response_update(
     agent_prompt_id: impl Into<tau_proto::AgentPromptId>,
     text: impl Into<String>,
@@ -1068,12 +1082,16 @@ fn switched_agent_shows_its_tool_usage() {
         ),
         tau_proto::UnixMicros::new(1_000_000),
     );
+    renderer.handle_recorded_at(
+        &initial_tool_progress("worker-call", "read", "src/lib.rs", ""),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
     sync(&handle);
     assert!(!vt.screen_contains(80, "read src/lib.rs"));
 
     renderer.switch_agent("worker-1".to_owned());
     sync(&handle);
-    assert!(vt.screen_contains(80, "read src/lib.rs 0s …"));
+    assert!(vt.screen_contains(80, "read src/lib.rs"));
 }
 
 #[test]
@@ -2163,11 +2181,12 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("side result".into()),
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
             query_id: "q1".to_owned(),
         },
+
+        display: None,
     }));
     renderer.handle(&Event::ToolResult(ToolResult {
         call_id: "call-1".into(),
@@ -2175,8 +2194,9 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("main result".into()),
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     }));
     sync(&handle);
     let status_row = vt
@@ -2216,8 +2236,9 @@ fn model_status_shows_main_tool_usage_before_context() {
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("main result".into()),
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     }));
     sync(&handle);
     let status_row = vt
@@ -3450,6 +3471,12 @@ fn delegate_progress_redraws_live_parent_block() {
         })],
     )));
     renderer.handle(&tool_started("call-delegate", "delegate", delegate_args));
+    renderer.handle(&initial_tool_progress(
+        "call-delegate",
+        "delegate",
+        "[probe]",
+        "",
+    ));
     sync(&handle);
     assert!(vt.screen_contains(100, "[probe]"));
     assert!(!vt.screen_contains(100, "%3/3"));
@@ -3530,8 +3557,9 @@ fn provider_tool_error_before_tool_started_is_ignored() {
             tool_type: tau_proto::ToolType::Function,
             message: "invalid arguments for tool `delegate`".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
         tau_proto::UnixMicros::new(2_000_000),
     );
@@ -3559,8 +3587,9 @@ fn logical_and_provider_tool_errors_render_one_terminal_line() {
             tool_type: tau_proto::ToolType::Function,
             message: "overlapping ranges".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
         tau_proto::UnixMicros::new(2_000_000),
     );
@@ -3571,8 +3600,9 @@ fn logical_and_provider_tool_errors_render_one_terminal_line() {
             tool_type: tau_proto::ToolType::Function,
             message: "overlapping ranges".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
         tau_proto::UnixMicros::new(2_100_000),
     );
@@ -3611,8 +3641,7 @@ fn provider_tool_error_without_logical_tool_error_does_not_finish_live_tool() {
         tau_proto::UnixMicros::new(1_500_000),
     );
     sync(&handle);
-    assert!(vt.screen_contains(80, "strict_tool 0s …"));
-
+    assert!(vt.screen_contains(80, "strict_tool 0s pending"));
     renderer.handle_recorded_at(
         &Event::ProviderToolError(ToolError {
             call_id: "bad-args".into(),
@@ -3620,14 +3649,15 @@ fn provider_tool_error_without_logical_tool_error_does_not_finish_live_tool() {
             tool_type: tau_proto::ToolType::Function,
             message: "invalid arguments: unexpected argument `extra`".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
         tau_proto::UnixMicros::new(2_000_000),
     );
     sync(&handle);
     assert!(!vt.screen_contains(80, "err: invalid"));
-    assert!(vt.screen_contains(80, "strict_tool 0s …"));
+    assert!(vt.screen_contains(80, "strict_tool 0s pending"));
 }
 
 #[test]
@@ -3665,9 +3695,12 @@ fn running_tool_call_shows_ellipsis_until_result() {
         ),
         tau_proto::UnixMicros::new(1_000_000),
     );
+    renderer.handle_recorded_at(
+        &initial_tool_progress("call-1", "read", "src/main.rs", ""),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
     sync(&handle);
-    assert!(vt.screen_contains(80, "read src/main.rs 0s …"));
-
+    assert!(vt.screen_contains(80, "read src/main.rs"));
     renderer.handle_recorded_at(
         &Event::ToolResult(ToolResult {
             call_id: "call-1".into(),
@@ -3744,7 +3777,7 @@ fn tool_progress_display_replaces_live_state_generically() {
 }
 
 #[test]
-fn tool_started_display_wins_over_argument_fallback() {
+fn tool_started_renders_pending_until_provider_progress() {
     let (_term, handle, vt) = setup(80, 24);
     let mut renderer = EventRenderer::new(
         handle.clone(),
@@ -3760,23 +3793,33 @@ fn tool_started_display_wins_over_argument_fallback() {
                 CborValue::Text("path".into()),
                 CborValue::Text("fallback.rs".into()),
             )]),
+            agent_id: Default::default(),
+            originator: tau_proto::PromptOriginator::User,
+        }),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
+    sync(&handle);
+    assert!(vt.screen_contains(80, "read 0s pending"));
+    assert!(!vt.screen_contains(80, "fallback.rs"));
+
+    renderer.handle_recorded_at(
+        &Event::ToolProgress(tau_proto::ToolProgress {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new("read"),
+            message: None,
+            progress: None,
             display: Some(tau_proto::ToolUseState {
                 args: "semantic.rs".into(),
                 status: tau_proto::ToolUseStatus::InProgress,
                 status_text: tau_proto::PROGRESS_INDICATOR_TEXT.into(),
                 ..Default::default()
             }),
-            agent_id: Default::default(),
-            originator: tau_proto::PromptOriginator::User,
         }),
         tau_proto::UnixMicros::new(1_000_000),
     );
-
     sync(&handle);
-    assert!(vt.screen_contains(80, "read semantic.rs 0s …"));
-    assert!(!vt.screen_contains(80, "fallback.rs"));
+    assert!(vt.screen_contains(80, "read semantic.rs"));
 }
-
 #[test]
 fn backgrounded_tool_stays_visibly_running_until_background_result() {
     let (_term, handle, vt) = setup(80, 24);
@@ -3820,6 +3863,10 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
         tau_proto::UnixMicros::new(1_000_000),
     );
     renderer.handle_recorded_at(
+        &initial_tool_progress("call-1", "shell", "sleep 10", "ro"),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
+    renderer.handle_recorded_at(
         &Event::ProviderToolResult(ToolResult {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new("shell"),
@@ -3828,14 +3875,15 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
                 "tau_internal: true\n\nTool call `call-1` is running in the background.".into(),
             ),
             kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
         tau_proto::UnixMicros::new(2_000_000),
     );
     sync(&handle);
     assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
-    assert!(vt.screen_contains(80, "shell ro sleep 10 0s …"));
+    assert!(vt.screen_contains(80, "shell ro sleep 10"));
     assert!(!vt.screen_contains(80, "shell 1s ok"));
     assert!(vt.screen_contains(80, "0/1"));
 
@@ -3913,9 +3961,28 @@ fn running_shell_tool_shows_multiline_command_body_in_full_mode() {
         ),
         tau_proto::UnixMicros::new(1_000_000),
     );
+    renderer.handle_recorded_at(
+        &Event::ToolProgress(tau_proto::ToolProgress {
+            call_id: "call-1".into(),
+            tool_name: tau_proto::ToolName::new("shell"),
+            message: None,
+            progress: None,
+            display: Some(tau_proto::ToolUseState {
+                args: "printf hello".to_owned(),
+                mode: "rw".to_owned(),
+                status: tau_proto::ToolUseStatus::InProgress,
+                status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+                payload: Some(tau_proto::ToolUsePayload::Text {
+                    text: command.to_owned(),
+                }),
+                ..Default::default()
+            }),
+        }),
+        tau_proto::UnixMicros::new(1_000_000),
+    );
     sync(&handle);
 
-    assert!(vt.screen_contains(100, "shell rw printf hello 0s …"));
+    assert!(vt.screen_contains(100, "shell rw printf hello"));
     assert!(
         vt.screen_text(100)
             .iter()
@@ -4047,6 +4114,7 @@ fn live_tool_timer_updates_do_not_mutate_scrolled_history() {
         })],
     )));
     renderer.handle(&tool_started("call-1", "read", read_args));
+    renderer.handle(&initial_tool_progress("call-1", "read", "src/main.rs", ""));
     sync(&handle);
     assert!(vt.screen_contains(80, "read src/main.rs"));
 
@@ -4318,8 +4386,9 @@ fn show_tools_off_hides_tool_blocks() {
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Null,
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     }));
     sync(&handle);
     assert!(!vt.screen_contains(80, "tools"));
@@ -4459,8 +4528,13 @@ fn render_tool_use_state_assembles_chips_in_order() {
 #[test]
 fn running_shell_display_keeps_mode_separate_for_dedicated_style() {
     let theme = tau_themes::Theme::builtin();
-    let display = shell_tool_use_state_from_command("printf hello".to_owned(), "rw");
-
+    let display = tau_proto::ToolUseState {
+        args: "printf hello".to_owned(),
+        mode: "rw".to_owned(),
+        status: tau_proto::ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        ..Default::default()
+    };
     let rendered = render_tool_use_state("shell", &display);
     assert_eq!(rendered.mode, "rw");
     assert_eq!(rendered.args, "printf hello");

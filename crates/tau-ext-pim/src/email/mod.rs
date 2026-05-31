@@ -48,7 +48,8 @@ use tau_proto::{
     ACTION_SCHEMA_VERSION, Ack, ActionArg, ActionArgKind, ActionChoice, ActionCommand, ActionError,
     ActionInvoke, ActionOutput, ActionResult, ActionSchema, CborValue, ConfigError, Event,
     EventLogSeq, Frame, FrameReader, FrameWriter, Message, PromptFragment, PromptPriority,
-    ToolError, ToolResult, ToolSpec, ToolStarted, ToolUseState, ToolUseStats, ToolUseStatus,
+    ToolError, ToolProgress, ToolResult, ToolSpec, ToolStarted, ToolUseState, ToolUseStats,
+    ToolUseStatus,
 };
 
 /// `tracing` target for events emitted from this extension.
@@ -95,6 +96,7 @@ where
                 }
             }
             Frame::Event(Event::ToolStarted(invoke)) if invoke.tool_name.as_str() == TOOL_NAME => {
+                writer.write_frame(&Frame::Event(initial_progress(&invoke)))?;
                 let event = runtime.dispatch(invoke);
                 writer.write_frame(&Frame::Event(event))?;
                 writer.flush()?;
@@ -5718,6 +5720,25 @@ fn message_target_display(command: &str, args: Option<&CborValue>) -> Option<Str
         display.push_str(&format!(" uid={}", safe_display_line(&uid)));
     }
     Some(display)
+}
+
+pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
+    ToolUseState {
+        args: invocation_display_args(arguments).unwrap_or_default(),
+        status: ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        ..Default::default()
+    }
+}
+
+fn initial_progress(invoke: &ToolStarted) -> Event {
+    Event::ToolProgress(ToolProgress {
+        call_id: invoke.call_id.clone(),
+        tool_name: invoke.tool_name.clone(),
+        message: None,
+        progress: None,
+        display: Some(initial_display(&invoke.arguments)),
+    })
 }
 
 fn invocation_display_args(arguments: &CborValue) -> Option<String> {

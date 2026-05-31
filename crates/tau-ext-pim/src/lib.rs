@@ -54,34 +54,13 @@ where
 
     while let Some(frame) = reader.read_frame()? {
         let (log_id, inner) = frame.peel_log();
-        match inner {
-            Frame::Message(Message::Configure(configure)) => {
-                if let Err(message) = runtime.configure(configure) {
-                    writer.write_frame(&Frame::Message(Message::ConfigError(ConfigError {
-                        message,
-                    })))?;
-                    writer.flush()?;
-                }
-            }
-            Frame::Event(Event::ToolStarted(invoke)) => {
-                if let Some(event) = runtime.dispatch_tool(invoke) {
-                    writer.write_frame(&Frame::Event(event))?;
-                    writer.flush()?;
-                }
-            }
-            Frame::Event(Event::ActionInvoke(invoke)) => {
-                let event = runtime.dispatch_action(invoke);
-                writer.write_frame(&Frame::Event(event))?;
-                writer.flush()?;
-            }
-            Frame::Message(Message::Disconnect(_)) => break,
-            _ => {}
+        if !handle_frame(&mut runtime, inner, &mut writer)? {
+            break;
         }
         if let Some(id) = log_id {
             ack_log_event(id, &mut writer)?;
         }
     }
-
     Ok(())
 }
 
@@ -133,6 +112,20 @@ impl RuntimeState {
             .configure_with_config(calendar_config, configure.state_dir, configure.secrets)
     }
 
+    fn initial_tool_progress(&self, invoke: &tau_proto::ToolStarted) -> Option<Event> {
+        match invoke.tool_name.as_str() {
+            email::TOOL_NAME => Some(Event::ToolProgress(tau_proto::ToolProgress {
+                call_id: invoke.call_id.clone(),
+                tool_name: invoke.tool_name.clone(),
+                message: None,
+                progress: None,
+                display: Some(email::initial_display(&invoke.arguments)),
+            })),
+            calendar::TOOL_NAME => Some(calendar::initial_progress(invoke)),
+            _ => None,
+        }
+    }
+
     fn dispatch_tool(&mut self, invoke: tau_proto::ToolStarted) -> Option<Event> {
         match invoke.tool_name.as_str() {
             email::TOOL_NAME => Some(self.email.dispatch(invoke)),
@@ -177,6 +170,48 @@ fn action_schema() -> ActionSchema {
         .roots
         .extend(calendar::calendar_action_schema().roots);
     schema
+}
+
+fn handle_frame<W: Write>(
+    runtime: &mut RuntimeState,
+    frame: Frame,
+    writer: &mut FrameWriter<W>,
+) -> Result<bool, Box<dyn Error>> {
+    match frame {
+        Frame::Message(Message::Configure(configure)) => {
+            if let Err(message) = runtime.configure(configure) {
+                writer.write_frame(&Frame::Message(Message::ConfigError(ConfigError {
+                    message,
+                })))?;
+                writer.flush()?;
+            }
+        }
+        Frame::Event(Event::ToolStarted(invoke)) => handle_tool_started(runtime, invoke, writer)?,
+        Frame::Event(Event::ActionInvoke(invoke)) => {
+            let event = runtime.dispatch_action(invoke);
+            writer.write_frame(&Frame::Event(event))?;
+            writer.flush()?;
+        }
+        Frame::Message(Message::Disconnect(_)) => return Ok(false),
+        _ => {}
+    }
+    Ok(true)
+}
+
+fn handle_tool_started<W: Write>(
+    runtime: &mut RuntimeState,
+    invoke: tau_proto::ToolStarted,
+    writer: &mut FrameWriter<W>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(progress) = runtime.initial_tool_progress(&invoke) {
+        writer.write_frame(&Frame::Event(progress))?;
+        writer.flush()?;
+    }
+    if let Some(event) = runtime.dispatch_tool(invoke) {
+        writer.write_frame(&Frame::Event(event))?;
+        writer.flush()?;
+    }
+    Ok(())
 }
 
 fn ack_log_event<W: Write>(
@@ -250,7 +285,6 @@ mod tests {
             call_id: tau_proto::ToolCallId::new("call-read"),
             tool_name: tau_proto::ToolName::new("read"),
             arguments: CborValue::Map(vec![]),
-            display: None,
             agent_id: tau_proto::AgentId::new("agent-1"),
             originator: tau_proto::PromptOriginator::User,
         };

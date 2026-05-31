@@ -832,6 +832,16 @@ fn dispatch_tool_invoke(
         return;
     }
 
+    if let Some(display) = crate::tools::initial_display(&invoke) {
+        let _ = tx.send(Frame::Event(Event::ToolProgress(tau_proto::ToolProgress {
+            call_id: invoke.call_id.clone(),
+            tool_name: invoke.tool_name.clone(),
+            message: None,
+            progress: None,
+            display: Some(display),
+        })));
+    }
+
     let events = execute_tool(invoke, &shell_config);
     for event in events {
         let _ = tx.send(Frame::Event(event));
@@ -858,11 +868,10 @@ fn dispatch_cancellable_shell_tool(
     let _ = tx.send(Frame::Event(Event::ToolProgress(tau_proto::ToolProgress {
         call_id: invoke.call_id.clone(),
         tool_name: invoke.tool_name.clone(),
-        message: Some("running shell command".to_owned()),
+        message: None,
         progress: None,
-        display: None,
+        display: Some(crate::tools::shell::initial_display(&invoke.arguments)),
     })));
-
     let event = match crate::tools::shell::run_command_cancellable(
         &invoke.arguments,
         &shell_config,

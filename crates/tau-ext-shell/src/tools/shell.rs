@@ -49,8 +49,22 @@ pub(crate) fn parse_access_mode(arguments: &CborValue) -> Result<ShellAccessMode
     }
 }
 
-/// Execute a `shell` tool call.
-///
+/// Build the provider-owned display descriptor published as the first progress
+/// event after `tool.started`.
+pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
+    let access_mode = parse_access_mode(arguments).unwrap_or(ShellAccessMode::ReadWrite);
+    let command = argument_text(arguments, "command").unwrap_or_default();
+    ToolUseState {
+        args: command_display_args(&command),
+        mode: access_mode.display_label().to_owned(),
+        status: ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        payload: command_display_payload(&command),
+        ..Default::default()
+    }
+}
+
+/// Execute a `shell` tool call.///
 /// **Process outcome semantics.** Commands that start successfully always
 /// produce `ToolResult`, even when they exit non-zero, time out, or terminate
 /// by signal. Those expected process outcomes are represented by structured

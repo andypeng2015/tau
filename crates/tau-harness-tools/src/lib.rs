@@ -90,6 +90,14 @@ impl InternalToolHandler for BuiltinTools {
                 else {
                     return Ok(());
                 };
+                if let Some(display) = initial_display(&call) {
+                    host.publish_tool_progress(
+                        &conversation_id,
+                        call.id.clone(),
+                        visible_tool_name.clone(),
+                        display,
+                    );
+                }
                 match call.name.as_str() {
                     SKILL_TOOL_NAME => {
                         handle_skill_tool_call(host, &conversation_id, &call, visible_tool_name)
@@ -305,6 +313,50 @@ fn started_call(
     started: &ToolStarted,
 ) -> Option<(AgentId, AgentToolCall, ToolName)> {
     host.internal_started_call(started)
+}
+
+fn initial_display(call: &AgentToolCall) -> Option<ToolUseState> {
+    let (args, status_text) = match call.name.as_str() {
+        SKILL_TOOL_NAME => {
+            let needles = extract_skill_search_queries(&call.arguments).unwrap_or_default();
+            let search_content = extract_optional_bool(&call.arguments, "search_content")
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+            let scope = if search_content { " [content]" } else { "" };
+            (
+                format!("{}{scope}", needles.join(" ")),
+                tau_proto::PROGRESS_INDICATOR_TEXT,
+            )
+        }
+        DELEGATE_TOOL_NAME => {
+            let parsed = parse_delegate_args(&call.arguments).ok()?;
+            let args = match parsed.role {
+                Some(role) => format!("[{}] +{role}", parsed.task_name),
+                None => format!("[{}]", parsed.task_name),
+            };
+            (args, tau_proto::PROGRESS_INDICATOR_TEXT)
+        }
+        WAIT_TOOL_NAME => match cbor_map_field(&call.arguments, "tool_call_id") {
+            Some(CborValue::Text(id)) => (id.clone(), tau_proto::PROGRESS_INDICATOR_TEXT),
+            _ => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
+        },
+        MESSAGE_TOOL_NAME => match parse_message_args(&call.arguments) {
+            Ok(parsed) => (parsed.recipient_id, tau_proto::PROGRESS_INDICATOR_TEXT),
+            Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
+        },
+        CANCEL_TOOL_NAME => match parse_cancel_args(&call.arguments) {
+            Ok(target) => (target.to_string(), tau_proto::PROGRESS_INDICATOR_TEXT),
+            Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
+        },
+        _ => return None,
+    };
+    Some(ToolUseState {
+        args,
+        status: ToolUseStatus::InProgress,
+        status_text: status_text.to_owned(),
+        ..Default::default()
+    })
 }
 
 const MAX_SKILL_CONTENT_BYTES: usize = 64 * 1024;

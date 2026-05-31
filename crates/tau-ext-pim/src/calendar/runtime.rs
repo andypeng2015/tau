@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use tau_proto::{
     ActionError, ActionInvoke, ActionOutput, ActionResult, AgentId, CborValue, Event, SecretValue,
-    ToolError, ToolResult, ToolStarted, ToolUseState, ToolUseStats, ToolUseStatus,
+    ToolError, ToolProgress, ToolResult, ToolStarted, ToolUseState, ToolUseStats, ToolUseStatus,
 };
 use time_tz::{OffsetDateTimeExt, OffsetResult, PrimitiveDateTimeExt, TimeZone};
 
@@ -2560,6 +2560,25 @@ fn calendar_display_info(command: &str, data: Option<&CborValue>) -> Vec<String>
         _ => {}
     }
     chips
+}
+
+pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
+    ToolUseState {
+        args: invocation_display_args(arguments).unwrap_or_default(),
+        status: ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn initial_progress(invoke: &ToolStarted) -> Event {
+    Event::ToolProgress(ToolProgress {
+        call_id: invoke.call_id.clone(),
+        tool_name: invoke.tool_name.clone(),
+        message: None,
+        progress: None,
+        display: Some(initial_display(&invoke.arguments)),
+    })
 }
 
 fn invocation_display_args(arguments: &CborValue) -> Option<String> {

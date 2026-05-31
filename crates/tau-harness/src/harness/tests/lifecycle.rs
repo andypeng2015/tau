@@ -197,8 +197,9 @@ fn test_tool_result(call_id: &str, tool_name: &str) -> Event {
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("ok".to_owned()),
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     })
 }
 
@@ -2405,8 +2406,9 @@ fn duplicate_tool_result_is_discarded() {
             tool_type: tau_proto::ToolType::Function,
             result: tau_proto::CborValue::Text("stale data".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     );
     // Should not error — just emits a warning and discards.

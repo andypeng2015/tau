@@ -21,6 +21,7 @@ pub use config::{
 pub use google::GoogleBackend;
 pub use ics_feed::IcsFeedBackend;
 pub use runtime::RuntimeState;
+pub(crate) use runtime::initial_progress;
 pub use tool::{calendar_prompt_fragment, calendar_tool_spec};
 
 /// Tau-internal and model-visible tool name for calendar commands.

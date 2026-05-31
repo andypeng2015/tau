@@ -443,10 +443,6 @@ pub struct AgentToolCall {
     pub tool_type: tau_proto::ToolType,
     /// CBOR arguments supplied by the model/provider.
     pub arguments: CborValue,
-    /// Generic UI state computed before dispatch and copied into the
-    /// `tool.started` event so clients can render the live tool line without
-    /// parsing tool-specific arguments.
-    pub display: Option<tau_proto::ToolUseState>,
 }
 
 #[derive(Clone, Debug)]
@@ -584,7 +580,6 @@ pub(crate) fn tool_calls_from_output_items(output_items: &[ContextItem]) -> Vec<
                 name: call.name.clone(),
                 tool_type: call.tool_type,
                 arguments: call.arguments.clone(),
-                display: None,
             }),
             _ => None,
         })
@@ -3424,8 +3419,9 @@ impl Harness {
                             tool_type: request.tool_type,
                             message,
                             details: None,
-                            display: None,
                             originator: tau_proto::PromptOriginator::User,
+
+                            display: None,
                         };
                         self.publish_terminal_tool_error(owning_cid.as_ref(), None, error);
                         self.clear_tool_call_tracking(&call_id);
@@ -4485,8 +4481,9 @@ impl Harness {
                 tool_type: tool.tool_type,
                 message: extension_disconnected_tool_call_error_message(&call_id),
                 details: None,
-                display: None,
                 originator: tau_proto::PromptOriginator::User,
+
+                display: None,
             };
             if self.tool_turn.is_backgrounded(&call_id) {
                 error.message = extension_disconnected_background_tool_call_error_message(&call_id);
@@ -6581,8 +6578,9 @@ impl Harness {
                     tool_type: call.tool_type,
                     message: restored_tool_call_error_message(&call.call_id),
                     details: None,
-                    display: None,
                     originator: tau_proto::PromptOriginator::User,
+
+                    display: None,
                 };
                 self.publish_terminal_tool_error(Some(&cid), Some(HARNESS_CONNECTION_ID), error);
             }
@@ -6678,8 +6676,9 @@ impl Harness {
                     tool_type: call.tool_type,
                     message: restored_background_tool_call_error_message(&call.call_id),
                     details: None,
-                    display: None,
                     originator: call.originator,
+
+                    display: None,
                 };
                 self.publish_terminal_background_error(&cid, Some(HARNESS_CONNECTION_ID), error);
             }
@@ -7677,14 +7676,6 @@ impl Harness {
                 stats: self.current_session_state.token_usage.clone(),
             });
         }
-        // Stamp the live-header `display` descriptor on each tool
-        // call so renderers don't need per-tool string knowledge.
-        for call in &mut tool_calls {
-            if call.display.is_some() {
-                continue;
-            }
-            call.display = build_tool_args_display(call.name.as_str(), &call.arguments);
-        }
         if requested_tool_calls && tool_calls.is_empty() {
             self.emit_info(&format!(
                 "agent response {} reported tool calls but contained none; treating it as end_turn",
@@ -8050,8 +8041,9 @@ impl Harness {
             tool_type: tool.tool_type,
             result,
             kind: ToolResultKind::BackgroundPlaceholder,
-            display: None,
             originator: PromptOriginator::User,
+
+            display: None,
         };
         self.publish_for_agent(&cid, Event::ProviderToolResult(result.clone()));
         self.record_wait_tool_result(result);
@@ -8083,8 +8075,9 @@ impl Harness {
             tool_type: tool.tool_type,
             result: CborValue::Text(content),
             kind: ToolResultKind::BackgroundPlaceholder,
-            display: None,
             originator: PromptOriginator::User,
+
+            display: None,
         };
         self.publish_for_agent(&cid, Event::ProviderToolResult(result.clone()));
         self.record_wait_tool_result(result);
@@ -8531,8 +8524,9 @@ impl Harness {
                 tool_type: call.tool_type,
                 message,
                 details: None,
-                display: None,
                 originator: tau_proto::PromptOriginator::User,
+
+                display: None,
             },
         );
         self.on_tool_call_complete(call_id.as_str());
@@ -8601,8 +8595,9 @@ impl Harness {
                     tool_type: call.tool_type,
                     message,
                     details: None,
-                    display: None,
                     originator: owner_originator,
+
+                    display: None,
                 },
             );
             self.on_tool_call_complete(call_id.as_str());
@@ -8659,8 +8654,7 @@ impl Harness {
 
         match self.registry.route_tool_request(request) {
             Ok(route) => {
-                let mut started = route.invoke;
-                started.display = call.display.clone();
+                let started = route.invoke;
                 match route.target {
                     ToolRouteTarget::Internal => {
                         self.publish_for_agent(cid, Event::ToolStarted(started));
@@ -8691,8 +8685,9 @@ impl Harness {
                     tool_type: call.tool_type,
                     message,
                     details: None,
-                    display: None,
                     originator: tau_proto::PromptOriginator::User,
+
+                    display: None,
                 };
                 self.publish_terminal_tool_error(Some(cid), None, error);
                 self.on_tool_call_complete(&call.id);
@@ -8949,184 +8944,6 @@ fn provider_disconnected_error() -> HarnessError {
     HarnessError::Participant("provider disconnected".to_owned())
 }
 
-/// Pre-render the live-header descriptor for a tool call so the
-/// CLI (and any future renderer) can paint the running block without
-/// per-tool string knowledge. The descriptor carries the tool's
-/// args label (e.g. `"foo" in src` for grep, `[task]` for delegate),
-/// optional mode chip, and is stamped with
-/// [`tau_proto::ToolUseStatus::InProgress`] /
-/// [`tau_proto::PROGRESS_INDICATOR_TEXT`] so subscribers render the
-/// running ellipsis uniformly.
-///
-/// Tools without a known label shape return `None`; the renderer
-/// falls back to a name-only block.
-fn build_tool_args_display(
-    tool_name: &str,
-    arguments: &tau_proto::CborValue,
-) -> Option<tau_proto::ToolUseState> {
-    use tau_proto::{ToolUseStatus, cbor_array_field, cbor_bool_field, cbor_text_field};
-
-    let mut payload = None;
-    let mut mode = String::new();
-    let args = match tool_name {
-        "shell" => {
-            let command = cbor_text_field(arguments, "command").unwrap_or_default();
-            mode = shell_command_mode(arguments).to_owned();
-            payload = shell_command_payload(&command);
-            shell_command_args(&command)
-        }
-        "read" => {
-            let path = cbor_text_field(arguments, "path").unwrap_or_default();
-            let ranges = cbor_array_field(arguments, "ranges")
-                .map(format_requested_line_ranges)
-                .unwrap_or_else(|| format_requested_line_range(arguments));
-            format!("{path} {ranges}")
-        }
-        "edit" => {
-            let path = cbor_text_field(arguments, "path").unwrap_or_default();
-            let ranges = cbor_array_field(arguments, "edits")
-                .map(format_requested_line_ranges)
-                .unwrap_or_default();
-            if ranges.is_empty() {
-                path
-            } else {
-                format!("{path} {ranges}")
-            }
-        }
-        "find" => {
-            let pattern = cbor_text_field(arguments, "pattern").unwrap_or_default();
-            let path = cbor_text_field(arguments, "path").unwrap_or_else(|| ".".to_owned());
-            format!("{pattern} in {path}")
-        }
-        "grep" => {
-            let pattern = cbor_text_field(arguments, "pattern").unwrap_or_default();
-            let path = cbor_text_field(arguments, "path").unwrap_or_else(|| ".".to_owned());
-            let mut args = format!("{pattern:?} in {path}");
-            if let Some(glob) = cbor_text_field(arguments, "glob") {
-                args.push_str(&format!(" [{glob}]"));
-            }
-            args
-        }
-        "ls" => cbor_text_field(arguments, "path").unwrap_or_else(|| ".".to_owned()),
-        "delegate" => match cbor_text_field(arguments, "task_name") {
-            Some(name) if !name.is_empty() => match cbor_text_field(arguments, "role") {
-                Some(role) if !role.is_empty() => format!("[{name}] +{role}"),
-                _ => format!("[{name}]"),
-            },
-            _ => String::new(),
-        },
-        "skill" => {
-            let query = cbor_query_label(arguments, "query");
-            let scope = if cbor_bool_field(arguments, "search_content").unwrap_or(false) {
-                " [content]"
-            } else {
-                ""
-            };
-            format!("{query}{scope}")
-        }
-        _ => return None,
-    };
-    Some(tau_proto::ToolUseState {
-        args,
-        mode,
-        status: ToolUseStatus::InProgress,
-        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
-        payload,
-        ..Default::default()
-    })
-}
-
-fn format_requested_line_ranges(items: &[tau_proto::CborValue]) -> String {
-    let mut ranges: Vec<String> = Vec::new();
-    for item in items {
-        let range = format_requested_line_range(item);
-        if ranges.iter().all(|existing| existing != &range) {
-            ranges.push(range);
-        }
-    }
-    ranges.join(",")
-}
-
-fn format_requested_line_range(arguments: &tau_proto::CborValue) -> String {
-    let start_line = positive_usize_field(arguments, "start_line");
-    let end_line = positive_usize_field(arguments, "end_line");
-    match (start_line, end_line) {
-        (None, None) => "..".to_owned(),
-        (Some(start), None) => format!("{start}.."),
-        (None, Some(end)) => format!("1..{end}"),
-        (Some(start), Some(end)) => format!("{start}..{end}"),
-    }
-}
-fn positive_usize_field(arguments: &tau_proto::CborValue, key: &str) -> Option<usize> {
-    let value = tau_proto::cbor_int_field(arguments, key)?;
-    if value < 1 {
-        return None;
-    }
-    usize::try_from(value).ok()
-}
-
-fn cbor_query_label(arguments: &tau_proto::CborValue, key: &str) -> String {
-    let tau_proto::CborValue::Map(entries) = arguments else {
-        return String::new();
-    };
-    let Some(value) = entries.iter().find_map(|(k, v)| match k {
-        tau_proto::CborValue::Text(k) if k == key => Some(v),
-        _ => None,
-    }) else {
-        return String::new();
-    };
-    match value {
-        tau_proto::CborValue::Text(s) => skill_tool::normalized_skill_query_terms(s).join(" "),
-        _ => String::new(),
-    }
-}
-
-fn shell_command_args(command: &str) -> String {
-    shorten_shell_command_line(command.lines().next().unwrap_or_default())
-}
-
-fn shell_command_mode(arguments: &tau_proto::CborValue) -> &'static str {
-    match tau_proto::cbor_text_field(arguments, "mode").as_deref() {
-        Some("ro") => "ro",
-        Some("rw") | None => "rw",
-        Some(_) => "",
-    }
-}
-
-fn shorten_shell_command_line(line: &str) -> String {
-    const EDGE_CHARS: usize = 20;
-    let chars: Vec<char> = line.chars().collect();
-    if chars.len() <= EDGE_CHARS * 2 {
-        return line.to_owned();
-    }
-
-    let head: String = chars.iter().take(EDGE_CHARS).copied().collect();
-    let tail: String = chars
-        .iter()
-        .skip(chars.len() - EDGE_CHARS)
-        .copied()
-        .collect();
-    format!("{head}┄{tail}")
-}
-
-fn shell_command_payload(command: &str) -> Option<tau_proto::ToolUsePayload> {
-    if command.lines().count() < 2 {
-        return None;
-    }
-    Some(tau_proto::ToolUsePayload::Text {
-        text: command.to_owned(),
-    })
-}
-
-/// Build the [`ToolUseState`] descriptor the renderer paints for a
-/// running `delegate` tool block. Carries the sub-task name as the
-/// args label and two progress counters (tools and context); the agent id stays
-/// on [`tau_proto::DelegateProgress`] so the UI can paint it as a dedicated
-/// chip. The tools counter is completed/total so
-/// users can infer the currently running count as `total - completed`.
-/// The trailing chip is set to
-/// [`ToolUseStatus::InProgress`] so the renderer paints
-/// [`tau_proto::PROGRESS_INDICATOR_TEXT`].
 fn build_delegate_progress_display(
     task_name: &str,
     ctx_input_tokens: Option<u64>,

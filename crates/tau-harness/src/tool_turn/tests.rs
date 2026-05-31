@@ -12,7 +12,6 @@ fn call(id: &str) -> AgentToolCall {
         name: ToolName::new("tool"),
         tool_type: ToolType::Function,
         arguments: CborValue::Null,
-        display: None,
     }
 }
 

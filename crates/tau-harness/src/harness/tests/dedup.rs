@@ -45,8 +45,9 @@ fn run_tool_result(
             tool_type: tau_proto::ToolType::Function,
             result,
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("tool result");
@@ -101,8 +102,9 @@ fn run_tool_error(
             tool_type: tau_proto::ToolType::Function,
             message,
             details,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("tool error");
@@ -478,8 +480,9 @@ fn dedup_refuses_to_self_point() {
         tool_type: tau_proto::ToolType::Function,
         result: big.clone(),
         kind: tau_proto::ToolResultKind::Final,
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     };
     h.dedup_tool_result(&cid, &mut replay);
     assert_eq!(

@@ -810,8 +810,9 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("running".to_owned()),
             kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
-            display: None,
             originator: Default::default(),
+
+            display: None,
         }),
     );
     h.publish_for_agent(
@@ -821,8 +822,9 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
             tool_name: ToolName::new("background_ok"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("done".to_owned()),
-            display: None,
             originator: Default::default(),
+
+            display: None,
         }),
     );
 
@@ -840,8 +842,9 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("running".to_owned()),
             kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
-            display: None,
             originator: Default::default(),
+
+            display: None,
         }),
     );
     h.publish_for_agent(
@@ -852,8 +855,9 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
             tool_type: tau_proto::ToolType::Function,
             message: "failed after backgrounding".to_owned(),
             details: None,
-            display: None,
             originator: Default::default(),
+
+            display: None,
         }),
     );
 

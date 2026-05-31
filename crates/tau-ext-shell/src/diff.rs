@@ -4,10 +4,11 @@
 const DIFF_CONTEXT_LINES: usize = 3;
 
 /// Compute a [`tau_proto::DiffSummary`] from two file contents using
-/// the `similar` crate. Hunks that are exactly one Remove paired with
-/// one Add collapse into a single [`tau_proto::DiffLine::Modify`] with
-/// intra-line word-level segments; other shapes flatten to plain
-/// Add/Remove/Equal rows.
+/// the `similar` crate. Opcode-level replacements that are exactly one
+/// Remove paired with one Add collapse into a single
+/// [`tau_proto::DiffLine::Modify`] with intra-line word-level segments; larger
+/// replacements render all removals before additions so the displayed order
+/// stays unified-diff-like.
 pub(crate) fn compute_diff(old: &str, new: &str) -> tau_proto::DiffSummary {
     use similar::{ChangeTag, TextDiff};
 
@@ -28,40 +29,50 @@ pub(crate) fn compute_diff(old: &str, new: &str) -> tau_proto::DiffSummary {
         let new_count = (last.new_range().end - first.new_range().start) as u32;
 
         let mut lines: Vec<tau_proto::DiffLine> = Vec::new();
-        // Group adjacent {1×Remove, 1×Add} pairs into Modify lines so
-        // single-line edits get intra-line word-level highlighting.
-        let mut pending_remove: Option<String> = None;
         for op in &group {
+            let mut removed = Vec::new();
+            let mut added = Vec::new();
+            let mut equal = Vec::new();
+
             for change in diff.iter_changes(op) {
                 let text = strip_eol(change.value()).to_owned();
                 match change.tag() {
-                    ChangeTag::Equal => {
-                        if let Some(removed) = pending_remove.take() {
-                            lines.push(tau_proto::DiffLine::Remove { text: removed });
-                        }
-                        lines.push(tau_proto::DiffLine::Equal { text });
-                    }
+                    ChangeTag::Equal => equal.push(text),
                     ChangeTag::Delete => {
-                        if let Some(removed) = pending_remove.take() {
-                            lines.push(tau_proto::DiffLine::Remove { text: removed });
-                        }
-                        pending_remove = Some(text);
                         summary.removed += 1;
+                        removed.push(text);
                     }
                     ChangeTag::Insert => {
                         summary.added += 1;
-                        if let Some(removed) = pending_remove.take() {
-                            // 1-Remove + 1-Add → Modify with intra-line segments.
-                            lines.push(make_modify(&removed, &text));
-                        } else {
-                            lines.push(tau_proto::DiffLine::Add { text });
-                        }
+                        added.push(text);
                     }
                 }
             }
-        }
-        if let Some(removed) = pending_remove.take() {
-            lines.push(tau_proto::DiffLine::Remove { text: removed });
+
+            if !equal.is_empty() {
+                lines.extend(
+                    equal
+                        .into_iter()
+                        .map(|text| tau_proto::DiffLine::Equal { text }),
+                );
+                continue;
+            }
+
+            if removed.len() == 1 && added.len() == 1 {
+                lines.push(make_modify(&removed[0], &added[0]));
+                continue;
+            }
+
+            lines.extend(
+                removed
+                    .into_iter()
+                    .map(|text| tau_proto::DiffLine::Remove { text }),
+            );
+            lines.extend(
+                added
+                    .into_iter()
+                    .map(|text| tau_proto::DiffLine::Add { text }),
+            );
         }
 
         summary.hunks.push(tau_proto::DiffHunk {
@@ -105,5 +116,46 @@ fn make_modify(old: &str, new: &str) -> tau_proto::DiffLine {
     tau_proto::DiffLine::Modify {
         old: old_segs,
         new: new_segs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tau_proto::DiffLine;
+
+    use super::*;
+
+    #[test]
+    fn multi_line_replacement_renders_removals_before_additions() {
+        let diff = compute_diff("one\ntwo\nkeep\n", "alpha\nbeta\nkeep\n");
+
+        assert_eq!(diff.removed, 2);
+        assert_eq!(diff.added, 2);
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(
+            diff.hunks[0].lines,
+            vec![
+                DiffLine::Remove { text: "one".into() },
+                DiffLine::Remove { text: "two".into() },
+                DiffLine::Add {
+                    text: "alpha".into(),
+                },
+                DiffLine::Add {
+                    text: "beta".into(),
+                },
+                DiffLine::Equal {
+                    text: "keep".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn single_line_replacement_still_gets_inline_modify() {
+        let diff = compute_diff("let count = 1;\n", "let count = 2;\n");
+
+        assert_eq!(diff.removed, 1);
+        assert_eq!(diff.added, 1);
+        assert!(matches!(diff.hunks[0].lines[0], DiffLine::Modify { .. }));
     }
 }

@@ -581,8 +581,9 @@ fn seed_background_placeholder(state_dir: &Path, call_id: &str, tool_name: &str)
                     tau_proto::TAU_INTERNAL_HEADER_NAME
                 )),
                 kind: tau_proto::ToolResultKind::BackgroundPlaceholder,
-                display: None,
                 originator: tau_proto::PromptOriginator::User,
+
+                display: None,
             }),
         )
         .expect("seed background placeholder");
@@ -600,8 +601,9 @@ fn seed_background_result(state_dir: &Path, call_id: &str, tool_name: &str, outp
                 tool_name: ToolName::new(tool_name),
                 tool_type: tau_proto::ToolType::Function,
                 result: CborValue::Text(output.to_owned()),
-                display: None,
                 originator: tau_proto::PromptOriginator::User,
+
+                display: None,
             }),
         )
         .expect("seed background result");
@@ -620,8 +622,9 @@ fn seed_background_error(state_dir: &Path, call_id: &str, tool_name: &str, messa
                 tool_type: tau_proto::ToolType::Function,
                 message: message.to_owned(),
                 details: None,
-                display: None,
                 originator: tau_proto::PromptOriginator::User,
+
+                display: None,
             }),
         )
         .expect("seed background error");
@@ -993,7 +996,6 @@ fn wait_no_args_call(call_id: &str) -> AgentToolCall {
         name: ToolName::new("wait"),
         tool_type: tau_proto::ToolType::Function,
         arguments: CborValue::Map(Vec::new()),
-        display: None,
     }
 }
 
@@ -1858,8 +1860,9 @@ fn provider_owner_validation_rejects_external_background_result() {
             tool_name: ToolName::new("owned_tool"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("spoofed background".to_owned()),
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
     )
     .expect("wrong background result ignored");
@@ -1885,8 +1888,9 @@ fn provider_owner_validation_rejects_external_background_error() {
             tool_type: tau_proto::ToolType::Function,
             message: "spoofed background error".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
     )
     .expect("wrong background error ignored");
@@ -2110,7 +2114,6 @@ fn cancel_clears_active_wait_state() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(target_call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
         .expect("start wait");
@@ -2134,7 +2137,6 @@ fn cancel_clears_active_wait_state() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(target_call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&cid, &second_wait_call, ToolName::new("wait"))
         .expect("second wait");
@@ -4488,7 +4490,6 @@ fn wait_returns_internal_background_error_after_extension_disconnect() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
         .expect("wait returns disconnected background error");
@@ -4579,8 +4580,9 @@ fn no_arg_wait_after_background_completion_removes_queued_completion_prompt() {
         tool_name: ToolName::new("slow_any_after"),
         tool_type: tau_proto::ToolType::Function,
         result: CborValue::Text("already done".to_owned()),
-        display: None,
         originator: tau_proto::PromptOriginator::User,
+
+        display: None,
     });
     seed_tools_running(&mut h, &cid, Vec::new());
     h.queue_background_completion_prompt(&cid, &call_id);
@@ -4653,7 +4655,6 @@ fn agent_message_interrupts_recipient_active_wait() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(background_call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
         .expect("start wait");
@@ -4736,7 +4737,6 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(background_call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&waiter_cid, &wait_call, ToolName::new("wait"))
         .expect("start cross-owner wait");
@@ -6182,8 +6182,9 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("real output".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
     )
     .expect("late tool result");
@@ -6393,8 +6394,9 @@ fn canceled_side_conversation_drops_inner_background_completion() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("real output".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
     )
     .expect("late tool result is ignored");
@@ -6479,8 +6481,9 @@ fn background_notification_suppression_keeps_error_event_but_skips_prompt() {
             tool_type: tau_proto::ToolType::Function,
             message: "late failure".to_owned(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         }),
     )
     .expect("late tool error");
@@ -6696,6 +6699,7 @@ fn backgrounded_tool_progress_is_not_published() {
             tool_name: ToolName::new("slow"),
             message: Some("running shell command".to_owned()),
             progress: None,
+
             display: None,
         }),
     )
@@ -6861,7 +6865,6 @@ fn wait_resolves_on_synthetic_tool_error() {
             CborValue::Text("tool_call_id".to_owned()),
             CborValue::Text(target_call_id.to_string()),
         )]),
-        display: None,
     };
     h.handle_wait_tool_call(&cid, &wait_call, ToolName::new("wait"))
         .expect("start wait");
@@ -6876,8 +6879,9 @@ fn wait_resolves_on_synthetic_tool_error() {
             tool_type: tau_proto::ToolType::Function,
             message: missing_message.clone(),
             details: None,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         },
     );
 
@@ -7435,8 +7439,9 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("fake result".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("ws result");
@@ -8182,8 +8187,9 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("nested answer".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("nested tool result");
@@ -8527,8 +8533,9 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("outer answer".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("delegate result");
@@ -8824,7 +8831,6 @@ fn message_tool_call(id: &str, recipient_id: &str, message: &str) -> AgentToolCa
                 CborValue::Text(message.to_owned()),
             ),
         ]),
-        display: None,
     }
 }
 

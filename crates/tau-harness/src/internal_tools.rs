@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tau_proto::{
-    CborValue, Event, StartAgentRequest, ToolCallId, ToolError, ToolName, ToolResult, ToolSpec,
-    ToolUseState,
+    CborValue, Event, StartAgentRequest, ToolCallId, ToolError, ToolName, ToolProgress, ToolResult,
+    ToolSpec, ToolUseState,
 };
 
 use crate::discovery::DiscoveredSkillSource;
@@ -208,7 +208,6 @@ impl<'a> InternalToolHost<'a> {
             name: pending.internal_name,
             tool_type: pending.tool_type,
             arguments: started.arguments.clone(),
-            display: None,
         };
         Some((cid, call, pending.name))
     }
@@ -241,6 +240,26 @@ impl<'a> InternalToolHost<'a> {
             tool_type,
             result,
             details,
+        );
+    }
+
+    /// Publish provider-owned display state for an in-flight internal tool.
+    pub fn publish_tool_progress(
+        &mut self,
+        conversation_id: &AgentId,
+        call_id: ToolCallId,
+        tool_name: ToolName,
+        display: ToolUseState,
+    ) {
+        self.harness.publish_for_agent(
+            conversation_id,
+            Event::ToolProgress(ToolProgress {
+                call_id,
+                tool_name,
+                message: None,
+                progress: None,
+                display: Some(display),
+            }),
         );
     }
 

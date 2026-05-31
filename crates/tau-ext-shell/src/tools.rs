@@ -1,6 +1,9 @@
 //! Tool registry: dispatches a `ToolStarted` to the right handler.
 
-use tau_proto::{CborValue, Event, ToolError, ToolProgress, ToolResult, ToolResultKind};
+use tau_proto::{
+    CborValue, Event, ToolError, ToolResult, ToolResultKind, ToolUseState, ToolUseStatus,
+    cbor_array_field, cbor_text_field,
+};
 
 use crate::config::ShellConfig;
 use crate::display::{ToolFailure, ToolOutput};
@@ -62,13 +65,7 @@ pub(crate) fn execute_tool(
     }
 
     if invoke.tool_name == SHELL_TOOL_NAME || invoke.tool_name == GPT_SHELL_TOOL_NAME {
-        let mut events = vec![Event::ToolProgress(ToolProgress {
-            call_id: invoke.call_id.clone(),
-            tool_name: invoke.tool_name.clone(),
-            message: Some("running shell command".to_owned()),
-            progress: None,
-            display: None,
-        })];
+        let mut events = Vec::new();
         match shell::run_command(&invoke.arguments, shell_config) {
             Ok(ToolOutput { result, display }) => events.push(Event::ToolResult(ToolResult {
                 call_id: invoke.call_id,
@@ -115,8 +112,9 @@ fn wrap_pure(
     invoke: tau_proto::ToolStarted,
     handler: fn(&CborValue) -> Result<ToolOutput, ToolFailure>,
 ) -> Vec<Event> {
+    let mut events = Vec::new();
     match handler(&invoke.arguments) {
-        Ok(ToolOutput { result, display }) => vec![Event::ToolResult(ToolResult {
+        Ok(ToolOutput { result, display }) => events.push(Event::ToolResult(ToolResult {
             call_id: invoke.call_id,
             tool_name: invoke.tool_name,
             tool_type: tau_proto::ToolType::Function,
@@ -124,12 +122,12 @@ fn wrap_pure(
             kind: ToolResultKind::Final,
             display: Some(display),
             originator: invoke.originator.clone(),
-        })],
+        })),
         Err(ToolFailure {
             message,
             details,
             display,
-        }) => vec![Event::ToolError(ToolError {
+        }) => events.push(Event::ToolError(ToolError {
             call_id: invoke.call_id,
             tool_name: invoke.tool_name,
             tool_type: tau_proto::ToolType::Function,
@@ -137,6 +135,88 @@ fn wrap_pure(
             details: details.map(|details| *details),
             display: Some(*display),
             originator: invoke.originator.clone(),
-        })],
+        })),
     }
+    events
+}
+
+pub(crate) fn initial_display(invoke: &tau_proto::ToolStarted) -> Option<ToolUseState> {
+    let mode = String::new();
+    let args = match invoke.tool_name.as_str() {
+        READ_TOOL_NAME => {
+            let path = cbor_text_field(&invoke.arguments, "path").unwrap_or_default();
+            let ranges = cbor_array_field(&invoke.arguments, "ranges")
+                .map(format_requested_line_ranges)
+                .unwrap_or_else(|| format_requested_line_range(&invoke.arguments));
+            format!("{path} {ranges}")
+        }
+        EDIT_TOOL_NAME | APPLY_PATCH_TOOL_NAME => {
+            let path = cbor_text_field(&invoke.arguments, "path").unwrap_or_default();
+            let ranges = cbor_array_field(&invoke.arguments, "edits")
+                .map(format_requested_line_ranges)
+                .unwrap_or_default();
+            if ranges.is_empty() {
+                path
+            } else {
+                format!("{path} {ranges}")
+            }
+        }
+        FIND_TOOL_NAME => {
+            let pattern = cbor_text_field(&invoke.arguments, "pattern").unwrap_or_default();
+            let path = cbor_text_field(&invoke.arguments, "path").unwrap_or_else(|| ".".to_owned());
+            format!("{pattern} in {path}")
+        }
+        GREP_TOOL_NAME => {
+            let pattern = cbor_text_field(&invoke.arguments, "pattern").unwrap_or_default();
+            let path = cbor_text_field(&invoke.arguments, "path").unwrap_or_else(|| ".".to_owned());
+            let mut args = format!("{pattern:?} in {path}");
+            if let Some(glob) = cbor_text_field(&invoke.arguments, "glob") {
+                args.push_str(&format!(" [{glob}]"));
+            }
+            args
+        }
+        LS_TOOL_NAME => {
+            cbor_text_field(&invoke.arguments, "path").unwrap_or_else(|| ".".to_owned())
+        }
+        _ => return None,
+    };
+    Some(ToolUseState {
+        args,
+        mode,
+        status: ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        ..Default::default()
+    })
+}
+
+fn format_requested_line_ranges(values: &[CborValue]) -> String {
+    let ranges: Vec<String> = values
+        .iter()
+        .map(format_requested_line_range)
+        .filter(|range| !range.is_empty())
+        .collect();
+    if ranges.is_empty() {
+        "..".to_owned()
+    } else {
+        ranges.join(",")
+    }
+}
+
+fn format_requested_line_range(arguments: &CborValue) -> String {
+    let start_line = positive_usize_field(arguments, "start_line");
+    let end_line = positive_usize_field(arguments, "end_line");
+    match (start_line, end_line) {
+        (None, None) => "..".to_owned(),
+        (Some(start), None) => format!("{start}.."),
+        (None, Some(end)) => format!("1..{end}"),
+        (Some(start), Some(end)) => format!("{start}..{end}"),
+    }
+}
+
+fn positive_usize_field(arguments: &CborValue, key: &str) -> Option<usize> {
+    let value = tau_proto::cbor_int_field(arguments, key)?;
+    if value < 1 {
+        return None;
+    }
+    usize::try_from(value).ok()
 }

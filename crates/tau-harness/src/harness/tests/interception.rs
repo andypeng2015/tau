@@ -414,8 +414,9 @@ fn deferred_tool_result_persists_after_call_tracking_is_cleared() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("ok".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
-            display: None,
             originator: tau_proto::PromptOriginator::User,
+
+            display: None,
         })),
     )
     .expect("defer tool result");

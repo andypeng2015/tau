@@ -17,10 +17,11 @@ use crate::build_banner;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
     build_osc1337_set_user_var, build_tool_summary_display, extension_status_block, extract_diff,
-    format_token_count, format_tool_call, render_compaction_block, render_delegate_display,
-    render_diff_tool_block, render_harness_info, render_shell_block, render_tool_block,
-    render_tool_use_state, render_turn_stats_block, session_status_block, streaming_block,
-    synthesize_fallback_display, system_loaded_block, tool_duration_suffix, ui_dir_block,
+    format_token_count, pending_tool_call_display, render_compaction_block,
+    render_delegate_display, render_diff_tool_block, render_harness_info, render_shell_block,
+    render_tool_block, render_tool_use_state, render_turn_stats_block, session_status_block,
+    streaming_block, synthesize_fallback_display, system_loaded_block, tool_duration_suffix,
+    ui_dir_block,
 };
 
 pub(crate) struct EventRenderer {
@@ -872,66 +873,6 @@ fn tool_calls_from_output_items(output_items: &[ContextItem]) -> Vec<ToolCallIte
             _ => None,
         })
         .collect()
-}
-
-fn cbor_text_field(arguments: &CborValue, key: &str) -> Option<String> {
-    let CborValue::Map(entries) = arguments else {
-        return None;
-    };
-    entries
-        .iter()
-        .find_map(|(entry_key, value)| match (entry_key, value) {
-            (CborValue::Text(entry_key), CborValue::Text(value)) if entry_key == key => {
-                Some(value.clone())
-            }
-            _ => None,
-        })
-}
-
-fn tool_use_state_from_call(call: &ToolCallItem) -> tau_proto::ToolUseState {
-    if call.name.as_str() == "shell" {
-        let command = cbor_text_field(&call.arguments, "command").unwrap_or_default();
-        let mode = cbor_text_field(&call.arguments, "mode").unwrap_or_else(|| "rw".to_owned());
-        return shell_tool_use_state_from_command(command, &mode);
-    }
-
-    let args = match call.name.as_str() {
-        "read" | "edit" | "ls" => cbor_text_field(&call.arguments, "path"),
-        "grep" | "glob" => cbor_text_field(&call.arguments, "pattern"),
-        "delegate" => cbor_text_field(&call.arguments, "task_name"),
-        _ => cbor_text_field(&call.arguments, "path")
-            .or_else(|| cbor_text_field(&call.arguments, "pattern"))
-            .or_else(|| cbor_text_field(&call.arguments, "query")),
-    }
-    .unwrap_or_default();
-    in_progress_tool_use_state(args, None)
-}
-
-pub(crate) fn shell_tool_use_state_from_command(
-    command: String,
-    mode: &str,
-) -> tau_proto::ToolUseState {
-    // Mirror ext-shell's final display shape so `show-tools=full` does not
-    // change layout or styling when a multiline command finishes.
-    let command_args = command.lines().next().unwrap_or_default().to_owned();
-    let payload =
-        (2 <= command.lines().count()).then_some(tau_proto::ToolUsePayload::Text { text: command });
-    let mut display = in_progress_tool_use_state(command_args, payload);
-    display.mode = mode.to_owned();
-    display
-}
-
-fn in_progress_tool_use_state(
-    args: String,
-    payload: Option<tau_proto::ToolUsePayload>,
-) -> tau_proto::ToolUseState {
-    tau_proto::ToolUseState {
-        args,
-        payload,
-        status: tau_proto::ToolUseStatus::InProgress,
-        status_text: "…".to_owned(),
-        ..Default::default()
-    }
 }
 
 impl EventRenderer {
@@ -3469,24 +3410,7 @@ impl EventRenderer {
         {
             return;
         }
-        let fallback_call = ToolCallItem {
-            call_id: started.call_id.clone(),
-            name: started.tool_name.clone(),
-            tool_type: tau_proto::ToolType::Function,
-            arguments: started.arguments.clone(),
-        };
-        let fallback_display;
-        let display_state = if let Some(display) = started.display.as_ref() {
-            display
-        } else {
-            // Compatibility for old event logs and third-party producers that have
-            // not yet attached ToolUseState to tool.started. New code should put
-            // all normal tool-use presentation data on the event, not derive it
-            // here from tool-specific arguments.
-            fallback_display = tool_use_state_from_call(&fallback_call);
-            &fallback_display
-        };
-        let mut display = format_tool_call(started.tool_name.as_str(), Some(display_state));
+        let mut display = pending_tool_call_display(started.tool_name.as_str());
         Self::upsert_tool_duration_suffix(&mut display, Duration::ZERO);
         let live_block = self.render_tool_history_block(&display);
         let live_id = self.handle.new_block(
@@ -3666,6 +3590,7 @@ impl EventRenderer {
                     ToolStatus::Success
                         | ToolStatus::Warning
                         | ToolStatus::Error
+                        | ToolStatus::Pending
                         | ToolStatus::Progress
                 )
             })

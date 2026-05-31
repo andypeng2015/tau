@@ -238,6 +238,7 @@ pub(crate) enum ToolStatus {
     Success,
     Warning,
     Error,
+    Pending,
     Info,
     Progress,
     DiffAdded,
@@ -291,23 +292,6 @@ pub(crate) struct ToolSummaryDisplay {
     pub(crate) bytes: u64,
     pub(crate) added: u64,
     pub(crate) removed: u64,
-}
-
-/// Build the live-header [`ToolCallDisplay`] for a still-running
-/// tool call from the harness-stamped descriptor. Falls back to a
-/// name-only block when the descriptor is absent (older logs, or
-/// extensions whose tools the harness doesn't know how to label).
-pub(crate) fn format_tool_call(tool_name: &str, display: Option<&ToolUseState>) -> ToolCallDisplay {
-    let mode = display.map(|d| d.mode.clone()).unwrap_or_default();
-    let args = display.map(|d| d.args.clone()).unwrap_or_default();
-    let suffix = running_suffix_after(&args);
-    ToolCallDisplay {
-        tool_name: tool_name.to_owned(),
-        mode,
-        args,
-        suffixes: vec![suffix],
-        payload: display.and_then(|d| d.payload.clone()),
-    }
 }
 
 /// Build the completion descriptor for a finished `delegate` call by
@@ -370,22 +354,17 @@ fn tool_suffix(text: String, status: ToolStatus) -> ToolSuffixSegment {
     }
 }
 
+pub(crate) fn pending_tool_call_display(tool_name: &str) -> ToolCallDisplay {
+    ToolCallDisplay {
+        tool_name: tool_name.to_owned(),
+        mode: String::new(),
+        args: String::new(),
+        suffixes: vec![tool_suffix("pending".to_owned(), ToolStatus::Pending)],
+        payload: None,
+    }
+}
 fn info_suffix(text: String) -> ToolSuffixSegment {
     tool_suffix(text, ToolStatus::Info)
-}
-
-/// Build the running-call ellipsis with the same leading-space rule
-/// `append_streaming_indicator` applies: skip the implicit space the
-/// renderer would otherwise insert when the preceding text (`args`)
-/// already ends in whitespace. Empty `args` keeps the space, since the
-/// label preceding the suffix is then the tool name (never whitespace).
-fn running_suffix_after(args: &str) -> ToolSuffixSegment {
-    let no_leading_space = args.chars().next_back().is_some_and(char::is_whitespace);
-    ToolSuffixSegment {
-        text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
-        status: ToolStatus::Progress,
-        no_leading_space,
-    }
 }
 
 /// Build a streaming block whose body uses `body_name` styling and
@@ -875,10 +854,10 @@ pub(crate) fn render_tool_block(
     for suffix in &display.suffixes {
         let status_name = match suffix.status {
             ToolStatus::Success => names::TOOL_STATUS_SUCCESS,
-            // Warning has no dedicated token yet — share the info
+            // Warning/Pending have no dedicated tokens yet — share the info
             // colour so the chip still reads as "non-error" without a
             // theme migration.
-            ToolStatus::Warning | ToolStatus::Info => names::TOOL_STATUS_INFO,
+            ToolStatus::Warning | ToolStatus::Pending | ToolStatus::Info => names::TOOL_STATUS_INFO,
             ToolStatus::Error => names::TOOL_STATUS_ERROR,
             ToolStatus::Progress => names::PROGRESS_INDICATOR,
             ToolStatus::DiffAdded => names::DIFF_ADDED,

@@ -992,19 +992,6 @@ pub struct ToolStarted {
     /// Arguments to pass to the selected tool provider. These are copied from
     /// the accepted request after harness validation/routing.
     pub arguments: CborValue,
-    /// Generic, UI-facing state for the running tool use.
-    ///
-    /// This must stay a tool-agnostic description of what should be rendered:
-    /// name/mode/argument label, stats, counters, status, and optional rich
-    /// payload. Do not make terminal UIs inspect tool-specific CBOR arguments
-    /// or result payloads just to produce the normal tool-use line; add another
-    /// optional field to [`ToolUseState`] or [`ToolUsePayload`] when a new tool
-    /// needs more structured display data. Keeping this state in the event log
-    /// makes replay, alternate UIs, and compact/full rendering modes all
-    /// consume the same semantic description instead of growing independent
-    /// special cases.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display: Option<ToolUseState>,
     /// Durable agent that owns this tool call.
     #[serde(default, skip_serializing_if = "AgentId::is_empty")]
     pub agent_id: AgentId,
@@ -1139,9 +1126,9 @@ pub struct ToolBackgroundError {
 /// small and display-oriented; model-visible transcript data still belongs in
 /// the normal tool result payloads.
 ///
-/// A `ToolUseState` may appear on `tool.started`, `tool.progress`,
-/// `tool.result`, `tool.error`, background result/error events, and delegated
-/// progress events. Each occurrence is a complete replacement for the display
+/// A `ToolUseState` may appear on `tool.progress`, `tool.result`, `tool.error`,
+/// background result/error events, and delegated progress events. Each
+/// occurrence is a complete replacement for the display
 /// state at that lifecycle point, not a patch that renderers need to merge.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolUseState {
@@ -1265,8 +1252,8 @@ pub enum ToolUseStatus {
     Success,
     Warning,
     Error,
-    /// The tool is still running. Used by progress events. The
-    /// renderer trades the trailing status chip for
+    /// The tool provider has accepted the call and it is running. Used by
+    /// progress events. The renderer trades an empty trailing status chip for
     /// [`crate::PROGRESS_INDICATOR_TEXT`].
     InProgress,
 }

@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use tau_proto::{
     Ack, CborValue, ConfigError, Event, EventLogSeq, Frame, FrameReader, FrameWriter, Message,
-    ToolError, ToolResult, ToolSpec, ToolStarted, ToolUseState, ToolUseStats, ToolUseStatus,
+    ToolError, ToolProgress, ToolResult, ToolSpec, ToolStarted, ToolUseState, ToolUseStats,
+    ToolUseStatus,
 };
-
 /// `tracing` target for events emitted from this extension.
 pub const LOG_TARGET: &str = "websearch";
 
@@ -315,6 +315,15 @@ fn dispatch_tool_invoke(
     parallel_client: &dyn ParallelClient,
     tx: &mpsc::Sender<Frame>,
 ) {
+    if let Some(display) = initial_display(&invoke) {
+        let _ = tx.send(Frame::Event(Event::ToolProgress(ToolProgress {
+            call_id: invoke.call_id.clone(),
+            tool_name: invoke.tool_name.clone(),
+            message: None,
+            progress: None,
+            display: Some(display),
+        })));
+    }
     let event = match invoke.tool_name.as_str() {
         EXA_TOOL_NAME => dispatch_exa(invoke, searcher),
         PARALLEL_SEARCH_TOOL_NAME => {
@@ -334,6 +343,39 @@ fn dispatch_tool_invoke(
         }),
     };
     let _ = tx.send(Frame::Event(event));
+}
+
+fn initial_display(invoke: &ToolStarted) -> Option<ToolUseState> {
+    let args = match invoke.tool_name.as_str() {
+        EXA_TOOL_NAME => parse_exa_args(&invoke.arguments)
+            .map(|(query, _)| query)
+            .unwrap_or_default(),
+        PARALLEL_SEARCH_TOOL_NAME => {
+            cbor_text_field(&invoke.arguments, "query").unwrap_or_default()
+        }
+        PARALLEL_FETCH_TOOL_NAME => cbor_text_field(&invoke.arguments, "url").unwrap_or_default(),
+        _ => return None,
+    };
+    Some(ToolUseState {
+        args,
+        status: ToolUseStatus::InProgress,
+        status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+        ..Default::default()
+    })
+}
+
+fn cbor_text_field(arguments: &CborValue, key: &str) -> Option<String> {
+    let CborValue::Map(entries) = arguments else {
+        return None;
+    };
+    entries
+        .iter()
+        .find_map(|(entry_key, value)| match (entry_key, value) {
+            (CborValue::Text(entry_key), CborValue::Text(value)) if entry_key == key => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
 }
 
 fn dispatch_exa(invoke: ToolStarted, searcher: &dyn Searcher) -> Event {

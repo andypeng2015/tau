@@ -1079,8 +1079,9 @@ impl WaitTracker {
                         tool_type: ToolType::Function,
                         message: "Tool call canceled".to_owned(),
                         details: None,
-                        display: None,
                         originator: tau_proto::PromptOriginator::User,
+
+                        display: None,
                     }),
                 );
                 self.push_completed(call_id.clone());
