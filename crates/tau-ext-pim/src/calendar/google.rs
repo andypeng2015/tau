@@ -1463,10 +1463,9 @@ mod tests {
     }
 
     #[test]
-    fn google_if_match_header_accepts_display_etags_without_quotes() {
-        // Google ETags are quoted in API responses, but agents can easily copy
-        // the visible numeric token without JSON-escaping the quotes. Preserve
-        // already-valid preconditions and repair the common stripped form.
+    fn google_if_match_header_accepts_etags_without_quotes() {
+        // Google ETags are quoted in API responses. Preserve already-valid
+        // preconditions and repair stripped forms from legacy internal state.
         assert_eq!(
             google_if_match_header("3560073119029470"),
             "\"3560073119029470\""

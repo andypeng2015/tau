@@ -283,12 +283,12 @@ The model-visible tool name for calendars is `calendar`. Commands are selected t
 - `list_accounts` — returns configured calendar accounts.
 - `list_calendars` — returns calendars visible through configured accounts.
 - `list_events` — lists bounded event metadata for one account/calendar.
-- `read_event` — reads one event by `event_id`; Google events include `etag` for safe writes.
+- `read_event` — reads one event by `event_id`; Google ETags are cached internally for safe writes.
 - `free_busy` — returns busy blocks without descriptions.
 - `create_event` — queues or applies a Google event create request.
-- `update_event` — queues or applies a Google event patch; requires `event_id` and `etag`.
-- `delete_event` — queues or applies a Google event delete; requires `event_id` and `etag`.
-- `respond_invite` — queues or applies an RSVP response; requires `event_id`, `etag`, and `response`.
+- `update_event` — queues or applies a Google event patch; requires `event_id`.
+- `delete_event` — queues or applies a Google event delete; requires `event_id`.
+- `respond_invite` — queues or applies an RSVP response; requires `event_id` and `response`.
 
 Calendar results use the same `ok`, `command`, `status`, `data` envelope as email. Line-style data includes `data.format` and sanitized text arrays (`accounts`, `calendars`, `events`, `event`, or `busy`). `list_events` and `free_busy` include `data.next_cursor` and `data.truncated`; pass the cursor with the same account/calendar/range arguments to continue.
 

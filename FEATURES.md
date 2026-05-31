@@ -300,8 +300,8 @@ private extension state, or continue using manually supplied refresh-token
 secrets. They support the same read/free-busy operations plus create, update,
 delete, and invite-response mutations through the native Calendar API. Google
 access tokens are cached in memory until near expiry. Calendar writes are queued
-for `/calendar change` approval by default, require ETags for existing events,
-and use provider conditional requests to avoid stale overwrites. Calendar reads and
+for `/calendar change` approval by default, keep ETags internal for existing
+events, and use provider conditional requests to avoid stale overwrites. Calendar reads and
 write requests are logged to `logs/calendar.jsonl` and can be reviewed with
 `/calendar log last [number]`. Calendar tool results use the same structured
 `ok`/`command`/`status`/`data` envelope as email, with `format` fields and

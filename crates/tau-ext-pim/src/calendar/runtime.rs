@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -61,6 +62,14 @@ struct Engine {
     state: StateStore,
     google: GoogleBackend,
     ics_feed: IcsFeedBackend,
+    etags: RefCell<BTreeMap<EventEtagKey, String>>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EventEtagKey {
+    account: String,
+    calendar: String,
+    event_id: String,
 }
 
 impl RuntimeState {
@@ -79,6 +88,7 @@ impl RuntimeState {
                 state: StateStore::open(state_dir)?,
                 google: GoogleBackend::new(secrets.clone()),
                 ics_feed: IcsFeedBackend::new(secrets),
+                etags: RefCell::new(BTreeMap::new()),
             })
         });
         match result {
@@ -151,7 +161,6 @@ struct ChangeArgs {
     account: Option<String>,
     calendar: Option<String>,
     event_id: Option<String>,
-    etag: Option<String>,
     title: Option<String>,
     description: Option<String>,
     location: Option<String>,
@@ -168,7 +177,6 @@ impl From<CreateEventArgs> for ChangeArgs {
             account: args.account,
             calendar: args.calendar,
             event_id: None,
-            etag: None,
             title: args.title,
             description: args.description,
             location: args.location,
@@ -187,7 +195,6 @@ impl From<UpdateEventArgs> for ChangeArgs {
             account: args.account,
             calendar: args.calendar,
             event_id: args.event_id,
-            etag: args.etag,
             title: args.title,
             description: args.description,
             location: args.location,
@@ -206,7 +213,6 @@ impl From<DeleteEventArgs> for ChangeArgs {
             account: args.account,
             calendar: args.calendar,
             event_id: args.event_id,
-            etag: args.etag,
             title: None,
             description: None,
             location: None,
@@ -225,7 +231,6 @@ impl From<RespondInviteArgs> for ChangeArgs {
             account: args.account,
             calendar: args.calendar,
             event_id: args.event_id,
-            etag: args.etag,
             title: None,
             description: None,
             location: None,
@@ -713,6 +718,7 @@ impl Engine {
         let range = parse_range(args, account)?;
         let page =
             self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
+        self.remember_event_etags(account, calendar, &page.events);
         let mut rows = Vec::new();
         for event in &page.events {
             rows.push(format_event_line(
@@ -759,6 +765,7 @@ impl Engine {
                 ));
             }
         };
+        self.remember_event_etag(account, calendar, &event);
         Ok(ok_envelope(
             "read_event",
             "ok",
@@ -784,6 +791,7 @@ impl Engine {
         let range = parse_range(args, account)?;
         let page =
             self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
+        self.remember_event_etags(account, calendar, &page.events);
         let mut rows = Vec::new();
         for event in &page.events {
             rows.push(format_free_busy_line(
@@ -811,7 +819,6 @@ impl Engine {
         args: ChangeArgs,
     ) -> Result<CborValue, String> {
         let change = self.build_change(command, args)?;
-        self.validate_change_etag_is_current(&change)?;
         if self.config.policy.write.require_approval {
             let id = self.state.pending_change(&change)?;
             return Ok(format_change_queued(&id, &change));
@@ -860,7 +867,7 @@ impl Engine {
             }
             CalendarCommand::UpdateEvent => {
                 change.event_id = Some(required_text(args.event_id.as_deref(), "event_id")?);
-                change.etag = Some(required_text(args.etag.as_deref(), "etag")?);
+                change.etag = Some(self.cached_etag_for_change(&change)?);
                 change.title = optional_line(args.title.as_deref(), "title", false)?;
                 change.description = optional_description(args.description.as_deref())?;
                 change.location = optional_line(args.location.as_deref(), "location", true)?;
@@ -888,11 +895,11 @@ impl Engine {
             }
             CalendarCommand::DeleteEvent => {
                 change.event_id = Some(required_text(args.event_id.as_deref(), "event_id")?);
-                change.etag = Some(required_text(args.etag.as_deref(), "etag")?);
+                change.etag = Some(self.cached_etag_for_change(&change)?);
             }
             CalendarCommand::RespondInvite => {
                 change.event_id = Some(required_text(args.event_id.as_deref(), "event_id")?);
-                change.etag = Some(required_text(args.etag.as_deref(), "etag")?);
+                change.etag = Some(self.cached_etag_for_change(&change)?);
                 change.response = Some(required_response(args.response.as_deref())?);
             }
             CalendarCommand::ListAccounts
@@ -904,48 +911,81 @@ impl Engine {
         Ok(change)
     }
 
-    fn validate_change_etag_is_current(
+    fn remember_event_etags(
+        &self,
+        account: &ValidatedAccount,
+        calendar: &str,
+        events: &[BackendEvent],
+    ) {
+        for event in events {
+            self.remember_event_etag(account, calendar, event);
+        }
+    }
+
+    fn remember_event_etag(
+        &self,
+        account: &ValidatedAccount,
+        calendar: &str,
+        event: &BackendEvent,
+    ) {
+        let key = EventEtagKey {
+            account: account.id.clone(),
+            calendar: calendar.to_owned(),
+            event_id: event_id(event).to_owned(),
+        };
+        let Some(etag) = event_etag(event) else {
+            self.etags.borrow_mut().remove(&key);
+            return;
+        };
+        self.etags.borrow_mut().insert(key, etag.to_owned());
+    }
+
+    fn cached_etag_for_change(&self, change: &CalendarChangeApproval) -> Result<String, String> {
+        let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
+        self.etags
+            .borrow()
+            .get(&EventEtagKey {
+                account: change.account.clone(),
+                calendar: change.calendar.clone(),
+                event_id: event_id.to_owned(),
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "calendar event `{}` has not been read in this session or changed since it was cached; re-read the event and retry",
+                    safe_display_line(event_id)
+                )
+            })
+    }
+
+    fn remember_mutation_result(
         &self,
         change: &CalendarChangeApproval,
-    ) -> Result<(), String> {
-        if !matches!(
-            change.command.as_str(),
-            "update_event" | "delete_event" | "respond_invite"
-        ) {
-            return Ok(());
+        result: &CalendarMutationResult,
+    ) {
+        match result {
+            CalendarMutationResult::Event(event) => {
+                if let Some(etag) = &event.etag {
+                    self.etags.borrow_mut().insert(
+                        EventEtagKey {
+                            account: change.account.clone(),
+                            calendar: change.calendar.clone(),
+                            event_id: event.id.clone(),
+                        },
+                        etag.clone(),
+                    );
+                }
+            }
+            CalendarMutationResult::Deleted => {
+                if let Some(event_id) = &change.event_id {
+                    self.etags.borrow_mut().remove(&EventEtagKey {
+                        account: change.account.clone(),
+                        calendar: change.calendar.clone(),
+                        event_id: event_id.clone(),
+                    });
+                }
+            }
         }
-        let account = self.account_by_id(&change.account)?;
-        let Some(ValidatedBackendConfig::Google { .. }) = &account.backend else {
-            return Ok(());
-        };
-        let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
-        let requested_etag = required_change_field(change.etag.as_deref(), "etag")?;
-        if requested_etag == "*" {
-            return Err(
-                "Google calendar writes require the exact current event etag; `*` is not accepted"
-                    .to_owned(),
-            );
-        }
-        let stored_refresh_token = self.google_refresh_token(account)?;
-        let current = self.google.read_event(
-            account,
-            stored_refresh_token.as_deref(),
-            &change.calendar,
-            event_id,
-        )?;
-        let current_etag = current
-            .etag
-            .as_deref()
-            .ok_or_else(|| "Google Calendar event response was missing etag".to_owned())?;
-        if google_etag_compare_value(requested_etag) == google_etag_compare_value(current_etag) {
-            return Ok(());
-        }
-        Err(format!(
-            "stale Google Calendar etag for event `{}`: requested `{}`, current `{}`; re-read the event and retry",
-            safe_display_line(event_id),
-            safe_display_line(requested_etag),
-            safe_display_line(current_etag)
-        ))
     }
 
     fn validate_persisted_change(&self, change: &CalendarChangeApproval) -> Result<(), String> {
@@ -966,7 +1006,11 @@ impl Engine {
         {
             return Err("calendar change has too many attendees for current policy".to_owned());
         }
-        validate_change_shape(change)
+        validate_change_shape(change)?;
+        if change.etag.as_deref() == Some("*") {
+            return Err("calendar change contains unsafe wildcard etag".to_owned());
+        }
+        Ok(())
     }
 
     fn execute_change(
@@ -976,57 +1020,70 @@ impl Engine {
         let account = self.account_by_id(&change.account)?;
         self.ensure_calendar_allowed(account, &change.calendar)?;
         let stored_refresh_token = self.google_refresh_token(account)?;
-        match change.command.as_str() {
+        let result = match change.command.as_str() {
             "create_event" => {
-                let event = self.google.create_event(
-                    account,
-                    stored_refresh_token.as_deref(),
-                    &change.calendar,
-                    &google_write_from_change(change),
-                )?;
+                let event = self
+                    .google
+                    .create_event(
+                        account,
+                        stored_refresh_token.as_deref(),
+                        &change.calendar,
+                        &google_write_from_change(change),
+                    )
+                    .map_err(calendar_write_error)?;
                 Ok(CalendarMutationResult::Event(Box::new(event)))
             }
             "update_event" => {
                 let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
                 let etag = required_change_field(change.etag.as_deref(), "etag")?;
-                let event = self.google.update_event(
-                    account,
-                    stored_refresh_token.as_deref(),
-                    &change.calendar,
-                    event_id,
-                    etag,
-                    &google_write_from_change(change),
-                )?;
+                let event = self
+                    .google
+                    .update_event(
+                        account,
+                        stored_refresh_token.as_deref(),
+                        &change.calendar,
+                        event_id,
+                        etag,
+                        &google_write_from_change(change),
+                    )
+                    .map_err(calendar_write_error)?;
                 Ok(CalendarMutationResult::Event(Box::new(event)))
             }
             "delete_event" => {
                 let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
                 let etag = required_change_field(change.etag.as_deref(), "etag")?;
-                self.google.delete_event(
-                    account,
-                    stored_refresh_token.as_deref(),
-                    &change.calendar,
-                    event_id,
-                    etag,
-                )?;
+                self.google
+                    .delete_event(
+                        account,
+                        stored_refresh_token.as_deref(),
+                        &change.calendar,
+                        event_id,
+                        etag,
+                    )
+                    .map_err(calendar_write_error)?;
                 Ok(CalendarMutationResult::Deleted)
             }
             "respond_invite" => {
                 let event_id = required_change_field(change.event_id.as_deref(), "event_id")?;
                 let etag = required_change_field(change.etag.as_deref(), "etag")?;
                 let response = required_change_field(change.response.as_deref(), "response")?;
-                let event = self.google.respond_invite(
-                    account,
-                    stored_refresh_token.as_deref(),
-                    &change.calendar,
-                    event_id,
-                    etag,
-                    response,
-                )?;
+                let event = self
+                    .google
+                    .respond_invite(
+                        account,
+                        stored_refresh_token.as_deref(),
+                        &change.calendar,
+                        event_id,
+                        etag,
+                        response,
+                    )
+                    .map_err(calendar_write_error)?;
                 Ok(CalendarMutationResult::Event(Box::new(event)))
             }
             other => Err(format!("unsupported calendar change command `{other}`")),
-        }
+        }?;
+        self.remember_mutation_result(change, &result);
+        Ok(result)
     }
 
     fn events_for_account(
@@ -1331,11 +1388,11 @@ fn required_text(value: Option<&str>, name: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn google_etag_compare_value(etag: &str) -> String {
-    if etag.starts_with('"') || etag.starts_with("W/\"") {
-        etag.to_owned()
+fn calendar_write_error(error: String) -> String {
+    if error.contains("HTTP 412") || error.contains("Precondition Failed") {
+        "calendar event changed since it was last read; re-read the event and retry".to_owned()
     } else {
-        format!("\"{etag}\"")
+        error
     }
 }
 
@@ -1746,9 +1803,6 @@ fn format_event_detail(
     if let Some(uid) = event_uid(event) {
         lines.push(format!("uid {}", safe_field(uid)));
     }
-    if let Some(etag) = event_etag(event) {
-        lines.push(format!("etag {}", safe_field(etag)));
-    }
     if let Some(status) = event_status(event) {
         lines.push(format!("status {}", safe_field(status)));
     }
@@ -1956,7 +2010,6 @@ fn format_change_detail(change: &CalendarChangeApproval) -> String {
         format!("reason: {}", safe_display_line(&change.reason)),
     ];
     push_change_detail(&mut lines, "event_id", change.event_id.as_deref());
-    push_change_detail(&mut lines, "etag", change.etag.as_deref());
     push_change_detail(&mut lines, "title", change.title.as_deref());
     push_change_detail(&mut lines, "location", change.location.as_deref());
     push_change_detail(&mut lines, "start", change.start.as_deref());
@@ -1989,12 +2042,11 @@ fn format_mutation_result(
 ) -> String {
     match result {
         CalendarMutationResult::Event(event) => format!(
-            "{verb} calendar change {id}. command={} account={} calendar={} event_id={} etag={}",
+            "{verb} calendar change {id}. command={} account={} calendar={} event_id={}",
             safe_display_line(&change.command),
             safe_display_line(&change.account),
             safe_display_line(&change.calendar),
-            safe_display_line(&event.id),
-            safe_display_line(event.etag.as_deref().unwrap_or("-"))
+            safe_display_line(&event.id)
         ),
         CalendarMutationResult::Deleted => format!(
             "{verb} calendar change {id}. command={} account={} calendar={} event_id={}",
@@ -2032,9 +2084,6 @@ fn format_mutation_result_envelope(
     match result {
         CalendarMutationResult::Event(event) => {
             entries.push(("event_id", CborValue::Text(safe_display_line(&event.id))));
-            if let Some(etag) = &event.etag {
-                entries.push(("etag", CborValue::Text(safe_display_line(etag))));
-            }
         }
         CalendarMutationResult::Deleted => {
             entries.push((
@@ -2526,6 +2575,7 @@ mod tests {
             state: StateStore::open(temp.path().join("state")).expect("state"),
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+            etags: RefCell::new(BTreeMap::new()),
         };
 
         let output = engine.list_accounts();
@@ -2804,6 +2854,7 @@ mod tests {
             state: StateStore::open(temp.path().join("state")).expect("state"),
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+            etags: RefCell::new(BTreeMap::new()),
         };
 
         let output = engine.dispatch(&command_args(
@@ -2835,20 +2886,6 @@ mod tests {
         assert_eq!(
             engine.action_change_deny("1"),
             Ok("Denied calendar change 1.".to_owned())
-        );
-    }
-
-    #[test]
-    fn google_etag_compare_value_accepts_agent_stripped_quotes() {
-        // The request-time freshness check compares Google API ETags with the
-        // common agent-written form where the wire quotes were stripped.
-        assert_eq!(
-            google_etag_compare_value("3560073119029470"),
-            google_etag_compare_value("\"3560073119029470\"")
-        );
-        assert_ne!(
-            google_etag_compare_value("3560073119029470"),
-            google_etag_compare_value("\"3560073119029471\"")
         );
     }
 
@@ -2897,6 +2934,7 @@ mod tests {
             state: StateStore::open(temp.path().join("state")).expect("state"),
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+            etags: RefCell::new(BTreeMap::new()),
         };
 
         let output = engine.dispatch(&command_args(
@@ -2947,6 +2985,7 @@ mod tests {
             state: StateStore::open(temp.path().join("state")).expect("state"),
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+            etags: RefCell::new(BTreeMap::new()),
         };
 
         let output = engine.dispatch(&command_args(
@@ -3025,9 +3064,9 @@ mod tests {
     }
 
     #[test]
-    fn google_event_details_include_etag_for_future_safe_writes() {
-        // Google read responses expose ETags that callers must preserve once
-        // write support exists. Keep the read-only detail format carrying it.
+    fn google_event_details_hide_etag_from_agent() {
+        // Google read responses keep ETags internally for conditional writes;
+        // model-visible event details should stay focused on user data.
         let account = ValidatedAccount {
             id: "google".to_owned(),
             enable: true,
@@ -3072,8 +3111,80 @@ mod tests {
 
         assert_eq!(
             format_event_detail(&policy, &account, "primary", &event).join("\n"),
-            "account google\ncalendar primary\nevent_id evt\nstart 2026-05-28T12:00:00Z\nend 2026-05-28T13:00:00Z\nflags read_only,recurring\nsummary Team_Sync\nuid uid@example.com\netag abc\nstatus confirmed\nlocation Room_1\norganizer org@example.com\nattendees a@example.com,b@example.com\ndescription line 1 line 2"
+            "account google\ncalendar primary\nevent_id evt\nstart 2026-05-28T12:00:00Z\nend 2026-05-28T13:00:00Z\nflags read_only,recurring\nsummary Team_Sync\nuid uid@example.com\nstatus confirmed\nlocation Room_1\norganizer org@example.com\nattendees a@example.com,b@example.com\ndescription line 1 line 2"
         );
+    }
+
+    #[test]
+    fn calendar_change_detail_hides_internal_etag() {
+        // Approval details may be echoed into agent-visible transcripts. Keep
+        // provider precondition tokens internal even though pending changes
+        // persist them for later approval execution.
+        let mut change = CalendarChangeApproval::pending("update_event", "google", "primary");
+        change.id = "1".to_owned();
+        change.event_id = Some("evt".to_owned());
+        change.etag = Some("abc".to_owned());
+        change.title = Some("Team Sync".to_owned());
+
+        let detail = format_change_detail(&change);
+
+        assert!(detail.contains("event_id: evt"), "{detail}");
+        assert!(!detail.contains("etag"), "{detail}");
+        assert!(!detail.contains("abc"), "{detail}");
+    }
+
+    #[test]
+    fn google_event_etag_cache_is_cleared_by_missing_provider_etag() {
+        // A malformed or degraded provider response without an ETag must fail
+        // closed instead of leaving an older precondition token active.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let engine = test_engine(temp.path());
+        let account = ValidatedAccount {
+            id: "google".to_owned(),
+            enable: true,
+            display_name: None,
+            backend: Some(ValidatedBackendConfig::Google {
+                client_id_secret: "client".to_owned(),
+                client_secret_secret: None,
+                refresh_token_secret: Some("refresh".to_owned()),
+                api_base: None,
+            }),
+            default_calendar: Some("primary".to_owned()),
+            allowed_calendars: vec!["primary".to_owned()],
+            timezone: Some("UTC".to_owned()),
+        };
+        let mut event = BackendEvent::Google(GoogleEvent {
+            id: "evt".to_owned(),
+            etag: Some("abc".to_owned()),
+            i_cal_uid: None,
+            summary: "Team Sync".to_owned(),
+            description: None,
+            location: None,
+            start: "2026-05-28T12:00:00Z".to_owned(),
+            end: "2026-05-28T13:00:00Z".to_owned(),
+            status: Some("confirmed".to_owned()),
+            visibility: None,
+            transparency: None,
+            organizer: None,
+            attendees: Vec::new(),
+            self_response_status: None,
+            recurring: false,
+        });
+        let mut change = CalendarChangeApproval::pending("update_event", "google", "primary");
+        change.event_id = Some("evt".to_owned());
+
+        engine.remember_event_etag(&account, "primary", &event);
+        assert_eq!(
+            engine.cached_etag_for_change(&change).expect("cached etag"),
+            "abc"
+        );
+
+        if let BackendEvent::Google(event) = &mut event {
+            event.etag = None;
+        }
+        engine.remember_event_etag(&account, "primary", &event);
+
+        assert!(engine.cached_etag_for_change(&change).is_err());
     }
 
     #[test]
@@ -3146,6 +3257,7 @@ mod tests {
             state: StateStore::open(root.join("state")).expect("state"),
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
+            etags: RefCell::new(BTreeMap::new()),
         }
     }
 

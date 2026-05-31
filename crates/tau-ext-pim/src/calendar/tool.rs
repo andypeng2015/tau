@@ -116,8 +116,6 @@ pub(crate) struct UpdateEventArgs {
     pub(crate) calendar: Option<String>,
     /// Backend event id.
     pub(crate) event_id: Option<String>,
-    /// Backend event ETag or version for stale-write protection.
-    pub(crate) etag: Option<String>,
     /// Event title.
     pub(crate) title: Option<String>,
     /// Event description.
@@ -144,8 +142,6 @@ pub(crate) struct DeleteEventArgs {
     pub(crate) calendar: Option<String>,
     /// Backend event id.
     pub(crate) event_id: Option<String>,
-    /// Backend event ETag or version for stale-write protection.
-    pub(crate) etag: Option<String>,
 }
 
 /// Arguments for responding to an invite.
@@ -158,8 +154,6 @@ pub(crate) struct RespondInviteArgs {
     pub(crate) calendar: Option<String>,
     /// Backend event id.
     pub(crate) event_id: Option<String>,
-    /// Backend event ETag or version for stale-write protection.
-    pub(crate) etag: Option<String>,
     /// Invitation response: accepted, tentative, or declined.
     pub(crate) response: Option<String>,
 }
@@ -169,7 +163,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
-        description: Some("Controlled calendar access through configured accounts. Commands: list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, respond_invite. Results use the email-style ok/command/status/data envelope; list/detail data includes a format field and sanitized line arrays. For list_events/free_busy, use start/end as event range filters; start is inclusive, end is exclusive, and omitted end defaults to start plus 7 days. Read bounds accept RFC3339 timestamps with offsets, YYYY-MM-DD dates, or local YYYY-MM-DDTHH:MM:SS values interpreted in the account timezone. Google calendar mutations are queued for user approval by default and require explicit account/calendar targets plus etag for existing events. ICS feed accounts are read-only. Use explicit timestamps or YYYY-MM-DD all-day dates; do not pass natural-language dates. For create_event, omit end only when the intended default duration is one hour for date-times or one day for all-day dates.".to_owned()),
+        description: Some("Controlled calendar access through configured accounts. Commands: list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, respond_invite. Results use the email-style ok/command/status/data envelope; list/detail data includes a format field and sanitized line arrays. For list_events/free_busy, use start/end as event range filters; start is inclusive, end is exclusive, and omitted end defaults to start plus 7 days. Read bounds accept RFC3339 timestamps with offsets, YYYY-MM-DD dates, or local YYYY-MM-DDTHH:MM:SS values interpreted in the account timezone. Google calendar mutations are queued for user approval by default and require explicit account/calendar targets for existing events. ICS feed accounts are read-only. Use explicit timestamps or YYYY-MM-DD all-day dates; do not pass natural-language dates. For create_event, omit end only when the intended default duration is one hour for date-times or one day for all-day dates.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -181,12 +175,11 @@ pub fn calendar_tool_spec() -> ToolSpec {
                 },
                 "args": {
                     "type": "object",
-                    "description": "Command arguments. list_accounts takes no arguments. Other commands generally require account/calendar once more than one target is configured. list_events and free_busy use start/end for range bounds; omitted end defaults to start plus 7 days, and cursor can be passed from the previous next_cursor. Mutations for existing events require event_id and etag for stale-write protection.",
+                    "description": "Command arguments. list_accounts takes no arguments. Other commands generally require account/calendar once more than one target is configured. list_events and free_busy use start/end for range bounds; omitted end defaults to start plus 7 days, and cursor can be passed from the previous next_cursor. Mutations for existing events require event_id.",
                     "properties": {
                         "account": {"type": "string", "description": "Configured calendar account id."},
                         "calendar": {"type": "string", "description": "Calendar id within the account."},
                         "event_id": {"type": "string", "description": "Backend event id."},
-                        "etag": {"type": "string", "description": "Backend ETag or version for stale-write protection."},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                         "cursor": {"type": "string", "description": "Cursor returned as next_cursor by list_events or free_busy; pass it with the same account/calendar/range arguments."},
                         "title": {"type": "string"},

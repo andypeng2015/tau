@@ -95,7 +95,7 @@ Recommended defaults:
 
 Calendar tool results use the same `ok`, `command`, `status`, `data` envelope convention as email. Line arrays include `data.format`; paginated event commands include `data.next_cursor` and `data.truncated`.
 
-Calendar writes should normally return `approval_required`; then the agent should wait for the user to inspect and approve with `/calendar change list`, `/calendar change open <id>`, and `/calendar change approve <id>`. Existing Google events require `etag` on update, delete, and RSVP to avoid stale writes.
+Calendar writes should normally return `approval_required`; then the agent should wait for the user to inspect and approve with `/calendar change list`, `/calendar change open <id>`, and `/calendar change approve <id>`. Existing Google event writes use internally cached ETags; if the event changed, the agent should re-read it and retry.
 
 
 ## Email policies and output safety
