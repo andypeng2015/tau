@@ -13,7 +13,7 @@
 //!   replays logical content without rubber
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
@@ -540,16 +540,28 @@ enum KeyBinding {
     Key(KeyCode),
 }
 
+fn parse_plain_key_code(input: &str) -> Option<KeyCode> {
+    match input.to_ascii_lowercase().as_str() {
+        "backspace" => Some(KeyCode::Backspace),
+        "backtab" | "shift-tab" => Some(KeyCode::BackTab),
+        "delete" | "del" => Some(KeyCode::Delete),
+        "down" => Some(KeyCode::Down),
+        "end" => Some(KeyCode::End),
+        "enter" => Some(KeyCode::Enter),
+        "esc" | "escape" => Some(KeyCode::Esc),
+        "home" => Some(KeyCode::Home),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        "tab" => Some(KeyCode::Tab),
+        "up" => Some(KeyCode::Up),
+        _ => None,
+    }
+}
+
 fn parse_key_binding(input: &str) -> Option<KeyBinding> {
     let input = input.trim_matches('`');
-    if input.eq_ignore_ascii_case("tab") {
-        return Some(KeyBinding::Key(KeyCode::Tab));
-    }
-    if input.eq_ignore_ascii_case("backtab") || input.eq_ignore_ascii_case("shift-tab") {
-        return Some(KeyBinding::Key(KeyCode::BackTab));
-    }
-    if input.eq_ignore_ascii_case("enter") {
-        return Some(KeyBinding::Key(KeyCode::Enter));
+    if let Some(code) = parse_plain_key_code(input) {
+        return Some(KeyBinding::Key(code));
     }
     let rest = input
         .strip_prefix("C-")
@@ -580,8 +592,18 @@ fn key_binding_for_event(key: KeyEvent, ctrl: bool) -> Option<KeyBinding> {
         KeyCode::Enter if ctrl_only => Some(KeyBinding::CtrlKey(KeyCode::Enter)),
         KeyCode::Enter if plain => Some(KeyBinding::Key(KeyCode::Enter)),
         KeyCode::Up | KeyCode::Down if ctrl => Some(KeyBinding::CtrlKey(key.code)),
-        KeyCode::Tab => Some(KeyBinding::Key(KeyCode::Tab)),
-        KeyCode::BackTab => Some(KeyBinding::Key(KeyCode::BackTab)),
+        KeyCode::Backspace
+        | KeyCode::BackTab
+        | KeyCode::Delete
+        | KeyCode::Down
+        | KeyCode::End
+        | KeyCode::Enter
+        | KeyCode::Esc
+        | KeyCode::Home
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::Up => Some(KeyBinding::Key(key.code)),
         _ => None,
     }
 }
@@ -1315,35 +1337,20 @@ impl Term {
     /// Configures key bindings surfaced as [`Event::Binding`].
     ///
     /// Supported key spellings include `Tab`, `BackTab`, `Shift-Tab`, `Enter`,
-    /// `C-Enter`, `C-Up`, `C-Down`, and `C-<letter>`.
-    ///
-    /// The following Ctrl chords are reserved built-in editing keys
-    /// and cannot be overridden — bindings to them are silently
-    /// dropped: `Ctrl-A` (beginning-of-line), `Ctrl-C` (clear /
-    /// notice on empty), `Ctrl-D` (EOF on empty), `Ctrl-E`
-    /// (end-of-line), `Ctrl-U` (kill-to-start), `Ctrl-W`
-    /// (kill-word). Every other Ctrl chord (including default
-    /// action bindings like `Ctrl-Z`/`Ctrl-Y`) may be rebound.
+    /// `Esc`, arrow/navigation/editing keys, `C-Enter`, `C-Up`, `C-Down`, and
+    /// `C-<letter>`.
     pub fn set_bindings(&mut self, bindings: impl IntoIterator<Item = (String, String)>) {
         self.bindings = bindings
             .into_iter()
             .filter_map(|(raw_key, action)| {
                 let parsed = parse_key_binding(&raw_key);
-                let reserved = matches!(
-                    parsed,
-                    Some(KeyBinding::Ctrl('a' | 'c' | 'd' | 'e' | 'u' | 'w'))
-                );
                 tracing::trace!(
                     target: "tau_cli_term_raw::input",
                     raw_key,
                     ?parsed,
                     action,
-                    reserved,
                     "configured prompt binding"
                 );
-                if reserved {
-                    return None;
-                }
                 parsed.map(|key| (key, action))
             })
             .collect();
@@ -1552,6 +1559,280 @@ impl Term {
         }
     }
 
+    fn move_cursor_left(&self) -> bool {
+        let mut st = self.handle.lock();
+        if st.cursor == 0 {
+            return false;
+        }
+        let prev = prev_char_boundary(&st.buffer, st.cursor);
+        st.write_cursor(prev);
+        true
+    }
+
+    fn move_cursor_right(&self) -> bool {
+        let mut st = self.handle.lock();
+        if st.buffer.len() <= st.cursor {
+            return false;
+        }
+        let next = next_char_boundary(&st.buffer, st.cursor);
+        st.write_cursor(next);
+        true
+    }
+
+    fn move_cursor_start(&self) -> bool {
+        let mut st = self.handle.lock();
+        if st.cursor == 0 {
+            return false;
+        }
+        st.write_cursor(0);
+        true
+    }
+
+    fn move_cursor_end(&self) -> bool {
+        let mut st = self.handle.lock();
+        let len = st.buffer.len();
+        if st.cursor == len {
+            return false;
+        }
+        st.write_cursor(len);
+        true
+    }
+
+    fn delete_backward(&self) -> bool {
+        let changed = {
+            let mut st = self.handle.lock();
+            if st.cursor == 0 {
+                return false;
+            }
+            st.record_undo();
+            let prev = prev_char_boundary(&st.buffer, st.cursor);
+            let cursor = st.cursor;
+            st.buffer.drain(prev..cursor);
+            st.write_cursor(prev);
+            st.sync_buffer_to_history_nav();
+            true
+        };
+        self.refresh_completion();
+        changed
+    }
+
+    fn delete_forward(&self) -> bool {
+        let changed = {
+            let mut st = self.handle.lock();
+            if st.buffer.len() <= st.cursor {
+                return false;
+            }
+            st.record_undo();
+            let cursor = st.cursor;
+            let next = next_char_boundary(&st.buffer, cursor);
+            st.buffer.drain(cursor..next);
+            st.write_cursor(cursor);
+            st.sync_buffer_to_history_nav();
+            true
+        };
+        self.refresh_completion();
+        changed
+    }
+
+    fn clear_prompt(&self) -> bool {
+        let changed = {
+            let mut st = self.handle.lock();
+            if st.buffer.is_empty() {
+                return false;
+            }
+            st.ctrl_c_cancel_armed = false;
+            st.record_undo();
+            st.buffer.clear();
+            st.history_nav = None;
+            st.completion = None;
+            st.write_cursor(0);
+            true
+        };
+        self.refresh_completion();
+        changed
+    }
+
+    fn clear_or_cancel_prompt(&self) -> Event {
+        let mut st = self.handle.lock();
+        if st.buffer.is_empty() {
+            if st.ctrl_c_cancel_armed {
+                st.ctrl_c_cancel_armed = false;
+                return Event::CancelPrompt;
+            }
+            st.ctrl_c_cancel_armed = true;
+            return Event::Notice(
+                "Press Ctrl-C again to cancel the current response; use Ctrl-D to exit".to_owned(),
+            );
+        }
+        st.ctrl_c_cancel_armed = false;
+        st.record_undo();
+        st.buffer.clear();
+        st.history_nav = None;
+        st.completion = None;
+        st.write_cursor(0);
+        drop(st);
+        self.refresh_completion();
+        Event::BufferChanged
+    }
+
+    fn kill_to_start(&self) -> bool {
+        let changed = {
+            let mut st = self.handle.lock();
+            if st.cursor == 0 {
+                return false;
+            }
+            st.record_undo();
+            let cursor = st.cursor;
+            st.buffer.drain(..cursor);
+            st.write_cursor(0);
+            st.sync_buffer_to_history_nav();
+            true
+        };
+        self.refresh_completion();
+        changed
+    }
+
+    fn kill_word_left(&self) -> bool {
+        let changed = {
+            let mut st = self.handle.lock();
+            if st.cursor == 0 {
+                return false;
+            }
+            let new_end = st.buffer[..st.cursor]
+                .trim_end()
+                .rfind(' ')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            st.record_undo();
+            let cursor = st.cursor;
+            st.buffer.drain(new_end..cursor);
+            st.write_cursor(new_end);
+            st.sync_buffer_to_history_nav();
+            true
+        };
+        self.refresh_completion();
+        changed
+    }
+
+    fn move_cursor_vertical_event(&self, delta: isize) -> Option<Event> {
+        let mut st = self.handle.lock();
+        let target_col = st.vertical_target_col();
+        if let Some(new_cursor) = move_cursor_vertical(&st, delta, target_col) {
+            st.write_cursor_keep_sticky(new_cursor);
+            return Some(Event::BufferChanged);
+        }
+        None
+    }
+
+    fn cycle_or_move_up(&self) -> Option<Event> {
+        let mut st = self.handle.lock();
+        if st.cycle_completion(-1) {
+            return Some(Event::BufferChanged);
+        }
+        let target_col = st.vertical_target_col();
+        if let Some(new_cursor) = move_cursor_vertical(&st, -1, target_col) {
+            st.write_cursor_keep_sticky(new_cursor);
+            return Some(Event::BufferChanged);
+        }
+        if st.step_history(-1) {
+            return Some(Event::BufferChanged);
+        }
+        None
+    }
+
+    fn cycle_or_move_down(&self) -> Option<Event> {
+        let mut st = self.handle.lock();
+        if st.cycle_completion(1) {
+            return Some(Event::BufferChanged);
+        }
+        let target_col = st.vertical_target_col();
+        if let Some(new_cursor) = move_cursor_vertical(&st, 1, target_col) {
+            st.write_cursor_keep_sticky(new_cursor);
+            return Some(Event::BufferChanged);
+        }
+        if st.step_history(1) {
+            return Some(Event::BufferChanged);
+        }
+        None
+    }
+
+    fn cycle_completion_event(&self, delta: isize) -> Option<Event> {
+        let mut st = self.handle.lock();
+        st.cycle_completion(delta).then_some(Event::BufferChanged)
+    }
+
+    fn dismiss_completion_event(&self) -> Option<Event> {
+        let mut st = self.handle.lock();
+        st.dismiss_completion().then_some(Event::BufferChanged)
+    }
+
+    fn accept_completion_event(&self) -> Option<Event> {
+        let mut st = self.handle.lock();
+        st.accept_completion().then_some(Event::CompletionAccept)
+    }
+
+    /// Returns true when `action` is handled by [`Self::trigger_named_action`].
+    pub fn is_named_action(action: &str) -> bool {
+        matches!(
+            action,
+            "accept-completion"
+                | "backtab"
+                | "clear-prompt"
+                | "clear-or-cancel-prompt"
+                | "cursor-down"
+                | "cursor-end"
+                | "cursor-left"
+                | "cursor-right"
+                | "cursor-start"
+                | "cursor-up"
+                | "delete-backward"
+                | "delete-forward"
+                | "dismiss-completion"
+                | "escape"
+                | "kill-to-start"
+                | "kill-word-left"
+                | "move-down"
+                | "move-up"
+                | "prompt-eof"
+                | "select-completion-next"
+                | "select-completion-previous"
+        )
+    }
+
+    /// Runs one named raw prompt action, returning the event it produced.
+    ///
+    /// These action names make built-in editing and prompt UI behaviors
+    /// available to the configurable binding layer.
+    pub fn trigger_named_action(&self, action: &str) -> Option<Event> {
+        match action {
+            "accept-completion" => self.accept_completion_event(),
+            "backtab" => Some(Event::BackTab),
+            "clear-prompt" => self.clear_prompt().then_some(Event::BufferChanged),
+            "clear-or-cancel-prompt" => Some(self.clear_or_cancel_prompt()),
+            "cursor-down" => self.cycle_or_move_down(),
+            "cursor-end" => self.move_cursor_end().then_some(Event::BufferChanged),
+            "cursor-left" => self.move_cursor_left().then_some(Event::BufferChanged),
+            "cursor-right" => self.move_cursor_right().then_some(Event::BufferChanged),
+            "cursor-start" => self.move_cursor_start().then_some(Event::BufferChanged),
+            "cursor-up" => self.cycle_or_move_up(),
+            "delete-backward" => self.delete_backward().then_some(Event::BufferChanged),
+            "delete-forward" => self.delete_forward().then_some(Event::BufferChanged),
+            "dismiss-completion" => self.dismiss_completion_event(),
+            "escape" => Some(Event::Escape),
+            "kill-to-start" => self.kill_to_start().then_some(Event::BufferChanged),
+            "kill-word-left" => self.kill_word_left().then_some(Event::BufferChanged),
+            "move-down" => self.move_cursor_vertical_event(1),
+            "move-up" => self.move_cursor_vertical_event(-1),
+            "prompt-eof" => {
+                let is_empty = self.handle.lock().buffer.is_empty();
+                is_empty.then_some(Event::Eof)
+            }
+            "select-completion-next" => self.cycle_completion_event(1),
+            "select-completion-previous" => self.cycle_completion_event(-1),
+            _ => None,
+        }
+    }
+
     fn insert_newline(&self) -> Event {
         {
             let mut st = self.handle.lock();
@@ -1611,6 +1892,16 @@ impl Term {
 
         if let Some(event) = self.handle_completion_key(key, ctrl, shift, alt) {
             return Ok(Some(event));
+        }
+
+        if let Some(action) = self.binding_action(&binding) {
+            tracing::trace!(
+                target: "tau_cli_term_raw::input",
+                ?binding,
+                action,
+                "matched configured binding"
+            );
+            return Ok(Some(Event::Binding(action)));
         }
 
         match key.code {
@@ -2294,9 +2585,10 @@ fn layout_all(st: &SharedState) -> LayoutAll {
 fn redraw_loop(
     state: Arc<Mutex<SharedState>>,
     notify_rx: tau_blocking_notify_channel::Receiver,
-    mut writer: Box<dyn Write + Send>,
+    writer: Box<dyn Write + Send>,
     sync_condvar: &std::sync::Condvar,
 ) {
+    let mut writer = BufWriter::new(writer);
     let (w, h) = {
         let st = state.lock().expect("term state mutex poisoned");
         (st.width, st.height)
@@ -2383,10 +2675,6 @@ fn redraw_loop(
         for seq in &pending_raw {
             let _ = writer.write_all(seq.as_bytes());
         }
-        if !pending_raw.is_empty() {
-            let _ = writer.flush();
-        }
-
         if force_full {
             // The terminal was clobbered by an external program
             // (\$EDITOR returned). Wipe Screen's cached idea of what's
@@ -2506,6 +2794,10 @@ fn redraw_loop(
                 }
             }
             terminal_model.reset_to_plan(layout, &plan);
+        }
+
+        if let Err(e) = writer.flush() {
+            tracing::error!(target: "tau_cli_term_raw::redraw", error = %e, "render flush error");
         }
 
         prev_width = width;
@@ -2658,8 +2950,6 @@ fn full_render(
     }
 
     stdout.queue(Print("\x1b[?7h"))?;
-    stdout.queue(terminal::EndSynchronizedUpdate)?;
-    stdout.flush()?;
 
     // After outputting, the cursor is at the last content line. When content
     // overflowed, that line is at the terminal bottom; otherwise it is at its
@@ -2677,7 +2967,7 @@ fn full_render(
         stdout.queue(MoveUp(up as u16))?;
     }
     stdout.queue(MoveToColumn(layout.cursor_col as u16))?;
-    stdout.flush()?;
+    stdout.queue(terminal::EndSynchronizedUpdate)?;
 
     // Track what's visible on the terminal so the next
     // screen.update() can diff correctly.

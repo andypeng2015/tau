@@ -93,10 +93,12 @@ fn pick_with_key_reader(
             PickerKey::Up => selected = adjacent_enabled_item(items, selected, false),
             PickerKey::Enter => {
                 screen.update(&mut writer, &[], (0, 0))?;
+                writer.flush()?;
                 return Ok(selected);
             }
             PickerKey::Cancelled => {
                 screen.update(&mut writer, &[], (0, 0))?;
+                writer.flush()?;
                 return Err(PickerError::Cancelled);
             }
             PickerKey::Ignored => {}
@@ -140,7 +142,8 @@ fn render(
         lines.push(StyledText::from(line).to_cells());
     }
     let cursor_row = selected - start + 1;
-    screen.update(writer, &lines, (cursor_row, 0))
+    screen.update(writer, &lines, (cursor_row, 0))?;
+    writer.flush()
 }
 
 /// Returns `[start, end)` of the items to render, ensuring `selected`

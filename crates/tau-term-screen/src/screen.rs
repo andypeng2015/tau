@@ -4,10 +4,10 @@
 //! currently on the terminal. Two rendering methods use it:
 //!
 //! - [`Screen::update()`] — **Path 1** (differential update): diffs the visible
-//!   viewport against the actual buffer and emits only the escape sequences
+//!   viewport against the actual buffer and queues only the escape sequences
 //!   needed to update changed cells.
 //! - [`Screen::render_scrolling()`] — **Path 2** (scrolling render): diffs the
-//!   full content array, renders changed lines in order, and lets `\r\n` at the
+//!   full content array, queues changed lines in order, and lets `\r\n` at the
 //!   bottom edge push content into the terminal's scrollback buffer.
 //!
 //! See `README.md` for the full rendering strategy.
@@ -105,11 +105,12 @@ impl Screen {
         self.cursor_row
     }
 
-    /// Diffs the desired content against the actual screen state and emits
+    /// Diffs the desired content against the actual screen state and queues
     /// only the escape sequences needed to make the terminal match.
     ///
     /// `desired_lines` is the content split into physical rows.
     /// `desired_cursor` is `(row, col)` where the cursor should end up.
+    /// The caller owns flushing so it can batch a whole render frame.
     pub fn update(
         &mut self,
         w: &mut impl Write,
@@ -125,7 +126,6 @@ impl Screen {
             self.lines.clear();
             self.cursor_row = 0;
             self.cursor_col = 0;
-            w.flush()?;
             return Ok(());
         }
 
@@ -186,8 +186,6 @@ impl Screen {
         // Position the cursor where it should be.
         self.move_to(w, desired_cursor.0, desired_cursor.1)?;
 
-        w.flush()?;
-
         // Actual now matches desired.
         self.lines = desired_lines.to_vec();
 
@@ -221,12 +219,13 @@ impl Screen {
     ///
     /// Unlike `update()` which diffs only the visible viewport,
     /// this method diffs against the full previous content and
-    /// renders changed lines in order. When rendering goes past
+    /// queues changed lines in order. When rendering goes past
     /// the bottom of the terminal, `\r\n` naturally pushes the
     /// top row into the terminal's scrollback buffer.
     ///
     /// Call this instead of `update()` when `viewport_top`
-    /// increased (content overflowed the viewport).
+    /// increased (content overflowed the viewport). The caller owns flushing
+    /// so it can batch a whole render frame.
     ///
     /// `all_lines` is the complete content (not just the visible
     /// slice). `prev_viewport_top` is where the viewport was on
@@ -275,7 +274,6 @@ impl Screen {
             // Nothing changed — just reposition cursor.
             let cursor_screen = desired_cursor.0.saturating_sub(new_viewport_top);
             self.move_to(w, cursor_screen, desired_cursor.1)?;
-            w.flush()?;
             return Ok(());
         };
         let last = last_changed.unwrap_or(first);
@@ -343,8 +341,6 @@ impl Screen {
         // Position cursor.
         let cursor_screen = desired_cursor.0.saturating_sub(new_viewport_top);
         self.move_to(w, cursor_screen, desired_cursor.1)?;
-        w.flush()?;
-
         // Update tracked state to the new visible viewport.
         self.lines = all_lines[new_viewport_top..].to_vec();
         self.cursor_row = cursor_screen;

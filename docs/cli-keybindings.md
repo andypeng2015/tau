@@ -8,6 +8,17 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 | Key | Action | Description |
 | --- | --- | --- |
 | `Enter`, `C-Enter` | `submit-prompt` | Submit the prompt, or accept a previewed completion without submitting. |
+| `C-c` | `clear-or-cancel-prompt` | Clear a non-empty prompt, or request prompt cancellation on a second press when empty. |
+| `C-d` | `prompt-eof` | Signal EOF when the prompt is empty. |
+| `C-a`, `Home` | `cursor-start` | Move to the beginning of the prompt. |
+| `C-e`, `End` | `cursor-end` | Move to the end of the prompt. |
+| `C-u` | `kill-to-start` | Kill from cursor to the beginning of the prompt. |
+| `C-w` | `kill-word-left` | Kill the word before the cursor. |
+| `Backspace` | `delete-backward` | Delete the character before the cursor. |
+| `Delete` | `delete-forward` | Delete the character after the cursor. |
+| `Left`, `Right` | `cursor-left`, `cursor-right` | Move by one character. |
+| `Up`, `Down` | `cursor-up`, `cursor-down` | Move within multiline input, completion candidates, or prompt history. |
+| `Esc` | `escape` | Dismiss the completion menu if open, otherwise surface Escape. |
 | `C-f` | `shell-prompt-insert` | Pick a file with `fzf` and insert it at the cursor. |
 | `C-k` | `agent-previous` | Switch to the previous active agent. |
 | `C-j` | `agent-next` | Switch to the next active agent. |
@@ -24,7 +35,7 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 
 ## Built-in editing keys
 
-These keys are handled by the raw terminal prompt when no configurable binding matches. The built-in `Enter` binding makes plain Enter submit by default; bind `Enter` to `insert-newline` to restore the raw editing fallback.
+These keys are handled by named actions in the default binding file, with raw fallback behavior when no configurable binding matches. The built-in `Enter` binding makes plain Enter submit by default; bind `Enter` to `insert-newline` to restore the raw editing fallback.
 
 | Key | Behavior |
 | --- | --- |
@@ -50,6 +61,20 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
 
 - `submit-prompt` — submit the current prompt, or accept a previewed completion without submitting.
 - `insert-newline` — insert a newline at the cursor.
+- `prompt-eof` — signal EOF when the prompt is empty.
+- `clear-prompt` — clear a non-empty prompt.
+- `clear-or-cancel-prompt` — clear a non-empty prompt, or arm/trigger cancellation on an empty prompt.
+- `cursor-start` / `cursor-end` — move to the beginning or end of the prompt.
+- `cursor-left` / `cursor-right` — move one character left or right.
+- `cursor-up` / `cursor-down` — cycle completion candidates, move vertically in multiline input, or step prompt history.
+- `move-up` / `move-down` — move vertically inside multiline input only.
+- `delete-backward` / `delete-forward` — delete around the cursor.
+- `kill-to-start` — kill from cursor to the beginning of the prompt.
+- `kill-word-left` — kill the word before the cursor.
+- `select-completion-next` / `select-completion-previous` — cycle completion candidates when the menu is open.
+- `accept-completion` — accept the previewed completion candidate when available.
+- `dismiss-completion` — dismiss the completion menu when open.
+- `escape` / `backtab` — surface Escape or BackTab to the outer UI.
 - `prompt-previous` — move backward in prompt history.
 - `prompt-next` — move forward in prompt history.
 - `prompt-undo` — undo an edit in the current prompt/history entry.

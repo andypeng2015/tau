@@ -9,6 +9,36 @@ Enter:
   action: submit-prompt
 C-Enter:
   action: submit-prompt
+C-c:
+  action: clear-or-cancel-prompt
+C-d:
+  action: prompt-eof
+C-a:
+  action: cursor-start
+C-e:
+  action: cursor-end
+C-u:
+  action: kill-to-start
+C-w:
+  action: kill-word-left
+Backspace:
+  action: delete-backward
+Delete:
+  action: delete-forward
+Left:
+  action: cursor-left
+Right:
+  action: cursor-right
+Up:
+  action: cursor-up
+Down:
+  action: cursor-down
+Home:
+  action: cursor-start
+End:
+  action: cursor-end
+Esc:
+  action: escape
 C-f:
   action: shell-prompt-insert
   command: >-

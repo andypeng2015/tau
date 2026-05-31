@@ -538,6 +538,40 @@ fn submit_prompt_binding_accepts_completion_before_submit() {
 }
 
 #[test]
+fn named_editing_actions_can_be_rebound() {
+    let (mut term, handle, _completion_data, input_tx) = new_test_term_with_data_and_bindings(
+        Vec::new(),
+        vec![
+            ("C-x".to_owned(), "clear-prompt".to_owned()),
+            ("C-c".to_owned(), "insert-newline".to_owned()),
+            ("Home".to_owned(), "cursor-end".to_owned()),
+        ],
+    );
+
+    handle.set_buffer("draft".to_owned(), 0);
+    send_key(&input_tx, KeyCode::Home);
+    assert!(matches!(
+        term.get_next_event().expect("cursor-end action"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_cursor(), "draft".len());
+
+    send_key_with_modifiers(&input_tx, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(matches!(
+        term.get_next_event().expect("ctrl-c rebound to newline"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_buffer(), "draft\n");
+
+    send_key_with_modifiers(&input_tx, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert!(matches!(
+        term.get_next_event().expect("clear-prompt action"),
+        Event::BufferChanged
+    ));
+    assert_eq!(handle.get_buffer(), "");
+}
+
+#[test]
 fn insert_newline_binding_inserts_newline() {
     // Users can bind any supported key spelling to insert-newline;
     // here plain Enter is bound explicitly instead of relying on the

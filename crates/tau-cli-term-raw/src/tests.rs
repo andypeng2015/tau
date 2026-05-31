@@ -2051,6 +2051,8 @@ struct GatedWriterInner {
     gate_closed: bool,
     /// The writer is currently blocked inside flush().
     blocked: bool,
+    /// Total number of write() calls that have reached the inner writer.
+    write_count: u64,
     /// Total number of flush() calls that have completed.
     flush_count: u64,
 }
@@ -2061,6 +2063,7 @@ impl GatedWriter {
             inner: Arc::new(Mutex::new(GatedWriterInner {
                 gate_closed: false,
                 blocked: false,
+                write_count: 0,
                 flush_count: 0,
             })),
             condvar: Arc::new(std::sync::Condvar::new()),
@@ -2091,6 +2094,14 @@ impl GatedWriter {
         self.condvar.notify_all();
     }
 
+    /// How many write() calls reached the inner writer so far.
+    fn write_count(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("gated writer poisoned")
+            .write_count
+    }
+
     /// How many flush() calls have completed so far.
     fn flush_count(&self) -> u64 {
         self.inner
@@ -2102,6 +2113,10 @@ impl GatedWriter {
 
 impl io::Write for GatedWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner
+            .lock()
+            .expect("gated writer poisoned")
+            .write_count += 1;
         Ok(buf.len())
     }
 
@@ -2120,6 +2135,44 @@ impl io::Write for GatedWriter {
         self.condvar.notify_all();
         Ok(())
     }
+}
+
+/// Full redraw should only queue terminal output. The redraw loop owns
+/// the single frame-ending flush so cursor placement is batched with
+/// the rest of the repaint.
+#[test]
+fn full_redraw_queues_without_flushing_mid_frame() {
+    let writer = GatedWriter::new();
+    let mut screen = Screen::new(40);
+    let all_lines = plain_lines(&["line 0", "line 1", "> prompt"]);
+    let line_sources = (0..all_lines.len())
+        .map(|wrapped_row| LineSource::Input { wrapped_row })
+        .collect();
+    let layout = LayoutAll {
+        all_lines,
+        line_sources,
+        log_end: 2,
+        cursor_row: 2,
+        cursor_col: 8,
+    };
+    let plan = TerminalModel::full_redraw_plan(&layout, 10);
+
+    let mut buffered = std::io::BufWriter::new(writer.clone());
+    full_render(&mut buffered, &mut screen, &layout, &plan, 40, 10).expect("full render");
+    assert_eq!(
+        writer.write_count(),
+        0,
+        "buffered full render should not write through"
+    );
+    assert_eq!(writer.flush_count(), 0, "full render should not flush");
+
+    std::io::Write::flush(&mut buffered).expect("flush frame");
+    assert_eq!(
+        writer.write_count(),
+        1,
+        "small frame should write through once"
+    );
+    assert_eq!(writer.flush_count(), 1, "caller should flush once");
 }
 
 /// Verify that notifications coalesce: while the redraw thread

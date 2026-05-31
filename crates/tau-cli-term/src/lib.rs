@@ -317,6 +317,14 @@ impl HighTerm {
 
     fn run_binding(&mut self, action: &str) -> PromptActionOutcome {
         tracing::trace!(target: "tau_cli::input", action, "running prompt binding");
+        if tau_cli_term_raw::Term::is_named_action(action) {
+            return self
+                .term
+                .trigger_named_action(action)
+                .map_or(PromptActionOutcome::Continue, |raw| {
+                    self.apply_raw_prompt_event(raw)
+                });
+        }
         let Some(action) = PromptShellAction::parse(action) else {
             self.print_local(&format!("binding: unknown action `{action}`"));
             return PromptActionOutcome::BufferChanged;
@@ -406,15 +414,23 @@ impl HighTerm {
                 self.sync_menu_block();
                 PromptActionOutcome::Return(Event::Line(line))
             }
-            RawEvent::Eof
-            | RawEvent::CancelPrompt
-            | RawEvent::Resize { .. }
-            | RawEvent::FocusChanged { .. }
-            | RawEvent::BackTab
-            | RawEvent::Escape
-            | RawEvent::Binding(_)
-            | RawEvent::Notice(_)
-            | RawEvent::ExternalEditor => unreachable!("unsupported prompt action event"),
+            RawEvent::Eof => PromptActionOutcome::Return(Event::Eof),
+            RawEvent::CancelPrompt => PromptActionOutcome::Return(Event::CancelPrompt),
+            RawEvent::Resize { width, height } => {
+                PromptActionOutcome::Return(Event::Resize { width, height })
+            }
+            RawEvent::FocusChanged { focused } => {
+                PromptActionOutcome::Return(Event::FocusChanged { focused })
+            }
+            RawEvent::BackTab => PromptActionOutcome::Return(Event::BackTab),
+            RawEvent::Escape => PromptActionOutcome::Return(Event::Escape),
+            RawEvent::Notice(message) => {
+                self.print_local(&message);
+                PromptActionOutcome::BufferChanged
+            }
+            RawEvent::Binding(_) | RawEvent::ExternalEditor => {
+                unreachable!("unsupported prompt action event")
+            }
         }
     }
 
@@ -489,8 +505,8 @@ enum PromptActionOutcome {
 }
 
 impl PromptShellAction {
-    // Keep this action list, built-in.cli-bindings.yaml, and
-    // docs/cli-keybindings.md in sync.
+    // Keep this action list, Term::trigger_named_action,
+    // built-in.cli-bindings.yaml, and docs/cli-keybindings.md in sync.
     fn parse(action: &str) -> Option<Self> {
         match action {
             "fast-toggle" => return Some(Self::FastToggle),
