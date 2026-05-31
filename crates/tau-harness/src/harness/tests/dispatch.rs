@@ -2554,6 +2554,10 @@ fn tool_turn_dispatches_provider_calls_without_global_locking() {
                     CborValue::Text("newText".to_owned()),
                     CborValue::Text("hi".to_owned()),
                 ),
+                (
+                    CborValue::Text("guard".to_owned()),
+                    CborValue::Text(String::new()),
+                ),
             ])]),
         ),
     ]);
@@ -2658,6 +2662,10 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
                     (
                         CborValue::Text("newText".to_owned()),
                         CborValue::Text(name.to_owned()),
+                    ),
+                    (
+                        CborValue::Text("guard".to_owned()),
+                        CborValue::Text(String::new()),
                     ),
                 ])]),
             ),
@@ -2869,6 +2877,10 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
                 (
                     CborValue::Text("newText".to_owned()),
                     CborValue::Text("a".to_owned()),
+                ),
+                (
+                    CborValue::Text("guard".to_owned()),
+                    CborValue::Text(String::new()),
                 ),
             ])]),
         ),

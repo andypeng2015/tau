@@ -53,8 +53,7 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
         })?;
         requested_ranges.push(format_read_range(Some(start_line), Some(end_line)));
         display_args = edit_display_args(&display_path, &requested_ranges);
-        let guard = parse_optional_guard(edit, &display_args)?;
-
+        let guard = parse_required_guard(edit, &display_args)?;
         original_lines.validate_range(start_line, end_line, &display_args)?;
         let end_line_exclusive = end_line.checked_add(1).ok_or_else(|| {
             with_display_args(&display_args, ToolFailure::new("end_line is too large"))
@@ -135,7 +134,7 @@ struct LineReplacement<'a> {
     start_byte: usize,
     end_byte: usize,
     new_text: &'a [u8],
-    guard: Option<&'a str>,
+    guard: &'a str,
 }
 
 struct LineIndex {
@@ -275,9 +274,7 @@ fn validate_guards(
     display_args: &str,
 ) -> Result<(), ToolFailure> {
     for replacement in replacements {
-        let Some(guard) = replacement.guard else {
-            continue;
-        };
+        let guard = replacement.guard;
         if original_lines.line_content_text(replacement.start_line, original_bytes) == Some(guard) {
             continue;
         }
@@ -406,12 +403,15 @@ fn parse_required_line(
     }
 }
 
-fn parse_optional_guard<'a>(
+fn parse_required_guard<'a>(
     edit: &'a CborValue,
     display_args: &str,
-) -> Result<Option<&'a str>, ToolFailure> {
+) -> Result<&'a str, ToolFailure> {
     let CborValue::Map(entries) = edit else {
-        return Ok(None);
+        return Err(with_display_args(
+            display_args,
+            ToolFailure::new("each edit must have a string guard"),
+        ));
     };
     for (key, value) in entries {
         if let CborValue::Text(key) = key
@@ -424,15 +424,18 @@ fn parse_optional_guard<'a>(
                         ToolFailure::new("guard must not include newline characters"),
                     ))
                 }
-                CborValue::Text(value) => Ok(Some(value.as_str())),
+                CborValue::Text(value) => Ok(value.as_str()),
                 _ => Err(with_display_args(
                     display_args,
-                    ToolFailure::new("guard must be a string when provided"),
+                    ToolFailure::new("guard must be a string"),
                 )),
             };
         }
     }
-    Ok(None)
+    Err(with_display_args(
+        display_args,
+        ToolFailure::new("each edit must have a string guard"),
+    ))
 }
 
 fn with_display_args(args: &str, failure: ToolFailure) -> ToolFailure {

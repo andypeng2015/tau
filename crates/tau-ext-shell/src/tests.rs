@@ -319,7 +319,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             let edit_item = &parameters["properties"]["edits"]["items"];
             assert_eq!(
                 edit_item["required"],
-                serde_json::json!(["start_line", "end_line", "newText"])
+                serde_json::json!(["start_line", "end_line", "newText", "guard"])
             );
             assert_eq!(edit_item["properties"]["oldText"], serde_json::Value::Null);
             assert_eq!(
@@ -529,7 +529,7 @@ fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
         .write_event(&tool_started(
             "edit-after-force-unlock",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
+            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
             "agent-b",
         ))
         .expect("edit");
@@ -662,7 +662,7 @@ fn dir_lock_blocks_conflicting_edit_until_unlock() {
         .write_event(&tool_started(
             "blocked-edit",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
+            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
             "agent-b",
         ))
         .expect("edit");
@@ -984,7 +984,10 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
         .write_event(&tool_started(
             "same-agent-edit",
             EDIT_TOOL_NAME,
-            edit_arguments(&child_dir.join("file.txt"), vec![line_edit(1, 1, "hello")]),
+            edit_arguments(
+                &child_dir.join("file.txt"),
+                vec![guarded_line_edit(1, 1, "hello", "")],
+            ),
             "agent-a",
         ))
         .expect("same-agent edit");
@@ -1175,7 +1178,7 @@ fn same_agent_edit_reenters_manual_lock_while_shell_auto_lock_is_active() {
         .write_event(&tool_started(
             "same-agent-edit",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![line_edit(1, 1, "hello")]),
+            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
             "agent-a",
         ))
         .expect("same-agent edit");
@@ -1746,7 +1749,12 @@ fn edit_result_reports_minimal_status_without_model_diff() {
 
     let output = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(1, 1, "alpha BETA gamma\n")],
+        vec![guarded_line_edit(
+            1,
+            1,
+            "alpha BETA gamma\n",
+            "alpha beta gamma",
+        )],
     ))
     .expect("edit");
 
@@ -1774,8 +1782,11 @@ fn edit_self_replacement_counts_without_diff() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "same\n").expect("write fixture");
 
-    let output =
-        edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "same\n")])).expect("edit");
+    let output = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(1, 1, "same\n", "same")],
+    ))
+    .expect("edit");
 
     assert!(cbor_map_field(&output.result, "path").is_none());
     assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
@@ -1796,7 +1807,7 @@ fn edit_new_file_reports_created_as_changed() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(1, 1, "created\n")],
+        vec![guarded_line_edit(1, 1, "created\n", "")],
     ))
     .expect("edit")
     .result;
@@ -1820,9 +1831,12 @@ fn edit_existing_symlink_updates_target() {
     fs::write(&target_path, "old\n").expect("write fixture");
     symlink("target.txt", &link_path).expect("symlink");
 
-    let result = edit_file(&edit_arguments(&link_path, vec![line_edit(1, 1, "new\n")]))
-        .expect("edit")
-        .result;
+    let result = edit_file(&edit_arguments(
+        &link_path,
+        vec![guarded_line_edit(1, 1, "new\n", "old")],
+    ))
+    .expect("edit")
+    .result;
 
     assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
     assert_eq!(
@@ -1838,9 +1852,12 @@ fn edit_dangling_symlink_creates_target() {
     let link_path = tempdir.path().join("link.txt");
     symlink("target.txt", &link_path).expect("symlink");
 
-    let result = edit_file(&edit_arguments(&link_path, vec![line_edit(1, 1, "")]))
-        .expect("edit")
-        .result;
+    let result = edit_file(&edit_arguments(
+        &link_path,
+        vec![guarded_line_edit(1, 1, "", "")],
+    ))
+    .expect("edit")
+    .result;
 
     assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
     assert_eq!(cbor_int_field(&result, "total_bytes"), Some(0));
@@ -1848,29 +1865,27 @@ fn edit_dangling_symlink_creates_target() {
 }
 
 #[test]
-fn edit_invalid_utf8_original_reports_changed_without_ui_diff() {
+fn edit_guard_rejects_invalid_utf8_original_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("invalid.bin");
     fs::write(&file_path, [0xff, 0xfe, b'a']).expect("write fixture");
 
-    let output = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "")])).expect("edit");
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(1, 1, "", "")],
+    ))
+    .expect_err("invalid UTF-8 guard should fail");
 
-    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
-    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
-    assert_eq!(cbor_int_field(&output.result, "total_bytes"), Some(0));
-    assert!(cbor_map_text(&output.result, "output").is_none());
-    assert!(matches!(
-        output.display.payload,
-        Some(ToolUsePayload::Text { .. })
-    ));
-    assert_eq!(fs::read(&file_path).expect("read back"), b"");
+    assert_eq!(error.message, "guard for line 1 did not match");
+    assert_eq!(fs::read(&file_path).expect("read back"), [0xff, 0xfe, b'a']);
 }
-
 #[test]
 fn edit_rejects_edit_request_over_cap() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
-    let edits = (0..=100).map(|_| line_edit(1, 1, "x")).collect::<Vec<_>>();
+    let edits = (0..=100)
+        .map(|_| guarded_line_edit(1, 1, "x", ""))
+        .collect::<Vec<_>>();
 
     let error = edit_file(&edit_arguments(&file_path, edits))
         .expect_err("edit should reject over-cap request");
@@ -1881,7 +1896,9 @@ fn edit_rejects_edit_request_over_cap() {
 
 #[test]
 fn edit_rejects_edit_request_over_cap_before_reading_file() {
-    let edits = (0..=100).map(|_| line_edit(1, 1, "x")).collect::<Vec<_>>();
+    let edits = (0..=100)
+        .map(|_| guarded_line_edit(1, 1, "x", ""))
+        .collect::<Vec<_>>();
     let args = cbor_map(vec![
         (
             "path",
@@ -1903,7 +1920,10 @@ fn edit_rejects_overlapping_ranges_without_partial_write() {
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(1, 2, "x\n"), line_edit(2, 2, "y\n")],
+        vec![
+            guarded_line_edit(1, 2, "x\n", "aa"),
+            guarded_line_edit(2, 2, "y\n", "bb"),
+        ],
     ))
     .expect_err("overlap should fail");
 
@@ -1926,7 +1946,10 @@ fn extension_edit_creates_file() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "written content")]),
+            arguments: edit_arguments(
+                &file_path,
+                vec![guarded_line_edit(1, 1, "written content", "")],
+            ),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1963,7 +1986,7 @@ fn extension_edit_missing_parent_reports_short_error() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "x")]),
+            arguments: edit_arguments(&file_path, vec![guarded_line_edit(1, 1, "x", "")]),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -1994,7 +2017,7 @@ fn extension_edit_directory_reports_short_error() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(Path::new("/tmp"), vec![line_edit(1, 1, "x")]),
+            arguments: edit_arguments(Path::new("/tmp"), vec![guarded_line_edit(1, 1, "x", "")]),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2027,7 +2050,10 @@ fn extension_edit_creates_directories() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(1, 1, "deep content")]),
+            arguments: edit_arguments(
+                &file_path,
+                vec![guarded_line_edit(1, 1, "deep content", "")],
+            ),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2550,8 +2576,11 @@ fn edit_rejects_end_line_before_start_line() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\nworld\n").expect("write");
 
-    let error = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 1, "x")]))
-        .expect_err("end_line before start_line should fail");
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(2, 1, "x", "world")],
+    ))
+    .expect_err("end_line before start_line should fail");
 
     assert_eq!(error.message, "end_line must be at least start_line");
     assert_eq!(
@@ -2601,7 +2630,10 @@ fn edit_uses_original_line_numbers_for_multiple_replacements() {
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(
                 &file_path,
-                vec![line_edit(1, 1, "x\ny\n"), line_edit(3, 3, "z\n")],
+                vec![
+                    guarded_line_edit(1, 1, "x\ny\n", "a"),
+                    guarded_line_edit(3, 3, "z\n", "c"),
+                ],
             ),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2642,7 +2674,7 @@ fn edit_replaces_exact_line_range() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(2, 2, "cat\n")]),
+            arguments: edit_arguments(&file_path, vec![guarded_line_edit(2, 2, "cat\n", "fish")]),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2676,9 +2708,12 @@ fn edit_appends_to_line_after_trailing_newline() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "fish\n").expect("write");
 
-    let result = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 2, "cat\n")]))
-        .expect("edit")
-        .result;
+    let result = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(2, 2, "cat\n", "")],
+    ))
+    .expect("edit")
+    .result;
 
     assert_eq!(cbor_int_field(&result, "new_max_valid_start_line"), Some(3));
     assert_eq!(
@@ -2695,7 +2730,7 @@ fn edit_replaces_empty_file_line_one() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(1, 1, "hello\n")],
+        vec![guarded_line_edit(1, 1, "hello\n", "")],
     ))
     .expect("edit")
     .result;
@@ -2720,7 +2755,7 @@ fn edit_rejects_start_line_past_end() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(3, 3, "x")]),
+            arguments: edit_arguments(&file_path, vec![guarded_line_edit(3, 3, "x", "")]),
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2751,8 +2786,11 @@ fn edit_rejects_range_past_end_without_trailing_newline() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello").expect("write");
 
-    let error = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 2, "x")]))
-        .expect_err("range should fail");
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(1, 2, "x", "hello")],
+    ))
+    .expect_err("range should fail");
 
     assert_eq!(
         error.message,
@@ -2839,6 +2877,25 @@ fn edit_guard_mismatch_on_missing_file_reports_empty_actual_content() {
 }
 
 #[test]
+fn edit_rejects_missing_guard_without_writing() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "alpha\n").expect("write");
+
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![line_edit(1, 1, "ALPHA\n")],
+    ))
+    .expect_err("missing guard should fail");
+
+    assert_eq!(error.message, "each edit must have a string guard");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "alpha\n"
+    );
+}
+
+#[test]
 fn edit_guard_rejects_non_string_guard_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
@@ -2855,7 +2912,7 @@ fn edit_guard_rejects_non_string_guard_without_writing() {
     ))
     .expect_err("non-string guard should fail");
 
-    assert_eq!(error.message, "guard must be a string when provided");
+    assert_eq!(error.message, "guard must be a string");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "alpha\n"
@@ -2933,7 +2990,7 @@ fn edit_handles_crlf_line_ranges() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(2, 2, "TWO\r\n")],
+        vec![guarded_line_edit(2, 2, "TWO\r\n", "two")],
     ))
     .expect("edit")
     .result;
@@ -4751,24 +4808,20 @@ fn read_file_truncates_single_long_line() {
 }
 
 #[test]
-fn edit_file_handles_invalid_utf8_bytes_without_diff() {
+fn edit_guard_rejects_invalid_utf8_bytes_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.bin");
     fs::write(&file_path, b"abc\xffdef\n").expect("write fixture");
 
-    let output =
-        edit_file(&edit_arguments(&file_path, vec![line_edit(1, 1, "XYZ\n")])).expect("edit");
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_line_edit(1, 1, "XYZ\n", "abc�def")],
+    ))
+    .expect_err("invalid UTF-8 guard should fail");
 
-    assert_eq!(fs::read(&file_path).expect("read back"), b"XYZ\n");
-    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
-    assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
-    assert!(cbor_map_text(&output.result, "output").is_none());
-    assert!(matches!(
-        output.display.payload,
-        Some(ToolUsePayload::Text { .. })
-    ));
+    assert_eq!(error.message, "guard for line 1 did not match");
+    assert_eq!(fs::read(&file_path).expect("read back"), b"abc\xffdef\n");
 }
-
 #[test]
 fn run_find_double_star_matches_top_level_files() {
     // Regression: `**/*.rs` should match both nested AND

@@ -172,13 +172,13 @@ where
                  and the line after a trailing newline is available for appends. Missing files \
                  are treated as empty and missing parent directories are created, so use \
                  `start_line: 1, end_line: 1` to create a file. \
-                 Optional per-edit `guard` must exactly match the first original line content, \
-                 excluding the line ending, and must not include newline characters. On mismatch, \
+                 Per-edit `guard` must exactly match the first original line content, \
+                 excluding the line ending, and must not include newline characters. Use an empty string \
+                 for an empty, missing, or append line. On mismatch, \
                  the edit fails and returns the mismatched range contents. Returns minimal status \
                  headers: replacements, changed, new_max_valid_start_line after the edit, and \
                  total_bytes."
-                    .to_owned(),
-            ),
+                    .to_owned(),            ),
             tool_type: tau_proto::ToolType::Function,
             parameters: Some(serde_json::json!({
                 "type": "object",
@@ -211,13 +211,12 @@ where
                                 },
                                 "guard": {
                                     "type": "string",
-                                    "description": "Optional exact expected content of the first original line in this range, excluding the line ending. Newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the mismatched range contents."
+                                    "description": "Exact expected content of the first original line in this range, excluding the line ending. Newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the mismatched range contents."
                                 }
                             },
-                            "required": ["start_line", "end_line", "newText"],
+                            "required": ["start_line", "end_line", "newText", "guard"],
                             "additionalProperties": false
-                        }
-                    }
+                        }                    }
                 },
                 "required": ["path", "edits"],
                 "additionalProperties": false
