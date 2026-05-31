@@ -929,19 +929,19 @@ pub(crate) fn render_diff_tool_block(
             spans.push(Span::new("\n", context_style));
             match line {
                 tau_proto::DiffLine::Equal { text } => {
-                    spans.push(Span::new(format!("  {text}"), context_style));
+                    spans.push(Span::new(format!(" {text}"), context_style));
                 }
                 tau_proto::DiffLine::Add { text } => {
-                    spans.push(Span::new(format!("+ {text}"), added_style));
+                    spans.push(Span::new(format!("+{text}"), added_style));
                 }
                 tau_proto::DiffLine::Remove { text } => {
-                    spans.push(Span::new(format!("- {text}"), removed_style));
+                    spans.push(Span::new(format!("-{text}"), removed_style));
                 }
                 tau_proto::DiffLine::Modify { old, new } => {
-                    spans.push(Span::new("- ".to_owned(), removed_style));
+                    spans.push(Span::new("-".to_owned(), removed_style));
                     push_segments(&mut spans, old, removed_style, removed_inline_style);
                     spans.push(Span::new("\n".to_owned(), context_style));
-                    spans.push(Span::new("+ ".to_owned(), added_style));
+                    spans.push(Span::new("+".to_owned(), added_style));
                     push_segments(&mut spans, new, added_style, added_inline_style);
                 }
             }

@@ -25,8 +25,8 @@ use super::tool_render::{
     CompactionStatus, ToolStatus, build_delegate_completion_display, build_osc1337_set_user_var,
     cache_hit_percent, format_turn_stats_line, render_action_error_block,
     render_action_output_block, render_compaction_block, render_delegate_display,
-    render_shell_block, render_tool_block, render_tool_use_state, render_turn_stats_block,
-    streaming_block, synthesize_fallback_display,
+    render_diff_tool_block, render_shell_block, render_tool_block, render_tool_use_state,
+    render_turn_stats_block, streaming_block, synthesize_fallback_display,
 };
 
 #[test]
@@ -4841,6 +4841,73 @@ fn render_tool_use_state_diff_payload_adds_plus_minus_chips() {
         rendered.suffixes[1].status,
         ToolStatus::DiffRemoved
     ));
+}
+
+#[test]
+fn render_diff_tool_block_uses_unified_diff_line_prefixes() {
+    use tau_proto::{DiffHunk, DiffLine, DiffSegment, DiffSummary, ToolUseState, ToolUseStatus};
+
+    let display = render_tool_use_state(
+        "edit",
+        &ToolUseState {
+            args: "src/main.rs 10..11".into(),
+            status: ToolUseStatus::Success,
+            status_text: "ok".into(),
+            ..Default::default()
+        },
+    );
+    let diff = DiffSummary {
+        added: 2,
+        removed: 2,
+        hunks: vec![DiffHunk {
+            old_start: 10,
+            old_count: 2,
+            new_start: 10,
+            new_count: 2,
+            lines: vec![
+                DiffLine::Equal {
+                    text: "    unchanged();".into(),
+                },
+                DiffLine::Remove {
+                    text: "    old();".into(),
+                },
+                DiffLine::Add {
+                    text: "    new();".into(),
+                },
+                DiffLine::Modify {
+                    old: vec![
+                        DiffSegment::Equal {
+                            text: "let x = ".into(),
+                        },
+                        DiffSegment::Remove { text: "1".into() },
+                        DiffSegment::Equal { text: ";".into() },
+                    ],
+                    new: vec![
+                        DiffSegment::Equal {
+                            text: "let x = ".into(),
+                        },
+                        DiffSegment::Add { text: "2".into() },
+                        DiffSegment::Equal { text: ";".into() },
+                    ],
+                },
+            ],
+        }],
+    };
+
+    let block = render_diff_tool_block(&tau_themes::Theme::builtin(), &display, &diff, true);
+    let text: String = block
+        .content
+        .spans()
+        .iter()
+        .map(|span| span.text.as_str())
+        .collect();
+
+    assert!(text.contains("\n     unchanged();"));
+    assert!(text.contains("\n-    old();"));
+    assert!(text.contains("\n+    new();"));
+    assert!(text.contains("\n-let x = 1;\n+let x = 2;"));
+    assert!(!text.contains("\n-     old();"));
+    assert!(!text.contains("\n+     new();"));
 }
 
 #[test]
