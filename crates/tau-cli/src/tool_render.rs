@@ -269,10 +269,11 @@ pub(crate) struct ToolSuffixSegment {
 }
 
 /// Decomposed tool-call label, painted as themed spans:
-/// `<tool_name> <args> <suffix...>`.
+/// `<tool_name> <mode> <args> <suffix...>`.
 #[derive(Clone)]
 pub(crate) struct ToolCallDisplay {
     pub(crate) tool_name: String,
+    pub(crate) mode: String,
     pub(crate) args: String,
     pub(crate) suffixes: Vec<ToolSuffixSegment>,
     pub(crate) payload: Option<ToolDisplayPayload>,
@@ -296,10 +297,12 @@ pub(crate) struct ToolSummaryDisplay {
 /// name-only block when the descriptor is absent (older logs, or
 /// extensions whose tools the harness doesn't know how to label).
 pub(crate) fn format_tool_call(tool_name: &str, display: Option<&ToolDisplay>) -> ToolCallDisplay {
+    let mode = display.map(|d| d.mode.clone()).unwrap_or_default();
     let args = display.map(|d| d.args.clone()).unwrap_or_default();
     let suffix = running_suffix_after(&args);
     ToolCallDisplay {
         tool_name: tool_name.to_owned(),
+        mode,
         args,
         suffixes: vec![suffix],
         payload: display.and_then(|d| d.payload.clone()),
@@ -639,6 +642,7 @@ pub(crate) fn render_tool_display(tool_name: &str, display: &ToolDisplay) -> Too
     suffixes.push(tool_suffix(status_text, status_kind));
     ToolCallDisplay {
         tool_name: tool_name.to_owned(),
+        mode: display.mode.clone(),
         args: display.args.clone(),
         suffixes,
         payload: display.payload.clone(),
@@ -787,6 +791,7 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
     }
     ToolCallDisplay {
         tool_name: "tools".to_owned(),
+        mode: String::new(),
         args: format!("{}/{}", summary.completed, summary.total),
         suffixes,
         payload: None,
@@ -845,12 +850,20 @@ pub(crate) fn render_tool_block(
     let mut themed = ThemedText::new();
     let output = themed.add_style(names::TOOL_OUTPUT);
     let name = themed.add_style(names::TOOL_NAME);
+    let mode = themed.add_style(names::TOOL_MODE);
     let args = themed.add_style(names::TOOL_ARGS);
 
     let mut children = vec![SpanTree::span(
         name,
         vec![SpanTree::text(display.tool_name.clone())],
     )];
+    if !display.mode.is_empty() {
+        children.push(SpanTree::span(args, vec![SpanTree::text(" ")]));
+        children.push(SpanTree::span(
+            mode,
+            vec![SpanTree::text(abbreviate_inline_text(&display.mode))],
+        ));
+    }
     if !display.args.is_empty() {
         children.push(SpanTree::span(
             args,

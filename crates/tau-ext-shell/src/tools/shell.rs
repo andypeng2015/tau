@@ -22,6 +22,15 @@ pub(crate) enum ShellAccessMode {
     ReadWrite,
 }
 
+impl ShellAccessMode {
+    fn display_label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "ro",
+            Self::ReadWrite => "rw",
+        }
+    }
+}
+
 /// Parse the shell command access mode.
 pub(crate) fn parse_access_mode(arguments: &CborValue) -> Result<ShellAccessMode, String> {
     match arguments {
@@ -71,11 +80,13 @@ pub(crate) fn run_command_cancellable(
     let access_mode = parse_access_mode(arguments).map_err(ToolFailure::from)?;
     let command = argument_text(arguments, "command").map_err(ToolFailure::from)?;
     let cwd = optional_argument_text(arguments, "cwd");
+    let display_mode = access_mode.display_label();
     let display_args = command_display_args(&command);
     let display_payload = command_display_payload(&command);
     let timeout_secs = parse_timeout_secs(arguments).map_err(|message| {
         ToolFailure::from(message)
             .with_args(display_args.clone())
+            .with_mode(display_mode)
             .with_payload(display_payload.clone())
     })?;
     let timeout = std::time::Duration::from_secs(timeout_secs);
@@ -90,6 +101,7 @@ pub(crate) fn run_command_cancellable(
         .map_err(|error| {
             ToolFailure::from(format!("failed to start shell command: {error}"))
                 .with_args(display_args.clone())
+                .with_mode(display_mode)
                 .with_payload(display_payload.clone())
                 .with_details(command_details_value(CommandDetails {
                     status: None,
@@ -166,6 +178,7 @@ pub(crate) fn run_command_cancellable(
             ..Default::default()
         }
     };
+    display.mode = display_mode.to_owned();
     display.payload = display_payload;
     display.stats = text_stats(&combined);
     debug!(

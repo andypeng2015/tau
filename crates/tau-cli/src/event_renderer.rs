@@ -823,7 +823,8 @@ fn cbor_text_field(arguments: &CborValue, key: &str) -> Option<String> {
 fn tool_display_from_call(call: &ToolCallItem) -> tau_proto::ToolDisplay {
     if call.name.as_str() == "shell" {
         let command = cbor_text_field(&call.arguments, "command").unwrap_or_default();
-        return shell_tool_display_from_command(command);
+        let mode = cbor_text_field(&call.arguments, "mode").unwrap_or_else(|| "rw".to_owned());
+        return shell_tool_display_from_command(command, &mode);
     }
 
     let args = match call.name.as_str() {
@@ -838,10 +839,15 @@ fn tool_display_from_call(call: &ToolCallItem) -> tau_proto::ToolDisplay {
     in_progress_tool_display(args, None)
 }
 
-fn shell_tool_display_from_command(command: String) -> tau_proto::ToolDisplay {
+fn shell_tool_display_from_command(command: String, mode: &str) -> tau_proto::ToolDisplay {
     // Mirror ext-shell's final display shape so `show-tools=full` does not
     // change layout when a multiline command finishes.
-    let args = command.lines().next().unwrap_or_default().to_owned();
+    let command_args = command.lines().next().unwrap_or_default();
+    let args = if command_args.is_empty() {
+        mode.to_owned()
+    } else {
+        format!("{mode} {command_args}")
+    };
     let payload = (2 <= command.lines().count())
         .then_some(tau_proto::ToolDisplayPayload::Text { text: command });
     in_progress_tool_display(args, payload)

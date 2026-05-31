@@ -8940,8 +8940,9 @@ fn provider_disconnected_error() -> HarnessError {
 /// Pre-render the live-header descriptor for a tool call so the
 /// CLI (and any future renderer) can paint the running block without
 /// per-tool string knowledge. The descriptor carries the tool's
-/// args label (e.g. `"foo" in src` for grep, `[task]` for delegate)
-/// and is stamped with [`tau_proto::ToolDisplayStatus::InProgress`] /
+/// args label (e.g. `"foo" in src` for grep, `[task]` for delegate),
+/// optional mode chip, and is stamped with
+/// [`tau_proto::ToolDisplayStatus::InProgress`] /
 /// [`tau_proto::PROGRESS_INDICATOR_TEXT`] so subscribers render the
 /// running ellipsis uniformly.
 ///
@@ -8954,9 +8955,11 @@ fn build_tool_args_display(
     use tau_proto::{ToolDisplayStatus, cbor_array_field, cbor_bool_field, cbor_text_field};
 
     let mut payload = None;
+    let mut mode = String::new();
     let args = match tool_name {
         "shell" => {
             let command = cbor_text_field(arguments, "command").unwrap_or_default();
+            mode = shell_command_mode(arguments).to_owned();
             payload = shell_command_payload(&command);
             shell_command_args(&command)
         }
@@ -9011,6 +9014,7 @@ fn build_tool_args_display(
     };
     Some(tau_proto::ToolDisplay {
         args,
+        mode,
         status: ToolDisplayStatus::InProgress,
         status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
         payload,
@@ -9066,6 +9070,14 @@ fn cbor_query_label(arguments: &tau_proto::CborValue, key: &str) -> String {
 
 fn shell_command_args(command: &str) -> String {
     shorten_shell_command_line(command.lines().next().unwrap_or_default())
+}
+
+fn shell_command_mode(arguments: &tau_proto::CborValue) -> &'static str {
+    match tau_proto::cbor_text_field(arguments, "mode").as_deref() {
+        Some("ro") => "ro",
+        Some("rw") | None => "rw",
+        Some(_) => "",
+    }
 }
 
 fn shorten_shell_command_line(line: &str) -> String {

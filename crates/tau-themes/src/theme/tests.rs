@@ -170,6 +170,9 @@ fn builtin_theme_parses() {
     let tool_ok = theme.resolve_style(&StyleName::new("tool.status.success"));
     assert_eq!(tool_ok.fg, Some(Color::Green));
 
+    let tool_mode = theme.resolve_style(&StyleName::new(crate::names::TOOL_MODE));
+    assert_eq!(tool_mode.fg, Some(Color::Yellow));
+
     let tool_time = theme.resolve_style(&StyleName::new(crate::names::TOOL_STATUS_TIME));
     assert_eq!(tool_time.fg, Some(Color::DarkGrey));
 
@@ -232,6 +235,9 @@ fn builtin_light_theme_parses() {
 
     let tool_ok = theme.resolve_style(&StyleName::new("tool.status.success"));
     assert_eq!(tool_ok.fg, Some(Color::DarkGreen));
+
+    let tool_mode = theme.resolve_style(&StyleName::new(crate::names::TOOL_MODE));
+    assert_eq!(tool_mode.fg, Some(Color::DarkYellow));
 
     let tool_time = theme.resolve_style(&StyleName::new(crate::names::TOOL_STATUS_TIME));
     assert_eq!(tool_time.fg, Some(Color::DarkGrey));

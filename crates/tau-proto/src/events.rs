@@ -1119,6 +1119,11 @@ pub struct ToolDisplay {
     /// when the tool has nothing useful to surface beyond its name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub args: String,
+    /// Optional compact execution mode rendered between the tool name
+    /// and `args` (e.g. shell `"ro"` / `"rw"`). This is intentionally
+    /// separate from `args` so themes can style mode chips distinctly.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
     /// Compact `NM, NL, NkB`-style stats. Each field is optional
     /// so the renderer can omit a slot rather than emit `(0M, 1L)`.
     #[serde(default, skip_serializing_if = "ToolDisplayStats::is_empty")]

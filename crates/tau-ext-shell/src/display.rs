@@ -45,6 +45,11 @@ impl ToolFailure {
         self
     }
 
+    pub fn with_mode(mut self, mode: impl Into<String>) -> Self {
+        self.display.mode = mode.into();
+        self
+    }
+
     pub fn with_details(mut self, details: CborValue) -> Self {
         self.details = Some(Box::new(details));
         self

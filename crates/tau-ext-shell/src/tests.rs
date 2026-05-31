@@ -3350,6 +3350,7 @@ fn shell_tool_multiline_display_uses_short_args_and_text_payload() {
     ]);
 
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
+    assert_eq!(output.display.mode, "rw");
     assert_eq!(output.display.args, "printf hello");
     assert_eq!(
         output.display.payload,
@@ -3373,11 +3374,32 @@ fn shell_tool_long_display_args_are_middle_shortened() {
     ]);
 
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
+    assert_eq!(output.display.mode, "rw");
     assert_eq!(
         output.display.args,
         "printf 1234567890123┄12345678901234567890"
     );
     assert_eq!(output.display.payload, None);
+}
+
+#[test]
+fn shell_tool_display_mode_carries_access_mode() {
+    // The CLI renders tool mode separately from display args so themes can
+    // distinguish the agent-declared shell access mode from the command text.
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text("printf hello".to_owned()),
+        ),
+        (
+            CborValue::Text("mode".to_owned()),
+            CborValue::Text("ro".to_owned()),
+        ),
+    ]);
+
+    let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
+    assert_eq!(output.display.mode, "ro");
+    assert_eq!(output.display.args, "printf hello");
 }
 
 #[test]

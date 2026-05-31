@@ -20,6 +20,7 @@
     // whole tool line and refine individual parts below.
     "tool.output":          { },
     "tool.name":            { fg: "yellow" },
+    "tool.mode":            { fg: "yellow" },
     "tool.args":            { },
     "tool.status.success":  { fg: "green" },
     "tool.status.error":    { fg: "red" },

@@ -16,6 +16,7 @@
     // -- Tool execution --
     "tool.output":          { },
     "tool.name":            { fg: "dark_yellow" },
+    "tool.mode":            { fg: "dark_yellow" },
     "tool.args":            { },
     "tool.status.success":  { fg: "dark_green" },
     "tool.status.error":    { fg: "dark_red" },

@@ -3624,10 +3624,13 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
                 call_id: "call-1".into(),
                 name: tau_proto::ToolName::new("shell"),
                 tool_type: tau_proto::ToolType::Function,
-                arguments: CborValue::Map(vec![(
-                    CborValue::Text("command".into()),
-                    CborValue::Text("sleep 10".into()),
-                )]),
+                arguments: CborValue::Map(vec![
+                    (
+                        CborValue::Text("command".into()),
+                        CborValue::Text("sleep 10".into()),
+                    ),
+                    (CborValue::Text("mode".into()), CborValue::Text("ro".into())),
+                ]),
             })],
         )),
         tau_proto::UnixMicros::new(1_000_000),
@@ -3636,10 +3639,13 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
         &tool_started(
             "call-1",
             "shell",
-            CborValue::Map(vec![(
-                CborValue::Text("command".into()),
-                CborValue::Text("sleep 10".into()),
-            )]),
+            CborValue::Map(vec![
+                (
+                    CborValue::Text("command".into()),
+                    CborValue::Text("sleep 10".into()),
+                ),
+                (CborValue::Text("mode".into()), CborValue::Text("ro".into())),
+            ]),
         ),
         tau_proto::UnixMicros::new(1_000_000),
     );
@@ -3659,7 +3665,7 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
     );
     sync(&handle);
     assert!(in_progress.load(std::sync::atomic::Ordering::Relaxed));
-    assert!(vt.screen_contains(80, "shell sleep 10 0s …"));
+    assert!(vt.screen_contains(80, "shell ro sleep 10 0s …"));
     assert!(!vt.screen_contains(80, "shell 1s ok"));
     assert!(vt.screen_contains(80, "0/1"));
 
@@ -3683,7 +3689,7 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("done".into()),
             display: Some(tau_proto::ToolDisplay {
-                args: "sleep 10".into(),
+                args: "ro sleep 10".into(),
                 status: tau_proto::ToolDisplayStatus::Success,
                 status_text: "ok".into(),
                 ..Default::default()
@@ -3694,7 +3700,7 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
     );
     sync(&handle);
     assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
-    assert!(vt.screen_contains(80, "shell sleep 10 3s ok"));
+    assert!(vt.screen_contains(80, "shell ro sleep 10 3s ok"));
     assert!(vt.screen_contains(80, "1/1"));
 }
 
@@ -3739,7 +3745,7 @@ fn running_shell_tool_shows_multiline_command_body_in_full_mode() {
     );
     sync(&handle);
 
-    assert!(vt.screen_contains(100, "shell printf hello 0s …"));
+    assert!(vt.screen_contains(100, "shell rw printf hello 0s …"));
     assert!(
         vt.screen_text(100)
             .iter()
@@ -3755,7 +3761,7 @@ fn running_shell_tool_shows_multiline_command_body_in_full_mode() {
             result: CborValue::Null,
             kind: tau_proto::ToolResultKind::Final,
             display: Some(tau_proto::ToolDisplay {
-                args: "printf hello".into(),
+                args: "rw printf hello".into(),
                 status: tau_proto::ToolDisplayStatus::Success,
                 status_text: "ok".into(),
                 payload: Some(tau_proto::ToolDisplayPayload::Text {
@@ -3769,7 +3775,7 @@ fn running_shell_tool_shows_multiline_command_body_in_full_mode() {
     );
     sync(&handle);
 
-    assert!(vt.screen_contains(100, "shell printf hello 1s ok"));
+    assert!(vt.screen_contains(100, "shell rw printf hello 1s ok"));
     assert!(
         vt.screen_text(100)
             .iter()
@@ -4278,6 +4284,36 @@ fn render_tool_display_assembles_chips_in_order() {
         rendered.suffixes.last().expect("status suffix").status,
         ToolStatus::Success
     ));
+}
+
+#[test]
+fn render_tool_block_paints_mode_with_dedicated_style() {
+    use tau_proto::{ToolDisplay, ToolDisplayStatus};
+
+    let theme = tau_themes::Theme::builtin();
+    let display = ToolDisplay {
+        mode: "rw".into(),
+        args: "printf hello".into(),
+        status: ToolDisplayStatus::Success,
+        status_text: "ok".into(),
+        ..Default::default()
+    };
+
+    let rendered = render_tool_display("shell", &display);
+    assert_eq!(rendered.mode, "rw");
+    assert_eq!(rendered.args, "printf hello");
+
+    let block = render_tool_block(&theme, &rendered);
+    let mode_span = block
+        .content
+        .spans()
+        .iter()
+        .find(|span| span.text == "rw")
+        .expect("mode span");
+    assert_eq!(
+        mode_span.style,
+        tau_cli_term::resolve::resolve(&theme, tau_themes::names::TOOL_MODE)
+    );
 }
 
 #[test]
