@@ -31,6 +31,7 @@
 //! marshals envelopes to the writer task and pulls events back from
 //! the reader.
 
+use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use futures_util::sink::SinkExt;
@@ -71,6 +72,14 @@ pub const OPENAI_BETA_WS: &str = "responses_websockets=2026-02-06";
 /// turn boundary.
 const KEEPALIVE_PING_INTERVAL: Duration = Duration::from_secs(25);
 
+/// How long one WS turn may go without any provider event before Tau treats
+/// the socket as wedged and lets the caller retry/fall back to HTTP/SSE.
+const TURN_EVENT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Poll cadence while waiting for WS events so harness cancellation is not
+/// hidden behind a blocking receive on an otherwise idle socket.
+const TURN_ABORT_POLL: Duration = Duration::from_millis(250);
+
 type SharedStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Sink = SplitSink<SharedStream, Message>;
 type Stream = SplitStream<SharedStream>;
@@ -109,7 +118,7 @@ enum InboundEvent {
 /// the outbound channel and pulls events off the inbound one.
 pub struct WsConn {
     outbound_tx: UnboundedSender<WsCommand>,
-    inbound_rx: UnboundedReceiver<InboundEvent>,
+    inbound_rx: std_mpsc::Receiver<InboundEvent>,
     /// Aborted on [`Drop`] so a `WsConn` falling out of scope cleanly
     /// tears down its background tasks. Cooperative cancellation via
     /// channel close would also work but adds latency on the path
@@ -159,11 +168,11 @@ impl WsConn {
 
         let (sink, stream) = ws.split();
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
-        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (inbound_tx, inbound_rx) = std_mpsc::channel();
         // Both tasks share the inbound channel: the reader's
         // primary job is feeding events, but the writer also
         // surfaces send-side failures there so `run_turn` never
-        // hangs on `blocking_recv` after a half-open socket
+        // waits forever after a half-open socket
         // (write fails, read still pending). The writer signals
         // first when writes break; the reader's eventual close
         // event just stacks behind it in the buffer.
@@ -203,6 +212,7 @@ impl WsConn {
         config: &ResponsesConfig,
         agent_prompt_id: &str,
         request: &PromptPayload<'_>,
+        should_abort: &mut impl FnMut() -> bool,
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<StreamState, LlmError> {
         let cached_response_id = self.cached_response_id.as_deref();
@@ -214,7 +224,7 @@ impl WsConn {
             tau_proto::ProviderBackendTransport::Websocket,
             &envelope,
         );
-        let state = self.run_envelope(envelope, on_update)?;
+        let state = self.run_envelope(envelope, Some(should_abort), on_update)?;
         self.cached_response_id = state.response_id.clone();
         Ok(state)
     }
@@ -228,12 +238,13 @@ impl WsConn {
         request: &PromptPayload<'_>,
     ) -> Result<StreamState, LlmError> {
         let envelope = build_ws_envelope(config, request, None, Some(false));
-        self.run_envelope(envelope, &mut |_, _| {})
+        self.run_envelope(envelope, None::<&mut fn() -> bool>, &mut |_, _| {})
     }
 
     fn run_envelope(
         &mut self,
         envelope: super::WsResponseCreate,
+        mut should_abort: Option<&mut impl FnMut() -> bool>,
         on_update: &mut impl FnMut(&str, Option<&str>),
     ) -> Result<StreamState, LlmError> {
         let text = serde_json::to_string(&envelope).map_err(LlmError::Json)?;
@@ -242,13 +253,37 @@ impl WsConn {
             .map_err(|_| LlmError::HttpStatus(0, "stream error: ws writer task gone".to_owned()))?;
 
         let mut state = StreamState::new();
+        let mut last_event_at = Instant::now();
         loop {
-            let Some(event) = self.inbound_rx.blocking_recv() else {
-                return Err(LlmError::HttpStatus(
-                    0,
-                    "stream error: ws reader task gone".to_owned(),
-                ));
+            if should_abort.as_mut().is_some_and(|abort| abort()) {
+                return Err(LlmError::HttpStatus(499, "cancelled by harness".to_owned()));
+            }
+            let remaining = TURN_EVENT_TIMEOUT.saturating_sub(last_event_at.elapsed());
+            let wait_for = remaining.min(TURN_ABORT_POLL);
+            let event = match self.inbound_rx.recv_timeout(wait_for) {
+                Ok(event) => event,
+                Err(std_mpsc::RecvTimeoutError::Timeout)
+                    if last_event_at.elapsed() < TURN_EVENT_TIMEOUT =>
+                {
+                    continue;
+                }
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(LlmError::HttpStatus(
+                        0,
+                        format!(
+                            "stream error: ws turn produced no events for {}s",
+                            TURN_EVENT_TIMEOUT.as_secs()
+                        ),
+                    ));
+                }
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(LlmError::HttpStatus(
+                        0,
+                        "stream error: ws reader task gone".to_owned(),
+                    ));
+                }
             };
+            last_event_at = Instant::now();
             match event {
                 InboundEvent::Event(value) => {
                     if apply_event(&mut state, &value, on_update)? {
@@ -308,7 +343,7 @@ fn build_request(config: &ResponsesConfig, thread_id: &str) -> Result<Request, L
 /// transparently inside `tungstenite`'s state machine — they're
 /// buffered on the sink half and flushed by the writer task's next
 /// send (the periodic ping in the steady state).
-async fn read_loop(mut stream: Stream, tx: UnboundedSender<InboundEvent>) {
+async fn read_loop(mut stream: Stream, tx: std_mpsc::Sender<InboundEvent>) {
     while let Some(item) = stream.next().await {
         let (event, terminal) = match item {
             Ok(Message::Text(text)) => match serde_json::from_str::<serde_json::Value>(&text) {
@@ -363,14 +398,14 @@ async fn read_loop(mut stream: Stream, tx: UnboundedSender<InboundEvent>) {
 /// pings to keep the upstream's keepalive timer happy. Exits when
 /// the command channel is closed (WsConn was dropped) or when the
 /// sink errors (server hung up mid-write); on the latter, signals
-/// the failure through `inbound_tx` so a sync `run_turn` blocked
-/// on `blocking_recv` wakes immediately rather than waiting on the
+/// the failure through `inbound_tx` so a sync `run_turn` waiting on
+/// events wakes immediately rather than waiting on the
 /// reader to independently notice the close (which it might miss
 /// entirely on a half-open socket).
 async fn write_loop(
     mut sink: Sink,
     mut rx: UnboundedReceiver<WsCommand>,
-    inbound_tx: UnboundedSender<InboundEvent>,
+    inbound_tx: std_mpsc::Sender<InboundEvent>,
     ping_interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(ping_interval);

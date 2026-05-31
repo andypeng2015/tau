@@ -362,7 +362,7 @@ pub fn run_turn_through_pool(
     // First attempt: prefer a warm cached connection so the
     // connection-local chain cache stays useful.
     if let Some(mut conn) = pool.checkout(&key, &config.api_key) {
-        match conn.run_turn(config, agent_prompt_id, request, on_update) {
+        match conn.run_turn(config, agent_prompt_id, request, &mut || false, on_update) {
             Ok(state) => {
                 pool.release(key, conn);
                 return Ok(state);
@@ -393,7 +393,7 @@ pub fn run_turn_through_pool(
     // switching to HTTP and staying cold.
     let mut conn = WsConn::connect(config, &key.thread_id).map_err(WsTurnError::Other)?;
     pool.stats.upgrades += 1;
-    match conn.run_turn(config, agent_prompt_id, request, on_update) {
+    match conn.run_turn(config, agent_prompt_id, request, &mut || false, on_update) {
         Ok(state) => {
             pool.release(key, conn);
             Ok(state)
@@ -426,7 +426,7 @@ pub fn run_turn_through_shared_pool(
             pool.release(key, conn)?;
             return Err(WsTurnError::Canceled);
         }
-        match conn.run_turn(config, agent_prompt_id, request, on_update) {
+        match conn.run_turn(config, agent_prompt_id, request, should_abort, on_update) {
             Ok(state) => {
                 pool.release(key, conn)?;
                 return Ok(state);
@@ -467,7 +467,7 @@ pub fn run_turn_through_shared_pool(
         return Err(WsTurnError::Canceled);
     }
     pool.record_fresh_open()?;
-    match conn.run_turn(config, agent_prompt_id, request, on_update) {
+    match conn.run_turn(config, agent_prompt_id, request, should_abort, on_update) {
         Ok(state) => {
             pool.release(key, conn)?;
             Ok(state)
