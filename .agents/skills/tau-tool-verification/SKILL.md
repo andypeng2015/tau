@@ -64,8 +64,7 @@ new information, such as a canonicalized path that differs from the input.
 
 ### Common patterns
 
-Range operations should use `start_line` and `line_count` fields for range selection.
-
+Range operations should use inclusive `start_line` and `end_line` fields for range selection.
 Newlines are assumed to be `\n`, but other styles are supported
 and displayed as `crlf` (`\r\n`), `cr` (`\r`) or `no_nl` (missing trailing newline).
 This applies to both `read` line-number prefixes and `shell` stdout/stderr prefixes.
@@ -95,8 +94,7 @@ Tool description should be short but informative. They should mention the line p
 The output of `read` and `shell` is intentionally similar, and should support
 the same semantics. The meaning of the line prefix is different: line number vs stdout/stderr information
 
-`read` supports either one top-level `start_line`/`line_count` range or a `ranges` array of up to 100 disjoint `{ start_line, line_count }` objects. Multi-range output uses the same line-number prefixes as normal read output, with exactly one empty line between requested chunks. Verify that overlapping ranges and mixed `ranges` plus top-level range arguments are rejected. `read` renders only actual file lines: `start_line` past the last actual line is an error, except `start_line: 1` is allowed for an empty file and returns empty content with zero totals. A `line_count` extending past EOF returns the available suffix rather than an error.
-
+`read` supports either one top-level inclusive `start_line`/`end_line` range or a `ranges` array of up to 100 disjoint inclusive `{ start_line, end_line }` objects. Multi-range output uses the same line-number prefixes as normal read output, with exactly one empty line between requested chunks. Verify that overlapping ranges and mixed `ranges` plus top-level range arguments are rejected. `read` renders only actual file lines: `start_line` past the last actual line is an error, except `start_line: 1` is allowed for an empty file and returns empty content with zero totals. An `end_line` past EOF returns the available suffix rather than an error.
 `shell` tool will add `duration_seconds: {number}` header for commands that took longer
 than 5s to execute. Whole-second precision is acceptable; finer precision is
 not needed. Reported durations are approximate, and can include overheads and
@@ -124,9 +122,9 @@ container policy does not support read-only bind mounts, `mode: ro` may degrade
 to a normal shell command; report that the ro-bind enforcement was unavailable
 instead of treating the shell invocation itself as broken.
 
-`edit` is line-oriented. Each edit entry must include `start_line`, `line_count`, and `newText`; it replaces that original line range with `newText` verbatim. All edit ranges use the original file numbering as if applied simultaneously, so the tool must reject overlapping ranges before changing the file. Unlike `read`, `edit` must not clip ranges: a range may include the single virtual empty line used for creation/appending, but extending beyond that virtual line is an error. Line 1 is always available for an empty or missing file, and the line after a trailing newline is available for appends. For example, in a 5-line file with a trailing newline, `start_line: 5, line_count: 2` is valid because it covers line 5 plus virtual line 6, while `line_count: 3` is invalid.
+`edit` is line-oriented. Each edit entry must include inclusive `start_line`, `end_line`, and `newText`; it replaces that original line range with `newText` verbatim. All edit ranges use the original file numbering as if applied simultaneously, so the tool must reject overlapping ranges before changing the file. Unlike `read`, `edit` must not clip ranges: a range may include the single virtual empty line used for creation/appending, but extending beyond that virtual line is an error. Line 1 is always available for an empty or missing file, and the line after a trailing newline is available for appends. For example, in a 5-line file with a trailing newline, `start_line: 5, end_line: 6` is valid because it covers line 5 plus virtual line 6, while `end_line: 7` is invalid.
 
-`edit` supports file creation: missing files are treated as empty, and missing parent directories are created only after the request validates. To create a file, replace `start_line: 1`, `line_count: 1` with the desired contents. The model-visible result should stay minimal: `replacements`, `changed`, `new_max_valid_start_line`, and `total_bytes`; `new_max_valid_start_line` is after-edit state and must not be confused with original range validation. Diff payloads belong in UI display state, not the model-visible result.
+`edit` supports file creation: missing files are treated as empty, and missing parent directories are created only after the request validates. To create a file, replace `start_line: 1`, `end_line: 1` with the desired contents. The model-visible result should stay minimal: `replacements`, `changed`, `new_max_valid_start_line`, and `total_bytes`; `new_max_valid_start_line` is after-edit state and must not be confused with original range validation. Diff payloads belong in UI display state, not the model-visible result.
 
 `edit` supports an optional per-entry `guard` string. When provided, it must exactly match the first original line content in that range, excluding any line ending, and must not contain literal `\r` or `\n` characters. Empty, missing-file, and append virtual lines match an empty guard. A malformed guard or guard mismatch must leave the file unchanged. A guard mismatch returns read-like `line-numbered content` details for only the range whose guard failed, with invalid UTF-8 and truncation handled like `read`; virtual empty/missing/append lines are not rendered as fake numbered lines, so empty recovery content should include totals to make that explicit.
 

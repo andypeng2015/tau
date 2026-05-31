@@ -2547,7 +2547,7 @@ fn tool_turn_dispatches_provider_calls_without_global_locking() {
                     CborValue::Integer(1.into()),
                 ),
                 (
-                    CborValue::Text("line_count".to_owned()),
+                    CborValue::Text("end_line".to_owned()),
                     CborValue::Integer(1.into()),
                 ),
                 (
@@ -2652,7 +2652,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
                         CborValue::Integer(1.into()),
                     ),
                     (
-                        CborValue::Text("line_count".to_owned()),
+                        CborValue::Text("end_line".to_owned()),
                         CborValue::Integer(1.into()),
                     ),
                     (
@@ -2863,7 +2863,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
                     CborValue::Integer(1.into()),
                 ),
                 (
-                    CborValue::Text("line_count".to_owned()),
+                    CborValue::Text("end_line".to_owned()),
                     CborValue::Integer(1.into()),
                 ),
                 (

@@ -765,8 +765,8 @@ fn started_read_tool_use_state_formats_multiple_ranges() {
                             CborValue::Integer(2.into()),
                         ),
                         (
-                            CborValue::Text("line_count".to_owned()),
-                            CborValue::Integer(1.into()),
+                            CborValue::Text("end_line".to_owned()),
+                            CborValue::Integer(2.into()),
                         ),
                     ]),
                     CborValue::Map(vec![
@@ -775,8 +775,8 @@ fn started_read_tool_use_state_formats_multiple_ranges() {
                             CborValue::Integer(5.into()),
                         ),
                         (
-                            CborValue::Text("line_count".to_owned()),
-                            CborValue::Integer(2.into()),
+                            CborValue::Text("end_line".to_owned()),
+                            CborValue::Integer(6.into()),
                         ),
                     ]),
                 ]),
@@ -785,7 +785,7 @@ fn started_read_tool_use_state_formats_multiple_ranges() {
     )
     .expect("known read display state");
 
-    assert_eq!(state.args, "src/lib.rs 2..3,5..7");
+    assert_eq!(state.args, "src/lib.rs 2..2,5..6");
 }
 
 #[test]

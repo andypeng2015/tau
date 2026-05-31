@@ -66,8 +66,9 @@ pub(crate) fn read_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
 pub(crate) struct ReadLineRange {
     /// 1-based inclusive first line to include.
     pub(crate) start_line: usize,
-    /// Number of lines to include, or `None` for the rest of the file.
-    pub(crate) line_count: Option<usize>,
+    /// 1-based inclusive final line to include, or `None` for the rest of the
+    /// file.
+    pub(crate) end_line: Option<usize>,
 }
 
 impl ReadLineRange {
@@ -75,15 +76,14 @@ impl ReadLineRange {
         if line < self.start_line {
             return false;
         }
-        match self.line_count {
-            Some(line_count) => line < self.start_line.saturating_add(line_count),
+        match self.end_line {
+            Some(end_line) => line <= end_line,
             None => true,
         }
     }
 
     fn end_line(&self) -> Option<usize> {
-        self.line_count
-            .map(|line_count| self.start_line.saturating_add(line_count))
+        self.end_line
     }
 }
 
@@ -236,22 +236,23 @@ fn render_read_line(line: &ReadLine) -> String {
 }
 
 fn parse_read_request(arguments: &CborValue) -> Result<ReadRequest, ToolFailure> {
+    reject_legacy_line_count(arguments)?;
     if let Some(ranges) = optional_argument_array(arguments, "ranges")? {
         return parse_disjoint_read_ranges(arguments, ranges);
     }
 
     let start_line_arg = optional_argument_int(arguments, "start_line");
-    let line_count_arg = optional_argument_int(arguments, "line_count");
+    let end_line_arg = optional_argument_int(arguments, "end_line");
     let start_line = parse_read_start_line(start_line_arg)?;
-    let line_count = parse_read_line_count(line_count_arg)?;
+    let end_line = parse_read_end_line(end_line_arg, start_line)?;
     Ok(ReadRequest {
         ranges: vec![ReadLineRange {
             start_line,
-            line_count,
+            end_line,
         }],
         display_ranges: vec![format_read_range(
             start_line_arg.map(|_| start_line),
-            line_count,
+            end_line,
         )],
     })
 }
@@ -260,9 +261,9 @@ fn parse_disjoint_read_ranges(
     arguments: &CborValue,
     ranges: &[CborValue],
 ) -> Result<ReadRequest, ToolFailure> {
-    if has_argument(arguments, "start_line") || has_argument(arguments, "line_count") {
+    if has_argument(arguments, "start_line") || has_argument(arguments, "end_line") {
         return Err(ToolFailure::new(
-            "ranges cannot be combined with start_line or line_count",
+            "ranges cannot be combined with start_line or end_line",
         ));
     }
     if ranges.is_empty() {
@@ -277,13 +278,15 @@ fn parse_disjoint_read_ranges(
     let mut parsed = Vec::new();
     let mut display_ranges = Vec::new();
     for range in ranges {
+        reject_legacy_line_count(range)?;
         let start_line = parse_required_range_line(range, "start_line")?;
-        let line_count = parse_required_range_line(range, "line_count")?;
+        let end_line = parse_required_range_line(range, "end_line")?;
+        validate_read_end_line(start_line, end_line)?;
         parsed.push(ReadLineRange {
             start_line,
-            line_count: Some(line_count),
+            end_line: Some(end_line),
         });
-        display_ranges.push(format_read_range(Some(start_line), Some(line_count)));
+        display_ranges.push(format_read_range(Some(start_line), Some(end_line)));
     }
     validate_non_overlapping_read_ranges(&parsed)?;
     Ok(ReadRequest {
@@ -344,7 +347,7 @@ fn validate_non_overlapping_read_ranges(ranges: &[ReadLineRange]) -> Result<(), 
                 "open-ended read ranges cannot be combined with other ranges",
             ));
         };
-        if pair[1].start_line < end_line {
+        if pair[1].start_line <= end_line {
             return Err(ToolFailure::new("overlapping ranges"));
         }
     }
@@ -373,37 +376,67 @@ fn parse_read_start_line(value: Option<i64>) -> Result<usize, ToolFailure> {
     match value {
         None => Ok(1),
         Some(value) if value < 1 => Err(ToolFailure::new("start_line must be >= 1")),
-        Some(value) => Ok(value as usize),
+        Some(value) => {
+            usize::try_from(value).map_err(|_| ToolFailure::new("start_line is too large"))
+        }
     }
 }
 
-fn parse_read_line_count(value: Option<i64>) -> Result<Option<usize>, ToolFailure> {
-    match value {
-        None => Ok(None),
-        Some(value) if value < 1 => Err(ToolFailure::new("line_count must be >= 1")),
-        Some(value) => Ok(Some(value as usize)),
+fn parse_read_end_line(
+    value: Option<i64>,
+    start_line: usize,
+) -> Result<Option<usize>, ToolFailure> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value < 1 {
+        return Err(ToolFailure::new("end_line must be >= 1"));
     }
+    let end_line = usize::try_from(value).map_err(|_| ToolFailure::new("end_line is too large"))?;
+    validate_read_end_line(start_line, end_line)?;
+    Ok(Some(end_line))
 }
 
-pub(crate) fn format_read_range(start_line: Option<usize>, line_count: Option<usize>) -> String {
-    match (start_line, line_count) {
+fn validate_read_end_line(start_line: usize, end_line: usize) -> Result<(), ToolFailure> {
+    if end_line < start_line {
+        return Err(ToolFailure::new("end_line must be >= start_line"));
+    }
+    Ok(())
+}
+
+fn reject_legacy_line_count(arguments: &CborValue) -> Result<(), ToolFailure> {
+    if has_argument(arguments, "line_count") {
+        return Err(ToolFailure::new(
+            "line_count is no longer supported; use end_line",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn format_read_range(start_line: Option<usize>, end_line: Option<usize>) -> String {
+    match (start_line, end_line) {
         (None, None) => "..".to_owned(),
         (Some(start), None) => format!("{start}.."),
-        (None, Some(count)) => format!("1..{}", 1usize.saturating_add(count)),
-        (Some(start), Some(count)) => format!("{start}..{}", start.saturating_add(count)),
+        (None, Some(end)) => format!("1..{end}"),
+        (Some(start), Some(end)) => format!("{start}..{end}"),
     }
 }
 
 /// In-memory equivalent of single-range file slicing, retained for tests
 /// that exercise the slicing logic on a string rather than a file.
 #[cfg(test)]
-pub(crate) fn slice_lines(input: &str, start_line: usize, line_count: Option<usize>) -> ReadSlice {
+pub(crate) fn slice_lines(input: &str, start_line: usize, end_line: Option<usize>) -> ReadSlice {
     let all_lines: Vec<&str> = input.lines().collect();
     let total_lines = all_lines.len();
     let start_idx = start_line.saturating_sub(1).min(total_lines);
-    let end_idx = match line_count {
-        Some(count) => start_idx.saturating_add(count).min(total_lines),
+    let end_idx = match end_line {
+        Some(end_line) => end_line.min(total_lines),
         None => total_lines,
+    };
+    let end_idx = if end_idx < start_idx {
+        start_idx
+    } else {
+        end_idx
     };
     ReadSlice {
         content: all_lines[start_idx..end_idx]

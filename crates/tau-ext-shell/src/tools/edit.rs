@@ -42,27 +42,29 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
     let mut replacements = Vec::new();
     let mut requested_ranges = Vec::new();
     for edit in edits {
+        reject_legacy_line_count(edit, &display_args)?;
         let start_line = parse_required_line(edit, "start_line", &display_args)?;
-        let line_count = parse_required_line(edit, "line_count", &display_args)?;
+        let end_line = parse_required_line(edit, "end_line", &display_args)?;
         let new_text = cbor_map_text(edit, "newText").ok_or_else(|| {
             with_display_args(
                 &display_args,
                 ToolFailure::new("each edit must have a string newText"),
             )
         })?;
-        requested_ranges.push(format_read_range(Some(start_line), Some(line_count)));
+        requested_ranges.push(format_read_range(Some(start_line), Some(end_line)));
         display_args = edit_display_args(&display_path, &requested_ranges);
         let guard = parse_optional_guard(edit, &display_args)?;
 
-        original_lines.validate_range(start_line, line_count, &display_args)?;
-        let end_line = start_line.checked_add(line_count).ok_or_else(|| {
-            with_display_args(&display_args, ToolFailure::new("line_count is too large"))
+        original_lines.validate_range(start_line, end_line, &display_args)?;
+        let end_line_exclusive = end_line.checked_add(1).ok_or_else(|| {
+            with_display_args(&display_args, ToolFailure::new("end_line is too large"))
         })?;
         replacements.push(LineReplacement {
             start_line,
             end_line,
+            end_line_exclusive,
             start_byte: original_lines.byte_start_for_line(start_line, original_bytes.len()),
-            end_byte: original_lines.byte_start_for_line(end_line, original_bytes.len()),
+            end_byte: original_lines.byte_start_for_line(end_line_exclusive, original_bytes.len()),
             new_text: new_text.as_bytes(),
             guard,
         });
@@ -129,6 +131,7 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
 struct LineReplacement<'a> {
     start_line: usize,
     end_line: usize,
+    end_line_exclusive: usize,
     start_byte: usize,
     end_byte: usize,
     new_text: &'a [u8],
@@ -204,7 +207,7 @@ impl LineIndex {
     fn validate_range(
         &self,
         start_line: usize,
-        line_count: usize,
+        end_line: usize,
         display_args: &str,
     ) -> Result<(), ToolFailure> {
         let max_valid_start_line = self.max_valid_start_line();
@@ -216,15 +219,17 @@ impl LineIndex {
                 )),
             ));
         }
-        let end_line = start_line.checked_add(line_count).ok_or_else(|| {
-            with_display_args(display_args, ToolFailure::new("line_count is too large"))
-        })?;
-        let max_end_line = max_valid_start_line.saturating_add(1);
-        if max_end_line < end_line {
+        if end_line < start_line {
+            return Err(with_display_args(
+                display_args,
+                ToolFailure::new("end_line must be at least start_line"),
+            ));
+        }
+        if max_valid_start_line < end_line {
             return Err(with_display_args(
                 display_args,
                 ToolFailure::new(format!(
-                    "line range starting at {start_line} with count {line_count} exceeds max_valid_start_line {max_valid_start_line}"
+                    "line range {start_line}..{end_line} exceeds max_valid_start_line {max_valid_start_line}"
                 )),
             ));
         }
@@ -253,7 +258,7 @@ fn validate_non_overlapping(
     let mut ranges: Vec<_> = replacements.iter().collect();
     ranges.sort_by_key(|replacement| replacement.start_line);
     for pair in ranges.windows(2) {
-        if pair[1].start_line < pair[0].end_line {
+        if pair[1].start_line < pair[0].end_line_exclusive {
             return Err(with_display_args(
                 display_args,
                 ToolFailure::new("overlapping edits"),
@@ -293,7 +298,7 @@ fn guard_mismatch_failure(
     let start_line = replacement.start_line;
     let ranges = vec![ReadLineRange {
         start_line,
-        line_count: Some(replacement.end_line.saturating_sub(replacement.start_line)),
+        end_line: Some(replacement.end_line),
     }];
     let rendered = slice_line_ranges(original_bytes, &ranges);
     let truncated = truncate_line_oriented(&rendered.content);
@@ -360,6 +365,22 @@ fn create_missing_parent_dirs(path: &Path, display_args: &str) -> Result<(), Too
     }
     fs::create_dir_all(parent)
         .map_err(|error| with_display_args(display_args, ToolFailure::from(error.to_string())))
+}
+
+fn reject_legacy_line_count(edit: &CborValue, display_args: &str) -> Result<(), ToolFailure> {
+    let CborValue::Map(entries) = edit else {
+        return Ok(());
+    };
+    if entries
+        .iter()
+        .any(|(key, _)| matches!(key, CborValue::Text(key) if key == "line_count"))
+    {
+        return Err(with_display_args(
+            display_args,
+            ToolFailure::new("line_count is no longer supported; use end_line"),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_required_line(

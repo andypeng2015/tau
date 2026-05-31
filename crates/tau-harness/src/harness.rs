@@ -9091,15 +9091,14 @@ fn format_requested_line_ranges(items: &[tau_proto::CborValue]) -> String {
 
 fn format_requested_line_range(arguments: &tau_proto::CborValue) -> String {
     let start_line = positive_usize_field(arguments, "start_line");
-    let line_count = positive_usize_field(arguments, "line_count");
-    match (start_line, line_count) {
+    let end_line = positive_usize_field(arguments, "end_line");
+    match (start_line, end_line) {
         (None, None) => "..".to_owned(),
         (Some(start), None) => format!("{start}.."),
-        (None, Some(count)) => format!("1..{}", 1usize.saturating_add(count)),
-        (Some(start), Some(count)) => format!("{start}..{}", start.saturating_add(count)),
+        (None, Some(end)) => format!("1..{end}"),
+        (Some(start), Some(end)) => format!("{start}..{end}"),
     }
 }
-
 fn positive_usize_field(arguments: &tau_proto::CborValue, key: &str) -> Option<usize> {
     let value = tau_proto::cbor_int_field(arguments, key)?;
     if value < 1 {

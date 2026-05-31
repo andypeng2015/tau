@@ -833,13 +833,13 @@ fn default_tool_use_state_formats_requested_line_ranges() {
                 CborValue::Integer(2.into()),
             ),
             (
-                CborValue::Text("line_count".to_owned()),
-                CborValue::Integer(3.into()),
+                CborValue::Text("end_line".to_owned()),
+                CborValue::Integer(4.into()),
             ),
         ]),
     )
     .expect("read display");
-    assert_eq!(read_display.args, "src/lib.rs 2..5");
+    assert_eq!(read_display.args, "src/lib.rs 2..4");
 
     let edit_display = super::super::build_tool_args_display(
         "edit",
@@ -856,8 +856,8 @@ fn default_tool_use_state_formats_requested_line_ranges() {
                         CborValue::Integer(2.into()),
                     ),
                     (
-                        CborValue::Text("line_count".to_owned()),
-                        CborValue::Integer(1.into()),
+                        CborValue::Text("end_line".to_owned()),
+                        CborValue::Integer(2.into()),
                     ),
                     (
                         CborValue::Text("newText".to_owned()),
@@ -868,7 +868,7 @@ fn default_tool_use_state_formats_requested_line_ranges() {
         ]),
     )
     .expect("edit display");
-    assert_eq!(edit_display.args, "src/lib.rs 2..3");
+    assert_eq!(edit_display.args, "src/lib.rs 2..2");
 }
 
 #[test]

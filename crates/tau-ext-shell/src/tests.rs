@@ -183,30 +183,29 @@ fn edit_arguments(path: &Path, edits: Vec<CborValue>) -> CborValue {
     ])
 }
 
-fn line_edit(start_line: i64, line_count: i64, new_text: &str) -> CborValue {
+fn line_edit(start_line: i64, end_line: i64, new_text: &str) -> CborValue {
     cbor_map(vec![
         ("start_line", CborValue::Integer(start_line.into())),
-        ("line_count", CborValue::Integer(line_count.into())),
+        ("end_line", CborValue::Integer(end_line.into())),
         ("newText", CborValue::Text(new_text.to_owned())),
     ])
 }
 
-fn guarded_line_edit(start_line: i64, line_count: i64, new_text: &str, guard: &str) -> CborValue {
+fn guarded_line_edit(start_line: i64, end_line: i64, new_text: &str, guard: &str) -> CborValue {
     cbor_map(vec![
         ("start_line", CborValue::Integer(start_line.into())),
-        ("line_count", CborValue::Integer(line_count.into())),
+        ("end_line", CborValue::Integer(end_line.into())),
         ("newText", CborValue::Text(new_text.to_owned())),
         ("guard", CborValue::Text(guard.to_owned())),
     ])
 }
 
-fn read_range(start_line: i64, line_count: i64) -> CborValue {
+fn read_range(start_line: i64, end_line: i64) -> CborValue {
     cbor_map(vec![
         ("start_line", CborValue::Integer(start_line.into())),
-        ("line_count", CborValue::Integer(line_count.into())),
+        ("end_line", CborValue::Integer(end_line.into())),
     ])
 }
-
 fn send_dir_lock_config(writer: &mut EventWriter<BufWriter<UnixStream>>, enable: bool) {
     writer
         .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
@@ -304,7 +303,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             let range_item = &parameters["properties"]["ranges"]["items"];
             assert_eq!(
                 range_item["required"],
-                serde_json::json!(["start_line", "line_count"])
+                serde_json::json!(["start_line", "end_line"])
             );
             found_read_schema = true;
         }
@@ -313,7 +312,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             let edit_item = &parameters["properties"]["edits"]["items"];
             assert_eq!(
                 edit_item["required"],
-                serde_json::json!(["start_line", "line_count", "newText"])
+                serde_json::json!(["start_line", "end_line", "newText"])
             );
             assert_eq!(edit_item["properties"]["oldText"], serde_json::Value::Null);
             assert_eq!(
@@ -1876,7 +1875,7 @@ fn edit_rejects_overlapping_ranges_without_partial_write() {
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(1, 2, "x\n"), line_edit(2, 1, "y\n")],
+        vec![line_edit(1, 2, "x\n"), line_edit(2, 2, "y\n")],
     ))
     .expect_err("overlap should fail");
 
@@ -2451,7 +2450,7 @@ fn edit_rejects_missing_new_text() {
                 &file_path,
                 vec![cbor_map(vec![
                     ("start_line", CborValue::Integer(1.into())),
-                    ("line_count", CborValue::Integer(1.into())),
+                    ("end_line", CborValue::Integer(1.into())),
                 ])],
             ),
             display: None,
@@ -2517,15 +2516,57 @@ fn edit_rejects_negative_start_line_with_path_args() {
 }
 
 #[test]
-fn edit_rejects_zero_line_count() {
+fn edit_rejects_zero_end_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "hello\n").expect("write");
 
     let error = edit_file(&edit_arguments(&file_path, vec![line_edit(1, 0, "x")]))
-        .expect_err("line_count=0 should fail");
+        .expect_err("end_line=0 should fail");
 
-    assert_eq!(error.message, "line_count must be at least 1");
+    assert_eq!(error.message, "end_line must be at least 1");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\n"
+    );
+}
+
+#[test]
+fn edit_rejects_end_line_before_start_line() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello\nworld\n").expect("write");
+
+    let error = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 1, "x")]))
+        .expect_err("end_line before start_line should fail");
+
+    assert_eq!(error.message, "end_line must be at least start_line");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "hello\nworld\n"
+    );
+}
+
+#[test]
+fn edit_rejects_legacy_line_count() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "hello\n").expect("write");
+
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![cbor_map(vec![
+            ("start_line", CborValue::Integer(1.into())),
+            ("line_count", CborValue::Integer(1.into())),
+            ("newText", CborValue::Text("x".to_owned())),
+        ])],
+    ))
+    .expect_err("line_count should fail");
+
+    assert_eq!(
+        error.message,
+        "line_count is no longer supported; use end_line"
+    );
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "hello\n"
@@ -2547,7 +2588,7 @@ fn edit_uses_original_line_numbers_for_multiple_replacements() {
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(
                 &file_path,
-                vec![line_edit(1, 1, "x\ny\n"), line_edit(3, 1, "z\n")],
+                vec![line_edit(1, 1, "x\ny\n"), line_edit(3, 3, "z\n")],
             ),
             display: None,
             agent_id: Default::default(),
@@ -2589,7 +2630,7 @@ fn edit_replaces_exact_line_range() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(2, 1, "cat\n")]),
+            arguments: edit_arguments(&file_path, vec![line_edit(2, 2, "cat\n")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2601,7 +2642,7 @@ fn edit_replaces_exact_line_range() {
     let Event::ToolResult(result) = result else {
         panic!("expected tool result");
     };
-    let expected_args = format!("{} 2..3", file_path.display());
+    let expected_args = format!("{} 2..2", file_path.display());
     assert_eq!(
         result.display.as_ref().map(|display| display.args.as_str()),
         Some(expected_args.as_str())
@@ -2624,7 +2665,7 @@ fn edit_appends_to_line_after_trailing_newline() {
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "fish\n").expect("write");
 
-    let result = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 1, "cat\n")]))
+    let result = edit_file(&edit_arguments(&file_path, vec![line_edit(2, 2, "cat\n")]))
         .expect("edit")
         .result;
 
@@ -2668,7 +2709,7 @@ fn edit_rejects_start_line_past_end() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![line_edit(3, 1, "x")]),
+            arguments: edit_arguments(&file_path, vec![line_edit(3, 3, "x")]),
             display: None,
             agent_id: Default::default(),
             originator: tau_proto::PromptOriginator::User,
@@ -2705,7 +2746,7 @@ fn edit_rejects_range_past_end_without_trailing_newline() {
 
     assert_eq!(
         error.message,
-        "line range starting at 1 with count 2 exceeds max_valid_start_line 1"
+        "line range 1..2 exceeds max_valid_start_line 1"
     );
     assert_eq!(fs::read_to_string(&file_path).expect("read back"), "hello");
 }
@@ -2719,7 +2760,7 @@ fn edit_guard_allows_matching_first_line() {
     // Guarded edits make the line-number assumption explicit before writing.
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 1, "BETA\n", "beta")],
+        vec![guarded_line_edit(2, 2, "BETA\n", "beta")],
     ))
     .expect("edit")
     .result;
@@ -2743,7 +2784,7 @@ fn edit_guard_rejects_stale_line_number_and_returns_mismatched_range() {
         &file_path,
         vec![
             guarded_line_edit(1, 1, "ALPHA\n", "alpha"),
-            guarded_line_edit(3, 1, "GAMMA\n", "wrong"),
+            guarded_line_edit(3, 3, "GAMMA\n", "wrong"),
         ],
     ))
     .expect_err("guard mismatch should fail");
@@ -2797,7 +2838,7 @@ fn edit_guard_rejects_non_string_guard_without_writing() {
         &file_path,
         vec![cbor_map(vec![
             ("start_line", CborValue::Integer(1.into())),
-            ("line_count", CborValue::Integer(1.into())),
+            ("end_line", CborValue::Integer(1.into())),
             ("newText", CborValue::Text("ALPHA\n".to_owned())),
             ("guard", CborValue::Integer(1.into())),
         ])],
@@ -2842,7 +2883,7 @@ fn edit_guard_matches_crlf_line_without_ending() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 1, "TWO\r\n", "two")],
+        vec![guarded_line_edit(2, 2, "TWO\r\n", "two")],
     ))
     .expect("edit")
     .result;
@@ -2862,7 +2903,7 @@ fn edit_guard_allows_empty_append_line_after_trailing_newline() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 1, "cat\n", "")],
+        vec![guarded_line_edit(2, 2, "cat\n", "")],
     ))
     .expect("edit")
     .result;
@@ -2882,7 +2923,7 @@ fn edit_handles_crlf_line_ranges() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![line_edit(2, 1, "TWO\r\n")],
+        vec![line_edit(2, 2, "TWO\r\n")],
     ))
     .expect("edit")
     .result;
@@ -4130,20 +4171,20 @@ fn truncate_tail_preserves_utf8_boundary_for_huge_line_suffix() {
 
 #[test]
 fn slice_lines_returns_requested_window() {
-    let sliced = slice_lines("a\nb\nc\nd", 2, Some(2));
+    let sliced = slice_lines("a\nb\nc\nd", 2, Some(3));
     assert_eq!(sliced.content, "2 b\n3 c");
     assert_eq!(sliced.line_count, 2);
 }
 
 #[test]
 fn slice_lines_clamps_past_end() {
-    let sliced = slice_lines("a\nb\nc", 10, Some(5));
+    let sliced = slice_lines("a\nb\nc", 10, Some(14));
     assert_eq!(sliced.content, "");
     assert_eq!(sliced.line_count, 0);
 }
 
 #[test]
-fn read_file_honors_start_line_and_line_count() {
+fn read_file_honors_start_line_and_end_line() {
     let td = TempDir::new().expect("tempdir");
     let path = td.path().join("small.txt");
     std::fs::write(&path, "line 1\nline 2\nline 3\nline 4\nline 5\n").expect("write");
@@ -4158,23 +4199,52 @@ fn read_file_honors_start_line_and_line_count() {
             CborValue::Integer(2.into()),
         ),
         (
-            CborValue::Text("line_count".to_owned()),
-            CborValue::Integer(3.into()),
+            CborValue::Text("end_line".to_owned()),
+            CborValue::Integer(4.into()),
         ),
     ]);
     let output = read_file(&args).expect("read");
     let result = output.result;
-    assert_eq!(output.display.args, format!("{} 2..5", path.display()));
+    assert_eq!(output.display.args, format!("{} 2..4", path.display()));
     assert_eq!(
         cbor_map_text(&result, "line-numbered content"),
         Some("2 line 2\n3 line 3\n4 line 4")
     );
     assert!(cbor_map_field(&result, "path").is_none());
     assert!(cbor_map_field(&result, "start_line").is_none());
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert!(cbor_map_field(&result, "total_lines").is_none());
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
     assert!(cbor_map_field(&result, "line_ending").is_none());
+}
+
+#[test]
+fn read_file_clips_end_line_past_eof() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("small.txt");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write");
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        ),
+        (
+            CborValue::Text("start_line".to_owned()),
+            CborValue::Integer(2.into()),
+        ),
+        (
+            CborValue::Text("end_line".to_owned()),
+            CborValue::Integer(99.into()),
+        ),
+    ]);
+
+    let output = read_file(&args).expect("read");
+    assert_eq!(output.display.args, format!("{} 2..99", path.display()));
+    assert_eq!(
+        cbor_map_text(&output.result, "line-numbered content"),
+        Some("2 two\n3 three")
+    );
 }
 
 #[test]
@@ -4190,13 +4260,13 @@ fn read_file_reads_multiple_disjoint_ranges_with_blank_separator() {
         ),
         (
             CborValue::Text("ranges".to_owned()),
-            CborValue::Array(vec![read_range(2, 2), read_range(5, 1)]),
+            CborValue::Array(vec![read_range(2, 3), read_range(5, 5)]),
         ),
     ]);
     let output = read_file(&args).expect("read");
     let result = output.result;
 
-    assert_eq!(output.display.args, format!("{} 2..4,5..6", path.display()));
+    assert_eq!(output.display.args, format!("{} 2..3,5..5", path.display()));
     assert_eq!(
         cbor_map_text(&result, "line-numbered content"),
         Some("2 two\n3 three\n\n5 five")
@@ -4217,7 +4287,7 @@ fn read_file_rejects_overlapping_ranges() {
         ),
         (
             CborValue::Text("ranges".to_owned()),
-            CborValue::Array(vec![read_range(1, 2), read_range(2, 1)]),
+            CborValue::Array(vec![read_range(1, 2), read_range(2, 2)]),
         ),
     ]);
 
@@ -4263,7 +4333,7 @@ fn read_file_rejects_ranges_combined_with_top_level_range() {
     let error = read_file(&args).expect_err("mixed range styles should fail");
     assert_eq!(
         error.message,
-        "ranges cannot be combined with start_line or line_count"
+        "ranges cannot be combined with start_line or end_line"
     );
 }
 
@@ -4271,9 +4341,9 @@ fn read_file_rejects_ranges_combined_with_top_level_range() {
 fn format_read_range_reports_requested_ranges() {
     assert_eq!(format_read_range(None, None), "..");
     assert_eq!(format_read_range(Some(11), None), "11..");
-    assert_eq!(format_read_range(None, Some(100)), "1..101");
-    assert_eq!(format_read_range(Some(11), Some(1)), "11..12");
-    assert_eq!(format_read_range(Some(11), Some(90)), "11..101");
+    assert_eq!(format_read_range(None, Some(100)), "1..100");
+    assert_eq!(format_read_range(Some(11), Some(11)), "11..11");
+    assert_eq!(format_read_range(Some(11), Some(100)), "11..100");
 }
 
 #[test]
@@ -4314,7 +4384,7 @@ fn read_file_reports_empty_file_as_zero_lines() {
 
     assert_eq!(cbor_map_text(&result, "line-numbered content"), Some(""));
     assert!(cbor_map_field(&result, "start_line").is_none());
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(0));
     assert_eq!(cbor_int_field(&result, "total_bytes"), Some(0));
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
@@ -4362,7 +4432,7 @@ fn read_file_reports_no_trailing_newline_as_one_line() {
         Some("1(no_nl) text")
     );
     assert!(cbor_map_field(&result, "start_line").is_none());
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert!(cbor_map_field(&result, "total_lines").is_none());
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
     assert!(cbor_map_field(&result, "line_ending").is_none());
@@ -4393,15 +4463,53 @@ fn read_file_rejects_invalid_line_arguments() {
             CborValue::Text("x".to_owned()),
         ),
         (
-            CborValue::Text("line_count".to_owned()),
+            CborValue::Text("end_line".to_owned()),
             CborValue::Integer(0.into()),
         ),
     ]);
     assert_eq!(
         read_file(&args)
-            .expect_err("line_count=0 should fail")
+            .expect_err("end_line=0 should fail")
             .message,
-        "line_count must be >= 1"
+        "end_line must be >= 1"
+    );
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text("x".to_owned()),
+        ),
+        (
+            CborValue::Text("start_line".to_owned()),
+            CborValue::Integer(3.into()),
+        ),
+        (
+            CborValue::Text("end_line".to_owned()),
+            CborValue::Integer(2.into()),
+        ),
+    ]);
+    assert_eq!(
+        read_file(&args)
+            .expect_err("end_line before start_line should fail")
+            .message,
+        "end_line must be >= start_line"
+    );
+
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text("x".to_owned()),
+        ),
+        (
+            CborValue::Text("line_count".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+    ]);
+    assert_eq!(
+        read_file(&args)
+            .expect_err("line_count should be rejected")
+            .message,
+        "line_count is no longer supported; use end_line"
     );
 }
 
@@ -4422,7 +4530,7 @@ fn read_file_truncates_large_output() {
     assert!(content.contains("\n...\n"));
     assert!(content.contains("line 3000"));
     assert!(cbor_map_field(&result, "start_line").is_none());
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(3000));
 }
 
@@ -4450,7 +4558,7 @@ fn read_file_truncation_notice_uses_source_line_numbers() {
     assert!(content.contains("\n...\n"));
     assert!(content.contains("line 2105"));
     assert!(cbor_map_field(&result, "start_line").is_none());
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert_eq!(cbor_int_field(&result, "total_lines"), Some(2105));
 }
 
@@ -4548,7 +4656,7 @@ fn read_file_handles_invalid_utf8_per_line() {
         cbor_map_text(&result, "line-numbered content"),
         Some("1(invalid-utf8)\n2 second")
     );
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert_eq!(cbor_bool_field(&result, "valid_utf8"), Some(false));
     assert!(cbor_map_field(&result, "total_bytes").is_none());
 }
@@ -4567,7 +4675,7 @@ fn read_file_truncates_single_long_line() {
     let content = cbor_map_text(&result, "line-numbered content").expect("content");
 
     assert_eq!(content, "1(truncated)\n2 second");
-    assert!(cbor_map_field(&result, "line_count").is_none());
+    assert!(cbor_map_field(&result, "end_line").is_none());
     assert!(cbor_int_field(&result, "total_bytes").is_some());
 }
 

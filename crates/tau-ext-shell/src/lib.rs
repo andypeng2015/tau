@@ -95,10 +95,10 @@ where
                 "Reads a file. Defaults to reading the whole file in one call — \
                  output is capped at 2000 lines / 50 KB. Truncated output keeps \
                  the first 1000 and last 1000 lines separated by a literal `...` line. \
-                 Prefer one full read. Pass `start_line`/`line_count` only to \
+                 Prefer one full read. Pass inclusive `start_line`/`end_line` only to \
                  fetch one specific known slice, or `ranges` for up to 100 disjoint slices; \
                  range chunks are separated by one empty line. `start_line` past EOF errors, \
-                 while `line_count` extending past EOF returns available lines. Returned content lines are prefixed \
+                 while `end_line` past EOF returns available lines. Returned content lines are prefixed \
                  by their 1-based line number and a space; \
                  CRLF, CR, and missing final line endings are marked after the number, e.g. \
                  `2(crlf)`, `3(cr)`, or `4(no_nl)`. Invalid UTF-8 and lines that would exceed \
@@ -117,15 +117,17 @@ where
                     },
                     "start_line": {
                         "type": "integer",
-                        "description": "Optional, 1-based. Omit to start at line 1 (the default)."
+                        "minimum": 1,
+                        "description": "Optional, 1-based inclusive. Omit to start at line 1 (the default)."
                     },
-                    "line_count": {
+                    "end_line": {
                         "type": "integer",
-                        "description": "Optional. Omit to read to end of file (the default and preferred mode). Set this only to continue past a previous truncation, or to fetch a known specific slice of a large file — do NOT pre-slice an ordinary file you haven't already established is large."
+                        "minimum": 1,
+                        "description": "Optional, 1-based inclusive. Omit to read to end of file (the default and preferred mode). Set this only to continue past a previous truncation, or to fetch a known specific slice of a large file — do NOT pre-slice an ordinary file you haven't already established is large."
                     },
                     "ranges": {
                         "type": "array",
-                        "description": "Optional list of disjoint line ranges to read. Cannot be combined with top-level start_line or line_count. Each chunk is separated by one empty line in the output.",
+                        "description": "Optional list of disjoint inclusive line ranges to read. Cannot be combined with top-level start_line or end_line. Each chunk is separated by one empty line in the output.",
                         "minItems": 1,
                         "maxItems": 100,
                         "items": {
@@ -136,13 +138,13 @@ where
                                     "minimum": 1,
                                     "description": "1-based inclusive start line to read."
                                 },
-                                "line_count": {
+                                "end_line": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Number of lines to read starting at start_line."
+                                    "description": "1-based inclusive end line to read."
                                 }
                             },
-                            "required": ["start_line", "line_count"],
+                            "required": ["start_line", "end_line"],
                             "additionalProperties": false
                         }
                     }
@@ -159,14 +161,14 @@ where
             model_visible_name: None,
             description: Some(
                 "Edit a file using line-oriented replacements. Each edit replaces \
-                 `line_count` lines starting at 1-based `start_line` with \
+                 the inclusive range from 1-based `start_line` through `end_line` with \
                  `newText`, and all edits use the original file's line numbering as if \
                  applied simultaneously. Ranges must be non-overlapping and may include \
                  the single virtual empty line used for creation/appending, but must not \
                  extend beyond it; line 1 is always available for an empty or missing file, \
                  and the line after a trailing newline is available for appends. Missing files \
-                 are treated as empty and missing parent directories are created, so use line 1 \
-                 with line_count 1 to create a file. \
+                 are treated as empty and missing parent directories are created, so use \
+                 `start_line: 1, end_line: 1` to create a file. \
                  Optional per-edit `guard` must exactly match the first original line content, \
                  excluding the line ending, and must not include newline characters. On mismatch, \
                  the edit fails and returns the mismatched range contents. Returns minimal status \
@@ -195,10 +197,10 @@ where
                                     "minimum": 1,
                                     "description": "1-based inclusive start line to replace. Line 1 is valid for an empty or missing file, and the line after a trailing newline is valid for appending."
                                 },
-                                "line_count": {
+                                "end_line": {
                                     "type": "integer",
                                     "minimum": 1,
-                                    "description": "Number of lines to replace starting at start_line. This may include the single virtual empty line for creation/appending, but must not extend beyond it. Use 1 on an empty or append line."
+                                    "description": "1-based inclusive end line to replace. This may include the single virtual empty line for creation/appending, but must not extend beyond it. Use the same value as start_line on an empty or append line."
                                 },
                                 "newText": {
                                     "type": "string",
@@ -209,7 +211,7 @@ where
                                     "description": "Optional exact expected content of the first original line in this range, excluding the line ending. Newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the mismatched range contents."
                                 }
                             },
-                            "required": ["start_line", "line_count", "newText"],
+                            "required": ["start_line", "end_line", "newText"],
                             "additionalProperties": false
                         }
                     }
