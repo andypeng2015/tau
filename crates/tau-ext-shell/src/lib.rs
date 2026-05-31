@@ -168,7 +168,7 @@ where
                  directories are created, so use line 1 with line_count 1 to create a file. \
                  Optional per-edit `guard` must exactly match the first original line content, \
                  excluding the line ending, and must not include newline characters. On mismatch, \
-                 the edit fails and returns the current range contents. Returns minimal status \
+                 the edit fails and returns the mismatched range contents. Returns minimal status \
                  headers: replacements, changed, new_max_valid_start_line after the edit, and \
                  total_bytes."
                     .to_owned(),
@@ -205,7 +205,7 @@ where
                                 },
                                 "guard": {
                                     "type": "string",
-                                    "description": "Optional exact expected content of the first original line in this range, excluding the line ending. Newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the current requested range contents."
+                                    "description": "Optional exact expected content of the first original line in this range, excluding the line ending. Newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the mismatched range contents."
                                 }
                             },
                             "required": ["start_line", "line_count", "newText"],
@@ -354,7 +354,7 @@ where
             description: Some(
                 "Execute a shell command via `sh -c`. Set `mode` to `rw` for commands \
                  that may modify files, or `ro` for read-only commands. Non-zero exits and timeouts \
-                 are tool errors with output details. Output is capped at 2000 lines / \
+                 are returned as structured command results with output details. Output is capped at 2000 lines / \
                  50 KB; truncated output keeps the first 1000 and last 1000 lines \
                  separated by a literal `...` line. Output lines are prefixed with `out ` \
                  for stdout or `err ` for stderr; missing trailing newlines are marked, e.g. \

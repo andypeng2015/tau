@@ -1229,6 +1229,9 @@ fn startup_registers_shell_schemas_with_cwd_and_timeout_minimum() {
             continue;
         };
         if register.tool.name == SHELL_TOOL_NAME || register.tool.name == GPT_SHELL_TOOL_NAME {
+            let description = register.tool.description.as_deref().expect("description");
+            assert!(description.contains("structured command results"));
+            assert!(!description.contains("tool errors"));
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let properties = &parameters["properties"];
             assert_eq!(properties["mode"]["enum"], serde_json::json!(["ro", "rw"]));
@@ -2729,13 +2732,13 @@ fn edit_guard_allows_matching_first_line() {
 }
 
 #[test]
-fn edit_guard_rejects_stale_line_number_and_returns_current_ranges() {
+fn edit_guard_rejects_stale_line_number_and_returns_mismatched_range() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "alpha\nbeta\ngamma\n").expect("write");
 
     // On mismatch, the file stays untouched and the agent gets read-like
-    // output for every range it tried to change.
+    // output only for the range whose guard failed.
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![
@@ -2749,12 +2752,12 @@ fn edit_guard_rejects_stale_line_number_and_returns_current_ranges() {
     let details = error.details.as_deref().expect("details");
     assert_eq!(
         cbor_map_text(details, "line-numbered content"),
-        Some("1 alpha\n\n3 gamma")
+        Some("3 gamma")
     );
     assert_eq!(cbor_int_field(details, "guard_start_line"), Some(3));
     assert!(matches!(
         error.display.payload.as_ref(),
-        Some(ToolUsePayload::Text { text }) if text == "1 alpha\n\n3 gamma"
+        Some(ToolUsePayload::Text { text }) if text == "3 gamma"
     ));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),

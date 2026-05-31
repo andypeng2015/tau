@@ -277,28 +277,24 @@ fn validate_guards(
             continue;
         }
         return Err(guard_mismatch_failure(
-            replacements,
+            replacement,
             original_bytes,
             display_args,
-            replacement.start_line,
         ));
     }
     Ok(())
 }
 
 fn guard_mismatch_failure(
-    replacements: &[LineReplacement<'_>],
+    replacement: &LineReplacement<'_>,
     original_bytes: &[u8],
     display_args: &str,
-    start_line: usize,
 ) -> ToolFailure {
-    let ranges = replacements
-        .iter()
-        .map(|replacement| ReadLineRange {
-            start_line: replacement.start_line,
-            line_count: Some(replacement.end_line.saturating_sub(replacement.start_line)),
-        })
-        .collect::<Vec<_>>();
+    let start_line = replacement.start_line;
+    let ranges = vec![ReadLineRange {
+        start_line,
+        line_count: Some(replacement.end_line.saturating_sub(replacement.start_line)),
+    }];
     let rendered = slice_line_ranges(original_bytes, &ranges);
     let truncated = truncate_line_oriented(&rendered.content);
     let mut details = vec![
