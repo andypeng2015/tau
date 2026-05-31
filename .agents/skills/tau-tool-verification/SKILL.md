@@ -76,7 +76,7 @@ In similar way, lines which are too long show `truncated` flag and have content 
 
 Total outputs that are too long are truncated; `truncated: true`,
 `total_lines: {lines}` and `total_bytes: {bytes}` headers are added.
-These total headers are omitted when output is not truncated.
+These total headers are omitted when output is not truncated, except `read` may report `total_lines: 0` and `total_bytes: 0` for an empty file.
 
 When output is truncated due to line number limit, first and last 1000 lines
 should be shown with `...` line separating them, instead of usual line prefix.
@@ -130,7 +130,7 @@ instead of treating the shell invocation itself as broken.
 
 `edit` supports an optional per-entry `guard` string. When provided, it must exactly match the first original line content in that range, excluding any line ending. Empty, missing-file, and append virtual lines match an empty guard. A guard mismatch must leave the file unchanged and return read-like `line-numbered content` details for the current contents of the requested ranges, with invalid UTF-8 and truncation handled like `read`.
 
-`edit` allows at most 100 edit entries per call. Requests with more entries must error out immediately before reading, writing, or creating parent directories. Invalid ranges, overlapping ranges, missing `newText`, malformed line fields, malformed guards, and guard mismatches must leave the file unchanged.
+`edit` allows at most 100 edit entries per call. Requests with more entries must error out immediately before reading, writing, or creating parent directories. Invalid ranges, overlapping ranges, missing `newText`, malformed line fields, malformed guards, and guard mismatches must leave the file unchanged. Error details should not echo raw edit requests; only purpose-built recovery details such as guard-mismatch range contents should be included.
 
 Other commands should adhere to pre-existing conventions and naming used in
 standard tools.

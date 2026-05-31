@@ -29,8 +29,6 @@ pub(crate) fn execute_tool(
     invoke: tau_proto::ToolStarted,
     shell_config: &ShellConfig,
 ) -> Vec<Event> {
-    let error_details = standard_tool_error_details(&invoke.tool_name, &invoke.arguments);
-
     #[cfg(any(test, feature = "echo-agent"))]
     if invoke.tool_name == ECHO_TOOL_NAME {
         return vec![Event::ToolResult(ToolResult {
@@ -45,22 +43,22 @@ pub(crate) fn execute_tool(
     }
 
     if invoke.tool_name == READ_TOOL_NAME {
-        return wrap_pure(invoke, error_details, read::read_file);
+        return wrap_pure(invoke, read::read_file);
     }
     if invoke.tool_name == EDIT_TOOL_NAME {
-        return wrap_pure(invoke, error_details, edit::edit_file);
+        return wrap_pure(invoke, edit::edit_file);
     }
     if invoke.tool_name == APPLY_PATCH_TOOL_NAME {
-        return wrap_pure(invoke, error_details, apply_patch::apply_patch);
+        return wrap_pure(invoke, apply_patch::apply_patch);
     }
     if invoke.tool_name == GREP_TOOL_NAME {
-        return wrap_pure(invoke, error_details, grep::run_grep);
+        return wrap_pure(invoke, grep::run_grep);
     }
     if invoke.tool_name == FIND_TOOL_NAME {
-        return wrap_pure(invoke, error_details, find::run_find);
+        return wrap_pure(invoke, find::run_find);
     }
     if invoke.tool_name == LS_TOOL_NAME {
-        return wrap_pure(invoke, error_details, ls::run_ls);
+        return wrap_pure(invoke, ls::run_ls);
     }
 
     if invoke.tool_name == SHELL_TOOL_NAME || invoke.tool_name == GPT_SHELL_TOOL_NAME {
@@ -110,13 +108,11 @@ pub(crate) fn execute_tool(
 }
 
 /// Common Ok/Err → Result/Error wrapping for tools whose handler is a
-/// pure `(arguments) -> Result<ToolOutput, ToolFailure>`. The
-/// handler's display descriptor is forwarded to the event; the
-/// failure's own details take precedence, with `fallback_details` used
-/// only when the handler didn't attach any.
+/// pure `(arguments) -> Result<ToolOutput, ToolFailure>`. The handler's
+/// display descriptor and purpose-built failure details are forwarded to
+/// the event.
 fn wrap_pure(
     invoke: tau_proto::ToolStarted,
-    fallback_details: Option<CborValue>,
     handler: fn(&CborValue) -> Result<ToolOutput, ToolFailure>,
 ) -> Vec<Event> {
     match handler(&invoke.arguments) {
@@ -138,18 +134,9 @@ fn wrap_pure(
             tool_name: invoke.tool_name,
             tool_type: tau_proto::ToolType::Function,
             message,
-            details: details.map(|details| *details).or(fallback_details),
+            details: details.map(|details| *details),
             display: Some(*display),
             originator: invoke.originator.clone(),
         })],
-    }
-}
-
-fn standard_tool_error_details(tool_name: &str, arguments: &CborValue) -> Option<CborValue> {
-    match tool_name {
-        READ_TOOL_NAME | EDIT_TOOL_NAME | GREP_TOOL_NAME | FIND_TOOL_NAME | LS_TOOL_NAME => {
-            Some(arguments.clone())
-        }
-        _ => None,
     }
 }

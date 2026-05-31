@@ -1697,6 +1697,10 @@ fn extension_read_missing_file_reports_error() {
     };
     assert!(!error.message.contains("failed to read"));
     assert!(error.message.contains("No such file or directory"));
+    assert!(
+        error.details.is_none(),
+        "read errors should not echo arguments"
+    );
 
     writer
         .write_frame(&disconnect_frame(None))
@@ -2493,6 +2497,10 @@ fn edit_rejects_negative_start_line_with_path_args() {
     };
     assert_eq!(error.tool_name, EDIT_TOOL_NAME);
     assert_eq!(error.message, "start_line must be at least 1");
+    assert!(
+        error.details.is_none(),
+        "edit errors should not echo arguments"
+    );
     assert_eq!(
         error.display.expect("display").args,
         file_path.display().to_string()
@@ -4258,7 +4266,8 @@ fn read_file_reports_empty_file_as_zero_lines() {
     assert_eq!(cbor_map_text(&result, "line-numbered content"), Some(""));
     assert!(cbor_map_field(&result, "start_line").is_none());
     assert!(cbor_map_field(&result, "line_count").is_none());
-    assert!(cbor_map_field(&result, "total_lines").is_none());
+    assert_eq!(cbor_int_field(&result, "total_lines"), Some(0));
+    assert_eq!(cbor_int_field(&result, "total_bytes"), Some(0));
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
     assert!(cbor_map_field(&result, "line_ending").is_none());
 }
@@ -4411,6 +4420,24 @@ fn read_file_reports_cr_only_line_endings() {
     assert!(cbor_map_field(&result, "total_lines").is_none());
     assert!(cbor_map_field(&result, "ends_with_newline").is_none());
     assert!(cbor_map_field(&result, "line_ending").is_none());
+}
+
+#[test]
+fn read_file_does_not_mark_lf_when_line_endings_are_evenly_mixed() {
+    let td = TempDir::new().expect("tempdir");
+    let path = td.path().join("mixed-even.txt");
+    std::fs::write(&path, b"one\ntwo\r\nthree").expect("write");
+
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Text(path.display().to_string()),
+    )]);
+    let result = read_file(&args).expect("read").result;
+
+    assert_eq!(
+        cbor_map_text(&result, "line-numbered content"),
+        Some("1 one\n2(crlf) two\n3(no_nl) three")
+    );
 }
 
 #[test]

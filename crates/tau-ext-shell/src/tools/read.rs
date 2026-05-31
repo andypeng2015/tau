@@ -37,11 +37,13 @@ pub(crate) fn read_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
             CborValue::Bool(false),
         ));
     }
-    if truncated.was_truncated {
-        entries.push((
-            CborValue::Text("truncated".to_owned()),
-            CborValue::Bool(true),
-        ));
+    if truncated.was_truncated || total_lines == 0 {
+        if truncated.was_truncated {
+            entries.push((
+                CborValue::Text("truncated".to_owned()),
+                CborValue::Bool(true),
+            ));
+        }
         entries.push((
             CborValue::Text("total_lines".to_owned()),
             CborValue::Integer((total_lines as i64).into()),
@@ -145,9 +147,6 @@ struct SliceState {
     ranges: Vec<ReadLineRange>,
     chunks: Vec<Vec<ReadLine>>,
     total_lines: usize,
-    lf_count: usize,
-    crlf_count: usize,
-    cr_count: usize,
     valid_utf8: bool,
 }
 
@@ -170,22 +169,12 @@ impl SliceState {
             ranges: ranges.to_vec(),
             chunks: ranges.iter().map(|_| Vec::new()).collect(),
             total_lines: 0,
-            lf_count: 0,
-            crlf_count: 0,
-            cr_count: 0,
             valid_utf8: true,
         }
     }
 
     fn push_line(&mut self, line: &[u8], ending: Option<LineEndingKind>) {
         self.total_lines += 1;
-        match ending {
-            Some(LineEndingKind::Lf) => self.lf_count += 1,
-            Some(LineEndingKind::Crlf) => self.crlf_count += 1,
-            Some(LineEndingKind::Cr) => self.cr_count += 1,
-            None => {}
-        }
-
         let valid_line = std::str::from_utf8(line).ok();
         if valid_line.is_none() {
             self.valid_utf8 = false;
@@ -202,14 +191,13 @@ impl SliceState {
     }
 
     fn finish(self) -> ReadSlice {
-        let default_ending = self.default_line_ending();
         let rendered_chunks = self
             .chunks
             .iter()
             .map(|lines| {
                 lines
                     .iter()
-                    .map(|line| render_read_line(line, default_ending))
+                    .map(render_read_line)
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -222,39 +210,18 @@ impl SliceState {
             total_lines: self.total_lines,
         }
     }
-
-    fn default_line_ending(&self) -> Option<LineEndingKind> {
-        let counts = [
-            (self.lf_count, LineEndingKind::Lf),
-            (self.crlf_count, LineEndingKind::Crlf),
-            (self.cr_count, LineEndingKind::Cr),
-        ];
-        let (max_count, default) = counts.iter().copied().max_by_key(|(count, _)| *count)?;
-        if max_count == 0
-            || counts
-                .iter()
-                .filter(|(count, _)| *count == max_count)
-                .count()
-                != 1
-        {
-            None
-        } else {
-            Some(default)
-        }
-    }
 }
 
-fn render_read_line(line: &ReadLine, default_ending: Option<LineEndingKind>) -> String {
+fn render_read_line(line: &ReadLine) -> String {
     let mut markers = Vec::new();
     if line.content.is_none() {
         markers.push("invalid-utf8");
     }
     match line.ending {
-        Some(LineEndingKind::Lf) if line.ending != default_ending => markers.push("lf"),
+        Some(LineEndingKind::Lf) => {}
         Some(LineEndingKind::Crlf) => markers.push("crlf"),
         Some(LineEndingKind::Cr) => markers.push("cr"),
         None => markers.push("no_nl"),
-        Some(LineEndingKind::Lf) => {}
     }
 
     let marker = if markers.is_empty() {
