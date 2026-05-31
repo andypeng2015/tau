@@ -2920,28 +2920,50 @@ fn edit_guard_rejects_non_string_guard_without_writing() {
 }
 
 #[test]
-fn edit_guard_rejects_newline_characters_without_writing() {
+fn edit_guard_trims_trailing_newline_characters() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+
+    for guard in ["alpha\n", "alpha\r", "alpha\r\n", "alpha\n\n"] {
+        fs::write(&file_path, "alpha\n").expect("write");
+        edit_file(&edit_arguments(
+            &file_path,
+            vec![guarded_line_edit(1, 1, "ALPHA\n", guard)],
+        ))
+        .expect("guard with trailing newline should match");
+
+        assert_eq!(
+            fs::read_to_string(&file_path).expect("read back"),
+            "ALPHA\n"
+        );
+    }
+}
+
+#[test]
+fn edit_guard_rejects_embedded_newline_characters_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "alpha\n").expect("write");
 
     // Guards describe one line's content only, so embedded line endings are
     // malformed instead of being treated as ordinary mismatching text.
-    for guard in ["alpha\n", "alpha\r"] {
+    for guard in ["al\npha", "al\rpha", "al\r\npha"] {
         let error = edit_file(&edit_arguments(
             &file_path,
             vec![guarded_line_edit(1, 1, "ALPHA\n", guard)],
         ))
-        .expect_err("guard with newline should fail");
+        .expect_err("guard with embedded newline should fail");
 
-        assert_eq!(error.message, "guard must not include newline characters");
+        assert_eq!(
+            error.message,
+            "guard must not include embedded newline characters"
+        );
         assert_eq!(
             fs::read_to_string(&file_path).expect("read back"),
             "alpha\n"
         );
     }
 }
-
 #[test]
 fn edit_guard_matches_crlf_line_without_ending() {
     let tempdir = TempDir::new().expect("tempdir");

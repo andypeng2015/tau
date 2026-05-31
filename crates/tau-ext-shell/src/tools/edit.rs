@@ -418,13 +418,16 @@ fn parse_required_guard<'a>(
             && key == "guard"
         {
             return match value {
-                CborValue::Text(value) if value.contains('\n') || value.contains('\r') => {
-                    Err(with_display_args(
-                        display_args,
-                        ToolFailure::new("guard must not include newline characters"),
-                    ))
+                CborValue::Text(value) => {
+                    let value = value.trim_end_matches(['\n', '\r']);
+                    if value.contains('\n') || value.contains('\r') {
+                        return Err(with_display_args(
+                            display_args,
+                            ToolFailure::new("guard must not include embedded newline characters"),
+                        ));
+                    }
+                    Ok(value)
                 }
-                CborValue::Text(value) => Ok(value.as_str()),
                 _ => Err(with_display_args(
                     display_args,
                     ToolFailure::new("guard must be a string"),
