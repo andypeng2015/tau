@@ -21,6 +21,7 @@ futures-util.workspace = true
 globset.workspace = true
 lettre.workspace = true
 mail-parser.workspace = true
+parse_datetime.workspace = true
 regex.workspace = true
 rustls.workspace = true
 serde.workspace = true

@@ -68,6 +68,8 @@ pub(crate) struct CalendarRangeArgs {
     pub(crate) limit: Option<u32>,
     /// Pagination cursor.
     pub(crate) cursor: Option<String>,
+    /// Case-insensitive substring filter for visible event summaries.
+    pub(crate) title: Option<String>,
 }
 
 /// Arguments for reading one event by backend id.
@@ -159,7 +161,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(TOOL_NAME),
         model_visible_name: None,
-        description: Some("Controlled calendar access. Use list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, or respond_invite. Results use ok/command/status/data envelopes with line arrays and format fields. For event ranges pass start; end is optional and defaults to 7 days after start. Time values may be RFC3339 with offset, YYYY-MM-DD all-day dates, or local YYYY-MM-DDTHH:MM:SS interpreted in the configured calendar timezone. Existing event writes require event_id; ETags are handled internally.".to_owned()),
+        description: Some("Controlled calendar access. Use list_accounts, list_calendars, list_events, read_event, free_busy, create_event, update_event, delete_event, or respond_invite. Results use ok/command/status/data envelopes with line arrays and format fields. For event ranges pass start; end is optional and defaults to 7 days after start. list_events accepts optional title substring filtering. Time values may be RFC3339 with offset, YYYY-MM-DD all-day dates, natural expressions like today/tomorrow/next week, or local YYYY-MM-DDTHH:MM:SS interpreted in the configured or system timezone. Existing event writes require event_id; ETags are handled internally.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -178,11 +180,11 @@ pub fn calendar_tool_spec() -> ToolSpec {
                         "event_id": {"type": "string", "description": "Backend event id."},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                         "cursor": {"type": "string", "description": "Cursor returned as next_cursor by list_events or free_busy."},
-                        "title": {"type": "string"},
+                        "title": {"type": "string", "description": "Optional case-insensitive substring filter for event summaries."},
                         "description": {"type": "string"},
                         "location": {"type": "string"},
-                        "start": {"type": "string", "description": "Range or event start. Use RFC3339 with offset, YYYY-MM-DD, or local YYYY-MM-DDTHH:MM:SS."},
-                        "end": {"type": "string", "description": "Range or event end. For update_event, pass end whenever start is passed."},
+                        "start": {"type": "string", "description": "Range or event start. Use RFC3339 with offset, YYYY-MM-DD, natural expressions like today/tomorrow/next week, or local YYYY-MM-DDTHH:MM:SS."},
+                        "end": {"type": "string", "description": "Range or event end. For update_event, omitted end defaults from start."},
                         "attendees": {"type": "array", "items": {"type": "string"}},
                         "response": {"type": "string", "enum": ["accepted", "tentative", "declined"]}
                     },
@@ -201,7 +203,18 @@ pub fn calendar_tool_spec() -> ToolSpec {
                     "then": {"properties": {"args": {"properties": {"account": {}}, "additionalProperties": false}}}
                 },
                 {
-                    "if": {"properties": {"command": {"enum": ["list_events", "free_busy"]}}, "required": ["command"]},
+                    "if": {"properties": {"command": {"const": "list_events"}}, "required": ["command"]},
+                    "then": {
+                        "required": ["args"],
+                        "properties": {"args": {
+                            "required": ["start"],
+                            "properties": {"account": {}, "calendar": {}, "start": {}, "end": {}, "limit": {}, "cursor": {}, "title": {}},
+                            "additionalProperties": false
+                        }}
+                    }
+                },
+                {
+                    "if": {"properties": {"command": {"const": "free_busy"}}, "required": ["command"]},
                     "then": {
                         "required": ["args"],
                         "properties": {"args": {
@@ -216,7 +229,6 @@ pub fn calendar_tool_spec() -> ToolSpec {
                     "then": {
                         "required": ["args"],
                         "properties": {"args": {
-                            "required": ["event_id"],
                             "properties": {"account": {}, "calendar": {}, "event_id": {}},
                             "additionalProperties": false
                         }}
@@ -240,7 +252,7 @@ pub fn calendar_tool_spec() -> ToolSpec {
                         "properties": {"args": {
                             "required": ["event_id"],
                             "anyOf": [{"required": ["title"]}, {"required": ["description"]}, {"required": ["location"]}, {"required": ["start"]}, {"required": ["end"]}, {"required": ["attendees"]}],
-                            "dependentRequired": {"start": ["end"], "end": ["start"]},
+                            "dependentRequired": {"end": ["start"]},
                             "properties": {"account": {}, "calendar": {}, "event_id": {}, "title": {}, "description": {}, "location": {}, "start": {}, "end": {}, "attendees": {}},
                             "additionalProperties": false
                         }}

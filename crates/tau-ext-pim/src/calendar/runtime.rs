@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;
 use tau_proto::{
-    ActionError, ActionInvoke, ActionOutput, ActionResult, CborValue, Event, SecretValue,
+    ActionError, ActionInvoke, ActionOutput, ActionResult, AgentId, CborValue, Event, SecretValue,
     ToolDisplay, ToolDisplayStats, ToolDisplayStatus, ToolError, ToolResult, ToolStarted,
 };
-use time_tz::{OffsetResult, PrimitiveDateTimeExt};
+use time_tz::{OffsetDateTimeExt, OffsetResult, PrimitiveDateTimeExt, TimeZone};
 
 use super::config::{
     CalendarExtensionConfig, DescriptionPolicy, PrivateEventsPolicy, ValidatedAccount,
@@ -63,6 +63,15 @@ struct Engine {
     google: GoogleBackend,
     ics_feed: IcsFeedBackend,
     etags: RefCell<BTreeMap<EventEtagKey, String>>,
+    last_events: RefCell<BTreeMap<String, Vec<RecentEventRef>>>,
+}
+
+#[derive(Clone, Debug)]
+struct RecentEventRef {
+    account: String,
+    calendar: String,
+    event_id: String,
+    summary: String,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -89,6 +98,7 @@ impl RuntimeState {
                 google: GoogleBackend::new(secrets.clone()),
                 ics_feed: IcsFeedBackend::new(secrets),
                 etags: RefCell::new(BTreeMap::new()),
+                last_events: RefCell::new(BTreeMap::new()),
             })
         });
         match result {
@@ -108,7 +118,7 @@ impl RuntimeState {
     /// Dispatch a model-visible `calendar` tool invocation.
     pub fn dispatch(&mut self, invoke: ToolStarted) -> Event {
         let result = match &self.config_state {
-            ConfigState::Configured(engine) => engine.dispatch(&invoke.arguments),
+            ConfigState::Configured(engine) => engine.dispatch(&invoke.arguments, &invoke.agent_id),
             ConfigState::Unconfigured => error_envelope(
                 None,
                 "configuration_error",
@@ -278,7 +288,7 @@ impl CalendarMutationResult {
 }
 
 impl Engine {
-    fn dispatch(&self, arguments: &CborValue) -> CborValue {
+    fn dispatch(&self, arguments: &CborValue, agent_id: &AgentId) -> CborValue {
         let invocation: ToolInvocation = match arguments.deserialized() {
             Ok(invocation) => invocation,
             Err(error) => {
@@ -299,11 +309,11 @@ impl Engine {
                     .and_then(|args| self.list_calendars(&args))
             }
             CalendarCommand::ListEvents => parse_invocation_args::<CalendarRangeArgs>(&invocation)
-                .and_then(|args| self.list_events(&args)),
+                .and_then(|args| self.list_events(&args, agent_id)),
             CalendarCommand::ReadEvent => parse_invocation_args::<ReadEventArgs>(&invocation)
-                .and_then(|args| self.read_event(&args)),
+                .and_then(|args| self.read_event(&args, agent_id)),
             CalendarCommand::FreeBusy => parse_invocation_args::<CalendarRangeArgs>(&invocation)
-                .and_then(|args| self.free_busy(&args)),
+                .and_then(|args| self.free_busy(&args, agent_id)),
             CalendarCommand::CreateEvent => parse_invocation_args::<CreateEventArgs>(&invocation)
                 .and_then(|args| self.submit_change(command, ChangeArgs::from(args))),
             CalendarCommand::UpdateEvent => parse_invocation_args::<UpdateEventArgs>(&invocation)
@@ -700,16 +710,25 @@ impl Engine {
         ))
     }
 
-    fn list_events(&self, args: &CalendarRangeArgs) -> Result<CborValue, String> {
+    fn list_events(
+        &self,
+        args: &CalendarRangeArgs,
+        agent_id: &AgentId,
+    ) -> Result<CborValue, String> {
         let limit = normalized_limit(args.limit)?;
+        let title_filter = optional_line(args.title.as_deref(), "title", false)?;
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
         let range = parse_range(args, account)?;
         let page =
             self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
-        self.remember_event_etags(account, calendar, &page.events);
+        let scanned_events = page.events.len();
+        let events = filtered_events(&self.config.policy, &page.events, title_filter.as_deref());
+        let returned_events = events.len();
+        self.remember_visible_events(agent_id, account, calendar, &events);
         let mut rows = Vec::new();
-        for event in &page.events {
+        for event in events {
+            self.remember_event_etag(account, calendar, event);
             rows.push(format_event_line(
                 &self.config.policy,
                 account,
@@ -723,19 +742,34 @@ impl Engine {
             cbor_map(vec![
                 ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
                 ("events", line_array(rows)),
+                (
+                    "returned_events",
+                    CborValue::Integer(returned_events.into()),
+                ),
+                ("scanned_events", CborValue::Integer(scanned_events.into())),
+                (
+                    "total_events",
+                    if page.truncated {
+                        CborValue::Null
+                    } else {
+                        CborValue::Integer(scanned_events.into())
+                    },
+                ),
                 ("next_cursor", optional_text(page.next_cursor)),
                 ("truncated", CborValue::Bool(page.truncated)),
             ]),
         ))
     }
 
-    fn read_event(&self, args: &ReadEventArgs) -> Result<CborValue, String> {
-        let event_id = required_arg(args.event_id.as_deref(), "event_id")?;
+    fn read_event(&self, args: &ReadEventArgs, agent_id: &AgentId) -> Result<CborValue, String> {
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
+        let implicit_event_id = args.event_id.is_none();
+        let event_id =
+            self.resolve_read_event_id(agent_id, account, calendar, args.event_id.as_deref())?;
         let event = match &account.backend {
             Some(ValidatedBackendConfig::IcsFeed { .. }) => {
-                BackendEvent::Ics(self.ics_feed.read_event(account, calendar, event_id)?)
+                BackendEvent::Ics(self.ics_feed.read_event(account, calendar, &event_id)?)
             }
             Some(ValidatedBackendConfig::Google { .. }) => {
                 let stored_refresh_token = self.google_refresh_token(account)?;
@@ -743,7 +777,7 @@ impl Engine {
                     account,
                     stored_refresh_token.as_deref(),
                     calendar,
-                    event_id,
+                    &event_id,
                 )?)
             }
             Some(ValidatedBackendConfig::Caldav { .. }) | None => {
@@ -755,34 +789,45 @@ impl Engine {
             }
         };
         self.remember_event_etag(account, calendar, &event);
-        Ok(ok_envelope(
-            "read_event",
-            "ok",
-            cbor_map(vec![
-                ("format", CborValue::Text(EVENT_DETAIL_FORMAT.to_owned())),
-                (
-                    "event",
-                    line_array(format_event_detail(
-                        &self.config.policy,
-                        account,
-                        calendar,
-                        &event,
-                    )),
-                ),
-            ]),
-        ))
+        let mut data = vec![
+            ("format", CborValue::Text(EVENT_DETAIL_FORMAT.to_owned())),
+            (
+                "event",
+                line_array(format_event_detail(
+                    &self.config.policy,
+                    account,
+                    calendar,
+                    &event,
+                )),
+            ),
+        ];
+        if implicit_event_id {
+            data.push(("event_id", CborValue::Text(safe_display_line(&event_id))));
+            data.push((
+                "event_id_source",
+                CborValue::Text("implicit_recent".to_owned()),
+            ));
+        }
+        Ok(ok_envelope("read_event", "ok", cbor_map(data)))
     }
 
-    fn free_busy(&self, args: &CalendarRangeArgs) -> Result<CborValue, String> {
+    fn free_busy(&self, args: &CalendarRangeArgs, agent_id: &AgentId) -> Result<CborValue, String> {
         let limit = normalized_limit(args.limit)?;
+        if args.title.is_some() {
+            return Err(
+                "free_busy does not accept `title`; use list_events for title filtering".to_owned(),
+            );
+        }
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
         let range = parse_range(args, account)?;
         let page =
             self.events_for_account(account, calendar, range, limit, args.cursor.as_deref())?;
-        self.remember_event_etags(account, calendar, &page.events);
+        let events = filtered_events(&self.config.policy, &page.events, None);
+        self.remember_visible_events(agent_id, account, calendar, &events);
         let mut rows = Vec::new();
-        for event in &page.events {
+        for event in events {
+            self.remember_event_etag(account, calendar, event);
             rows.push(format_free_busy_line(
                 &self.config.policy,
                 account,
@@ -869,8 +914,22 @@ impl Engine {
                         change.start = Some(start);
                         change.end = Some(end);
                     }
+                    (Some(_), None) => {
+                        let (start, end) = create_event_time_pair(
+                            args.start.as_deref(),
+                            None,
+                            account.timezone.as_deref(),
+                        )?;
+                        change.start = Some(start);
+                        change.end = Some(end);
+                    }
                     (None, None) => {}
-                    _ => return Err("start and end must be provided together".to_owned()),
+                    (None, Some(_)) => {
+                        return Err(
+                            "end without start is ambiguous; pass start too, or omit both"
+                                .to_owned(),
+                        );
+                    }
                 }
                 change.attendees = optional_attendees(
                     args.attendees.as_deref(),
@@ -899,17 +958,6 @@ impl Engine {
             | CalendarCommand::FreeBusy => unreachable!("read commands are not calendar changes"),
         }
         Ok(change)
-    }
-
-    fn remember_event_etags(
-        &self,
-        account: &ValidatedAccount,
-        calendar: &str,
-        events: &[BackendEvent],
-    ) {
-        for event in events {
-            self.remember_event_etag(account, calendar, event);
-        }
     }
 
     fn remember_event_etag(
@@ -975,6 +1023,67 @@ impl Engine {
                     });
                 }
             }
+        }
+    }
+
+    fn remember_visible_events(
+        &self,
+        agent_id: &AgentId,
+        account: &ValidatedAccount,
+        calendar: &str,
+        events: &[&BackendEvent],
+    ) {
+        let recent = events
+            .iter()
+            .map(|event| RecentEventRef {
+                account: account.id.clone(),
+                calendar: calendar.to_owned(),
+                event_id: event_id(event).to_owned(),
+                summary: event_summary_for_policy(&self.config.policy, event).to_owned(),
+            })
+            .collect();
+        self.last_events
+            .borrow_mut()
+            .insert(agent_id.as_ref().to_owned(), recent);
+    }
+
+    fn resolve_read_event_id(
+        &self,
+        agent_id: &AgentId,
+        account: &ValidatedAccount,
+        calendar: &str,
+        event_id: Option<&str>,
+    ) -> Result<String, String> {
+        if let Some(event_id) = event_id {
+            return required_arg(Some(event_id), "event_id").map(str::to_owned);
+        }
+        let recent = self.last_events.borrow();
+        let candidates = recent
+            .get(agent_id.as_ref())
+            .map(|events| {
+                events
+                    .iter()
+                    .filter(|event| event.account == account.id && event.calendar == calendar)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        match candidates.as_slice() {
+            [event] => Ok(event.event_id.clone()),
+            [] => Err(
+                "event_id is required; retry like {\"command\":\"read_event\",\"args\":{\"event_id\":\"EVENT_ID\"}}".to_owned(),
+            ),
+            events => Err(format!(
+                "event_id is required; choose one of: {}",
+                events
+                    .iter()
+                    .map(|event| format!(
+                        "{} ({})",
+                        safe_display_line(&event.event_id),
+                        safe_display_line(&event.summary)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
@@ -1296,8 +1405,14 @@ fn parse_read_bound(
     {
         return Ok(value);
     }
-    let local = parse_local_read_bound(value, field)?;
-    local_read_bound_to_utc(local, field, account_timezone)
+    match parse_local_read_bound(value, field, account_timezone) {
+        Ok(local) => local_read_bound_to_utc(local, field, account_timezone),
+        Err(local_error) => {
+            parse_natural_datetime_bound(value, field, account_timezone).map_err(|natural_error| {
+                format!("{local_error}; natural date parser also rejected it: {natural_error}")
+            })
+        }
+    }
 }
 
 fn default_read_end_bound(
@@ -1312,13 +1427,26 @@ fn default_read_end_bound(
             .checked_add(time::Duration::days(7))
             .ok_or_else(|| "default end is out of range".to_owned());
     }
-    let local = parse_local_read_bound(start_value, "start")?
+    if let Ok(local_start) = parse_local_read_bound(start_value, "start", account_timezone) {
+        let local = local_start
+            .checked_add(time::Duration::days(7))
+            .ok_or_else(|| "default end is out of range".to_owned())?;
+        return local_read_bound_to_utc(local, "end", account_timezone);
+    }
+    start_utc
         .checked_add(time::Duration::days(7))
-        .ok_or_else(|| "default end is out of range".to_owned())?;
-    local_read_bound_to_utc(local, "end", account_timezone)
+        .ok_or_else(|| "default end is out of range".to_owned())
 }
 
-fn parse_local_read_bound(value: &str, field: &str) -> Result<time::PrimitiveDateTime, String> {
+fn parse_local_read_bound(
+    value: &str,
+    field: &str,
+    account_timezone: Option<&str>,
+) -> Result<time::PrimitiveDateTime, String> {
+    let value = value.trim();
+    if let Some(date) = parse_natural_date(value, field, account_timezone)? {
+        return Ok(date.with_time(time::Time::MIDNIGHT));
+    }
     if let Some(date) = parse_tool_date(value) {
         return Ok(date.with_time(time::Time::MIDNIGHT));
     }
@@ -1328,9 +1456,35 @@ fn parse_local_read_bound(value: &str, field: &str) -> Result<time::PrimitiveDat
     )
     .map_err(|error| {
         format!(
-            "{field} must be RFC3339 with offset, YYYY-MM-DD, or local YYYY-MM-DDTHH:MM:SS: {error}"
+            "{field} must be RFC3339 with offset, YYYY-MM-DD, today, yesterday, tomorrow, or local YYYY-MM-DDTHH:MM:SS: {error}"
         )
     })
+}
+
+fn parse_natural_date(
+    value: &str,
+    field: &str,
+    account_timezone: Option<&str>,
+) -> Result<Option<time::Date>, String> {
+    let timezone = timezone_for_read(field, account_timezone)?;
+    let today = time::OffsetDateTime::now_utc().to_timezone(timezone).date();
+    Ok(match value.trim().to_ascii_lowercase().as_str() {
+        "today" => Some(today),
+        "yesterday" => today.previous_day(),
+        "tomorrow" => today.next_day(),
+        _ => None,
+    })
+}
+
+fn parse_natural_datetime_bound(
+    value: &str,
+    field: &str,
+    _account_timezone: Option<&str>,
+) -> Result<time::OffsetDateTime, String> {
+    let parsed = parse_datetime::parse_datetime(value)
+        .map_err(|error| format!("{field} natural date/time parse failed: {error}"))?;
+    time::OffsetDateTime::from_unix_timestamp_nanos(parsed.timestamp().as_nanosecond())
+        .map_err(|error| format!("{field} natural date/time is out of range: {error}"))
 }
 
 fn local_read_bound_to_utc(
@@ -1338,18 +1492,48 @@ fn local_read_bound_to_utc(
     field: &str,
     account_timezone: Option<&str>,
 ) -> Result<time::OffsetDateTime, String> {
-    let timezone_name = account_timezone.ok_or_else(|| {
-        format!("{field} has no UTC offset and account timezone is not configured")
-    })?;
-    let timezone = time_tz::timezones::get_by_name(timezone_name)
-        .ok_or_else(|| format!("account timezone `{timezone_name}` is not recognized"))?;
+    let timezone = timezone_for_read(field, account_timezone)?;
     match local.assume_timezone(timezone) {
         OffsetResult::Some(value) => Ok(value),
         OffsetResult::Ambiguous(_, _) => Err(format!(
-            "{field} is ambiguous in timezone `{timezone_name}`"
+            "{field} is ambiguous in timezone `{}`",
+            timezone.name()
         )),
-        OffsetResult::None => Err(format!("{field} is invalid in timezone `{timezone_name}`")),
+        OffsetResult::None => Err(format!(
+            "{field} is invalid in timezone `{}`",
+            timezone.name()
+        )),
     }
+}
+
+fn timezone_for_read(
+    field: &str,
+    account_timezone: Option<&str>,
+) -> Result<&'static time_tz::Tz, String> {
+    if let Some(timezone_name) = account_timezone {
+        return time_tz::timezones::get_by_name(timezone_name).ok_or_else(|| {
+            format!("account timezone `{timezone_name}` is not recognized for {field}")
+        });
+    }
+    if let Some(timezone_name) = system_timezone_name()
+        && let Some(timezone) = time_tz::timezones::get_by_name(&timezone_name)
+    {
+        return Ok(timezone);
+    }
+    time_tz::timezones::get_by_name("UTC")
+        .ok_or_else(|| "UTC timezone is not recognized".to_owned())
+}
+
+fn system_timezone_name() -> Option<String> {
+    if let Ok(value) = std::env::var("TZ") {
+        let value = value.trim().trim_start_matches(':');
+        if !value.is_empty() {
+            return Some(value.to_owned());
+        }
+    }
+    let path = std::fs::read_link("/etc/localtime").ok()?;
+    let text = path.to_string_lossy();
+    text.split("zoneinfo/").nth(1).map(str::to_owned)
 }
 
 fn normalized_limit(limit: Option<u32>) -> Result<usize, String> {
@@ -1520,10 +1704,20 @@ fn normalize_write_time_value(
     {
         return Ok(value.to_owned());
     }
-    let local = parse_local_read_bound(value, field)?;
-    local_read_bound_to_utc(local, field, account_timezone)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| format!("{field} could not be formatted: {error}"))
+    match parse_local_read_bound(value, field, account_timezone) {
+        Ok(local) => local_read_bound_to_utc(local, field, account_timezone)?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|error| format!("{field} could not be formatted: {error}")),
+        Err(local_error) => parse_natural_datetime_bound(value, field, account_timezone)
+            .and_then(|datetime| {
+                datetime
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|error| format!("{field} could not be formatted: {error}"))
+            })
+            .map_err(|natural_error| {
+                format!("{local_error}; natural date parser also rejected it: {natural_error}")
+            }),
+    }
 }
 
 fn validate_time_pair(start: &str, end: &str) -> Result<(), String> {
@@ -1640,6 +1834,7 @@ fn google_write_from_change(change: &CalendarChangeApproval) -> GoogleEventWrite
         start: change.start.as_deref(),
         end: change.end.as_deref(),
         timezone: change.timezone.as_deref(),
+        clear_opposite_time_kind: change.command == "update_event" && change.start.is_some(),
         attendees: change.attendees.as_deref(),
     }
 }
@@ -1836,6 +2031,25 @@ fn format_event_detail(
         }
     }
     lines
+}
+
+fn filtered_events<'a>(
+    policy: &ValidatedPolicy,
+    events: &'a [BackendEvent],
+    title_filter: Option<&str>,
+) -> Vec<&'a BackendEvent> {
+    let Some(title_filter) = title_filter else {
+        return events.iter().collect();
+    };
+    let title_filter = title_filter.to_lowercase();
+    events
+        .iter()
+        .filter(|event| {
+            event_summary_for_policy(policy, event)
+                .to_lowercase()
+                .contains(&title_filter)
+        })
+        .collect()
 }
 
 fn event_id(event: &BackendEvent) -> &str {
@@ -2330,7 +2544,18 @@ fn calendar_display_info(command: &str, data: Option<&CborValue>) -> Vec<String>
         "list_calendars" => {
             push_count_chip(&mut chips, cbor_array_len(data, "calendars"), "calendar")
         }
-        "list_events" => push_count_chip(&mut chips, cbor_array_len(data, "events"), "event"),
+        "list_events" => {
+            push_count_chip(
+                &mut chips,
+                cbor_u32_field(data, "returned_events").map(u64::from),
+                "event",
+            );
+            if let Some(total_events) = cbor_u32_field(data, "total_events") {
+                chips.push(format!("{total_events} total"));
+            } else if let Some(scanned_events) = cbor_u32_field(data, "scanned_events") {
+                chips.push(format!("{scanned_events} scanned"));
+            }
+        }
         "free_busy" => push_count_chip(&mut chips, cbor_array_len(data, "busy"), "busy block"),
         _ => {}
     }
@@ -2594,6 +2819,7 @@ mod tests {
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
             etags: RefCell::new(BTreeMap::new()),
+            last_events: RefCell::new(BTreeMap::new()),
         };
 
         let output = engine.list_accounts();
@@ -2612,10 +2838,13 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let engine = test_engine(temp.path());
 
-        let output = engine.dispatch(&command_args(
-            "list_calendars",
-            vec![("account", CborValue::Text("feed".to_owned()))],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "list_calendars",
+                vec![("account", CborValue::Text("feed".to_owned()))],
+            ),
+        );
         let data = cbor_field(&output, "data").expect("data");
         assert_eq!(cbor_text_field(data, "format"), Some(LIST_CALENDARS_FORMAT));
 
@@ -2655,17 +2884,20 @@ mod tests {
 
         let temp = tempfile::TempDir::new().expect("tempdir");
         let engine = test_engine(temp.path());
-        let output = engine.dispatch(&command_args(
-            "list_events",
-            vec![
-                ("account", CborValue::Text("feed".to_owned())),
-                ("calendar", CborValue::Text("main".to_owned())),
-                (
-                    "time_min",
-                    CborValue::Text("2026-05-29T00:00:00Z".to_owned()),
-                ),
-            ],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "list_events",
+                vec![
+                    ("account", CborValue::Text("feed".to_owned())),
+                    ("calendar", CborValue::Text("main".to_owned())),
+                    (
+                        "time_min",
+                        CborValue::Text("2026-05-29T00:00:00Z".to_owned()),
+                    ),
+                ],
+            ),
+        );
 
         assert_eq!(cbor_bool_field(&output, "ok"), Some(false));
         assert_eq!(cbor_text_field(&output, "command"), Some("list_events"));
@@ -2674,25 +2906,32 @@ mod tests {
     }
 
     #[test]
-    fn free_busy_rejects_event_payload_fields_instead_of_ignoring_them() {
-        // free_busy has a command-specific range args struct, so payload fields
-        // like title fail during serde parsing instead of being silently ignored.
+    fn free_busy_rejects_title_filter_instead_of_ignoring_it() {
+        // `free_busy` should not leak title probing; use `list_events` for title
+        // filters.
         let temp = tempfile::TempDir::new().expect("tempdir");
         let engine = test_engine(temp.path());
 
-        let output = engine.dispatch(&command_args(
-            "free_busy",
-            vec![
-                ("account", CborValue::Text("feed".to_owned())),
-                ("calendar", CborValue::Text("main".to_owned())),
-                ("title", CborValue::Text("tau test party".to_owned())),
-            ],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "free_busy",
+                vec![
+                    ("account", CborValue::Text("feed".to_owned())),
+                    ("calendar", CborValue::Text("main".to_owned())),
+                    ("start", CborValue::Text("2026-05-29".to_owned())),
+                    ("title", CborValue::Text("tau".to_owned())),
+                ],
+            ),
+        );
 
         assert_eq!(cbor_bool_field(&output, "ok"), Some(false));
         assert_eq!(cbor_text_field(&output, "command"), Some("free_busy"));
         let message = cbor_nested_text_field(&output, "error", "message").expect("message");
-        assert_eq!(message, "free_busy does not accept `title`");
+        assert_eq!(
+            message,
+            "free_busy does not accept `title`; use list_events for title filtering"
+        );
     }
 
     #[test]
@@ -2801,14 +3040,17 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let engine = test_engine(temp.path());
 
-        let err = engine.dispatch(&command_args(
-            "create_event",
-            vec![
-                ("account", CborValue::Text("feed".to_owned())),
-                ("calendar", CborValue::Text("main".to_owned())),
-                ("title", CborValue::Text("private title".to_owned())),
-            ],
-        ));
+        let err = dispatch_test(
+            &engine,
+            command_args(
+                "create_event",
+                vec![
+                    ("account", CborValue::Text("feed".to_owned())),
+                    ("calendar", CborValue::Text("main".to_owned())),
+                    ("title", CborValue::Text("private title".to_owned())),
+                ],
+            ),
+        );
         assert_eq!(cbor_bool_field(&err, "ok"), Some(false));
         let err_text = calendar_error_message(&err);
         assert!(
@@ -2870,22 +3112,26 @@ mod tests {
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
             etags: RefCell::new(BTreeMap::new()),
+            last_events: RefCell::new(BTreeMap::new()),
         };
 
-        let output = engine.dispatch(&command_args(
-            "create_event",
-            vec![
-                ("account", CborValue::Text("google".to_owned())),
-                ("calendar", CborValue::Text("primary".to_owned())),
-                ("title", CborValue::Text("Team Sync".to_owned())),
-                ("start", CborValue::Text("2026-05-28T12:00:00Z".to_owned())),
-                ("end", CborValue::Text("2026-05-28T13:00:00Z".to_owned())),
-                (
-                    "attendees",
-                    CborValue::Array(vec![CborValue::Text("a@example.com".to_owned())]),
-                ),
-            ],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "create_event",
+                vec![
+                    ("account", CborValue::Text("google".to_owned())),
+                    ("calendar", CborValue::Text("primary".to_owned())),
+                    ("title", CborValue::Text("Team Sync".to_owned())),
+                    ("start", CborValue::Text("2026-05-28T12:00:00Z".to_owned())),
+                    ("end", CborValue::Text("2026-05-28T13:00:00Z".to_owned())),
+                    (
+                        "attendees",
+                        CborValue::Array(vec![CborValue::Text("a@example.com".to_owned())]),
+                    ),
+                ],
+            ),
+        );
         let data = cbor_field(&output, "data").expect("data");
 
         assert_eq!(
@@ -2959,15 +3205,19 @@ mod tests {
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
             etags: RefCell::new(BTreeMap::new()),
+            last_events: RefCell::new(BTreeMap::new()),
         };
 
-        let output = engine.dispatch(&command_args(
-            "create_event",
-            vec![
-                ("title", CborValue::Text("Team Sync".to_owned())),
-                ("start", CborValue::Text("2026-05-28T12:00:00Z".to_owned())),
-            ],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "create_event",
+                vec![
+                    ("title", CborValue::Text("Team Sync".to_owned())),
+                    ("start", CborValue::Text("2026-05-28T12:00:00Z".to_owned())),
+                ],
+            ),
+        );
         let data = cbor_field(&output, "data").expect("data");
 
         assert_eq!(
@@ -3010,12 +3260,16 @@ mod tests {
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
             etags: RefCell::new(BTreeMap::new()),
+            last_events: RefCell::new(BTreeMap::new()),
         };
 
-        let output = engine.dispatch(&command_args(
-            "list_calendars",
-            vec![("account", CborValue::Text("google".to_owned()))],
-        ));
+        let output = dispatch_test(
+            &engine,
+            command_args(
+                "list_calendars",
+                vec![("account", CborValue::Text("google".to_owned()))],
+            ),
+        );
 
         assert_eq!(cbor_bool_field(&output, "ok"), Some(false));
         assert_eq!(
@@ -3212,6 +3466,121 @@ mod tests {
     }
 
     #[test]
+    fn title_filter_matches_visible_event_summaries() {
+        let events = vec![
+            BackendEvent::Google(GoogleEvent {
+                id: "evt1".to_owned(),
+                etag: None,
+                i_cal_uid: None,
+                summary: "Tau Testing Party".to_owned(),
+                description: None,
+                location: None,
+                start: "2026-05-28".to_owned(),
+                end: "2026-05-29".to_owned(),
+                status: Some("confirmed".to_owned()),
+                visibility: None,
+                transparency: None,
+                organizer: None,
+                attendees: Vec::new(),
+                self_response_status: None,
+                recurring: false,
+            }),
+            BackendEvent::Google(GoogleEvent {
+                id: "evt2".to_owned(),
+                etag: None,
+                i_cal_uid: None,
+                summary: "Lunch".to_owned(),
+                description: None,
+                location: None,
+                start: "2026-05-28".to_owned(),
+                end: "2026-05-29".to_owned(),
+                status: Some("confirmed".to_owned()),
+                visibility: None,
+                transparency: None,
+                organizer: None,
+                attendees: Vec::new(),
+                self_response_status: None,
+                recurring: false,
+            }),
+        ];
+        let policy = ValidatedPolicy {
+            read: ValidatedReadPolicy {
+                private_events: PrivateEventsPolicy::BusyOnly,
+                descriptions: DescriptionPolicy::Always,
+            },
+            write: ValidatedWritePolicy {
+                require_approval: true,
+                max_attendees: 50,
+            },
+        };
+
+        let filtered = filtered_events(&policy, &events, Some("tau"));
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(event_id(filtered[0]), "evt1");
+    }
+
+    #[test]
+    fn read_event_can_use_single_recent_event_for_agent() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let engine = test_engine(temp.path());
+        let agent_id = AgentId::from("agent");
+        let account = ValidatedAccount {
+            id: "feed".to_owned(),
+            enable: true,
+            display_name: None,
+            backend: None,
+            default_calendar: Some("main".to_owned()),
+            allowed_calendars: vec!["main".to_owned()],
+            timezone: Some("UTC".to_owned()),
+        };
+        let event = BackendEvent::Ics(IcsEvent {
+            id: "evt".to_owned(),
+            uid: "uid".to_owned(),
+            summary: "Tau Testing Party".to_owned(),
+            description: None,
+            location: None,
+            start: "2026-05-28".to_owned(),
+            end: "2026-05-29".to_owned(),
+            start_utc: None,
+            end_utc: None,
+            status: None,
+            organizer: None,
+            attendees: Vec::new(),
+            private: false,
+            recurring: false,
+            time_unparsed: false,
+        });
+        engine.remember_visible_events(&agent_id, &account, "main", &[&event]);
+
+        let event_id = engine
+            .resolve_read_event_id(&agent_id, &account, "main", None)
+            .expect("single recent event id");
+
+        assert_eq!(event_id, "evt");
+    }
+
+    #[test]
+    fn natural_date_bounds_are_accepted_without_configured_timezone() {
+        parse_range(
+            &CalendarRangeArgs {
+                start: Some("2 days".to_owned()),
+                ..Default::default()
+            },
+            &ValidatedAccount {
+                id: "google".to_owned(),
+                enable: true,
+                display_name: None,
+                backend: None,
+                default_calendar: Some("primary".to_owned()),
+                allowed_calendars: vec!["primary".to_owned()],
+                timezone: None,
+            },
+        )
+        .expect("natural date without configured timezone");
+    }
+
+    #[test]
     fn duplicate_account_ids_are_rejected() {
         let cfg = CalendarExtensionConfig {
             enable: true,
@@ -3282,7 +3651,12 @@ mod tests {
             google: GoogleBackend::new(BTreeMap::new()),
             ics_feed: IcsFeedBackend::new(BTreeMap::new()),
             etags: RefCell::new(BTreeMap::new()),
+            last_events: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    fn dispatch_test(engine: &Engine, arguments: CborValue) -> CborValue {
+        engine.dispatch(&arguments, &AgentId::from("test-agent"))
     }
 
     fn command_args(command: &str, args: Vec<(&str, CborValue)>) -> CborValue {

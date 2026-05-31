@@ -143,6 +143,10 @@ pub struct GoogleEventWrite<'a> {
     pub end: Option<&'a str>,
     /// IANA timezone for date-time values.
     pub timezone: Option<&'a str>,
+    /// Clear the opposite Google time representation (`date` vs `dateTime`).
+    /// Required by Google when PATCH converts all-day events to timed events
+    /// or the reverse.
+    pub clear_opposite_time_kind: bool,
     /// Attendee email addresses. `None` leaves attendees unchanged for updates.
     pub attendees: Option<&'a [String]>,
 }
@@ -1014,7 +1018,7 @@ fn google_event_body(event: &GoogleEventWrite<'_>) -> Result<Value, String> {
         let (Some(start), Some(end)) = (event.start, event.end) else {
             return Err("Google event writes require both start and end".to_owned());
         };
-        let pair = google_time_pair(start, end, event.timezone)?;
+        let pair = google_time_pair(start, end, event.timezone, event.clear_opposite_time_kind)?;
         object.insert("start".to_owned(), pair.start);
         object.insert("end".to_owned(), pair.end);
     }
@@ -1036,6 +1040,7 @@ fn google_time_pair(
     start: &str,
     end: &str,
     timezone: Option<&str>,
+    clear_opposite_time_kind: bool,
 ) -> Result<GoogleTimePair, String> {
     match (
         parse_google_boundary(start, "start")?,
@@ -1054,9 +1059,17 @@ fn google_time_pair(
             if !is_date_before(start_date, end_date) {
                 return Err("event start must be before event end".to_owned());
             }
+            let mut start_value = Map::new();
+            start_value.insert("date".to_owned(), Value::String(start));
+            let mut end_value = Map::new();
+            end_value.insert("date".to_owned(), Value::String(end));
+            if clear_opposite_time_kind {
+                start_value.insert("dateTime".to_owned(), Value::Null);
+                end_value.insert("dateTime".to_owned(), Value::Null);
+            }
             Ok(GoogleTimePair {
-                start: json!({ "date": start }),
-                end: json!({ "date": end }),
+                start: Value::Object(start_value),
+                end: Value::Object(end_value),
             })
         }
         (
@@ -1073,8 +1086,14 @@ fn google_time_pair(
                 return Err("event start must be before event end".to_owned());
             }
             let mut start_value = Map::new();
+            if clear_opposite_time_kind {
+                start_value.insert("date".to_owned(), Value::Null);
+            }
             start_value.insert("dateTime".to_owned(), Value::String(start));
             let mut end_value = Map::new();
+            if clear_opposite_time_kind {
+                end_value.insert("date".to_owned(), Value::Null);
+            }
             end_value.insert("dateTime".to_owned(), Value::String(end));
             if let Some(timezone) = timezone {
                 start_value.insert("timeZone".to_owned(), Value::String(timezone.to_owned()));
@@ -1407,6 +1426,7 @@ mod tests {
             start: Some("2026-05-28"),
             end: Some("2026-05-29"),
             timezone: None,
+            clear_opposite_time_kind: false,
             attendees: Some(&attendees),
         })
         .expect("body");
@@ -1426,6 +1446,27 @@ mod tests {
 
         assert_eq!(body["start"]["dateTime"], "2026-05-28T12:00:00Z");
         assert_eq!(body["start"]["timeZone"], "UTC");
+        assert!(body["start"].get("date").is_none());
+
+        let body = google_event_body(&GoogleEventWrite {
+            start: Some("2026-05-28T12:00:00Z"),
+            end: Some("2026-05-28T13:00:00Z"),
+            clear_opposite_time_kind: true,
+            ..Default::default()
+        })
+        .expect("timed patch body");
+        assert_eq!(body["start"]["date"], Value::Null);
+        assert_eq!(body["end"]["date"], Value::Null);
+
+        let body = google_event_body(&GoogleEventWrite {
+            start: Some("2026-05-28"),
+            end: Some("2026-05-29"),
+            clear_opposite_time_kind: true,
+            ..Default::default()
+        })
+        .expect("all-day patch body");
+        assert_eq!(body["start"]["dateTime"], Value::Null);
+        assert_eq!(body["end"]["dateTime"], Value::Null);
     }
 
     #[test]
