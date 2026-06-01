@@ -12,6 +12,7 @@ use crate::tools::read::{ReadLineRange, format_read_range, slice_line_ranges};
 use crate::truncate::truncate_line_oriented;
 
 const MAX_EDITS_PER_CALL: usize = 100;
+const GUARD_MISMATCH_CONTEXT_LINES: usize = 10;
 
 pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     let path = argument_text(arguments, "path").map_err(ToolFailure::from)?;
@@ -60,7 +61,6 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
         })?;
         replacements.push(LineReplacement {
             start_line,
-            end_line,
             end_line_exclusive,
             start_byte: original_lines.byte_start_for_line(start_line, original_bytes.len()),
             end_byte: original_lines.byte_start_for_line(end_line_exclusive, original_bytes.len()),
@@ -129,7 +129,6 @@ pub(crate) fn edit_file(arguments: &CborValue) -> Result<ToolOutput, ToolFailure
 
 struct LineReplacement<'a> {
     start_line: usize,
-    end_line: usize,
     end_line_exclusive: usize,
     start_byte: usize,
     end_byte: usize,
@@ -293,9 +292,13 @@ fn guard_mismatch_failure(
     display_args: &str,
 ) -> ToolFailure {
     let start_line = replacement.start_line;
+    let context_start_line = start_line
+        .saturating_sub(GUARD_MISMATCH_CONTEXT_LINES)
+        .max(1);
+    let context_end_line = start_line.saturating_add(GUARD_MISMATCH_CONTEXT_LINES);
     let ranges = vec![ReadLineRange {
-        start_line,
-        end_line: Some(replacement.end_line),
+        start_line: context_start_line,
+        end_line: Some(context_end_line),
     }];
     let rendered = slice_line_ranges(original_bytes, &ranges);
     let truncated = truncate_line_oriented(&rendered.content);

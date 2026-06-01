@@ -1877,6 +1877,12 @@ fn edit_guard_rejects_invalid_utf8_original_line() {
     .expect_err("invalid UTF-8 guard should fail");
 
     assert_eq!(error.message, "guard for line 1 did not match");
+    let details = error.details.as_deref().expect("details");
+    assert_eq!(
+        cbor_map_text(details, "line-numbered content"),
+        Some("1(invalid-utf8,no_nl)")
+    );
+    assert_eq!(cbor_bool_field(details, "valid_utf8"), Some(false));
     assert_eq!(fs::read(&file_path).expect("read back"), [0xff, 0xfe, b'a']);
 }
 #[test]
@@ -2821,37 +2827,42 @@ fn edit_guard_allows_matching_first_line() {
 }
 
 #[test]
-fn edit_guard_rejects_stale_line_number_and_returns_mismatched_range() {
+fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "alpha\nbeta\ngamma\n").expect("write");
+    let original = (1..=100)
+        .map(|line| format!("line {line:03}\n"))
+        .collect::<String>();
+    fs::write(&file_path, &original).expect("write");
 
     // On mismatch, the file stays untouched and the agent gets read-like
-    // output only for the range whose guard failed.
+    // output around the line whose guard failed. This gives enough context to
+    // recover from stale line numbers without dumping the full replacement range.
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![
-            guarded_line_edit(1, 1, "ALPHA\n", "alpha"),
-            guarded_line_edit(3, 3, "GAMMA\n", "wrong"),
+            guarded_line_edit(1, 1, "LINE 001\n", "line 001"),
+            guarded_line_edit(12, 40, "replacement\n", "wrong"),
         ],
     ))
     .expect_err("guard mismatch should fail");
 
-    assert_eq!(error.message, "guard for line 3 did not match");
+    let expected_context = (2..=22)
+        .map(|line| format!("{line} line {line:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(error.message, "guard for line 12 did not match");
     let details = error.details.as_deref().expect("details");
     assert_eq!(
         cbor_map_text(details, "line-numbered content"),
-        Some("3 gamma")
+        Some(expected_context.as_str())
     );
-    assert_eq!(cbor_int_field(details, "guard_start_line"), Some(3));
+    assert_eq!(cbor_int_field(details, "guard_start_line"), Some(12));
     assert!(matches!(
         error.display.payload.as_ref(),
-        Some(ToolUsePayload::Text { text }) if text == "3 gamma"
+        Some(ToolUsePayload::Text { text }) if text == &expected_context
     ));
-    assert_eq!(
-        fs::read_to_string(&file_path).expect("read back"),
-        "alpha\nbeta\ngamma\n"
-    );
+    assert_eq!(fs::read_to_string(&file_path).expect("read back"), original);
 }
 
 #[test]

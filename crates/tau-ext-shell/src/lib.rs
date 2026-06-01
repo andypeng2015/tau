@@ -181,8 +181,8 @@ where
                  first original line content, including spaces and tabs, after trimming \
                  trailing newline characters and excluding the line ending. Embedded newline \
                  characters in `guard` are invalid. Use an empty string for an empty, \
-                 missing, or append line. On mismatch, the edit fails and returns the \
-                 mismatched range contents. Returns minimal status headers: replacements, \
+                 missing, or append line. On mismatch, the edit fails and returns the guard \
+                 line plus up to 10 lines before and after it. Returns minimal status headers: replacements, \
                  changed, new_max_valid_start_line after the edit (including the virtual \
                  append line when present), and total_bytes."
                     .to_owned(),
@@ -219,7 +219,7 @@ where
                                 },
                                 "guard": {
                                     "type": "string",
-                                    "description": "Exact expected content of the first original line in this range, including spaces and tabs, after trimming trailing newline characters and excluding the line ending. Embedded newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the mismatched range contents."
+                                    "description": "Exact expected content of the first original line in this range, including spaces and tabs, after trimming trailing newline characters and excluding the line ending. Embedded newline characters are invalid. Use an empty string for an empty, missing, or append line. If it does not match, the edit fails and returns the guard line plus up to 10 lines before and after it."
                                 }
                             },
                             "required": ["start_line", "end_line", "newText", "guard"],
