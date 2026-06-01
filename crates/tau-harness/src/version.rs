@@ -11,8 +11,9 @@
 //! `mov imm32` operands in `.text`, splitting the bytes across two
 //! instructions in reverse order. The placeholder then no longer
 //! exists as a contiguous byte sequence anywhere in the file, and bbe
-//! has nothing to patch. A `#[used]` byte array in a named section is
-//! guaranteed to live in `.rodata` as one contiguous, unmerged blob.
+//! has nothing to patch. A `#[used]` byte array in a named section (using
+//! the target platform's section naming syntax) is guaranteed to live in
+//! `.rodata`/data as one contiguous, unmerged blob.
 
 mod built_info;
 
@@ -24,14 +25,22 @@ const PLACEHOLDER_TAG: &[u8] = b"__TAU_BUILD";
 /// in place by the Nix build's `bbe` post-processing.
 #[used]
 #[allow(unsafe_code)]
-#[unsafe(link_section = ".tau_build_info")]
+#[cfg_attr(
+    target_vendor = "apple",
+    unsafe(link_section = "__DATA,.tau_build_info")
+)]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".tau_build_info"))]
 static GIT_REVISION: [u8; 40] = *b"__TAU_BUILD_GIT_REVISION_PLACEHOLDER____";
 
 /// 16-byte slot for the build date, formatted `YYYY-MM-DD HH:MM`.
 /// Patched in place by the Nix build's `bbe` post-processing.
 #[used]
 #[allow(unsafe_code)]
-#[unsafe(link_section = ".tau_build_info")]
+#[cfg_attr(
+    target_vendor = "apple",
+    unsafe(link_section = "__DATA,.tau_build_info")
+)]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".tau_build_info"))]
 static LAST_MODIFIED: [u8; 16] = *b"__TAU_BUILD_DATE";
 
 /// Read a `static` byte array via `read_volatile` so the optimizer
