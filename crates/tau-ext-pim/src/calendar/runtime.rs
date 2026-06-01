@@ -571,13 +571,14 @@ impl Engine {
         }
         let args = invocation.args.as_ref();
         let status = calendar_log_status(result);
-        let account = self.log_account(args);
+        let result_data = cbor_field(result, "data");
+        let account = self.log_account(args, result_data);
         let mut entry = CalendarLogEntry::tool(command_name(invocation.command), &status);
         entry.account = account
             .as_deref()
             .map(|value| safe_log_value(value, MAX_LOG_FIELD_CHARS));
         entry.calendar = self
-            .log_calendar(args, account.as_deref())
+            .log_calendar(args, result_data, account.as_deref())
             .map(|value| safe_log_value(&value, MAX_LOG_FIELD_CHARS));
         entry.event_id = args
             .and_then(|args| cbor_text_field(args, "event_id"))
@@ -595,7 +596,14 @@ impl Engine {
         Some(entry)
     }
 
-    fn log_account(&self, args: Option<&CborValue>) -> Option<String> {
+    fn log_account(
+        &self,
+        args: Option<&CborValue>,
+        result_data: Option<&CborValue>,
+    ) -> Option<String> {
+        if let Some(account) = result_data.and_then(|data| cbor_text_field(data, "account")) {
+            return Some(account.to_owned());
+        }
         if let Some(account) = args.and_then(|args| cbor_text_field(args, "account")) {
             return Some(account.to_owned());
         }
@@ -613,7 +621,15 @@ impl Engine {
         }
     }
 
-    fn log_calendar(&self, args: Option<&CborValue>, account_id: Option<&str>) -> Option<String> {
+    fn log_calendar(
+        &self,
+        args: Option<&CborValue>,
+        result_data: Option<&CborValue>,
+        account_id: Option<&str>,
+    ) -> Option<String> {
+        if let Some(calendar) = result_data.and_then(|data| cbor_text_field(data, "calendar")) {
+            return Some(calendar.to_owned());
+        }
         args.and_then(|args| cbor_text_field(args, "calendar"))
             .map(str::to_owned)
             .or_else(|| {
@@ -740,6 +756,8 @@ impl Engine {
             "list_events",
             "ok",
             cbor_map(vec![
+                ("account", CborValue::Text(safe_display_line(&account.id))),
+                ("calendar", CborValue::Text(safe_display_line(calendar))),
                 ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
                 ("events", line_array(rows)),
                 (
@@ -790,6 +808,8 @@ impl Engine {
         };
         self.remember_event_etag(account, calendar, &event);
         let mut data = vec![
+            ("account", CborValue::Text(safe_display_line(&account.id))),
+            ("calendar", CborValue::Text(safe_display_line(calendar))),
             ("format", CborValue::Text(EVENT_DETAIL_FORMAT.to_owned())),
             (
                 "event",
@@ -839,6 +859,8 @@ impl Engine {
             "free_busy",
             "ok",
             cbor_map(vec![
+                ("account", CborValue::Text(safe_display_line(&account.id))),
+                ("calendar", CborValue::Text(safe_display_line(calendar))),
                 ("format", CborValue::Text(FREE_BUSY_FORMAT.to_owned())),
                 ("busy", line_array(rows)),
                 ("next_cursor", optional_text(page.next_cursor)),
@@ -1250,11 +1272,6 @@ impl Engine {
         let Some(first) = accounts.next() else {
             return Err("no enabled calendar accounts are configured".to_owned());
         };
-        if accounts.next().is_some() {
-            return Err(
-                "account is required when multiple calendar accounts are enabled".to_owned(),
-            );
-        }
         Ok(first)
     }
 
@@ -2860,6 +2877,57 @@ mod tests {
         assert_eq!(cbor_text_field(&output, "status"), Some("ok"));
         assert_eq!(cbor_text_field(data, "format"), Some(LIST_ACCOUNTS_FORMAT));
         assert_eq!(line_payload(data, "accounts"), "work - \"Work_Calendar\"");
+    }
+
+    #[test]
+    fn omitted_calendar_account_defaults_to_first_enabled_account() {
+        // Match email's default-account behavior so weaker local models that omit
+        // an account can continue. Calendar read outputs include account/calendar
+        // fields, so the selected default is visible to the model afterwards.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let mut engine = test_engine(temp.path());
+        engine.config.accounts.insert(
+            "later".to_owned(),
+            ValidatedAccount {
+                id: "later".to_owned(),
+                enable: true,
+                display_name: Some("Later".to_owned()),
+                backend: Some(ValidatedBackendConfig::IcsFeed {
+                    url_secret: None,
+                    url: Some("https://example.test/later.ics".to_owned()),
+                }),
+                default_calendar: Some("other".to_owned()),
+                allowed_calendars: vec!["other".to_owned()],
+                timezone: Some("UTC".to_owned()),
+            },
+        );
+        engine.config.account_order.push("later".to_owned());
+
+        let account = engine.single_account(None).expect("default account");
+        assert_eq!(account.id, "feed");
+        assert_eq!(engine.calendar_arg(account, None), Ok("main"));
+
+        let invocation = ToolInvocation {
+            command: CalendarCommand::ListEvents,
+            args: Some(cbor_map(vec![(
+                "start",
+                CborValue::Text("2026-05-29".to_owned()),
+            )])),
+        };
+        let result = ok_envelope(
+            "list_events",
+            "ok",
+            cbor_map(vec![
+                ("account", CborValue::Text("feed".to_owned())),
+                ("calendar", CborValue::Text("main".to_owned())),
+                ("events", CborValue::Array(Vec::new())),
+            ]),
+        );
+        let entry = engine
+            .calendar_log_entry(&invocation, &result)
+            .expect("log entry");
+        assert_eq!(entry.account.as_deref(), Some("feed"));
+        assert_eq!(entry.calendar.as_deref(), Some("main"));
     }
 
     #[test]

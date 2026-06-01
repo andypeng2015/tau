@@ -749,6 +749,10 @@ fn omitted_tool_scope_defaults_to_first_account_inbox_and_limit_100() {
         .expect("parse read"),
     );
     assert_eq!(cbor_text_field(&read, "status"), Some("ok"));
+    assert_eq!(
+        data_field(&read, "account"),
+        &CborValue::Text("work".to_owned())
+    );
 }
 
 #[test]

@@ -3412,6 +3412,10 @@ impl<B: EmailBackend> Engine<B> {
                 "ok",
                 cbor_map(vec![
                     (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
                         "headers",
                         CborValue::Text(format_read_headers(
                             &from,
@@ -3475,7 +3479,10 @@ impl<B: EmailBackend> Engine<B> {
             "read",
             ACCESS_PREVIEW,
             cbor_map(vec![
-                ("reason", CborValue::Text(decision.reason.clone())),
+                (
+                    "account",
+                    CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                ),
                 (
                     "headers",
                     CborValue::Text(format_read_headers(
@@ -3515,10 +3522,16 @@ impl<B: EmailBackend> Engine<B> {
             return ok_envelope(
                 "request_full",
                 "already_full",
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text("Access already available. Use email read.".to_owned()),
-                )]),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "message",
+                        CborValue::Text("Access already available. Use email read.".to_owned()),
+                    ),
+                ]),
             );
         }
         let approval = IncomingApproval {
@@ -3541,13 +3554,19 @@ impl<B: EmailBackend> Engine<B> {
             Ok(_id) => ok_envelope(
                 "request_full",
                 "approval_required",
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text(
-                        "Access requested. When approved, read again to fetch full content."
-                            .to_owned(),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
                     ),
-                )]),
+                    (
+                        "message",
+                        CborValue::Text(
+                            "Access requested. When approved, read again to fetch full content."
+                                .to_owned(),
+                        ),
+                    ),
+                ]),
             ),
             Err(message) => error_envelope(Some("request_full"), "internal_error", &message),
         }
@@ -3601,10 +3620,16 @@ impl<B: EmailBackend> Engine<B> {
             Ok(()) => ok_envelope(
                 command_name,
                 command.status_name(),
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text(command.success_message().to_owned()),
-                )]),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "message",
+                        CborValue::Text(command.success_message().to_owned()),
+                    ),
+                ]),
             ),
             Err(message) if backend_error_code(&message, "imap_error") == "message_not_found" => {
                 error_envelope(Some(command_name), "message_not_found", "message not found")
@@ -3623,10 +3648,16 @@ impl<B: EmailBackend> Engine<B> {
             Ok(_trash_folder) => ok_envelope(
                 command,
                 "moved_to_trash",
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text("Message moved to trash.".to_owned()),
-                )]),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "message",
+                        CborValue::Text("Message moved to trash.".to_owned()),
+                    ),
+                ]),
             ),
             Err(message) if backend_error_code(&message, "imap_error") == "message_not_found" => {
                 error_envelope(Some(command), "message_not_found", "message not found")
@@ -3744,10 +3775,13 @@ impl<B: EmailBackend> Engine<B> {
                 Ok(_id) => ok_envelope(
                     "send",
                     "sent",
-                    cbor_map(vec![(
-                        "message",
-                        CborValue::Text("Message sent.".to_owned()),
-                    )]),
+                    cbor_map(vec![
+                        (
+                            "account",
+                            CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                        ),
+                        ("message", CborValue::Text("Message sent.".to_owned())),
+                    ]),
                 ),
                 Err(message) => backend_error_envelope(Some("send"), "smtp_error", &message),
             };
@@ -3756,10 +3790,16 @@ impl<B: EmailBackend> Engine<B> {
             return ok_envelope(
                 "send",
                 "already_sent",
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text("Message already sent.".to_owned()),
-                )]),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "message",
+                        CborValue::Text("Message already sent.".to_owned()),
+                    ),
+                ]),
             );
         }
         let approval = OutgoingApproval {
@@ -3784,10 +3824,16 @@ impl<B: EmailBackend> Engine<B> {
             Ok(_id) => ok_envelope(
                 "send",
                 "approval_required",
-                cbor_map(vec![(
-                    "message",
-                    CborValue::Text("Message pending approval.".to_owned()),
-                )]),
+                cbor_map(vec![
+                    (
+                        "account",
+                        CborValue::Text(safe_model_line(&account_id, MAX_HEADER_VALUE_CHARS)),
+                    ),
+                    (
+                        "message",
+                        CborValue::Text("Message pending approval.".to_owned()),
+                    ),
+                ]),
             ),
             Err(message) => error_envelope(Some("send"), "internal_error", &message),
         }
