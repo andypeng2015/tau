@@ -222,6 +222,12 @@ extensions: {
 },
 ```
 
+Repeatable `--harness-config=KEY=VALUE` CLI overrides are applied after config
+files for a newly started harness, for example
+`tau --harness-config=extensions.core-shell.config.working_directory=/srv/project`.
+The flag is rejected for attach-only commands because a running harness cannot
+have its startup config changed.
+
 ### `core-shell` — shell and filesystem tools
 
 Registers the everyday tools the agent uses to inspect and edit a project:

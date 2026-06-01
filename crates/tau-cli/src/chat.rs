@@ -16,7 +16,7 @@ use tau_proto::{
 };
 
 use crate::action_commands::ActionCommandState;
-use crate::daemon::{daemon_output_for_session, resolve_daemon};
+use crate::daemon::{DaemonCliOverrides, daemon_output_for_session, resolve_daemon};
 use crate::event_renderer::{EventRenderer, ToolTimerNotifier, ToolTimerState};
 use crate::prompt_history::PromptHistoryStore;
 use crate::tool_render::ui_dir_block;
@@ -446,6 +446,7 @@ pub(crate) fn run_chat(
     startup_role: Option<&str>,
     role_cli_overrides: &[tau_config::settings::RoleCliOverride],
     extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
+    harness_config_overrides: &[tau_config::settings::HarnessConfigCliOverride],
 ) -> Result<(), CliError> {
     use tau_cli_term::{HighTerm, SlashCommand};
 
@@ -473,10 +474,12 @@ pub(crate) fn run_chat(
         session_status,
         daemon_output,
         startup_role,
-        role_cli_overrides,
-        extension_cli_overrides,
+        DaemonCliOverrides {
+            role: role_cli_overrides,
+            extension: extension_cli_overrides,
+            harness_config: harness_config_overrides,
+        },
     )?;
-    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness daemon resolved");
     let socket_path = daemon.socket_path();
 
     // Connect and split into independent reader/writer — no mutex

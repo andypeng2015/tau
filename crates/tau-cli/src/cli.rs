@@ -35,6 +35,15 @@ pub struct HarnessArgs {
     /// Select the startup/rendered role.
     #[arg(long = "role", global = true)]
     pub role: Option<String>,
+
+    /// Override one harness config key after all config files are loaded.
+    #[arg(
+        long = "harness-config",
+        global = true,
+        value_name = "KEY=VALUE",
+        require_equals = true
+    )]
+    pub harness_config: Vec<tau_config::settings::HarnessConfigCliOverride>,
 }
 
 #[derive(Args)]

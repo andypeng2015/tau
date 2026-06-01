@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use tempfile::TempDir;
 
 use super::*;
@@ -220,6 +222,78 @@ fn harness_settings_user_override_wins_over_built_in() {
         s.session_retention(),
         Some(std::time::Duration::from_secs(7 * 24 * 60 * 60))
     );
+}
+
+#[test]
+fn harness_config_cli_overrides_are_applied_last_and_typed() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"{
+            session_retention_days: 7,
+            extensions: {
+                "core-shell": { config: { working_directory: "/from-file" } },
+                "std-websearch": { enable: true },
+            },
+        }"#,
+    )
+    .expect("write");
+
+    let overrides = [
+        HarnessConfigCliOverride::from_str("session_retention_days=3").expect("override"),
+        HarnessConfigCliOverride::from_str(
+            "extensions.core-shell.config.working_directory=/from-cli",
+        )
+        .expect("override"),
+        HarnessConfigCliOverride::from_str("extensions.std-websearch.enable=false")
+            .expect("override"),
+        HarnessConfigCliOverride::from_str("extensions.core-shell.command=[\"tau\", \"ext\"]")
+            .expect("override"),
+    ];
+
+    let s = load_harness_settings_with_cli_overrides_in(&dirs_with_config(dir), &[], &overrides)
+        .expect("load");
+
+    assert_eq!(s.session_retention_days, 3);
+    let core_shell = &s.extensions["core-shell"];
+    assert_eq!(
+        core_shell.config.as_ref().and_then(|config| {
+            config
+                .get("working_directory")
+                .and_then(serde_json::Value::as_str)
+        }),
+        Some("/from-cli")
+    );
+    assert_eq!(
+        core_shell.command.as_ref().expect("command"),
+        &vec!["tau".to_owned(), "ext".to_owned()]
+    );
+    assert_eq!(s.extensions["std-websearch"].enable, Some(false));
+}
+
+#[test]
+fn harness_config_cli_overrides_can_update_roles() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    let overrides = [HarnessConfigCliOverride::from_str(
+        "roleGroups.engineer.roles.senior-engineer.effort=low",
+    )
+    .expect("override")];
+
+    let s = load_harness_settings_with_cli_overrides_in(&dirs_with_config(dir), &[], &overrides)
+        .expect("load");
+
+    assert_eq!(
+        s.roles["senior-engineer"].effort,
+        Some(tau_proto::Effort::Low)
+    );
+}
+
+#[test]
+fn harness_config_cli_overrides_reject_bad_key_value() {
+    assert!(HarnessConfigCliOverride::from_str("missing-equals").is_err());
+    assert!(HarnessConfigCliOverride::from_str("=value").is_err());
 }
 
 #[test]

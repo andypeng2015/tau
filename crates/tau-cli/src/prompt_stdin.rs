@@ -12,7 +12,7 @@ use tau_proto::{
 };
 
 use crate::CliError;
-use crate::daemon::{daemon_output_for_session, resolve_daemon};
+use crate::daemon::{DaemonCliOverrides, daemon_output_for_session, resolve_daemon};
 
 /// Read a single user prompt from stdin, submit it to a daemon, print the final
 /// reasoning snapshots and answer, then exit.
@@ -23,6 +23,7 @@ pub(crate) fn run_prompt_stdin(
     startup_role: Option<&str>,
     role_cli_overrides: &[tau_config::settings::RoleCliOverride],
     extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
+    harness_config_overrides: &[tau_config::settings::HarnessConfigCliOverride],
 ) -> Result<(), CliError> {
     let mut prompt = String::new();
     io::stdin().read_to_string(&mut prompt)?;
@@ -42,10 +43,12 @@ pub(crate) fn run_prompt_stdin(
         session_status,
         daemon_output,
         startup_role,
-        role_cli_overrides,
-        extension_cli_overrides,
+        DaemonCliOverrides {
+            role: role_cli_overrides,
+            extension: extension_cli_overrides,
+            harness_config: harness_config_overrides,
+        },
     )?;
-
     let (mut reader, mut writer) = connect_prompt_stdin_client(&daemon.socket_path())?;
     submit_prompt(&mut writer, session_id, prompt)?;
 

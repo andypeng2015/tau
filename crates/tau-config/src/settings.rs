@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use indexmap::IndexMap;
@@ -766,6 +767,33 @@ pub struct ExtensionSecretEntry {
     pub optional: bool,
 }
 
+/// One command-line harness config override in `key=value` form.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessConfigCliOverride {
+    /// Dotted config path to override, e.g.
+    /// `extensions.core-shell.config.working_directory`.
+    pub key: String,
+    /// Raw right-hand side parsed as YAML when applied.
+    pub raw_value: String,
+}
+
+impl FromStr for HarnessConfigCliOverride {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let Some((key, raw_value)) = value.split_once('=') else {
+            return Err("expected KEY=VALUE".to_owned());
+        };
+        if key.is_empty() {
+            return Err("harness config override key must not be empty".to_owned());
+        }
+        Ok(Self {
+            key: key.to_owned(),
+            raw_value: raw_value.to_owned(),
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness roles
 // ---------------------------------------------------------------------------
@@ -920,8 +948,8 @@ pub enum SettingsError {
         second_group: String,
     },
     UnknownRoleCliOverride(String),
+    InvalidHarnessConfigCliOverride(String),
 }
-
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -937,6 +965,9 @@ impl fmt::Display for SettingsError {
             Self::UnknownRoleCliOverride(role) => {
                 write!(f, "unknown role in CLI override: `{role}`")
             }
+            Self::InvalidHarnessConfigCliOverride(message) => {
+                write!(f, "invalid harness config CLI override: {message}")
+            }
         }
     }
 }
@@ -945,7 +976,9 @@ impl std::error::Error for SettingsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(source) => Some(source),
-            Self::DuplicateGroupedRole { .. } | Self::UnknownRoleCliOverride(_) => None,
+            Self::DuplicateGroupedRole { .. }
+            | Self::UnknownRoleCliOverride(_)
+            | Self::InvalidHarnessConfigCliOverride(_) => None,
         }
     }
 }
@@ -1098,7 +1131,7 @@ pub fn load_harness_settings() -> Result<HarnessSettings, SettingsError> {
 
 /// Like [`load_harness_settings`] but reads from an explicit directory layout.
 pub fn load_harness_settings_in(dirs: &TauDirs) -> Result<HarnessSettings, SettingsError> {
-    load_harness_settings_with_role_overrides_in(dirs, &[])
+    load_harness_settings_with_cli_overrides_in(dirs, &[], &[])
 }
 
 /// Like [`load_harness_settings_in`], then applies role CLI overrides in order.
@@ -1106,10 +1139,23 @@ pub fn load_harness_settings_with_role_overrides_in(
     dirs: &TauDirs,
     role_overrides: &[RoleCliOverride],
 ) -> Result<HarnessSettings, SettingsError> {
-    let mut settings: HarnessSettings = load_yaml_layered_with_builtin(
+    load_harness_settings_with_cli_overrides_in(dirs, role_overrides, &[])
+}
+
+/// Like [`load_harness_settings_in`], then applies role and harness config CLI
+/// overrides in order. Harness config overrides are layered last and use normal
+/// dotted config paths such as
+/// `extensions.core-shell.config.working_directory`.
+pub fn load_harness_settings_with_cli_overrides_in(
+    dirs: &TauDirs,
+    role_overrides: &[RoleCliOverride],
+    harness_config_overrides: &[HarnessConfigCliOverride],
+) -> Result<HarnessSettings, SettingsError> {
+    let mut settings: HarnessSettings = load_yaml_layered_with_builtin_and_harness_overrides(
         BUILT_IN_HARNESS_YAML,
         dirs.config_dir.as_deref(),
         "harness",
+        harness_config_overrides,
     )?;
 
     // Generic YAML layering replaces arrays, but prompt fragments are additive
@@ -1123,6 +1169,10 @@ pub fn load_harness_settings_with_role_overrides_in(
         role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
         role_settings.apply_role_group_overrides(overrides.role_groups)?;
     }
+    for overrides in harness_role_cli_override_layers(harness_config_overrides)? {
+        role_settings.apply_prompt_fragment_overrides(overrides.prompt_fragments);
+        role_settings.apply_role_group_overrides(overrides.role_groups)?;
+    }
     role_settings.apply_role_cli_overrides(role_overrides)?;
     role_settings.remove_disabled_roles();
     role_settings.apply_global_prompt_fragments_to_roles();
@@ -1130,6 +1180,118 @@ pub fn load_harness_settings_with_role_overrides_in(
     settings.roles = role_settings.roles;
     settings.role_groups = role_settings.role_groups;
     Ok(settings)
+}
+
+#[derive(Clone, Debug)]
+struct HarnessConfigOverrideSource {
+    key: String,
+    value: config::Value,
+}
+
+impl config::Source for HarnessConfigOverrideSource {
+    fn clone_into_box(&self) -> Box<dyn config::Source + Send + Sync> {
+        Box::new(self.clone())
+    }
+
+    fn collect(&self) -> Result<config::Map<String, config::Value>, config::ConfigError> {
+        let mut out = config::Map::new();
+        out.insert(self.key.clone(), self.value.clone());
+        Ok(out)
+    }
+}
+
+fn load_yaml_layered_with_builtin_and_harness_overrides<T: for<'de> Deserialize<'de>>(
+    built_in_text: &'static str,
+    dir: Option<&Path>,
+    name: &str,
+    overrides: &[HarnessConfigCliOverride],
+) -> Result<T, SettingsError> {
+    let mut builder = config::Config::builder()
+        .add_source(config::File::from_str(built_in_text, config::FileFormat::Yaml).required(true));
+    builder = add_yaml_file_sources(builder, dir, name);
+    for override_ in overrides {
+        builder = builder.add_source(harness_config_override_source(override_)?);
+    }
+    builder
+        .build()?
+        .try_deserialize()
+        .map_err(SettingsError::from)
+}
+
+fn harness_role_cli_override_layers(
+    overrides: &[HarnessConfigCliOverride],
+) -> Result<Vec<HarnessRoleOverrides>, SettingsError> {
+    let mut layers = Vec::new();
+    for override_ in overrides {
+        let layer: HarnessRoleOverrides = config::Config::builder()
+            .add_source(harness_config_override_source(override_)?)
+            .build()?
+            .try_deserialize()?;
+        layers.push(layer);
+    }
+    Ok(layers)
+}
+
+fn harness_config_override_source(
+    override_: &HarnessConfigCliOverride,
+) -> Result<HarnessConfigOverrideSource, SettingsError> {
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&override_.raw_value).map_err(|err| {
+            SettingsError::InvalidHarnessConfigCliOverride(format!(
+                "{}: failed to parse value as YAML: {err}",
+                override_.key
+            ))
+        })?;
+    let value = config_value_from_yaml(yaml)?;
+    Ok(HarnessConfigOverrideSource {
+        key: override_.key.clone(),
+        value,
+    })
+}
+
+fn config_value_from_yaml(value: serde_yaml_ng::Value) -> Result<config::Value, SettingsError> {
+    let kind = match value {
+        serde_yaml_ng::Value::Null => config::ValueKind::Nil,
+        serde_yaml_ng::Value::Bool(value) => config::ValueKind::Boolean(value),
+        serde_yaml_ng::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                config::ValueKind::I64(value)
+            } else if let Some(value) = value.as_u64() {
+                config::ValueKind::U64(value)
+            } else if let Some(value) = value.as_f64() {
+                config::ValueKind::Float(value)
+            } else {
+                return Err(SettingsError::InvalidHarnessConfigCliOverride(
+                    "unsupported YAML number".to_owned(),
+                ));
+            }
+        }
+        serde_yaml_ng::Value::String(value) => config::ValueKind::String(value),
+        serde_yaml_ng::Value::Sequence(values) => config::ValueKind::Array(
+            values
+                .into_iter()
+                .map(config_value_from_yaml)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        serde_yaml_ng::Value::Mapping(entries) => {
+            let mut table = config::Map::new();
+            for (key, value) in entries {
+                let serde_yaml_ng::Value::String(key) = key else {
+                    return Err(SettingsError::InvalidHarnessConfigCliOverride(
+                        "YAML map override values must use string keys".to_owned(),
+                    ));
+                };
+                table.insert(key, config_value_from_yaml(value)?);
+            }
+            config::ValueKind::Table(table)
+        }
+        serde_yaml_ng::Value::Tagged(_) => {
+            return Err(SettingsError::InvalidHarnessConfigCliOverride(
+                "YAML tags are not supported in harness config overrides".to_owned(),
+            ));
+        }
+    };
+    Ok(config::Value::new(None, kind))
 }
 
 /// Stacks an embedded built-in YAML string underneath the user's files.

@@ -307,6 +307,18 @@ where
     overrides
 }
 
+fn reject_harness_config_overrides(
+    overrides: &[tau_config::settings::HarnessConfigCliOverride],
+    command: &str,
+) -> Result<(), CliError> {
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::Participant(format!(
+        "--harness-config can only be used when starting a new harness instance; `{command}` cannot apply it to an existing or absent harness"
+    )))
+}
+
 fn required_harness_role<'a>(role: Option<&'a str>, command: &str) -> Result<&'a str, CliError> {
     role.ok_or_else(|| CliError::Participant(format!("tau dev {command} requires --role <role>")))
 }
@@ -353,6 +365,28 @@ where
     overrides
 }
 
+fn parse_harness_config_cli_overrides<I, S>(
+    args: I,
+) -> Result<Vec<tau_config::settings::HarnessConfigCliOverride>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut overrides = Vec::new();
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            break;
+        }
+        if let Some(value) = arg.strip_prefix("--harness-config=") {
+            overrides.push(value.parse()?);
+        }
+    }
+    Ok(overrides)
+}
+
 /// Describes how an `ext` component gets its global tracing subscriber.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComponentLogging {
@@ -389,6 +423,8 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
     let run = || -> Result<(), CliError> {
         let role_cli_overrides = parse_role_cli_overrides(std::env::args_os());
         let extension_cli_overrides = parse_extension_cli_overrides(std::env::args_os());
+        let harness_config_overrides = parse_harness_config_cli_overrides(std::env::args_os())
+            .map_err(CliError::Participant)?;
         let cli::Cli {
             version,
             harness,
@@ -401,9 +437,12 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
         }
 
         let command = command.unwrap_or(cli::Command::Run(run));
-        tau_harness::validate_cli_overrides(&role_cli_overrides, &extension_cli_overrides)
-            .map_err(|error| CliError::Participant(error.to_string()))?;
-
+        tau_harness::validate_cli_overrides(
+            &role_cli_overrides,
+            &extension_cli_overrides,
+            &harness_config_overrides,
+        )
+        .map_err(|error| CliError::Participant(error.to_string()))?;
         match command {
             cli::Command::Run(cli::RunArgs {
                 resume,
@@ -412,6 +451,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 attach,
             }) => {
                 let (session_id, session_status) = if attach {
+                    reject_harness_config_overrides(&harness_config_overrides, "--attach")?;
                     let cwd = std::env::current_dir()?;
                     let daemon_dir =
                         runtime_dir::find_harness_for_dir(&cwd).ok_or(CliError::NoRunningDaemon)?;
@@ -441,6 +481,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                         harness.role.as_deref(),
                         &role_cli_overrides,
                         &extension_cli_overrides,
+                        &harness_config_overrides,
                     )
                 } else {
                     run_chat(
@@ -450,11 +491,13 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                         harness.role.as_deref(),
                         &role_cli_overrides,
                         &extension_cli_overrides,
+                        &harness_config_overrides,
                     )
                 }
             }
 
             cli::Command::SessionList { sessions_dir } => {
+                reject_harness_config_overrides(&harness_config_overrides, "session-list")?;
                 for line in tau_session_inspect::session_list_lines(sessions_dir)? {
                     println!("{line}");
                 }
@@ -465,6 +508,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 session_id,
                 sessions_dir,
             } => {
+                reject_harness_config_overrides(&harness_config_overrides, "session-show")?;
                 for line in tau_session_inspect::session_lines(sessions_dir, &session_id)? {
                     println!("{line}");
                 }
@@ -472,22 +516,34 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
             }
 
             cli::Command::PolicyShow { state_dir } => {
+                reject_harness_config_overrides(&harness_config_overrides, "policy-show")?;
                 for line in tau_session_inspect::policy_lines(state_dir.join("policy.cbor"))? {
                     println!("{line}");
                 }
                 Ok(())
             }
 
-            cli::Command::Init { force } => run_init(force),
+            cli::Command::Init { force } => {
+                reject_harness_config_overrides(&harness_config_overrides, "init")?;
+                run_init(force)
+            }
 
-            cli::Command::Provider { args } => tau_ext_provider_builtin::run_provider_cli(&args)
-                .map_err(|e| CliError::Participant(e.to_string())),
+            cli::Command::Provider { args } => {
+                reject_harness_config_overrides(&harness_config_overrides, "provider")?;
+                tau_ext_provider_builtin::run_provider_cli(&args)
+                    .map_err(|e| CliError::Participant(e.to_string()))
+            }
 
             cli::Command::Dev { command } => match command {
                 cli::DevCommand::Send { session_id, line } => {
+                    reject_harness_config_overrides(&harness_config_overrides, "dev send")?;
                     send::run_send(&session_id, &line.join(" "))
                 }
                 cli::DevCommand::DumpInitialPrompt { out, message } => {
+                    reject_harness_config_overrides(
+                        &harness_config_overrides,
+                        "dev dump-initial-prompt",
+                    )?;
                     tau_harness::dump_initial_prompt(&out, &message)?;
                     println!("wrote {}", out.display());
                     Ok(())
@@ -498,6 +554,7 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                         role,
                         &role_cli_overrides,
                         &extension_cli_overrides,
+                        &harness_config_overrides,
                     )
                 }
                 cli::DevCommand::PrintTools => {
@@ -506,11 +563,13 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                         role,
                         &role_cli_overrides,
                         &extension_cli_overrides,
+                        &harness_config_overrides,
                     )
                 }
             },
 
             cli::Command::Ext { name } => {
+                reject_harness_config_overrides(&harness_config_overrides, "ext")?;
                 let built_in_components = [Component {
                     name: "harness",
                     runner: run_harness_component,

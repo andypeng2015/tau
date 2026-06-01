@@ -74,6 +74,53 @@ fn prompt_stdin_flag_is_parsed_for_default_run() {
 }
 
 #[test]
+fn harness_config_flags_parse_repeated_and_global() {
+    let overrides = super::parse_harness_config_cli_overrides([
+        "tau",
+        "--harness-config=extensions.core-shell.config.working_directory=/foo",
+        "dev",
+        "print-prompt",
+        "--harness-config=session_retention_days=3",
+    ])
+    .expect("parse overrides");
+
+    assert_eq!(
+        overrides,
+        vec![
+            tau_config::settings::HarnessConfigCliOverride {
+                key: "extensions.core-shell.config.working_directory".to_owned(),
+                raw_value: "/foo".to_owned(),
+            },
+            tau_config::settings::HarnessConfigCliOverride {
+                key: "session_retention_days".to_owned(),
+                raw_value: "3".to_owned(),
+            },
+        ]
+    );
+}
+#[test]
+fn harness_config_overrides_reject_attach_only_paths() {
+    let overrides = [tau_config::settings::HarnessConfigCliOverride {
+        key: "session_retention_days".to_owned(),
+        raw_value: "3".to_owned(),
+    }];
+
+    let err = super::reject_harness_config_overrides(&overrides, "--attach")
+        .expect_err("attach cannot apply overrides");
+    assert!(err.to_string().contains("starting a new harness instance"));
+}
+
+#[test]
+fn harness_config_flag_requires_key_value() {
+    let err = match super::cli::Cli::try_parse_from(["tau", "--harness-config=missing-equals"]) {
+        Ok(_) => panic!("missing KEY=VALUE must fail"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("expected KEY=VALUE"));
+}
+
+#[test]
 fn global_harness_flags_parse_before_dev_print_prompt() {
     // Hidden diagnostic commands use the same global harness args as normal
     // startup, including flags placed before the `dev` subcommand.

@@ -215,14 +215,19 @@ pub(crate) fn daemon_output_for_session(session_id: &str) -> Result<DaemonOutput
     })
 }
 
+pub(crate) struct DaemonCliOverrides<'a> {
+    pub(crate) role: &'a [tau_config::settings::RoleCliOverride],
+    pub(crate) extension: &'a [tau_config::settings::ExtensionCliOverride],
+    pub(crate) harness_config: &'a [tau_config::settings::HarnessConfigCliOverride],
+}
+
 pub(crate) fn resolve_daemon(
     attach: bool,
     session_id: &str,
     session_status: SessionLaunchStatus,
     daemon_output: Option<DaemonOutput>,
     startup_role: Option<&str>,
-    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
-    extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
+    cli_overrides: DaemonCliOverrides<'_>,
 ) -> Result<DaemonHandle, CliError> {
     tracing::debug!(target: "tau_cli::startup", attach, session_id, "resolving harness daemon");
     let project_root = std::env::current_dir()?;
@@ -238,8 +243,7 @@ pub(crate) fn resolve_daemon(
         session_status,
         daemon_output.expect("daemon output for spawned harness"),
         startup_role,
-        role_cli_overrides,
-        extension_cli_overrides,
+        cli_overrides,
     )
 }
 
@@ -266,8 +270,7 @@ fn start_daemon(
     session_status: SessionLaunchStatus,
     output: DaemonOutput,
     startup_role: Option<&str>,
-    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
-    extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
+    cli_overrides: DaemonCliOverrides<'_>,
 ) -> Result<DaemonHandle, CliError> {
     let tau_binary = std::env::current_exe()?;
     tracing::debug!(target: "tau_cli::startup", tau_binary = %tau_binary.display(), session_id, "spawning harness daemon");
@@ -282,8 +285,7 @@ fn start_daemon(
         stderr: output.stderr,
         stdin: Stdio::from(write_pipe),
         startup_role,
-        role_cli_overrides,
-        extension_cli_overrides,
+        cli_overrides,
     })
     .spawn();
 
@@ -326,8 +328,7 @@ struct DaemonCommandSpec<'a> {
     stderr: Stdio,
     stdin: Stdio,
     startup_role: Option<&'a str>,
-    role_cli_overrides: &'a [tau_config::settings::RoleCliOverride],
-    extension_cli_overrides: &'a [tau_config::settings::ExtensionCliOverride],
+    cli_overrides: DaemonCliOverrides<'a>,
 }
 
 /// Build the `tau ext harness` command with the readiness-pipe write end wired
@@ -359,17 +360,24 @@ fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
     if let Some(role) = spec.startup_role.filter(|role| !role.is_empty()) {
         cmd.env(tau_harness::STARTUP_ROLE_ENV, role);
     }
-    if !spec.role_cli_overrides.is_empty() {
+    if !spec.cli_overrides.role.is_empty() {
         cmd.env(
             tau_harness::ROLE_CLI_OVERRIDES_ENV,
-            serde_json::to_string(spec.role_cli_overrides).expect("role overrides serialize"),
+            serde_json::to_string(spec.cli_overrides.role).expect("role overrides serialize"),
         );
     }
-    if !spec.extension_cli_overrides.is_empty() {
+    if !spec.cli_overrides.extension.is_empty() {
         cmd.env(
             tau_harness::EXTENSION_CLI_OVERRIDES_ENV,
-            serde_json::to_string(spec.extension_cli_overrides)
+            serde_json::to_string(spec.cli_overrides.extension)
                 .expect("extension overrides serialize"),
+        );
+    }
+    if !spec.cli_overrides.harness_config.is_empty() {
+        cmd.env(
+            tau_harness::HARNESS_CONFIG_CLI_OVERRIDES_ENV,
+            serde_json::to_string(spec.cli_overrides.harness_config)
+                .expect("harness config overrides serialize"),
         );
     }
 
