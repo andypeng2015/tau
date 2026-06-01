@@ -519,6 +519,12 @@ where
             Frame::Message(Message::Configure(msg)) => {
                 match tau_extension::parse_config::<ExtConfig>(&msg.config) {
                     Ok(cfg) => {
+                        if let Err(message) = apply_working_directory(&cfg) {
+                            tx.send(Frame::Message(Message::ConfigError(ConfigError {
+                                message,
+                            })))?;
+                            continue;
+                        }
                         let dir_lock_changed = config.dir_lock.enable != cfg.dir_lock.enable;
                         config = cfg;
                         if dir_lock_changed {
@@ -649,6 +655,18 @@ where
         .map_err(|_| "writer thread panicked")?
         .map_err(|e| -> Box<dyn Error> { e })?;
     Ok(())
+}
+
+fn apply_working_directory(config: &ExtConfig) -> Result<(), String> {
+    let Some(working_directory) = config.working_directory.as_ref() else {
+        return Ok(());
+    };
+    std::env::set_current_dir(working_directory).map_err(|err| {
+        format!(
+            "failed to set ext-shell working_directory to {}: {err}",
+            working_directory.display()
+        )
+    })
 }
 
 fn dir_lock_tool_spec(enabled_by_default: bool) -> ToolSpec {

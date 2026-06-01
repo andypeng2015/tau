@@ -231,6 +231,10 @@ tool for testing. The shell command and any wrapper prefix are configurable:
 ```json5
 "core-shell": {
   config: {
+    // Process-wide cwd for ext-shell itself. Useful when core-shell is
+    // launched remotely via SSH and the harness-level cwd only affects
+    // the local ssh process.
+    working_directory: "/srv/project",
     shell: {
       command: "bash",
       prefix: ["nix", "develop", "-c"],
@@ -251,6 +255,9 @@ tool for testing. The shell command and any wrapper prefix are configurable:
   },
 },
 ```
+
+`working_directory` changes ext-shell's own process cwd after startup config is
+received, so default relative paths for shell and filesystem tools resolve there.
 
 When `dir_lock.enable` is true (the default), the `dir_lock` tool can manually
 lock an existing directory for updates, and `edit`, `apply_patch`, plus

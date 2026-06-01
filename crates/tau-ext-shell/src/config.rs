@@ -1,6 +1,7 @@
 //! Per-session configuration for the shell/file extension.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::isolation::{apply_command_isolation, apply_read_only_cwd_mount};
@@ -8,6 +9,10 @@ use crate::isolation::{apply_command_isolation, apply_read_only_cwd_mount};
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ExtConfig {
+    /// Current working directory the extension switches to after receiving its
+    /// startup configuration. Relative paths used by ext-shell tools are
+    /// resolved from this directory unless a per-call cwd overrides them.
+    pub(crate) working_directory: Option<PathBuf>,
     pub(crate) shell: ShellConfig,
     pub(crate) dir_lock: DirLockConfig,
 }

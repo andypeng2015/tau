@@ -3355,6 +3355,47 @@ fn shell_extension_rejects_invalid_config() {
 }
 
 #[test]
+fn shell_extension_reports_invalid_working_directory_config() {
+    // `working_directory` is applied by ext-shell itself after Configure. A bad
+    // path should surface as ConfigError instead of silently leaving relative
+    // filesystem tools rooted at an unexpected directory.
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let td = TempDir::new().expect("tempdir");
+    let missing_dir = td.path().join("missing");
+
+    writer
+        .write_frame(&Frame::Message(Message::Configure(tau_proto::Configure {
+            config: cbor_text_map(vec![(
+                "working_directory",
+                missing_dir.to_str().expect("utf8 temp path"),
+            )]),
+            state_dir: None,
+            secrets: std::collections::BTreeMap::new(),
+        })))
+        .expect("configure");
+    writer.flush().expect("flush");
+
+    let error = loop {
+        let message = reader.read_message().expect("read").expect("message");
+        if let Message::ConfigError(error) = message {
+            break error;
+        }
+    };
+    assert!(
+        error
+            .message
+            .contains("failed to set ext-shell working_directory")
+    );
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
 fn shell_tool_multiline_display_uses_short_args_and_text_payload() {
     let args = CborValue::Map(vec![
         (
