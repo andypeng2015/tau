@@ -716,7 +716,7 @@ impl Engine {
         agent_id: &AgentId,
     ) -> Result<CborValue, String> {
         let limit = normalized_limit(args.limit)?;
-        let title_filter = optional_line(args.title.as_deref(), "title", false)?;
+        let title_filter = optional_trimmed_line(args.title.as_deref(), "title")?;
         let account = self.single_account(args.account.as_deref())?;
         let calendar = self.calendar_arg(account, args.calendar.as_deref())?;
         let range = parse_range(args, account)?;
@@ -1586,6 +1586,18 @@ fn optional_line(
         return Ok(None);
     };
     validate_line(value, name, allow_empty)?;
+    Ok(Some(value.to_owned()))
+}
+
+fn optional_trimmed_line(value: Option<&str>, name: &str) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    validate_line(value, name, false)?;
     Ok(Some(value.to_owned()))
 }
 
@@ -3037,6 +3049,20 @@ mod tests {
                 .format(&time::format_description::well_known::Rfc3339)
                 .expect("format la fall end"),
             "2026-11-07T00:00:00-08:00"
+        );
+    }
+
+    #[test]
+    fn list_events_ignores_blank_title_filter() {
+        // Agents may include an empty `title` when they mean "no filter".
+        // Treat whitespace-only filters as absent instead of failing the read.
+        assert_eq!(
+            optional_trimmed_line(Some(" \n\t "), "title").expect("blank title"),
+            None
+        );
+        assert_eq!(
+            optional_trimmed_line(Some("  project sync\n"), "title").expect("trimmed title"),
+            Some("project sync".to_owned())
         );
     }
 
