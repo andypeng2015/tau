@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 
 use tau_config::settings::{
     ExtensionCliOverride, ExtensionEntry, ExtensionSecretEntry, HarnessSettings, RoleCliOverride,
@@ -50,6 +51,9 @@ pub struct ExtensionConfig {
     pub command: String,
     pub args: Vec<String>,
     pub role: Option<String>,
+    /// Current working directory used when starting the extension process. When
+    /// absent, the child inherits the harness process working directory.
+    pub cwd: Option<PathBuf>,
     /// Config object handed to the extension via
     /// `LifecycleConfigure`. Defaults to an empty object so
     /// extensions always see a value.
@@ -67,6 +71,8 @@ pub struct BuiltinExtension {
     pub command: Vec<String>,
     pub suffix: Vec<String>,
     pub role: Option<String>,
+    /// Built-in default current working directory for this extension.
+    pub cwd: Option<PathBuf>,
     pub enable: bool,
     /// Built-in default config for this extension, merged below any
     /// user-provided `config: { … }` object in `harness.yaml`.
@@ -108,6 +114,7 @@ struct ResolvedExtension {
     suffix: Vec<String>,
     enable: bool,
     role: Option<String>,
+    cwd: Option<PathBuf>,
     config: serde_json::Value,
     secrets: BTreeMap<String, ExtensionSecretEntry>,
 }
@@ -154,6 +161,7 @@ pub fn resolve_extensions_with_cli_overrides(
                     suffix: b.suffix,
                     enable: b.enable,
                     role: b.role,
+                    cwd: b.cwd,
                     config: b.config,
                     secrets: b.secrets,
                 },
@@ -189,6 +197,9 @@ pub fn resolve_extensions_with_cli_overrides(
                 if let Some(role) = user.role.as_ref() {
                     existing.role = Some(role.clone());
                 }
+                if let Some(cwd) = user.cwd.as_ref() {
+                    existing.cwd = Some(cwd.clone());
+                }
                 if let Some(over) = user.config.clone() {
                     existing.config = merge_json(existing.config.take(), over);
                 }
@@ -207,6 +218,7 @@ pub fn resolve_extensions_with_cli_overrides(
                         suffix: user.suffix.clone().unwrap_or_default(),
                         enable: user.enable.unwrap_or(true),
                         role: user.role.clone(),
+                        cwd: user.cwd.clone(),
                         config: user
                             .config
                             .clone()
@@ -267,6 +279,7 @@ pub fn resolve_extensions_with_cli_overrides(
             command: program,
             args,
             role: entry.role,
+            cwd: entry.cwd,
             config: entry.config,
             secrets: entry.secrets,
         });
@@ -376,6 +389,7 @@ pub fn builtin_extensions() -> Vec<BuiltinExtension> {
                 .unwrap_or_else(|| vec![tau_binary.clone()]),
             suffix: def.suffix.clone().unwrap_or_default(),
             role: def.role.clone(),
+            cwd: def.cwd.clone(),
             enable: def.enable,
             config: def.config.clone(),
             secrets: def.secrets.clone().unwrap_or_default(),
@@ -400,6 +414,8 @@ pub(crate) struct BuiltInExtensionDef {
     pub suffix: Option<Vec<String>>,
     #[serde(default)]
     pub role: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
     pub enable: bool,
     pub config: serde_json::Value,
     #[serde(default)]

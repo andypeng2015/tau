@@ -208,15 +208,16 @@ with `tau policy-show`.
 
 Most built-in integrations are regular extensions under `crates/tau-ext-*/`.
 They are configured under `extensions.<name>` in `harness.yaml` and can be
-disabled with `enable: false`, swapped via `command:` / `prefix:`, or given
-free-form `config:` payload that arrives at startup as a `LifecycleConfigure`
-message. Some core tools, such as `delegate`, `wait`, and `skill`, are
-harness-owned instead of extension processes.
+disabled with `enable: false`, started from a configured `cwd:`, swapped via
+`command:` / `prefix:`, or given free-form `config:` payload that arrives at
+startup as a `LifecycleConfigure` message. Some core tools, such as `delegate`,
+`wait`, and `skill`, are harness-owned instead of extension processes.
 
 ```json5
 extensions: {
   "core-shell":         { enable: false },                       // disable
   "provider-builtin":    { prefix: ["ssh", "user@host"] },        // run remotely
+  "custom-tool":         { command: ["./tool"], cwd: "/srv/tool" }, // run from cwd
   "std-notifications": { config: { idle_seconds: 30 } },         // reconfigure
 },
 ```

@@ -214,6 +214,7 @@ mod tests {
                     command: "tau".to_owned(),
                     args: Vec::new(),
                     role: None,
+                    cwd: None,
                     config: serde_json::json!({}),
                     secrets,
                 },

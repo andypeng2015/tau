@@ -180,27 +180,35 @@ pub fn harness_log_path(sessions_dir: &Path, session_id: &str) -> PathBuf {
     session_logs_dir(sessions_dir, session_id).join("tau-harness.log")
 }
 
+fn supervised_command(config: &ExtensionConfig, pipe_stderr: bool) -> Command {
+    let mut command = Command::new(&config.command);
+    command
+        .args(&config.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    if let Some(cwd) = config.cwd.as_ref() {
+        command.current_dir(cwd);
+    }
+    if pipe_stderr {
+        command.stderr(Stdio::piped());
+    } else {
+        command.stderr(Stdio::inherit());
+    }
+    command
+}
+
 pub(crate) fn spawn_supervised(
     config: &ExtensionConfig,
     _kind: ClientKind,
     stderr_log_path: Option<PathBuf>,
     tx: &Sender<HarnessEvent>,
 ) -> Result<SupervisedSpawn, HarnessError> {
-    let mut command = Command::new(&config.command);
-    command
-        .args(&config.args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+    let mut command = supervised_command(config, stderr_log_path.is_some());
     for key in std::env::vars()
         .map(|(key, _)| key)
         .filter(|key| key.starts_with("TAU_SECRET_"))
     {
         command.env_remove(key);
-    }
-    if stderr_log_path.is_some() {
-        command.stderr(Stdio::piped());
-    } else {
-        command.stderr(Stdio::inherit());
     }
     let mut child = command.spawn().map_err(HarnessError::Io)?;
 
@@ -308,7 +316,21 @@ fn spawn_extension_stderr_logger(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn test_extension_config(cwd: Option<PathBuf>) -> ExtensionConfig {
+        ExtensionConfig {
+            name: "test-extension".to_owned(),
+            command: "tau-test-extension".to_owned(),
+            args: vec!["--stdio".to_owned()],
+            role: None,
+            cwd,
+            config: serde_json::json!({}),
+            secrets: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn extension_stderr_log_path_rejects_unsafe_extension_names() {
@@ -331,5 +353,17 @@ mod tests {
                 "{name:?} must be rejected before building the log path"
             );
         }
+    }
+
+    #[test]
+    fn supervised_command_uses_configured_cwd() {
+        // The cwd field is resolved from harness.yaml and must affect the OS
+        // child process, not the LifecycleConfigure payload sent after spawn.
+        let cwd = PathBuf::from("/tmp/tau-extension-cwd");
+        let config = test_extension_config(Some(cwd.clone()));
+
+        let command = supervised_command(&config, false);
+
+        assert_eq!(command.get_current_dir(), Some(cwd.as_path()));
     }
 }

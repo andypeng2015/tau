@@ -727,6 +727,10 @@ pub struct ExtensionEntry {
     /// use `suffix` to pick the subcommand on the running tau binary.
     pub command: Option<Vec<String>>,
 
+    /// Current working directory used when starting the extension process. When
+    /// absent, the child inherits the harness process working directory.
+    pub cwd: Option<PathBuf>,
+
     /// argv suffix appended after `command`. Symmetric to `prefix`.
     /// Built-in extensions use this to spell their subcommand (e.g.
     /// `["ext", "ext-provider-builtin"]`) so the `command` slot stays

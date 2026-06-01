@@ -16,6 +16,7 @@ fn builtin(
         command: vec!["tau".into()],
         suffix: vec!["ext".into(), suffix_arg.into()],
         role: Some(role.into()),
+        cwd: None,
         enable,
         config,
         secrets: BTreeMap::new(),
@@ -361,7 +362,7 @@ fn resolve_extensions_loads_from_yaml() {
                 extensions: {
                     "core-shell": { enable: false },
                     "test-dummy": { enable: true },
-                    "provider-builtin": { prefix: ["ssh", "host"] },
+                    "provider-builtin": { prefix: ["ssh", "host"], cwd: "/srv/provider" },
                     mything: { command: ["/bin/foo"] },
                 },
             }"#,
@@ -392,6 +393,10 @@ fn resolve_extensions_loads_from_yaml() {
     assert_eq!(
         provider.args,
         vec!["host", "tau", "ext", "ext-provider-builtin"]
+    );
+    assert_eq!(
+        provider.cwd.as_deref(),
+        Some(std::path::Path::new("/srv/provider"))
     );
 }
 
@@ -448,6 +453,32 @@ fn resolve_extensions_carries_and_merges_secret_declarations() {
         .expect("provider");
     assert!(!provider.secrets["builtin_secret"].optional);
     assert!(provider.secrets["user_secret"].optional);
+}
+
+#[test]
+fn resolve_extensions_carries_user_extension_cwd() {
+    // Extension cwd is harness-owned process launch metadata. It should stay at
+    // the extension entry level instead of being mixed into the extension's
+    // free-form LifecycleConfigure payload.
+    let mut s = HarnessSettings::built_in();
+    s.extensions.insert(
+        "mything".into(),
+        ExtensionEntry {
+            command: Some(vec!["/usr/local/bin/mything".into()]),
+            cwd: Some(std::path::PathBuf::from("/srv/mything")),
+            ..Default::default()
+        },
+    );
+
+    let resolved = resolve_extensions(&s, builtins()).expect("resolve");
+    let mything = resolved
+        .iter()
+        .find(|e| e.name == "mything")
+        .expect("mything");
+    assert_eq!(
+        mything.cwd.as_deref(),
+        Some(std::path::Path::new("/srv/mything"))
+    );
 }
 
 #[test]
