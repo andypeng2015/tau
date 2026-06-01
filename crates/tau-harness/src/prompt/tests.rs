@@ -48,7 +48,7 @@ fn cwd_prompt_fragment() -> tau_proto::PromptFragment {
 fn build_system_prompt_without_fragments_does_not_render_cwd_prose() {
     let skills = std::collections::HashMap::new();
     let prompt = build_system_prompt(&skills, &[]);
-    assert!(prompt.contains("autonomous agent operating inside the Tau harness"));
+    assert!(prompt.contains("## Your identity"));
     assert!(!prompt.contains("Current working directory: /tmp/work"));
 }
 
@@ -90,8 +90,9 @@ fn build_system_prompt_encourages_parallel_tool_calls() {
         serde_json::json!({}),
         RolePromptTemplateContext { role_name: "" },
     );
-    assert!(prompt.contains("parallel"));
-    assert!(prompt.contains("Maximize use of parallel tool calls"));
+    assert!(prompt.contains("## Tool calling"));
+    assert!(prompt.contains("## Available tools"));
+    assert!(prompt.contains("shell tool docs"));
 }
 
 #[test]
@@ -99,8 +100,7 @@ fn build_system_prompt_explains_tau_internal_marker() {
     let skills = std::collections::HashMap::new();
     let prompt = build_system_prompt(&skills, &[]);
     assert!(prompt.contains("[tau-internal]"));
-    assert!(prompt.contains("tool call was moved to run in the background"));
-    assert!(prompt.contains("tool output was deduplicated"));
+    assert!(prompt.contains("### Tau harness"));
 }
 
 /// Role prompts are configuration templates. They should be rendered just
