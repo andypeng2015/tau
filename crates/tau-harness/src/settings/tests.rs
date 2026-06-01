@@ -1,4 +1,8 @@
-use tau_config::settings::{ExtensionEntry, HarnessSettings, load_harness_settings_in};
+use std::str::FromStr;
+
+use tau_config::settings::{
+    ExtensionEntry, HarnessConfigCliOverride, HarnessSettings, load_harness_settings_in,
+};
 use tempfile::TempDir;
 
 use super::*;
@@ -218,6 +222,16 @@ fn resolve_extensions_cli_enable_unknown_extension_errors() {
         err,
         super::ResolveExtensionsError::UnknownCliOverride("missing".to_owned())
     );
+}
+#[test]
+fn validate_cli_overrides_rejects_invalid_harness_config_override() {
+    let overrides = [
+        HarnessConfigCliOverride::from_str("session_retention_days=abc").expect("override syntax"),
+    ];
+
+    let err = validate_cli_overrides(&[], &[], &overrides).expect_err("wrong type fails");
+
+    assert!(err.to_string().contains("session_retention_days"));
 }
 
 #[test]
@@ -465,7 +479,7 @@ fn resolve_extensions_carries_user_extension_cwd() {
         "mything".into(),
         ExtensionEntry {
             command: Some(vec!["/usr/local/bin/mything".into()]),
-            cwd: Some(std::path::PathBuf::from("/srv/mything")),
+            cwd: Some(Some(std::path::PathBuf::from("/srv/mything"))),
             ..Default::default()
         },
     );
@@ -479,6 +493,26 @@ fn resolve_extensions_carries_user_extension_cwd() {
         mything.cwd.as_deref(),
         Some(std::path::Path::new("/srv/mything"))
     );
+}
+#[test]
+fn resolve_extensions_user_can_clear_builtin_cwd() {
+    let mut builtins = builtins();
+    builtins[0].cwd = Some(std::path::PathBuf::from("/srv/provider"));
+    let mut s = HarnessSettings::built_in();
+    s.extensions.insert(
+        "provider-builtin".into(),
+        ExtensionEntry {
+            cwd: Some(None),
+            ..Default::default()
+        },
+    );
+
+    let resolved = resolve_extensions(&s, builtins).expect("resolve");
+    let provider = resolved
+        .iter()
+        .find(|e| e.name == "provider-builtin")
+        .expect("provider");
+    assert_eq!(provider.cwd, None);
 }
 
 #[test]

@@ -437,6 +437,47 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
         }
 
         let command = command.unwrap_or(cli::Command::Run(run));
+        match &command {
+            cli::Command::Run(run) if run.attach => {
+                reject_harness_config_overrides(&harness_config_overrides, "--attach")?;
+            }
+            cli::Command::Run(_)
+            | cli::Command::Dev {
+                command: cli::DevCommand::PrintPrompt | cli::DevCommand::PrintTools,
+            } => {}
+            cli::Command::SessionList { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "session-list")?;
+            }
+            cli::Command::SessionShow { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "session-show")?;
+            }
+            cli::Command::PolicyShow { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "policy-show")?;
+            }
+            cli::Command::Init { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "init")?;
+            }
+            cli::Command::Provider { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "provider")?;
+            }
+            cli::Command::Dev {
+                command: cli::DevCommand::Send { .. },
+            } => {
+                reject_harness_config_overrides(&harness_config_overrides, "dev send")?;
+            }
+            cli::Command::Dev {
+                command: cli::DevCommand::DumpInitialPrompt { .. },
+            } => {
+                reject_harness_config_overrides(
+                    &harness_config_overrides,
+                    "dev dump-initial-prompt",
+                )?;
+            }
+            cli::Command::Ext { .. } => {
+                reject_harness_config_overrides(&harness_config_overrides, "ext")?;
+            }
+        }
+
         tau_harness::validate_cli_overrides(
             &role_cli_overrides,
             &extension_cli_overrides,

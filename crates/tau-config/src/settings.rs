@@ -396,6 +396,7 @@ pub struct HarnessSettings {
     ///     enable: false
     ///   provider-builtin:
     ///     prefix: ["ssh", "user@host"]
+    ///     cwd: "/srv/tau-provider"
     ///   mything:
     ///     command: ["/usr/local/bin/my-tau-ext"]
     /// ```
@@ -730,7 +731,7 @@ pub struct ExtensionEntry {
 
     /// Current working directory used when starting the extension process. When
     /// absent, the child inherits the harness process working directory.
-    pub cwd: Option<PathBuf>,
+    pub cwd: Option<Option<PathBuf>>,
 
     /// argv suffix appended after `command`. Symmetric to `prefix`.
     /// Built-in extensions use this to spell their subcommand (e.g.

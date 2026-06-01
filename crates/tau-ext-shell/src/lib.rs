@@ -518,8 +518,11 @@ where
         match inner {
             Frame::Message(Message::Configure(msg)) => {
                 match tau_extension::parse_config::<ExtConfig>(&msg.config) {
-                    Ok(cfg) => {
-                        if let Err(message) = apply_working_directory(&cfg) {
+                    Ok(mut cfg) => {
+                        if cfg.working_directory.is_none() {
+                            cfg.working_directory = config.working_directory.clone();
+                        }
+                        if let Err(message) = apply_working_directory(&config, &cfg) {
                             tx.send(Frame::Message(Message::ConfigError(ConfigError {
                                 message,
                             })))?;
@@ -657,10 +660,20 @@ where
     Ok(())
 }
 
-fn apply_working_directory(config: &ExtConfig) -> Result<(), String> {
-    let Some(working_directory) = config.working_directory.as_ref() else {
-        return Ok(());
-    };
+fn apply_working_directory(current: &ExtConfig, next: &ExtConfig) -> Result<(), String> {
+    match (&current.working_directory, &next.working_directory) {
+        (None, Some(working_directory)) => set_process_working_directory(working_directory),
+        (Some(current), Some(next)) if current == next => Ok(()),
+        (Some(current), Some(next)) => Err(format!(
+            "ext-shell working_directory cannot be changed after startup (current: {}, requested: {})",
+            current.display(),
+            next.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn set_process_working_directory(working_directory: &Path) -> Result<(), String> {
     std::env::set_current_dir(working_directory).map_err(|err| {
         format!(
             "failed to set ext-shell working_directory to {}: {err}",

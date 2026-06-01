@@ -3355,6 +3355,26 @@ fn shell_extension_rejects_invalid_config() {
 }
 
 #[test]
+fn shell_working_directory_cannot_change_after_startup() {
+    let current = ExtConfig {
+        working_directory: Some(PathBuf::from("/srv/one")),
+        ..Default::default()
+    };
+    let same = ExtConfig {
+        working_directory: Some(PathBuf::from("/srv/one")),
+        ..Default::default()
+    };
+    let changed = ExtConfig {
+        working_directory: Some(PathBuf::from("/srv/two")),
+        ..Default::default()
+    };
+
+    apply_working_directory(&current, &same).expect("same cwd is idempotent");
+    let err = apply_working_directory(&current, &changed).expect_err("cwd change rejected");
+    assert!(err.contains("cannot be changed after startup"));
+}
+
+#[test]
 fn shell_extension_reports_invalid_working_directory_config() {
     // `working_directory` is applied by ext-shell itself after Configure. A bad
     // path should surface as ConfigError instead of silently leaving relative

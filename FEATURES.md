@@ -225,8 +225,9 @@ extensions: {
 Repeatable `--harness-config=KEY=VALUE` CLI overrides are applied after config
 files for a newly started harness, for example
 `tau --harness-config=extensions.core-shell.config.working_directory=/srv/project`.
-The flag is rejected for attach-only commands because a running harness cannot
-have its startup config changed.
+Values are parsed as YAML, so quote string values that look like booleans,
+numbers, `null`, arrays, or maps when you need literal strings. The flag is
+rejected for attach-only commands because a running harness cannot
 
 ### `core-shell` — shell and filesystem tools
 
@@ -264,6 +265,8 @@ tool for testing. The shell command and any wrapper prefix are configurable:
 
 `working_directory` changes ext-shell's own process cwd after startup config is
 received, so default relative paths for shell and filesystem tools resolve there.
+It is startup-only: later partial config updates may omit it, but attempts to
+change it to a different directory are rejected.
 
 When `dir_lock.enable` is true (the default), the `dir_lock` tool can manually
 lock an existing directory for updates, and `edit`, `apply_patch`, plus

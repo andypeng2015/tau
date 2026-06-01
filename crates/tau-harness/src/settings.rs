@@ -199,7 +199,7 @@ pub fn resolve_extensions_with_cli_overrides(
                     existing.role = Some(role.clone());
                 }
                 if let Some(cwd) = user.cwd.as_ref() {
-                    existing.cwd = Some(cwd.clone());
+                    existing.cwd = cwd.clone();
                 }
                 if let Some(over) = user.config.clone() {
                     existing.config = merge_json(existing.config.take(), over);
@@ -219,7 +219,7 @@ pub fn resolve_extensions_with_cli_overrides(
                         suffix: user.suffix.clone().unwrap_or_default(),
                         enable: user.enable.unwrap_or(true),
                         role: user.role.clone(),
-                        cwd: user.cwd.clone(),
+                        cwd: user.cwd.clone().flatten(),
                         config: user
                             .config
                             .clone()
@@ -495,6 +495,20 @@ fn load_settings_for_cli_overrides(
             tau_config::settings::SettingsError::UnknownRoleCliOverride(role),
         )),
         Err(error) => {
+            if !harness_config_overrides.is_empty() {
+                eprintln!("tau: harness.yaml failed to parse — ignored.\n{error}");
+                let fallback_dirs = tau_config::settings::TauDirs {
+                    config_dir: None,
+                    state_dir: dirs.state_dir.clone(),
+                };
+                return tau_config::settings::load_harness_settings_with_cli_overrides_in(
+                    &fallback_dirs,
+                    role_overrides,
+                    harness_config_overrides,
+                )
+                .map(apply_startup_role_override)
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>);
+            }
             eprintln!("tau: harness.yaml failed to parse — ignored.\n{error}");
             Ok(apply_startup_role_override(HarnessSettings::built_in()))
         }
