@@ -38,7 +38,8 @@ fn rebuild_records_only_above_threshold() {
 #[test]
 fn rebuild_skips_dedup_pointers() {
     let big = "z".repeat(1024);
-    let pointer = format!("{INTERNAL_MARKER} same as read call_x");
+    let pointer =
+        format!("{INTERNAL_MARKER} read tool output identical to previous tool call: call_x");
     let entries = vec![
         result_entry("call_a", &big),
         // A previously-recorded dedup pointer that was already
@@ -90,23 +91,28 @@ fn needs_rebuild_detects_head_jump() {
 }
 
 #[test]
-fn pointer_value_starts_with_marker() {
+fn pointer_value_describes_original_tool_call() {
     let v = build_pointer_value(&ToolCallId::from("call_xyz"), &ToolName::new("read"));
     let CborValue::Text(s) = v else {
         panic!("pointer should always be CborValue::Text");
     };
-    assert!(s.starts_with(INTERNAL_MARKER), "got: {s}");
+    assert_eq!(
+        s,
+        "[tau-internal] read tool output identical to previous tool call: call_xyz"
+    );
     assert!(is_dedup_pointer_value(&tau_proto::ToolResponse::from_cbor(
         &CborValue::Text(s),
     )));
 }
 
 #[test]
-fn pointer_error_message_starts_with_marker() {
+fn pointer_error_message_describes_original_tool_call() {
     let m = build_pointer_error_message(&ToolCallId::from("call_xyz"), &ToolName::new("shell"));
-    assert!(m.starts_with(INTERNAL_MARKER), "got: {m}");
+    assert_eq!(
+        m,
+        "[tau-internal] shell tool output identical to previous tool call: call_xyz"
+    );
 }
-
 #[test]
 fn error_hash_keyspace_is_disjoint_from_result_keyspace() {
     // An error message and a tool result whose CBOR-encoded form

@@ -160,15 +160,14 @@ fn cross_turn_identical_result_collapses_to_pointer() {
         text.contains("call_first"),
         "pointer must reference the first call_id; got: {text:?}",
     );
-    // Lock in the terse pointer budget. The format is
-    // `[tau-internal] same as <tool> <call_id>` — currently ~50 B for
-    // a typical tool name + OpenAI-style call_id. Cap at 100 B so a
-    // future format change that grows the pointer significantly
-    // (and erodes the dedup win) trips this test instead of slipping
-    // through silently.
+    // Lock in the pointer budget. The format is now descriptive enough for
+    // models to understand it as an already-completed duplicate while still
+    // staying small compared with deduped large outputs. Cap at 150 B so a
+    // future format change that grows the pointer significantly (and erodes
+    // the dedup win) trips this test instead of slipping through silently.
     assert!(
-        text.len() < 100,
-        "pointer text should stay terse (<100 B); got {} bytes: {text:?}",
+        text.len() < 150,
+        "pointer text should stay compact (<150 B); got {} bytes: {text:?}",
         text.len(),
     );
 
@@ -257,9 +256,9 @@ fn identical_errors_collapse_but_distinct_details_stay() {
     let mut h = echo_harness(&sp).expect("start");
 
     let cid = ensure_test_user_agent(&mut h);
-    // Above the threshold: a 300-char "compile failed" message with
-    // a long hex digest dump as details.
-    let long_msg = "compile failed: ".to_owned() + &"E0277 ".repeat(50);
+    // Above the threshold: a large "compile failed" message with identical
+    // details.
+    let long_msg = "compile failed: ".to_owned() + &"E0277 ".repeat(200);
 
     let first = run_tool_error(
         &mut h,
@@ -472,7 +471,7 @@ fn dedup_refuses_to_self_point() {
 
     // Manually run the dedup intake again on a result with the same
     // call_id and same content. Without the self-pointer guard this
-    // would produce `[tau-internal] same as ... call_solo ...` —
+    // would produce a dedup pointer to `call_solo` —
     // a pointer to itself.
     let mut replay = ToolResult {
         call_id: "call_solo".into(),

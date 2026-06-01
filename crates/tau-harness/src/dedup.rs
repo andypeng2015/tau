@@ -12,9 +12,9 @@
 //! This module replaces the *content* of any tool result whose CBOR
 //! encoding hashes to the same value as a result already on the
 //! conversation's branch with a short pointer
-//! (`[tau-internal] same as <tool_name> <call_id>`). The first
-//! occurrence is kept verbatim — only the duplicates are collapsed.
-//! The model can cross-reference the pointer to the original
+//! (`[tau-internal] <tool_name> tool output identical to previous tool call:
+//! <call_id>`). The first occurrence is kept verbatim — only the duplicates are
+//! collapsed. The model can cross-reference the pointer to the original
 //! `call_id` which is still present earlier in its own context.
 //!
 //! Three invariants protect correctness:
@@ -30,9 +30,9 @@
 //!    linear-prefix invariant for the upstream prompt cache.
 //!
 //! 3. **Threshold gated.** Results whose serialized form is below
-//!    [`DEFAULT_THRESHOLD_BYTES`] are not deduped at all — the pointer text
-//!    itself runs ~50 B, so single-digit savings aren't worth the extra hop the
-//!    model has to make to recover the original.
+//!    [`DEFAULT_THRESHOLD_BYTES`] are not deduped at all — the pointer adds
+//!    indirection, so smaller repeats aren't worth the extra hop the model has
+//!    to make to recover the original.
 
 use std::collections::HashMap;
 
@@ -44,10 +44,9 @@ use crate::INTERNAL_MARKER;
 /// Minimum CBOR-serialized size of a tool result to consider
 /// deduping. Below this, the pointer text is comparable to the
 /// original content and the model cost of the redirect outweighs the
-/// savings. 256 B leaves a healthy margin over the ~50-B pointer
-/// text and covers most "empty-success" tool outputs without
-/// burning cycles hashing them.
-pub(crate) const DEFAULT_THRESHOLD_BYTES: usize = 256;
+/// savings. 1 KiB keeps dedup limited to outputs large enough that the context
+/// savings justify the extra model hop needed to recover the original.
+pub(crate) const DEFAULT_THRESHOLD_BYTES: usize = 1024;
 
 /// 16-byte truncated BLAKE3 digest of the CBOR-serialized result
 /// content. BLAKE3 picked over SHA-256 for raw speed — this hash
@@ -247,17 +246,15 @@ pub(crate) fn hash_truncated(bytes: &[u8]) -> ResultHash {
 /// downstream [`crate::prompt::cbor_to_text`] path see identical
 /// human-readable content with a stable, recognizable prefix.
 ///
-/// Format kept terse on purpose: the model already knows from the
-/// wrapping `function_call_output` that this is a tool-result
-/// payload, so re-stating "result of …" is redundant. Tool-name and
-/// call_id are enough for the model to locate the original output
-/// earlier in its own context.
+/// Format includes both the tool name and original call id so the model can
+/// find the previous output without mistaking the pointer for a pending or
+/// cached result.
 pub(crate) fn build_pointer_value(
     original_call_id: &ToolCallId,
     tool_name: &tau_proto::ToolName,
 ) -> CborValue {
     CborValue::Text(format!(
-        "{INTERNAL_MARKER} same as {} {}",
+        "{INTERNAL_MARKER} {} tool output identical to previous tool call: {}",
         tool_name.as_str(),
         original_call_id
     ))
@@ -267,15 +264,15 @@ pub(crate) fn build_pointer_value(
 /// error. The full pointer goes into the `message` field with the
 /// same marker prefix; `details` is dropped because it is what made
 /// the original distinct and the pointer's job is to refer back, not
-/// to reproduce it. The wrapping `function_call_output` is rendered
-/// with an "ERROR:" prefix downstream, so the pointer doesn't need
-/// to restate the kind here.
+/// to reproduce it. The wrapping `function_call_output` is rendered with an
+/// "ERROR:" prefix downstream. The pointer still names the original tool and
+/// call id so the model can locate the full error earlier in context.
 pub(crate) fn build_pointer_error_message(
     original_call_id: &ToolCallId,
     tool_name: &tau_proto::ToolName,
 ) -> String {
     format!(
-        "{INTERNAL_MARKER} same as {} {}",
+        "{INTERNAL_MARKER} {} tool output identical to previous tool call: {}",
         tool_name.as_str(),
         original_call_id
     )
