@@ -443,7 +443,7 @@ fn handle_skill_tool_call(
             visible_tool_name,
             call.tool_type,
             message,
-            Some(call.arguments.clone()),
+            None,
             display,
         ),
     }
@@ -695,7 +695,7 @@ fn skill_search_result(
             ),
             (
                 CborValue::Text("guidance".to_owned()),
-                CborValue::Text(skill_search_guidance(total_matches)),
+                CborValue::Text(skill_search_guidance(total_matches, search_content)),
             ),
         ]),
         Some(display),
@@ -809,7 +809,10 @@ fn skill_search_stats(matches: &[SkillSearchHit]) -> ToolUseStats {
     stats.matches = Some(matches.len() as u64);
     stats
 }
-fn skill_search_guidance(total_matches: usize) -> String {
+fn skill_search_guidance(total_matches: usize, search_content: bool) -> String {
+    if total_matches == 0 && search_content {
+        return "No skills matched. Try different terms or fewer terms.".to_owned();
+    }
     if total_matches == 0 {
         return include_str!("prompts/skill_search_guidance_empty.md").to_owned();
     }

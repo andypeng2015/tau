@@ -14,6 +14,19 @@ fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
     })
 }
 
+fn cbor_map_bool(value: &CborValue, key: &str) -> Option<bool> {
+    let CborValue::Map(entries) = value else {
+        return None;
+    };
+    entries.iter().find_map(|(entry_key, entry_value)| {
+        matches!(entry_key, CborValue::Text(text) if text == key)
+            .then_some(entry_value)
+            .and_then(|value| match value {
+                CborValue::Bool(value) => Some(*value),
+                _ => None,
+            })
+    })
+}
 fn wait_args_exact(call_id: &str) -> CborValue {
     CborValue::Map(vec![(
         CborValue::Text("tool_call_id".to_owned()),
@@ -128,4 +141,56 @@ fn delegate_result_includes_only_caller_and_sub_agent_ids() {
     );
     assert_eq!(cbor_map_text(&value, "agent_id"), None);
     assert_eq!(cbor_map_text(&value, "output"), Some("done"));
+}
+
+#[test]
+fn skill_search_guidance_omits_content_hint_when_content_was_already_searched() {
+    let (result, _) = skill_search_result(
+        &["missing".to_owned()],
+        true,
+        SkillSearchOutcome {
+            hits: Vec::new(),
+            total_matches: 0,
+            truncated: false,
+            auto_load_name: None,
+            warnings: Vec::new(),
+        },
+    );
+
+    assert_eq!(cbor_map_bool(&result, "search_content"), Some(true));
+    let guidance = cbor_map_text(&result, "guidance").expect("guidance");
+    assert!(guidance.contains("No skills matched"));
+    assert!(!guidance.contains("search_content: true"));
+}
+
+#[test]
+fn skill_search_guidance_suggests_content_search_only_when_not_already_enabled() {
+    let (result, _) = skill_search_result(
+        &["missing".to_owned()],
+        false,
+        SkillSearchOutcome {
+            hits: Vec::new(),
+            total_matches: 0,
+            truncated: false,
+            auto_load_name: None,
+            warnings: Vec::new(),
+        },
+    );
+
+    let guidance = cbor_map_text(&result, "guidance").expect("guidance");
+    assert!(guidance.contains("search_content: true"));
+}
+
+#[test]
+fn skill_query_rejects_whitespace_without_echoing_raw_input() {
+    let args = CborValue::Map(vec![(
+        CborValue::Text("query".to_owned()),
+        CborValue::Text("  \n\t  ".to_owned()),
+    )]);
+
+    let err = extract_skill_search_queries(&args).expect_err("whitespace query should fail");
+
+    assert_eq!(err, "query must include at least one non-empty term");
+    assert!(!err.contains('\n'));
+    assert!(!err.contains('\t'));
 }

@@ -177,11 +177,24 @@ fn cbor_tool_response_text(value: &CborValue) -> String {
         CborValue::Float(f) => f.to_string(),
         CborValue::Text(s) => s.clone(),
         CborValue::Bytes(b) => format!("<{} bytes>", b.len()),
-        CborValue::Array(arr) => arr
-            .iter()
-            .map(cbor_tool_response_text)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        CborValue::Array(arr) => {
+            let separator = if arr.iter().any(|value| matches!(value, CborValue::Map(_))) {
+                "\n\n"
+            } else {
+                "\n"
+            };
+            arr.iter()
+                .map(|item| {
+                    let text = cbor_tool_response_text(item);
+                    if matches!(item, CborValue::Map(_)) {
+                        text.trim_end_matches('\n').to_owned()
+                    } else {
+                        text
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(separator)
+        }
         CborValue::Map(entries) => ToolResponse::from_cbor_map(entries).render(),
         CborValue::Tag(_, inner) => cbor_tool_response_text(inner),
         _ => String::new(),

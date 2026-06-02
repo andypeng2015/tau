@@ -1229,3 +1229,29 @@ fn tool_response_leaves_plain_text_as_body_only() {
 
     assert_eq!(response.render(), "done");
 }
+
+#[test]
+fn tool_response_separates_array_map_records_with_blank_lines() {
+    let response = ToolResponse::from_cbor(&CborValue::Array(vec![
+        CborValue::Map(vec![(
+            CborValue::Text("name".to_owned()),
+            CborValue::Text("first".to_owned()),
+        )]),
+        CborValue::Map(vec![(
+            CborValue::Text("name".to_owned()),
+            CborValue::Text("second".to_owned()),
+        )]),
+    ]));
+
+    assert_eq!(response.render(), "name: first\n\nname: second");
+}
+
+#[test]
+fn tool_response_keeps_scalar_arrays_compact() {
+    let response = ToolResponse::from_cbor(&CborValue::Array(vec![
+        CborValue::Text("name".to_owned()),
+        CborValue::Text("description".to_owned()),
+    ]));
+
+    assert_eq!(response.render(), "name\ndescription");
+}
