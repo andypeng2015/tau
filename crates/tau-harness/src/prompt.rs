@@ -3,7 +3,7 @@
 //! [`tau_core::AgentTree`] into item-based prompt context.
 
 use tau_core::AgentEntry;
-use tau_proto::{ContextItem, PromptFragment};
+use tau_proto::{ContextItem, PromptFragment, ToolName};
 
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
 
@@ -23,6 +23,28 @@ pub(crate) fn built_in_system_prompt_templates() -> std::collections::HashMap<St
             BIG_SYSTEM_PROMPT_TEMPLATE.to_owned(),
         ),
     ])
+}
+
+/// Tool-scoped prompt fragment plus the model-visible tool name used for its
+/// heading.
+#[derive(Clone, Debug)]
+pub(crate) struct ToolPromptFragment {
+    /// Model-visible tool name used in the automatic prompt-fragment heading.
+    pub(crate) tool_name: ToolName,
+    /// Original tool-scoped prompt fragment template registered by the
+    /// provider.
+    pub(crate) fragment: PromptFragment,
+}
+
+impl ToolPromptFragment {
+    /// Create a tool-scoped prompt fragment wrapper.
+    #[cfg(test)]
+    pub(crate) fn new(tool_name: ToolName, fragment: PromptFragment) -> Self {
+        Self {
+            tool_name,
+            fragment,
+        }
+    }
 }
 
 /// Context made available to role prompt Handlebars templates.
@@ -85,7 +107,7 @@ pub(crate) fn build_system_prompt_with_tool_template_context(
     system_template: &str,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
-    tool_prompt_fragments: &[PromptFragment],
+    tool_prompt_fragments: &[ToolPromptFragment],
     agent_context: serde_json::Value,
     template_context: RolePromptTemplateContext<'_>,
 ) -> String {
@@ -108,7 +130,7 @@ fn render_system_prompt_template(
     context: RolePromptTemplateContext<'_>,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
-    tool_prompt_fragments: &[PromptFragment],
+    tool_prompt_fragments: &[ToolPromptFragment],
     agent_context: serde_json::Value,
 ) -> String {
     let data = system_prompt_template_data(
@@ -170,13 +192,13 @@ fn system_prompt_template_data(
     context: RolePromptTemplateContext<'_>,
     skills: &std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
     prompt_fragments: &[PromptFragment],
-    tool_prompt_fragments: &[PromptFragment],
+    tool_prompt_fragments: &[ToolPromptFragment],
     agent_context: serde_json::Value,
 ) -> serde_json::Value {
     let mut data = prompt_template_data(context, skills, agent_context);
     let rendered_fragments = rendered_prompt_fragment_template_parts(prompt_fragments, &data);
     let rendered_tool_fragments =
-        rendered_prompt_fragment_template_parts(tool_prompt_fragments, &data);
+        rendered_tool_prompt_fragment_template_parts(tool_prompt_fragments, &data);
     let object = data
         .as_object_mut()
         .expect("system prompt template data is an object");
@@ -227,6 +249,52 @@ fn rendered_prompt_fragment_template_parts(
     )
 }
 
+fn rendered_tool_prompt_fragment_template_parts(
+    fragments: &[ToolPromptFragment],
+    data: &serde_json::Value,
+) -> serde_json::Value {
+    let handlebars = prompt_template_renderer();
+    serde_json::Value::Array(
+        {
+            let mut ordered = fragments.iter().collect::<Vec<_>>();
+            // Preserve the caller's deterministic source/name tie-break within
+            // a priority bucket. The harness gathers tool fragments in
+            // priority/source/name order before rendering.
+            ordered.sort_by_key(|item| item.fragment.priority);
+            ordered
+        }
+        .into_iter()
+        .filter_map(|item| {
+            let fragment = &item.fragment;
+            if fragment.template.is_empty() {
+                return None;
+            }
+            let rendered = match handlebars.render_template(fragment.template.as_str(), data) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    tracing::warn!(
+                        fragment_name = fragment.name,
+                        priority = fragment.priority.get(),
+                        error = %error,
+                        "failed to render tool prompt fragment template; skipping fragment"
+                    );
+                    return None;
+                }
+            };
+            let rendered = rendered.trim();
+            if rendered.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "name": fragment.name,
+                "priority": fragment.priority.get(),
+                "content": format!("### `{}` instructions\n\n{rendered}", item.tool_name),
+                "early": fragment.priority.get() < 100,
+            }))
+        })
+        .collect(),
+    )
+}
 fn prompt_template_renderer() -> handlebars::Handlebars<'static> {
     let mut handlebars = handlebars::Handlebars::new();
     handlebars.set_strict_mode(true);

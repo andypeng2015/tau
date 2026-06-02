@@ -437,8 +437,82 @@ fn staged_tool_register_activates_on_ready_and_prompts_include_it() {
     let spid = h.send_prompt_to_agent("s1");
     let prompt = read_prompt_created(&h, &spid);
     assert!(prompt_has_tool(&prompt, "staged_tool"));
-    assert!(prompt.system_prompt.contains("STAGED TOOL PROMPT"));
+    assert!(
+        prompt
+            .system_prompt
+            .contains("### `staged_tool` instructions\n\nSTAGED TOOL PROMPT")
+    );
     assert!(prompt.system_prompt.contains("STAGED EXTENSION PROMPT"));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn tool_prompt_fragment_heading_uses_model_visible_tool_name() {
+    // Tool prompt fragments are grouped by the tool name the model can call, so
+    // the automatic heading must use the same model-visible alias as the tool
+    // definition instead of the provider's internal routing name.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = quiet_provider_harness(&sp).expect("start");
+    h.selected_model = Some("test/model".into());
+    let conn_id = "conn-staged-visible-tool";
+    let _sink = connect_handshaking_tool(&mut h, conn_id);
+    let mut spec = staged_tool_spec("internal_staged_tool");
+    spec.model_visible_name = Some(ToolName::new("visible_staged_tool"));
+
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
+            tool: spec,
+            prompt_fragment: Some(tau_proto::PromptFragment::new(
+                "visible_staged_tool.instructions",
+                tau_proto::PromptPriority::new(10),
+                "ALIASED TOOL PROMPT",
+            )),
+        })),
+    )
+    .expect("stage tool");
+    h.handle_extension_event(
+        conn_id,
+        Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
+            tool: staged_tool_spec("empty_fragment_tool"),
+            prompt_fragment: Some(tau_proto::PromptFragment::new(
+                "empty_fragment_tool.instructions",
+                tau_proto::PromptPriority::new(10),
+                "",
+            )),
+        })),
+    )
+    .expect("stage empty prompt tool");
+    h.handle_extension_message(
+        conn_id,
+        Message::Ready(tau_proto::Ready {
+            message: Some("ready".to_owned()),
+        }),
+    )
+    .expect("ready");
+
+    append_user_message_via_event(&mut h, "s1", "after ready");
+    let spid = h.send_prompt_to_agent("s1");
+    let prompt = read_prompt_created(&h, &spid);
+
+    assert!(
+        prompt
+            .system_prompt
+            .contains("### `visible_staged_tool` instructions\n\nALIASED TOOL PROMPT")
+    );
+    assert!(
+        !prompt
+            .system_prompt
+            .contains("### `internal_staged_tool` instructions")
+    );
+
+    assert!(
+        !prompt
+            .system_prompt
+            .contains("### `empty_fragment_tool` instructions")
+    );
 
     h.shutdown().expect("shutdown");
 }

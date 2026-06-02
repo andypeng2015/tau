@@ -60,9 +60,9 @@ use crate::model::{
     verbosities_for_model,
 };
 use crate::prompt::{
-    BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, assemble_prompt_context_from,
-    build_system_prompt_with_tool_template_context, built_in_system_prompt_templates,
-    render_agents_context_message,
+    BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, ToolPromptFragment,
+    assemble_prompt_context_from, build_system_prompt_with_tool_template_context,
+    built_in_system_prompt_templates, render_agents_context_message,
 };
 use crate::secrets::{load_secret_sources, resolve_extension_secrets};
 use crate::settings::{Config, load_harness_settings_or_warn};
@@ -470,6 +470,32 @@ fn sorted_prompt_fragments(
         .collect()
 }
 
+#[derive(Clone, Debug)]
+struct SourcedToolPromptFragment {
+    source: PromptFragmentSource,
+    tool_name: tau_proto::ToolName,
+    fragment: PromptFragment,
+}
+
+fn sorted_tool_prompt_fragments(
+    fragments: impl IntoIterator<Item = SourcedToolPromptFragment>,
+) -> Vec<ToolPromptFragment> {
+    let mut fragments = fragments.into_iter().collect::<Vec<_>>();
+    fragments.sort_by(|a, b| {
+        a.fragment
+            .priority
+            .cmp(&b.fragment.priority)
+            .then_with(|| a.source.sort_key().cmp(&b.source.sort_key()))
+            .then_with(|| a.fragment.name.cmp(&b.fragment.name))
+    });
+    fragments
+        .into_iter()
+        .map(|sourced| ToolPromptFragment {
+            tool_name: sourced.tool_name,
+            fragment: sourced.fragment,
+        })
+        .collect()
+}
 impl AgentContextStore {
     /// Store or replace one contributor's value for an agent context key.
     pub(crate) fn publish(
@@ -7540,24 +7566,29 @@ impl Harness {
     #[cfg(test)]
     fn gather_prompt_fragments_for_role(&self, role_name: &str) -> Vec<PromptFragment> {
         let (fragments, tool_fragments) = self.gather_sourced_prompt_fragment_groups(role_name);
-        sorted_prompt_fragments(fragments.into_iter().chain(tool_fragments))
+        sorted_prompt_fragments(fragments.into_iter().chain(tool_fragments.into_iter().map(
+            |sourced| SourcedPromptFragment {
+                source: sourced.source,
+                fragment: sourced.fragment,
+            },
+        )))
     }
 
     fn gather_prompt_fragment_groups_for_role(
         &self,
         role_name: &str,
-    ) -> (Vec<PromptFragment>, Vec<PromptFragment>) {
+    ) -> (Vec<PromptFragment>, Vec<ToolPromptFragment>) {
         let (fragments, tool_fragments) = self.gather_sourced_prompt_fragment_groups(role_name);
         (
             sorted_prompt_fragments(fragments),
-            sorted_prompt_fragments(tool_fragments),
+            sorted_tool_prompt_fragments(tool_fragments),
         )
     }
 
     fn gather_sourced_prompt_fragment_groups(
         &self,
         role_name: &str,
-    ) -> (Vec<SourcedPromptFragment>, Vec<SourcedPromptFragment>) {
+    ) -> (Vec<SourcedPromptFragment>, Vec<SourcedToolPromptFragment>) {
         let mut fragments: Vec<_> = self
             .extension_prompt_fragments
             .iter()
@@ -7594,15 +7625,16 @@ impl Harness {
             .into_iter()
             .filter(|provider| self.is_tool_enabled_for_role(&provider.tool, role_name))
             .filter_map(|provider| {
-                provider
-                    .prompt_fragment
-                    .as_ref()
-                    .map(|fragment| SourcedPromptFragment {
+                provider.prompt_fragment.as_ref().map(|fragment| {
+                    let visible_name = self.tool_model_visible_name(&provider.tool);
+                    SourcedToolPromptFragment {
                         source: PromptFragmentSource::Tool {
                             connection_id: provider.connection_id.clone(),
                         },
+                        tool_name: visible_name.clone(),
                         fragment: fragment.clone(),
-                    })
+                    }
+                })
             })
             .collect::<Vec<_>>();
         (fragments, tool_fragments)

@@ -46,7 +46,7 @@ Prompt fragments can use:
 - `skills` — prompt-visible skills, with `name`, `description`, and `baseDir`.
 - `agent_context` — extension-published per-agent context, keyed by context name. Each key is an array of contributions with `extension_name` and `value`.
 
-Full system prompt templates additionally receive rendered `prompt_fragments` and `tool_prompt_fragments` arrays. Each item has `name`, `priority`, `content`, and `early`.
+Full system prompt templates additionally receive rendered `prompt_fragments` and `tool_prompt_fragments` arrays. Each item has `name`, `priority`, `content`, and `early`. Tool prompt fragment `content` already includes Tau's automatic ``### `<tool>` instructions`` heading.
 
 ## Helpers
 

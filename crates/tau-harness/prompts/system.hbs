@@ -25,16 +25,12 @@ Tau comes with a set of `self-knowledge` skills describing it. Search for them a
 {{/each~}}
 
 {{/if}}
-{{#if tool_prompt_fragments}}
 
 ## Tool calling
 
 You can call multiple tools in a single response and they will execute in parallel. Maximize use of parallel tool calls inside the same response whenever possible to increase efficiency. However, if some tool calls depend on previous calls completing, do NOT call these tools in parallel.
 
-## Available tools
-
-Your task makes the following tools available to you:
-
+{{#if tool_prompt_fragments}}
 {{#each tool_prompt_fragments}}
 {{trim content}}{{#unless @last}}
 
@@ -43,6 +39,7 @@ Your task makes the following tools available to you:
 {{/if}}
 
 {{#if skills~}}
+
 ## Skills and skill system
 
 Skills provide specialized instructions for specific tasks.

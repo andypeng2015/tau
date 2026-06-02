@@ -83,10 +83,13 @@ fn build_system_prompt_encourages_parallel_tool_calls() {
         BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
         &skills,
         &[],
-        &[tau_proto::PromptFragment::new(
-            "tool.shell",
-            tau_proto::PromptPriority::new(100),
-            "shell tool docs",
+        &[ToolPromptFragment::new(
+            tau_proto::ToolName::new("shell"),
+            tau_proto::PromptFragment::new(
+                "tool.shell",
+                tau_proto::PromptPriority::new(100),
+                "shell tool docs",
+            ),
         )],
         serde_json::json!({}),
         RolePromptTemplateContext {
@@ -95,7 +98,6 @@ fn build_system_prompt_encourages_parallel_tool_calls() {
         },
     );
     assert!(prompt.contains("## Tool calling"));
-    assert!(prompt.contains("## Available tools"));
     assert!(prompt.contains("shell tool docs"));
 }
 
@@ -428,10 +430,13 @@ fn tool_prompt_fragments_render_in_dedicated_section() {
             tau_proto::PromptPriority::new(10),
             "ROLE FRAGMENT",
         )],
-        &[tau_proto::PromptFragment::new(
-            "tool.instructions",
-            tau_proto::PromptPriority::new(10),
-            "TOOL FRAGMENT",
+        &[ToolPromptFragment::new(
+            tau_proto::ToolName::new("tool"),
+            tau_proto::PromptFragment::new(
+                "tool.instructions",
+                tau_proto::PromptPriority::new(10),
+                "TOOL FRAGMENT",
+            ),
         )],
         serde_json::json!({}),
         RolePromptTemplateContext {
@@ -451,6 +456,34 @@ fn tool_prompt_fragments_render_in_dedicated_section() {
         .expect("ordinary fragment should render");
     assert!(role_fragment < tool_heading);
     assert!(tool_heading < tool_fragment);
+}
+
+#[test]
+fn rendered_empty_tool_prompt_fragment_skips_automatic_heading() {
+    // Tool fragments are Handlebars templates. If a non-empty template renders
+    // to empty content for the current prompt context, the harness must not
+    // leave behind a bare automatic tool heading.
+    let prompt = build_system_prompt_with_tool_template_context(
+        BUILT_IN_SYSTEM_PROMPT_TEMPLATE,
+        &std::collections::HashMap::new(),
+        &[],
+        &[ToolPromptFragment::new(
+            tau_proto::ToolName::new("conditional_tool"),
+            tau_proto::PromptFragment::new(
+                "tool.conditional",
+                tau_proto::PromptPriority::new(10),
+                "{{#if role.name}}conditional docs{{/if}}",
+            ),
+        )],
+        serde_json::json!({}),
+        RolePromptTemplateContext {
+            role_name: "",
+            working_directory: None,
+        },
+    );
+
+    assert!(!prompt.contains("### `conditional_tool` instructions"));
+    assert!(!prompt.contains("conditional docs"));
 }
 
 /// Bad fragment templates are skipped rather than leaking raw unrendered
