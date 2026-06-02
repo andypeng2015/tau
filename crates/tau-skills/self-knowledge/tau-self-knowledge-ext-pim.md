@@ -1,10 +1,10 @@
 ---
-name: tau-self-knowledge-pim
-description: Use this skill when the user asks how to configure Tau's std-pim extension, email tool, calendar tool, Google Calendar OAuth, ICS calendars, PIM actions, approval workflow, audit logs, or PIM security policy.
+name: tau-self-knowledge-ext-pim
+description: Use this extension skill when the user asks how to configure Tau's std-pim extension, email tool, calendar tool, Google Calendar OAuth, ICS calendars, PIM actions, approval workflow, audit logs, or PIM security policy.
 advertise: false
 ---
 
-# Tau std-pim extension
+# Tau std-pim extension self-knowledge
 
 `std-pim` is Tau's built-in personal information management extension. It runs `tau-ext-pim`, registers the model-visible `email` and `calendar` tools, and publishes `/email` and `/calendar` user actions.
 

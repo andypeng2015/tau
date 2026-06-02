@@ -127,8 +127,28 @@ const BUILT_IN_SKILL_SOURCES: &[BuiltInSkillSource] = &[
         content: include_str!("../self-knowledge/tau-self-knowledge-email.md"),
     },
     BuiltInSkillSource {
-        diagnostic_path: "tau-self-knowledge-pim.md",
-        content: include_str!("../self-knowledge/tau-self-knowledge-pim.md"),
+        diagnostic_path: "tau-self-knowledge-ext-pim.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-pim.md"),
+    },
+    BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-ext-provider-builtin.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-provider-builtin.md"),
+    },
+    BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-ext-shell.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-shell.md"),
+    },
+    BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-ext-std-notifications.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-std-notifications.md"),
+    },
+    BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-ext-test-dummy.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-test-dummy.md"),
+    },
+    BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-ext-websearch.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-ext-websearch.md"),
     },
     BuiltInSkillSource {
         diagnostic_path: "tau-self-knowledge-source-code.md",

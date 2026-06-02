@@ -76,7 +76,7 @@ const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";
 const SELF_KNOWLEDGE_BUILD_DATE_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_BUILD_DATE__";
 const SELF_KNOWLEDGE_CONFIG_SKILL_NAME: &str = "tau-self-knowledge-config";
-const SELF_KNOWLEDGE_PIM_SKILL_NAME: &str = "tau-self-knowledge-pim";
+const SELF_KNOWLEDGE_PIM_SKILL_NAME: &str = "tau-self-knowledge-ext-pim";
 const SELF_KNOWLEDGE_HARNESS_CONFIG: &str =
     include_str!("../../tau-config/config/built-in.harness.yaml");
 const SELF_KNOWLEDGE_UI_CONFIG: &str = include_str!("../../tau-config/config/built-in.cli.yaml");
@@ -629,7 +629,7 @@ fn render_self_knowledge_config_content() -> std::borrow::Cow<'static, str> {
 
 fn render_self_knowledge_pim_content() -> std::borrow::Cow<'static, str> {
     std::borrow::Cow::Owned(format!(
-        include_str!("../../tau-skills/self-knowledge/tau-self-knowledge-pim.md"),
+        include_str!("../../tau-skills/self-knowledge/tau-self-knowledge-ext-pim.md"),
         pim_config = SELF_KNOWLEDGE_PIM_CONFIG,
     ))
 }

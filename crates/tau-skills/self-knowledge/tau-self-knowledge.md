@@ -23,7 +23,12 @@ You are running inside Tau version `__TAU_SELF_KNOWLEDGE_VERSION__`, git revisio
 - `tau-self-knowledge-architecture` — high-level overview of Tau architecture and core components.
 - `tau-self-knowledge-config` — directories, important config files, and provider setup commands.
 - `tau-self-knowledge-email` — secure configuration for the built-in `std-pim`/`std-email` email module.
-- `tau-self-knowledge-pim` — capabilities, configuration, OAuth, and approval workflow for the built-in `std-pim` email/calendar extension.
+- `tau-self-knowledge-ext-pim` — extension capabilities, configuration, OAuth, and approval workflow for the built-in `std-pim` email/calendar extension.
+- `tau-self-knowledge-ext-provider-builtin` — extension details for built-in provider profiles, model publication, ChatGPT/Codex, Chat Completions, and OpenRouter.
+- `tau-self-knowledge-ext-shell` — extension details for `core-shell` filesystem, shell, editing, directory-lock, and AGENTS.md discovery tools.
+- `tau-self-knowledge-ext-std-notifications` — extension details for prompt/response sounds, idle notifications, OSC 1337, bells, and notification commands.
+- `tau-self-knowledge-ext-test-dummy` — extension details for the disabled test-only dummy extension and restart/interception behavior.
+- `tau-self-knowledge-ext-websearch` — extension details for `std-websearch`, Exa search, and Parallel.ai search/fetch tools.
 - `tau-self-knowledge-source-code` — where to fetch Tau source code for debugging or detailed understanding.
 - `tau-self-knowledge-community` — places to ask questions or talk about Tau.
 - `tau-self-knowledge-debugging` — debugging workflow for Tau sessions, daemon behavior, logs, state, and provider request captures.

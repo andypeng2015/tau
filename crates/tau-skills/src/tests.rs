@@ -508,7 +508,12 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
             "tau-self-knowledge-architecture",
             "tau-self-knowledge-config",
             "tau-self-knowledge-email",
-            "tau-self-knowledge-pim",
+            "tau-self-knowledge-ext-pim",
+            "tau-self-knowledge-ext-provider-builtin",
+            "tau-self-knowledge-ext-shell",
+            "tau-self-knowledge-ext-std-notifications",
+            "tau-self-knowledge-ext-test-dummy",
+            "tau-self-knowledge-ext-websearch",
             "tau-self-knowledge-source-code",
             "tau-self-knowledge-community",
             "tau-self-knowledge-debugging",
@@ -534,7 +539,20 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
     assert!(skill.content.contains("tau-self-knowledge-architecture"));
     assert!(skill.content.contains("tau-self-knowledge-config"));
     assert!(skill.content.contains("tau-self-knowledge-email"));
-    assert!(skill.content.contains("tau-self-knowledge-pim"));
+    assert!(skill.content.contains("tau-self-knowledge-ext-pim"));
+    assert!(
+        skill
+            .content
+            .contains("tau-self-knowledge-ext-provider-builtin")
+    );
+    assert!(skill.content.contains("tau-self-knowledge-ext-shell"));
+    assert!(
+        skill
+            .content
+            .contains("tau-self-knowledge-ext-std-notifications")
+    );
+    assert!(skill.content.contains("tau-self-knowledge-ext-test-dummy"));
+    assert!(skill.content.contains("tau-self-knowledge-ext-websearch"));
     assert!(skill.content.contains("tau-self-knowledge-source-code"));
     assert!(skill.content.contains("tau-self-knowledge-community"));
     assert!(skill.content.contains("tau-self-knowledge-debugging"));
@@ -564,11 +582,50 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
 
     let pim = skills
         .iter()
-        .find(|skill| skill.name == "tau-self-knowledge-pim")
-        .expect("built-in pim skill");
+        .find(|skill| skill.name == "tau-self-knowledge-ext-pim")
+        .expect("built-in pim extension skill");
     assert!(!pim.add_to_prompt);
     assert!(pim.content.contains("{pim_config}"));
     assert!(pim.content.contains("Google Calendar authorization"));
+
+    let provider_builtin = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-ext-provider-builtin")
+        .expect("built-in provider extension skill");
+    assert!(!provider_builtin.add_to_prompt);
+    assert!(provider_builtin.content.contains("tau provider add"));
+    assert!(provider_builtin.content.contains("ChatGPT/Codex"));
+
+    let shell = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-ext-shell")
+        .expect("built-in shell extension skill");
+    assert!(!shell.add_to_prompt);
+    assert!(shell.content.contains("core-shell"));
+    assert!(shell.content.contains("dir_lock"));
+
+    let notifications = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-ext-std-notifications")
+        .expect("built-in notifications extension skill");
+    assert!(!notifications.add_to_prompt);
+    assert!(notifications.content.contains("std-notifications"));
+    assert!(notifications.content.contains("idle_seconds"));
+
+    let test_dummy = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-ext-test-dummy")
+        .expect("built-in test dummy extension skill");
+    assert!(!test_dummy.add_to_prompt);
+    assert!(test_dummy.content.contains("restart_test_dummy"));
+
+    let websearch = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-ext-websearch")
+        .expect("built-in websearch extension skill");
+    assert!(!websearch.add_to_prompt);
+    assert!(websearch.content.contains("std-websearch"));
+    assert!(websearch.content.contains("Parallel.ai"));
 
     let source_code = skills
         .iter()
