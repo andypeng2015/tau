@@ -1153,8 +1153,7 @@ pub struct ToolUseState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress_counters: Vec<ProgressCounter>,
     /// Free-form info chips beyond the stats slot (e.g. `"(2
-    /// suggestions)"`, `"(3 entries)"`). Rendered between counters
-    /// and status.
+    /// suggestions)"`). Rendered between counters and status.
     ///
     /// Keep these display-only and generic. If a chip starts requiring renderer
     /// code that knows which tool produced it, replace it with a typed optional
@@ -1214,8 +1213,8 @@ pub enum ProgressUnit {
 }
 
 /// Volume metrics. Each is optional because a given tool typically
-/// reports only some of them — `read` has lines/bytes but no matches;
-/// `grep` has all three; `ls` has none (uses [`ToolUseState::info_chips`]).
+/// reports only some of them — `read` and `ls` have lines/bytes but no
+/// matches; `grep` has all three.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ToolUseStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]

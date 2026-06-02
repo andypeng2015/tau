@@ -3,10 +3,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use tau_proto::CborValue;
+use tau_proto::{CborValue, ToolUseStats};
 
 use crate::argument::{optional_argument_int, optional_argument_text};
-use crate::display::{ToolFailure, ToolOutput, ok_display};
+use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
 use crate::truncate::truncate_line_oriented;
 
 pub(crate) const DEFAULT_LS_LIMIT: usize = 500;
@@ -66,7 +66,11 @@ pub(crate) fn run_ls(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
 
     if entries.is_empty() {
         let mut display = ok_display(display_args.clone());
-        display.info_chips.push("(0 entries)".to_owned());
+        display.stats = ToolUseStats {
+            matches: None,
+            lines: Some(0),
+            bytes: Some(0),
+        };
         return Ok(ToolOutput {
             result: CborValue::Map(vec![
                 (
@@ -81,7 +85,6 @@ pub(crate) fn run_ls(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
             display,
         });
     }
-
     let total_entries = entries.len();
     let displayed: Vec<String> = entries.into_iter().take(limit).collect();
     let limit_reached = total_entries > displayed.len();
@@ -108,9 +111,7 @@ pub(crate) fn run_ls(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     }
 
     let mut display = ok_display(display_args.clone());
-    display
-        .info_chips
-        .push(format!("({total_entries} entries)"));
+    display.stats = text_stats(&output_text);
     Ok(ToolOutput {
         result: CborValue::Map(vec![
             (
@@ -124,4 +125,49 @@ pub(crate) fn run_ls(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
         ]),
         display,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ls_args(path: &std::path::Path) -> CborValue {
+        CborValue::Map(vec![(
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(path.display().to_string()),
+        )])
+    }
+
+    #[test]
+    fn empty_ls_display_uses_zero_line_and_byte_stats() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+
+        let output = run_ls(&ls_args(tempdir.path())).expect("ls output");
+
+        assert!(output.display.info_chips.is_empty());
+        assert_eq!(output.display.stats.lines, Some(0));
+        assert_eq!(output.display.stats.bytes, Some(0));
+        assert!(matches!(
+            &output.result,
+            CborValue::Map(entries)
+                if entries.iter().any(|(key, value)| matches!(
+                    (key, value),
+                    (CborValue::Text(key), CborValue::Text(value))
+                        if key == "output" && value == "(empty directory)"
+                ))
+        ));
+    }
+
+    #[test]
+    fn ls_display_uses_line_and_byte_stats_instead_of_entry_chip() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(tempdir.path().join("alpha"), "a").expect("write alpha");
+        std::fs::write(tempdir.path().join("beta"), "b").expect("write beta");
+
+        let output = run_ls(&ls_args(tempdir.path())).expect("ls output");
+
+        assert!(output.display.info_chips.is_empty());
+        assert_eq!(output.display.stats.lines, Some(2));
+        assert_eq!(output.display.stats.bytes, Some("alpha\nbeta".len() as u64));
+    }
 }
