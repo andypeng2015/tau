@@ -178,6 +178,8 @@
               src = buildSrc;
               nativeBuildInputs = [ ];
               env.RUSTDOCFLAGS = "-D warnings";
+              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "";
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "";
             };
           in
           rec {
@@ -332,9 +334,13 @@
               cp ${crapRegression}/lcov.info $out/lcov.info
             '';
 
+            tauDeps = craneLib.buildDepsOnly {
+              cargoExtraArgs = "-p tau";
+            };
+
             tau = replaceTauBuildInfo (
               craneLib.buildPackage {
-                cargoArtifacts = workspaceDeps;
+                cargoArtifacts = tauDeps;
                 cargoExtraArgs = "-p tau";
               }
             );
