@@ -1902,7 +1902,7 @@ fn edit_guard_rejects_invalid_utf8_original_line() {
     let details = error.details.as_deref().expect("details");
     assert_eq!(
         cbor_map_text(details, "line-numbered content"),
-        Some("1(invalid-utf8,no_nl)")
+        Some("1(invalid-utf8,no_nl) ��a")
     );
     assert_eq!(cbor_bool_field(details, "valid_utf8"), Some(false));
     assert_eq!(fs::read(&file_path).expect("read back"), [0xff, 0xfe, b'a']);
@@ -3572,7 +3572,7 @@ fn shell_tool_marks_invalid_utf8_stdout_line_and_marks_output_invalid() {
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
     assert_eq!(
         cbor_map_text(&output.result, "output"),
-        Some("out(invalid-utf8,no_nl)")
+        Some("out(invalid-utf8,no_nl) �stdout")
     );
     assert_eq!(cbor_bool_field(&output.result, "valid_utf8"), Some(false));
 }
@@ -3590,7 +3590,7 @@ fn shell_tool_replaces_invalid_utf8_stderr_and_marks_output_invalid() {
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
     assert_eq!(
         cbor_map_text(&output.result, "output"),
-        Some("err(invalid-utf8,no_nl)")
+        Some("err(invalid-utf8,no_nl) �stderr")
     );
     assert_eq!(cbor_bool_field(&output.result, "valid_utf8"), Some(false));
 }
@@ -3607,7 +3607,7 @@ fn shell_tool_replaces_invalid_utf8_both_streams_in_combined_output() {
     let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
     assert_eq!(
         cbor_map_text(&output.result, "output"),
-        Some("out(invalid-utf8,no_nl)\nerr(invalid-utf8,no_nl)")
+        Some("out(invalid-utf8,no_nl) �stdout\nerr(invalid-utf8,no_nl) �stderr")
     );
     assert_eq!(cbor_bool_field(&output.result, "valid_utf8"), Some(false));
 }
@@ -4954,7 +4954,7 @@ fn read_file_handles_invalid_utf8_per_line() {
 
     assert_eq!(
         cbor_map_text(&result, "line-numbered content"),
-        Some("1(invalid-utf8)\n2 second")
+        Some("1(invalid-utf8) abc�def\n2 second")
     );
     assert!(cbor_map_field(&result, "end_line").is_none());
     assert_eq!(cbor_bool_field(&result, "valid_utf8"), Some(false));

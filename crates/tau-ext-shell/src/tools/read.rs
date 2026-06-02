@@ -148,7 +148,8 @@ struct SliceState {
 
 struct ReadLine {
     number: usize,
-    content: Option<String>,
+    content: String,
+    invalid_utf8: bool,
     ending: Option<LineEndingKind>,
 }
 
@@ -175,11 +176,23 @@ impl SliceState {
         if valid_line.is_none() {
             self.valid_utf8 = false;
         }
+        if !self
+            .ranges
+            .iter()
+            .any(|range| range.contains_line(self.total_lines))
+        {
+            return;
+        }
+        let content = valid_line.map_or_else(
+            || String::from_utf8_lossy(line).into_owned(),
+            ToOwned::to_owned,
+        );
         for (range, chunk) in self.ranges.iter().zip(self.chunks.iter_mut()) {
             if range.contains_line(self.total_lines) {
                 chunk.push(ReadLine {
                     number: self.total_lines,
-                    content: valid_line.map(ToOwned::to_owned),
+                    content: content.clone(),
+                    invalid_utf8: valid_line.is_none(),
                     ending,
                 });
             }
@@ -210,7 +223,7 @@ impl SliceState {
 
 fn render_read_line(line: &ReadLine) -> String {
     let mut markers = Vec::new();
-    if line.content.is_none() {
+    if line.invalid_utf8 {
         markers.push("invalid-utf8");
     }
     match line.ending {
@@ -225,10 +238,7 @@ fn render_read_line(line: &ReadLine) -> String {
     } else {
         format!("({})", markers.join(","))
     };
-    match &line.content {
-        Some(content) => format!("{}{marker} {content}", line.number),
-        None => format!("{}{marker}", line.number),
-    }
+    format!("{}{marker} {}", line.number, line.content)
 }
 
 fn parse_read_request(arguments: &CborValue) -> Result<ReadRequest, ToolFailure> {

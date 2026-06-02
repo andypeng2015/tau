@@ -62,8 +62,10 @@ pub(crate) fn truncate_line_oriented_lines<'a>(
         let line = match line {
             Some(line) => line,
             None => {
-                rendered.push("...".to_owned());
-                rendered_bytes += 3 + usize::from(rendered.len() != 1);
+                if !push_budgeted_line(&mut rendered, &mut rendered_bytes, "...") {
+                    was_truncated = true;
+                    break;
+                }
                 continue;
             }
         };
@@ -71,12 +73,14 @@ pub(crate) fn truncate_line_oriented_lines<'a>(
         if MAX_OUTPUT_BYTES < line.len()
             || MAX_OUTPUT_BYTES < rendered_bytes.saturating_add(separator_bytes + line.len())
         {
-            rendered.push(mark_line(line, "truncated"));
-            rendered_bytes += separator_bytes + rendered.last().map_or(0, String::len);
+            let marker = mark_line(line, "truncated");
+            if !push_budgeted_line(&mut rendered, &mut rendered_bytes, &marker) {
+                break;
+            }
             was_truncated = true;
-        } else {
-            rendered.push(line.to_owned());
-            rendered_bytes += separator_bytes + line.len();
+        } else if !push_budgeted_line(&mut rendered, &mut rendered_bytes, line) {
+            was_truncated = true;
+            break;
         }
     }
 
@@ -86,6 +90,21 @@ pub(crate) fn truncate_line_oriented_lines<'a>(
         total_lines,
         total_bytes,
     }
+}
+
+fn can_push_budgeted_line(rendered: &[String], rendered_bytes: usize, line: &str) -> bool {
+    let separator_bytes = usize::from(!rendered.is_empty());
+    rendered_bytes.saturating_add(separator_bytes + line.len()) <= MAX_OUTPUT_BYTES
+}
+
+fn push_budgeted_line(rendered: &mut Vec<String>, rendered_bytes: &mut usize, line: &str) -> bool {
+    if !can_push_budgeted_line(rendered, *rendered_bytes, line) {
+        return false;
+    }
+    let separator_bytes = usize::from(!rendered.is_empty());
+    rendered.push(line.to_owned());
+    *rendered_bytes += separator_bytes + line.len();
+    true
 }
 
 /// Add a marker to a rendered line prefix and skip its content.
@@ -125,4 +144,27 @@ pub(crate) fn truncate_line(line: &str, max: usize) -> String {
         return line.to_owned();
     }
     mark_line(line, "truncated")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combined_line_and_byte_truncation_stops_within_budget_without_popping_prefix() {
+        let lines = (1..=MAX_OUTPUT_LINES + 1)
+            .map(|line| format!("{line} {}", "x".repeat(120)))
+            .collect::<Vec<_>>();
+        let total_bytes = lines.iter().map(String::len).sum::<usize>() + lines.len() - 1;
+
+        let truncated = truncate_line_oriented_lines(
+            lines.iter().map(String::as_str),
+            lines.len(),
+            total_bytes,
+        );
+
+        assert!(truncated.was_truncated);
+        assert!(truncated.content.len() <= MAX_OUTPUT_BYTES);
+        assert!(truncated.content.starts_with("1 "));
+    }
 }

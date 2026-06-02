@@ -13,14 +13,14 @@ advertise: false
 
 Model-visible tools:
 
-- `read` — reads UTF-8 and non-UTF-8 files with line numbers, line-ending markers, range/ranges support, and line/byte truncation metadata.
+- `read` — reads UTF-8 and non-UTF-8 files with line numbers, line-ending markers, Unicode replacement for invalid bytes plus `invalid-utf8` flags, range/ranges support, and line/byte truncation metadata.
 - `edit` — applies guarded line-oriented replacements. The agent-visible result is minimal status only; the UI receives a separate structured diff payload for changed UTF-8 files, including inline changed-token segments.
 - `apply_patch` — applies patch-style file edits and also sends structured UI-only diffs for changed UTF-8 files. It is registered but disabled by default.
-- `shell` — runs `sh -c`-style commands with `mode: "ro"` or `mode: "rw"`, optional `cwd`, timeout, stdout/stderr capture, truncation, and tool cancellation support.
+- `shell` — runs `sh -c`-style commands with `mode: "ro"` or `mode: "rw"`, optional `cwd`, timeout, stdout/stderr capture, Unicode replacement for invalid output bytes plus `invalid-utf8` flags, truncation, and tool cancellation support.
 - `gpt_shell` — shell-like execution surface advertised as model-visible `shell_command` for GPT-style tool compatibility. It is registered but disabled by default.
 - `grep` — ripgrep-backed literal or regex search with context, glob filtering, and truncation.
 - `find` — ignore-aware glob file search.
-- `ls` — sorted directory listing.
+- `ls` — sorted directory listing with 1-based entry prefixes, escaped control characters/backslashes, Unicode replacement for invalid filename bytes plus `invalid-utf8` flags, and standard truncation metadata.
 - `dir_lock` — manual directory update lock/unlock for coordinating mutating agents.
 
 Test builds or the `echo-agent` cargo feature also register `echo` for harness tests.

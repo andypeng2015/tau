@@ -104,9 +104,9 @@ where
                  while `end_line` past EOF returns available lines. Returned content lines are prefixed \
                  by their 1-based line number and a space; \
                  CRLF, CR, and missing final line endings are marked after the number, e.g. \
-                 `2(crlf)`, `3(cr)`, or `4(no_nl)`. Invalid UTF-8 and lines that would exceed \
-                 the 50 KB output budget are marker-only, e.g. `1(invalid-utf8)` or \
-                 `1(truncated)`. Truncated results include `truncated: true`, `total_lines`, \
+                 `2(crlf)`, `3(cr)`, or `4(no_nl)`. Invalid UTF-8 is shown with \
+                 Unicode replacement characters and an `invalid-utf8` line flag. Lines that would exceed \
+                 the 50 KB output budget are marker-only, e.g. `1(truncated)`. Truncated results include `truncated: true`, `total_lines`, \
                  and `total_bytes`; `valid_utf8: false` is included only when applicable."
                     .to_owned(),
             ),
@@ -340,7 +340,9 @@ where
             model_visible_name: None,
             description: Some(
                 "List directory contents. Returns entries sorted alphabetically, with '/' suffix \
-                 for directories. Includes dotfiles. Output is truncated at `limit` entries or 50KB."
+                 for directories. Includes dotfiles. Output lines are prefixed with 1-based \
+                 entry numbers plus flags such as `escaped`, `invalid-utf8`, or `truncated`; \
+                 output is capped at `limit` entries, 2000 lines, or 50KB with standard truncation headers."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -353,6 +355,7 @@ where
                     },
                     "limit": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "Maximum number of entries to return (default: 500)"
                     }
                 },
@@ -373,9 +376,9 @@ where
                  separated by a literal `...` line. Output lines are prefixed with `out ` \
                  for stdout or `err ` for stderr; missing trailing newlines are marked, e.g. \
                  `out(no_nl)`; CRLF and CR line endings are marked as `out(crlf)` \
-                 or `out(cr)`. Invalid UTF-8 and lines that would exceed the 50 KB output \
-                 budget are marker-only, e.g. `out(invalid-utf8)` or `err(truncated)`. \
-                 Truncated results include `truncated: true`, `total_lines`, and `total_bytes`. \
+                 or `out(cr)`. Invalid UTF-8 is shown with Unicode replacement characters and \
+                 an `invalid-utf8` line flag. Lines that would exceed the 50 KB output budget \
+                 are marker-only, e.g. `err(truncated)`. Truncated results include `truncated: true`, `total_lines`, and `total_bytes`. \
                  Commands taking longer than 5 seconds include duration metadata. Prefer dedicated \
                  tools like `read`, `grep`, and `find` when they fit."
                     .to_owned(),
@@ -419,8 +422,9 @@ where
                  command results with output details. Output is capped at 2000 lines / 50 KB; \
                  truncated output keeps the first 1000 and last 1000 lines separated by `...`. \
                  Output lines are prefixed with `out ` for stdout or `err ` for stderr; missing \
-                 trailing newlines are marked with `(no_nl)`. Invalid UTF-8 and lines that \
-                 would exceed the 50 KB output budget are marker-only. Truncated results \
+                 trailing newlines are marked with `(no_nl)`. Invalid UTF-8 is shown with Unicode \
+                 replacement characters and an `invalid-utf8` line flag. Lines that would exceed \
+                 the 50 KB output budget are marker-only. Truncated results \
                  include `truncated: true`, `total_lines`, and `total_bytes`. Commands taking \
                  longer than 5 seconds include approximate duration metadata. For file changes, \
                  prefer apply_patch."

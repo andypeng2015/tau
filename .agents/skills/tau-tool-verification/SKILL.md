@@ -69,9 +69,9 @@ Newlines are assumed to be `\n`, but other styles are supported
 and displayed as `crlf` (`\r\n`), `cr` (`\r`) or `no_nl` (missing trailing newline).
 This applies to both `read` line-number prefixes and `shell` stdout/stderr prefixes.
 
-Lines containing invalid UTF-8 characters are skipped, and a `invalid-utf8` is displayed,
-and line content is skipped to avoid mistakes and force fallback to more appropriate tools.
-In similar way, lines which are too long show `truncated` flag and have content skipped.
+Lines containing invalid UTF-8 bytes should show Unicode replacement characters and an `invalid-utf8` flag,
+so useful surrounding content remains visible while the agent knows the bytes were not exact.
+Lines which are too long show a `truncated` flag and have content skipped.
 
 Total outputs that are too long are truncated; `truncated: true`,
 `total_lines: {lines}` and `total_bytes: {bytes}` headers are added.

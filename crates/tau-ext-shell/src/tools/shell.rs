@@ -8,7 +8,7 @@ use tracing::{debug, trace};
 use crate::argument::{argument_text, optional_argument_int_strict, optional_argument_text};
 use crate::config::ShellConfig;
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
-use crate::truncate::{MAX_OUTPUT_LINES, mark_line, truncate_line_oriented_lines};
+use crate::truncate::{MAX_OUTPUT_LINES, truncate_line_oriented_lines};
 
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(crate) const SLOW_COMMAND_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
@@ -875,6 +875,7 @@ enum OutputContent {
         ending: Option<LineEndingKind>,
     },
     InvalidUtf8 {
+        text: String,
         ending: Option<LineEndingKind>,
     },
 }
@@ -1001,6 +1002,7 @@ impl StreamDecoder {
                         self.flush_pending_cr_as_cr(&mut lines);
                         self.had_invalid_utf8 = true;
                         self.pending_line_invalid = true;
+                        self.pending_line.push('\u{fffd}');
                         remaining = &remaining[valid_up_to + error_len..];
                     } else {
                         self.flush_pending_cr_as_cr(&mut lines);
@@ -1027,8 +1029,7 @@ impl StreamDecoder {
             match ch {
                 '\r' => self.pending_cr = true,
                 '\n' => lines.push(self.take_pending_line(Some(LineEndingKind::Lf))),
-                _ if !self.pending_line_invalid => self.pending_line.push(ch),
-                _ => {}
+                _ => self.pending_line.push(ch),
             }
         }
     }
@@ -1040,6 +1041,7 @@ impl StreamDecoder {
             self.pending_utf8.clear();
             self.flush_pending_cr_as_cr(&mut lines);
             self.pending_line_invalid = true;
+            self.pending_line.push('\u{fffd}');
         }
         self.flush_pending_cr_as_cr(&mut lines);
         if !self.pending_line.is_empty() || self.pending_line_invalid {
@@ -1057,8 +1059,10 @@ impl StreamDecoder {
 
     fn take_pending_line(&mut self, ending: Option<LineEndingKind>) -> OutputContent {
         if std::mem::take(&mut self.pending_line_invalid) {
-            self.pending_line.clear();
-            OutputContent::InvalidUtf8 { ending }
+            OutputContent::InvalidUtf8 {
+                text: std::mem::take(&mut self.pending_line),
+                ending,
+            }
         } else {
             OutputContent::Text {
                 text: std::mem::take(&mut self.pending_line),
@@ -1074,12 +1078,12 @@ fn render_output_line(line: &OutputLine) -> String {
         OutputContent::Text { text, ending } => {
             format_output_line(prefix, line_ending_marker(*ending), text)
         }
-        OutputContent::InvalidUtf8 { ending } => {
+        OutputContent::InvalidUtf8 { text, ending } => {
             let mut markers = vec!["invalid-utf8"];
             if let Some(marker) = line_ending_marker(*ending) {
                 markers.push(marker);
             }
-            mark_line(&format_output_line(prefix, None, ""), &markers.join(","))
+            format_output_line(prefix, Some(&markers.join(",")), text)
         }
     }
 }
