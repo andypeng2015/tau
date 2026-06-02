@@ -17,7 +17,7 @@ use std::io::{self, BufWriter, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
-use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::cursor::{MoveToColumn, MoveUp, SetCursorStyle};
 use crossterm::event::{
     self, Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -1460,8 +1460,9 @@ impl Term {
     }
 
     /// Releases the terminal for an external program (e.g. `$EDITOR`):
-    /// disables raw mode + bracketed paste and clears the screen so
-    /// the editor starts on a clean canvas.
+    /// disables raw mode + bracketed paste, restores the user-configured
+    /// cursor shape, and clears the screen so the editor starts on a clean
+    /// canvas.
     ///
     /// No reader-thread coordination is needed — the only reader is
     /// the main thread, which is the same thread that drives the
@@ -1479,6 +1480,7 @@ impl Term {
             io::stdout(),
             PopKeyboardEnhancementFlags,
             crossterm::event::DisableBracketedPaste,
+            SetCursorStyle::DefaultUserShape,
         );
         terminal::disable_raw_mode()?;
         let _ = crossterm::execute!(
@@ -2292,16 +2294,16 @@ impl Drop for Term {
     fn drop(&mut self) {
         self.shutdown();
         if self.owns_raw_mode {
-            // Pair the `EnableBracketedPaste` and the keyboard-protocol
-            // push we issued in `new`; the terminal would keep
-            // bracketing subsequent pastes and emitting CSI-u
-            // sequences in other programs until they're explicitly
-            // turned off.
+            // Pair the terminal modes we set in `new`: disable paste/focus,
+            // pop the keyboard-protocol push, and return cursor shape to the
+            // user's configured default so shells and other programs don't
+            // inherit Tau's prompt cursor.
             let _ = crossterm::execute!(
                 io::stdout(),
                 PopKeyboardEnhancementFlags,
                 crossterm::event::DisableFocusChange,
                 crossterm::event::DisableBracketedPaste,
+                SetCursorStyle::DefaultUserShape,
             );
             let _ = terminal::disable_raw_mode();
         }
