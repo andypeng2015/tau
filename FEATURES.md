@@ -444,8 +444,8 @@ Available `/set` names include `show-diff` (expanded vs. compact diffs),
 (prompt-cache hit stats in status bar), and `show-turn-stats` (per-turn
 token usage below responses). These take `true` / `false`.
 `/set show-messages <none|self-summary|self-full|all-summary|all-full>`
-controls how agent/user messages are shown in the transcript. The first-arg
-completion menu shows each setting's current value; the second-arg
+controls how agent-to-agent messages are shown in the transcript; messages sent
+from an agent to `user` always render fully as human-visible broadcasts. The first-arg
 menu shows the meaning of each allowed value. State is persisted to
 `<state_dir>/cli.json`.
 

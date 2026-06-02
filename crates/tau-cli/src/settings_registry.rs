@@ -48,15 +48,15 @@ const BOOL_VALUES: &[SettingValue] = &[
 const SHOW_MESSAGES_VALUES: &[SettingValue] = &[
     SettingValue {
         value: "none",
-        description: "hide all messages",
+        description: "hide agent-agent messages; user messages still show",
     },
     SettingValue {
         value: "self-summary",
-        description: "summarize messages from or to the user",
+        description: "hide agent-agent messages; user messages still show",
     },
     SettingValue {
         value: "self-full",
-        description: "show messages from or to the user",
+        description: "hide agent-agent messages; user messages still show",
     },
     SettingValue {
         value: "all-summary",

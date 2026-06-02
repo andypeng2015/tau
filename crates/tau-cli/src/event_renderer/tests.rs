@@ -16,8 +16,10 @@ fn agent_message(sender_id: &str, recipient: &str, message: &str) -> tau_proto::
 }
 
 /// `/set show-messages` must hide, summarize, or fully render durable
-/// message events based on whether they involve the user. This locks the
-/// privacy modes without needing a terminal renderer fixture.
+/// message events based on whether they involve the user. User-directed
+/// messages are broadcasts and always render fully, while agent-to-agent
+/// messages still respect the privacy modes. This locks the policy down
+/// without needing a terminal renderer fixture.
 #[test]
 fn show_messages_modes_map_user_and_agent_messages() {
     let user_recipient_message = agent_message("agent", "user", "visible body");
@@ -26,12 +28,12 @@ fn show_messages_modes_map_user_and_agent_messages() {
     let cases = [
         (
             tau_config::settings::ShowMessages::None,
-            MessageRenderMode::Hidden,
+            MessageRenderMode::Full,
             MessageRenderMode::Hidden,
         ),
         (
             tau_config::settings::ShowMessages::SelfSummary,
-            MessageRenderMode::Summary,
+            MessageRenderMode::Full,
             MessageRenderMode::Hidden,
         ),
         (

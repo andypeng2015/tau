@@ -1,6 +1,6 @@
 # Agent messaging tool
 
-The harness-owned `message` tool lets an agent send an asynchronous short text note to the user or to another agent. Every successful send is recorded as an `agent.message_sent` sender projection; agent recipients also get a separate `agent.message_received` recipient projection with the same `message_id`. UI display depends on `/set show-messages`; when shown fully it renders as:
+The harness-owned `message` tool lets an agent send an asynchronous short text note to the user or to another agent. Every successful send is recorded as an `agent.message_sent` sender projection; agent recipients also get a separate `agent.message_received` recipient projection with the same `message_id`. User-recipient messages always render fully; agent-to-agent UI display depends on `/set show-messages`. When shown fully, a message renders as:
 
 ```text
 Message from <sender> to <recipient>:
@@ -9,10 +9,12 @@ Message from <sender> to <recipient>:
 
 `/set show-messages` modes are:
 
-- `none`: no UI indication or history of any messages
-- `self-summary`: one-line no-content indication for messages from or to the user; no UI indication for agent-agent messages
-- `self-full`: full content for messages from or to the user only
-- `all-summary`: full content for user messages plus one-line no-content indication for agent-agent messages
+User-recipient messages are human-visible broadcasts: they always render fully in every attached UI's currently visible transcript, regardless of `/set show-messages`. Agent-to-agent message projections still obey `/set show-messages`:
+
+- `none`: no UI indication or history of agent-to-agent messages
+- `self-summary`: no UI indication for agent-to-agent messages
+- `self-full`: no UI indication for agent-to-agent messages
+- `all-summary`: one-line no-content indication for agent-to-agent messages
 - `all-full`: full content of all messages
 
 ## Send to the user
@@ -47,7 +49,7 @@ Use `sub_agent_id` as `recipient_id`:
 message({"recipient_id":"engineer_b","message":"Please also inspect crates/tau-cli/src/event_renderer.rs."})
 ```
 
-The UI may display the message, summarize it, or hide it depending on `/set show-messages`. The recipient agent also receives a hidden internal prompt with the message body XML-escaped inside a `<message>` wrapper.
+The UI may display, summarize, or hide agent-to-agent messages depending on `/set show-messages`. The recipient agent also receives a hidden internal prompt with the message body XML-escaped inside a `<message>` wrapper.
 
 ## Invalid recipients and arguments
 

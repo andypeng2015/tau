@@ -2553,6 +2553,11 @@ impl EventRenderer {
             Event::ToolCancelled(cancelled) => {
                 self.tool_agents.get(cancelled.call_id.as_str()).cloned()
             }
+            Event::AgentMessageSent(message)
+                if Self::is_user_broadcast_agent_message_sent(message) =>
+            {
+                None
+            }
             Event::AgentMessageSent(message) => Some(message.sender_id.to_string()),
             Event::AgentMessageReceived(message) => Some(message.recipient_id.to_string()),
             Event::UiPromptSubmitted(prompt) => Some(prompt.agent_id.to_string()),
@@ -2723,6 +2728,18 @@ impl EventRenderer {
         }
     }
 
+    fn is_user_broadcast_agent_message(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::AgentMessageSent(message)
+                if Self::is_user_broadcast_agent_message_sent(message)
+        )
+    }
+
+    fn is_user_broadcast_agent_message_sent(message: &tau_proto::AgentMessageSent) -> bool {
+        matches!(message.recipient, tau_proto::AgentMessageRecipient::User)
+    }
+
     fn agent_message_sent_recipient_agent_id(
         message: &tau_proto::AgentMessageSent,
     ) -> Option<&str> {
@@ -2736,6 +2753,10 @@ impl EventRenderer {
         show_messages: tau_config::settings::ShowMessages,
         event: &Event,
     ) -> MessageRenderMode {
+        if Self::is_user_broadcast_agent_message(event) {
+            return MessageRenderMode::Full;
+        }
+
         let self_msg = matches!(
             event,
             Event::AgentMessageSent(tau_proto::AgentMessageSent {

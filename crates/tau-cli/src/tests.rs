@@ -1786,6 +1786,36 @@ fn show_messages_none_leaves_no_visible_message_output() {
 }
 
 #[test]
+fn user_recipient_agent_messages_broadcast_to_visible_agent_even_when_hidden() {
+    // Messages sent to `recipient_id: "user"` are intended for the human, not
+    // just the sender's private transcript. They must render in the visible UI
+    // even when another agent is selected and `show-messages` hides normal
+    // agent-to-agent messages.
+    let (_term, handle, vt) = setup(80, 10);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-visible".to_owned(),
+        agent_id: "visible-agent".to_owned().into(),
+    }));
+    renderer.switch_agent("visible-agent".to_owned());
+    renderer.apply_setting("show-messages", "none");
+    renderer.handle(&agent_message(
+        "sender-agent",
+        "user",
+        "broadcast body for all visible agents",
+    ));
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "Message from sender-agent to user:"));
+    assert!(vt.screen_contains(80, "broadcast body for all visible agents"));
+}
+
+#[test]
 fn show_messages_summary_modes_do_not_show_body() {
     let (_term, handle, vt) = setup(80, 8);
     let mut renderer = EventRenderer::new(

@@ -209,9 +209,11 @@ harness/agent.
 - **`agent.message_received`** — Recipient-side projection for an agent-to-agent
   message. Carries the same stable `message_id`, the `sender_id`, the receiving
   `recipient_id`, and `message`; user-recipient messages have no received
-  projection. UI subscribers filter, summarize, or fully display message
-  projections according to `/set show-messages`. Agent recipients are delivered
-  as hidden internal prompts; if a side/delegate agent is about to finish,
+  projection. User-recipient sent projections are human-visible broadcasts that
+  UIs always render fully in the currently visible transcript. UI subscribers
+  filter, summarize, or fully display agent-to-agent message projections according
+  to `/set show-messages`. Agent recipients are delivered as hidden internal
+  prompts; if a side/delegate agent is about to finish,
   teardown waits until the message turn has been dispatched and answered. See
   [agent-messaging.md](agent-messaging.md) for model-facing tool examples.
 - **`extension.event`** — Custom extension-defined event with a free-form
