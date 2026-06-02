@@ -722,14 +722,20 @@ impl Engine {
                 }
             }
         }
+        let mut headers = vec![("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned()))];
+        let mut data = vec![
+            ("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned())),
+            ("calendars", line_array(rows.clone())),
+        ];
+        if let Some(account) = args.account.as_deref() {
+            headers.push(("account", CborValue::Text(safe_display_line(account))));
+            data.push(("account", CborValue::Text(safe_display_line(account))));
+        }
         Ok(ok_line_envelope(
             "list_calendars",
             "ok",
-            vec![("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned()))],
-            cbor_map(vec![
-                ("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned())),
-                ("calendars", line_array(rows.clone())),
-            ]),
+            headers,
+            cbor_map(data),
             &rows,
         ))
     }
@@ -841,6 +847,7 @@ impl Engine {
         let mut data = vec![
             ("account", CborValue::Text(safe_display_line(&account.id))),
             ("calendar", CborValue::Text(safe_display_line(calendar))),
+            ("event_id", CborValue::Text(safe_display_line(&event_id))),
             ("format", CborValue::Text(EVENT_DETAIL_FORMAT.to_owned())),
             (
                 "event",
@@ -853,7 +860,6 @@ impl Engine {
             ),
         ];
         if implicit_event_id {
-            data.push(("event_id", CborValue::Text(safe_display_line(&event_id))));
             data.push((
                 "event_id_source",
                 CborValue::Text("implicit_recent".to_owned()),
@@ -2291,25 +2297,31 @@ fn event_flags(policy: &ValidatedPolicy, event: &BackendEvent) -> String {
 }
 
 fn format_change_queued(id: &str, change: &CalendarChangeApproval) -> CborValue {
-    ok_envelope(
-        &change.command,
-        "approval_required",
-        cbor_map(vec![
-            (
-                "message",
-                CborValue::Text("Calendar change pending approval.".to_owned()),
-            ),
-            ("approval_id", CborValue::Text(safe_display_line(id))),
-            (
-                "account",
-                CborValue::Text(safe_display_line(&change.account)),
-            ),
-            (
-                "calendar",
-                CborValue::Text(safe_display_line(&change.calendar)),
-            ),
-        ]),
-    )
+    let mut entries = vec![
+        (
+            "message",
+            CborValue::Text("Calendar change pending approval.".to_owned()),
+        ),
+        ("approval_id", CborValue::Text(safe_display_line(id))),
+        (
+            "account",
+            CborValue::Text(safe_display_line(&change.account)),
+        ),
+        (
+            "calendar",
+            CborValue::Text(safe_display_line(&change.calendar)),
+        ),
+    ];
+    if let Some(event_id) = change.event_id.as_deref() {
+        entries.push(("event_id", CborValue::Text(safe_display_line(event_id))));
+    }
+    if let Some(start) = change.start.as_deref() {
+        entries.push(("start", CborValue::Text(safe_display_line(start))));
+    }
+    if let Some(end) = change.end.as_deref() {
+        entries.push(("end", CborValue::Text(safe_display_line(end))));
+    }
+    ok_envelope(&change.command, "approval_required", cbor_map(entries))
 }
 
 fn format_change_summary(change: &CalendarChangeApproval) -> String {
@@ -2642,8 +2654,8 @@ fn error_display(arguments: &CborValue, details: &CborValue, message: &str) -> T
     }
 }
 
-fn calendar_display_args(command: &str, _data: Option<&CborValue>) -> Option<String> {
-    Some(safe_display_line(command))
+fn calendar_display_args(command: &str, data: Option<&CborValue>) -> Option<String> {
+    Some(calendar_args_text(command, data))
 }
 
 fn calendar_display_stats(command: &str, data: Option<&CborValue>) -> ToolUseStats {
@@ -2709,7 +2721,65 @@ pub(crate) fn initial_progress(invoke: &ToolStarted) -> Event {
 
 fn invocation_display_args(arguments: &CborValue) -> Option<String> {
     let command = cbor_text_field(arguments, "command")?;
-    Some(safe_display_line(command))
+    let args = cbor_field(arguments, "args");
+    Some(calendar_args_text(command, args))
+}
+
+fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
+    let mut text = safe_display_line(command);
+    if let Some(scope) = calendar_scope_text(args) {
+        text.push(' ');
+        text.push_str(&scope);
+    }
+    if matches!(
+        command,
+        "list_events" | "free_busy" | "create_event" | "update_event"
+    ) && let Some(range) = calendar_range_text(args)
+    {
+        text.push(' ');
+        text.push_str(&range);
+    }
+    if matches!(
+        command,
+        "read_event" | "update_event" | "delete_event" | "respond_invite"
+    ) && let Some(event_id) = args.and_then(|args| cbor_text_field(args, "event_id"))
+    {
+        text.push_str(" event=");
+        text.push_str(&safe_display_line(event_id));
+    }
+    text
+}
+
+fn calendar_scope_text(args: Option<&CborValue>) -> Option<String> {
+    let args = args?;
+    let account = cbor_text_field(args, "account");
+    let calendar = cbor_text_field(args, "calendar");
+    match (account, calendar) {
+        (Some(account), Some(calendar)) => Some(format!(
+            "{}/{}",
+            safe_display_line(account),
+            safe_display_line(calendar)
+        )),
+        (Some(account), None) => Some(safe_display_line(account)),
+        (None, Some(calendar)) => Some(format!("-/{}", safe_display_line(calendar))),
+        (None, None) => None,
+    }
+}
+
+fn calendar_range_text(args: Option<&CborValue>) -> Option<String> {
+    let args = args?;
+    let start = cbor_text_field(args, "start");
+    let end = cbor_text_field(args, "end");
+    match (start, end) {
+        (Some(start), Some(end)) => Some(format!(
+            "{}..{}",
+            safe_display_line(start),
+            safe_display_line(end)
+        )),
+        (Some(start), None) => Some(format!("{}..", safe_display_line(start))),
+        (None, Some(end)) => Some(format!("..{}", safe_display_line(end))),
+        (None, None) => None,
+    }
 }
 
 fn line_array(rows: Vec<String>) -> CborValue {

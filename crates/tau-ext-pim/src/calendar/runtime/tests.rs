@@ -116,8 +116,9 @@ fn calendar_log_records_tool_reads_and_action_lists_them() {
     assert_eq!(cbor_text_field(data, "format"), Some(LIST_CALENDARS_FORMAT));
     assert_eq!(
         tau_proto::ToolResponse::from_cbor(&output).render(),
-        "ok: true\ncommand: list_calendars\nstatus: ok\nformat: calendar_id account_id flags display_name\n\nmain feed read_only \"Feed\""
+        "ok: true\ncommand: list_calendars\nstatus: ok\nformat: calendar_id account_id flags display_name\naccount: feed\n\nmain feed read_only \"Feed\""
     );
+    assert_eq!(success_display(&output).args, "list_calendars feed");
 
     let log = engine.action_log_last(10).expect("log output");
 
@@ -127,6 +128,40 @@ fn calendar_log_records_tool_reads_and_action_lists_them() {
     assert!(log.contains("status=ok"), "{log}");
     assert!(log.contains("account=feed"), "{log}");
     assert!(log.contains("items=1"), "{log}");
+}
+
+#[test]
+fn calendar_success_display_keeps_queued_event_target() {
+    // Queued write results are the final model-visible status for default
+    // approval policy, so keep the target event and range visible there too.
+    let mut change = CalendarChangeApproval::pending("update_event", "google", "primary");
+    change.event_id = Some("evt1".to_owned());
+    change.start = Some("2026-05-29T10:00:00Z".to_owned());
+    change.end = Some("2026-05-29T11:00:00Z".to_owned());
+
+    let result = format_change_queued("change1", &change);
+
+    assert_eq!(
+        success_display(&result).args,
+        "update_event google/primary 2026-05-29T10:00:00Z..2026-05-29T11:00:00Z event=evt1"
+    );
+}
+
+#[test]
+fn calendar_initial_display_shows_scope_and_range() {
+    // Calendar reads can be slow/networked; keep the live status chip useful by
+    // showing the same scope/range information that matters for the result.
+    let display = initial_display(&command_args(
+        "list_events",
+        vec![
+            ("account", CborValue::Text("feed".to_owned())),
+            ("calendar", CborValue::Text("main".to_owned())),
+            ("start", CborValue::Text("2026-05-29".to_owned())),
+            ("end", CborValue::Text("2026-05-30".to_owned())),
+        ],
+    ));
+
+    assert_eq!(display.args, "list_events feed/main 2026-05-29..2026-05-30");
 }
 
 #[test]
