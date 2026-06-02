@@ -2836,8 +2836,8 @@ fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
     fs::write(&file_path, &original).expect("write");
 
     // On mismatch, the file stays untouched and the agent gets read-like
-    // output around the line whose guard failed. This gives enough context to
-    // recover from stale line numbers without dumping the full replacement range.
+    // details around the line whose guard failed. This gives enough context to
+    // recover from stale line numbers without dumping context into the UI payload.
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![
@@ -2858,10 +2858,13 @@ fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
         Some(expected_context.as_str())
     );
     assert_eq!(cbor_int_field(details, "guard_start_line"), Some(12));
-    assert!(matches!(
-        error.display.payload.as_ref(),
-        Some(ToolUsePayload::Text { text }) if text == &expected_context
-    ));
+    assert_eq!(error.display.payload, None);
+    assert_eq!(error.display.stats.lines, Some(21));
+    assert_eq!(
+        error.display.stats.bytes,
+        Some(expected_context.len() as u64)
+    );
+    assert_eq!(error.display.stats.matches, None);
     assert_eq!(fs::read_to_string(&file_path).expect("read back"), original);
 }
 

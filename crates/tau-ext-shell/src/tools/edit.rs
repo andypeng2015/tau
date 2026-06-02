@@ -337,10 +337,7 @@ fn guard_mismatch_failure(
 
     let mut failure = ToolFailure::new(format!("guard for line {start_line} did not match"))
         .with_args(display_args.to_owned())
-        .with_details(CborValue::Map(details))
-        .with_payload(Some(ToolUsePayload::Text {
-            text: truncated.content.clone(),
-        }));
+        .with_details(CborValue::Map(details));
     failure.display.stats = text_stats(&truncated.content);
     failure
 }
