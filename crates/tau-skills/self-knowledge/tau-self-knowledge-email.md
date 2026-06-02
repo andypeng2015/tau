@@ -85,6 +85,7 @@ Important fields:
 - Password auth requires `auth.password_secret` and a matching declaration under `extensions.std-pim.secrets`.
 - `auth.method: none` is only for SMTP-only or relay-style setups; IMAP requires password auth.
 - OAuth and command-based password sources are not implemented or are rejected.
+- List-style email outputs use Tau's header-then-payload tool-output shape: headers such as `format: ...` first, one empty line, then plain unindented rows. Message rows start with UID. Whitespace inside token fields is percent-encoded so follow-up keys stay one-column and reversible; percent-decode token fields before passing them back as tool arguments. Attachment metadata inside `email.read` is structured detail metadata, not a top-level list response.
 
 
 ## Secrets

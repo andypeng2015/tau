@@ -144,11 +144,17 @@ impl ToolResponse {
     }
 
     fn from_cbor_map(entries: &[(CborValue, CborValue)]) -> Self {
+        let has_output = entries.iter().any(|(key, _)| {
+            matches!(key, CborValue::Text(key) if key == "output" || key == "line-numbered content")
+        });
         let raw = CborValue::Map(entries.to_vec());
         let mut headers = Vec::new();
         let mut body_parts = Vec::new();
         for (key, value) in entries {
             let key = cbor_tool_response_text(key);
+            if has_output && key == "data" {
+                continue;
+            }
             let value = cbor_tool_response_text(value);
             if key == "output" || key == "line-numbered content" {
                 body_parts.push(value);

@@ -41,6 +41,10 @@ fn list_accounts_reports_enabled_configured_accounts() {
     assert_eq!(cbor_text_field(&output, "status"), Some("ok"));
     assert_eq!(cbor_text_field(data, "format"), Some(LIST_ACCOUNTS_FORMAT));
     assert_eq!(line_payload(data, "accounts"), "work - \"Work_Calendar\"");
+    assert_eq!(
+        tau_proto::ToolResponse::from_cbor(&output).render(),
+        "ok: true\ncommand: list_accounts\nstatus: ok\nformat: account_id default_calendar display_name\n\nwork - \"Work_Calendar\""
+    );
 }
 
 #[test]
@@ -110,6 +114,10 @@ fn calendar_log_records_tool_reads_and_action_lists_them() {
     );
     let data = cbor_field(&output, "data").expect("data");
     assert_eq!(cbor_text_field(data, "format"), Some(LIST_CALENDARS_FORMAT));
+    assert_eq!(
+        tau_proto::ToolResponse::from_cbor(&output).render(),
+        "ok: true\ncommand: list_calendars\nstatus: ok\nformat: calendar_id account_id flags display_name\n\nmain feed read_only \"Feed\""
+    );
 
     let log = engine.action_log_last(10).expect("log output");
 

@@ -1224,6 +1224,35 @@ fn tool_response_renders_output_field_as_body_without_label() {
 }
 
 #[test]
+fn tool_response_output_field_hides_raw_data_from_rendered_body() {
+    let response = ToolResponse::from_cbor(&CborValue::Map(vec![
+        (
+            CborValue::Text("format".to_owned()),
+            CborValue::Text("name flags".to_owned()),
+        ),
+        (
+            CborValue::Text("data".to_owned()),
+            CborValue::Map(vec![
+                (
+                    CborValue::Text("format".to_owned()),
+                    CborValue::Text("name flags".to_owned()),
+                ),
+                (
+                    CborValue::Text("folders".to_owned()),
+                    CborValue::Array(vec![CborValue::Text("INBOX selectable".to_owned())]),
+                ),
+            ]),
+        ),
+        (
+            CborValue::Text("output".to_owned()),
+            CborValue::Text("INBOX selectable".to_owned()),
+        ),
+    ]));
+
+    assert_eq!(response.render(), "format: name flags\n\nINBOX selectable");
+}
+
+#[test]
 fn tool_response_leaves_plain_text_as_body_only() {
     let response = ToolResponse::from_cbor(&CborValue::Text("done".to_owned()));
 

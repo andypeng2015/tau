@@ -22,7 +22,7 @@ use super::tool::{
 };
 
 const LIST_ACCOUNTS_FORMAT: &str = "account_id default_calendar display_name";
-const LIST_CALENDARS_FORMAT: &str = "account_id calendar_id flags display_name";
+const LIST_CALENDARS_FORMAT: &str = "calendar_id account_id flags display_name";
 const LIST_EVENTS_FORMAT: &str = "event_id start end flags status summary...";
 const FREE_BUSY_FORMAT: &str = "event_id start end flags";
 const EVENT_DETAIL_FORMAT: &str = "key value...";
@@ -664,13 +664,15 @@ impl Engine {
                 ));
             }
         }
-        ok_envelope(
+        ok_line_envelope(
             "list_accounts",
             "ok",
+            vec![("format", CborValue::Text(LIST_ACCOUNTS_FORMAT.to_owned()))],
             cbor_map(vec![
                 ("format", CborValue::Text(LIST_ACCOUNTS_FORMAT.to_owned())),
-                ("accounts", line_array(rows)),
+                ("accounts", line_array(rows.clone())),
             ]),
+            &rows,
         )
     }
 
@@ -689,8 +691,8 @@ impl Engine {
                             };
                             rows.push(format!(
                                 "{} {} {} {}",
-                                safe_field(&account.id),
                                 safe_field(&calendar.id),
+                                safe_field(&account.id),
                                 flags,
                                 quoted_display_field(&calendar.display_name)
                             ));
@@ -709,8 +711,8 @@ impl Engine {
                             };
                             rows.push(format!(
                                 "{} {} {} {}",
-                                safe_field(&account.id),
                                 safe_field(&calendar.id),
+                                safe_field(&account.id),
                                 flags,
                                 quoted_display_field(&calendar.summary)
                             ));
@@ -720,13 +722,15 @@ impl Engine {
                 }
             }
         }
-        Ok(ok_envelope(
+        Ok(ok_line_envelope(
             "list_calendars",
             "ok",
+            vec![("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned()))],
             cbor_map(vec![
                 ("format", CborValue::Text(LIST_CALENDARS_FORMAT.to_owned())),
-                ("calendars", line_array(rows)),
+                ("calendars", line_array(rows.clone())),
             ]),
+            &rows,
         ))
     }
 
@@ -753,16 +757,38 @@ impl Engine {
             self.remember_event_etag(account, calendar, event);
             rows.push(format_event_line(&self.config.policy, event));
         }
-        Ok(ok_envelope(
+        let data = cbor_map(vec![
+            ("account", CborValue::Text(safe_display_line(&account.id))),
+            ("calendar", CborValue::Text(safe_display_line(calendar))),
+            ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
+            ("start", optional_text(range_start.clone())),
+            ("end", optional_text(range_end.clone())),
+            ("events", line_array(rows.clone())),
+            (
+                "returned_events",
+                CborValue::Integer(returned_events.into()),
+            ),
+            ("scanned_events", CborValue::Integer(scanned_events.into())),
+            (
+                "total_events",
+                if page.truncated {
+                    CborValue::Null
+                } else {
+                    CborValue::Integer(scanned_events.into())
+                },
+            ),
+            ("next_cursor", optional_text(page.next_cursor.clone())),
+            ("truncated", CborValue::Bool(page.truncated)),
+        ]);
+        Ok(ok_line_envelope(
             "list_events",
             "ok",
-            cbor_map(vec![
+            vec![
                 ("account", CborValue::Text(safe_display_line(&account.id))),
                 ("calendar", CborValue::Text(safe_display_line(calendar))),
                 ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
                 ("start", optional_text(range_start)),
                 ("end", optional_text(range_end)),
-                ("events", line_array(rows)),
                 (
                     "returned_events",
                     CborValue::Integer(returned_events.into()),
@@ -778,7 +804,9 @@ impl Engine {
                 ),
                 ("next_cursor", optional_text(page.next_cursor)),
                 ("truncated", CborValue::Bool(page.truncated)),
-            ]),
+            ],
+            data,
+            &rows,
         ))
     }
 
@@ -855,19 +883,30 @@ impl Engine {
             self.remember_event_etag(account, calendar, event);
             rows.push(format_free_busy_line(&self.config.policy, event));
         }
-        Ok(ok_envelope(
+        let data = cbor_map(vec![
+            ("account", CborValue::Text(safe_display_line(&account.id))),
+            ("calendar", CborValue::Text(safe_display_line(calendar))),
+            ("format", CborValue::Text(FREE_BUSY_FORMAT.to_owned())),
+            ("start", optional_text(range_start.clone())),
+            ("end", optional_text(range_end.clone())),
+            ("busy", line_array(rows.clone())),
+            ("next_cursor", optional_text(page.next_cursor.clone())),
+            ("truncated", CborValue::Bool(page.truncated)),
+        ]);
+        Ok(ok_line_envelope(
             "free_busy",
             "ok",
-            cbor_map(vec![
+            vec![
                 ("account", CborValue::Text(safe_display_line(&account.id))),
                 ("calendar", CborValue::Text(safe_display_line(calendar))),
                 ("format", CborValue::Text(FREE_BUSY_FORMAT.to_owned())),
                 ("start", optional_text(range_start)),
                 ("end", optional_text(range_end)),
-                ("busy", line_array(rows)),
                 ("next_cursor", optional_text(page.next_cursor)),
                 ("truncated", CborValue::Bool(page.truncated)),
-            ]),
+            ],
+            data,
+            &rows,
         ))
     }
 
@@ -2466,6 +2505,32 @@ fn ok_envelope(command: &str, status: &str, data: CborValue) -> CborValue {
         ("status", CborValue::Text(status.to_owned())),
         ("data", data),
     ])
+}
+
+fn ok_line_envelope(
+    command: &str,
+    status: &str,
+    headers: Vec<(&str, CborValue)>,
+    data: CborValue,
+    rows: &[String],
+) -> CborValue {
+    let mut entries = vec![
+        ("ok", CborValue::Bool(true)),
+        ("command", CborValue::Text(command.to_owned())),
+        ("status", CborValue::Text(status.to_owned())),
+    ];
+    entries.extend(headers);
+    entries.push(("data", data));
+    entries.push(("output", CborValue::Text(line_rows_output(rows))));
+    cbor_map(entries)
+}
+
+fn line_rows_output(rows: &[String]) -> String {
+    if rows.is_empty() {
+        "(no matches found)".to_owned()
+    } else {
+        rows.join("\n")
+    }
 }
 
 fn error_envelope(command: Option<&str>, code: &str, message: &str) -> CborValue {

@@ -5,6 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::thread;
 
+use tau_proto::ToolResponse;
+
 use super::*;
 
 struct FramePair {
@@ -671,7 +673,7 @@ fn list_accounts_returns_config_without_secrets_and_folders_are_whitelisted() {
     let accounts = engine.dispatch(EmailCommand::ListAccounts);
     assert_eq!(
         data_field(&accounts, "format"),
-        &CborValue::Text("id flags from display_name".to_owned())
+        &CborValue::Text("id flags from display_name...".to_owned())
     );
     let CborValue::Array(items) = data_field(&accounts, "accounts") else {
         panic!("accounts array")
@@ -684,17 +686,49 @@ fn list_accounts_returns_config_without_secrets_and_folders_are_whitelisted() {
     assert!(!format!("{accounts:?}").contains("email_password"));
     assert!(!format!("{accounts:?}").contains("secret"));
 
-    let folders = engine.dispatch(EmailCommand::ListFolders {
+    let folders_result = engine.dispatch(EmailCommand::ListFolders {
         account: "work".to_owned(),
     });
     assert_eq!(
-        data_field(&folders, "format"),
-        &CborValue::Text("flags name".to_owned())
+        data_field(&folders_result, "format"),
+        &CborValue::Text("name flags".to_owned())
     );
-    let CborValue::Array(folders) = data_field(&folders, "folders") else {
+    let CborValue::Array(folders) = data_field(&folders_result, "folders") else {
         panic!("folders")
     };
-    assert_eq!(folders, &[CborValue::Text("selectable INBOX".to_owned())]);
+    assert_eq!(folders, &[CborValue::Text("INBOX selectable".to_owned())]);
+    assert_eq!(
+        ToolResponse::from_cbor(&folders_result).render(),
+        "ok: true\ncommand: list_folders\nstatus: ok\naccount: work\nformat: name flags\n\nINBOX selectable"
+    );
+}
+
+#[test]
+fn folder_line_keeps_key_reversible_without_extra_columns() {
+    // Folder names are follow-up keys. Percent-encode whitespace instead of
+    // replacing it so `Sent Items` cannot collide with `Sent_Items`.
+    let line = format_folder_line(BackendFolder {
+        name: "Sent Items".to_owned(),
+        delimiter: "/".to_owned(),
+        selectable: true,
+    });
+
+    assert_eq!(line, CborValue::Text("Sent%20Items selectable".to_owned()));
+}
+#[test]
+fn empty_list_render_uses_no_matches_payload() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    engine.backend.folders.insert("work".to_owned(), Vec::new());
+
+    let result = engine.dispatch(EmailCommand::ListFolders {
+        account: "work".to_owned(),
+    });
+
+    assert_eq!(
+        ToolResponse::from_cbor(&result).render(),
+        "ok: true\ncommand: list_folders\nstatus: ok\naccount: work\nformat: name flags\n\n(no matches found)"
+    );
 }
 
 #[test]
@@ -944,7 +978,7 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
 
     assert_eq!(
         data_field(&result, "format"),
-        &CborValue::Text("uid date from flags access attachments subject".to_owned())
+        &CborValue::Text("uid date from flags access attachments subject...".to_owned())
     );
     assert_eq!(
         messages[0],
@@ -979,6 +1013,28 @@ fn incoming_list_shows_sanitized_untrusted_subject_preview_and_whitelisted_subje
         empty_subject_messages[1],
         CborValue::Text("2 2026-05-24T00:01:00Z team@company.com - full 0 -".to_owned())
     );
+}
+
+#[test]
+fn attachment_lines_are_single_line_with_index_first() {
+    // Attachment metadata is a list-style response inside `read`; keep it as
+    // one sanitized line per attachment so filenames cannot forge columns or
+    // extra rows.
+    let line = format_attachment_line(
+        7,
+        &BackendAttachment {
+            filename: Some("invoice final\nforged: yes\u{202e}.pdf".to_owned()),
+            content_type: Some("application/pdf".to_owned()),
+            size_bytes: Some(1234),
+        },
+    );
+
+    assert_eq!(
+        line,
+        "7 invoice%20final\\nforged:%20yes\\u{202e}.pdf application/pdf 1234"
+    );
+    assert!(!line.contains('\n'));
+    assert!(!line.contains('\u{202e}'));
 }
 
 #[test]

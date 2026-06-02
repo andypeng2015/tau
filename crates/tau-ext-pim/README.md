@@ -25,7 +25,7 @@ Email is hostile input. Message bodies, subjects, display names, addresses, MIME
 
 `email.list_recent` and `email.list_by_uid` return bounded line-oriented metadata with a `format` header and one line per message. Each line includes an `access` field: `full`, `preview`, or `none`. `full` means `email.read` can return simplified full content. `preview` means `email.read` returns only a stripped `body_preview`. `none` means `email.read` returns an `approval_required` error and no body preview.
 
-The list format is `uid date from flags access attachments subject`. For messages that do not have `full` access, `flags` includes `redacted`, attachment metadata is `?`, and `subject` is only a short lossy preview containing ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
+The list format is `uid date from flags access attachments subject...`. For messages that do not have `full` access, `flags` includes `redacted`, attachment metadata is `?`, and `subject...` is only a short lossy preview containing ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
 
 `email.read` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. In `preview` mode, it returns a heavily stripped `body_preview` without creating a user approval request. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. If the preview justifies full access, the agent can call `email.request_full` for the same message to create an incoming approval. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny the exact request with `/email in deny <id>`. After approval, the model must repeat the matching `email.read` call to fetch the content. After denial, matching reads report `access=none`; an explicit `request_full` can still ask the user again.
 
@@ -261,8 +261,8 @@ Folder allowlists are glob patterns over mailbox folder names. Empty `folders.al
 
 The model-visible tool name is `email`. Commands are selected through the `command` argument:
 
-- `list_accounts` — returns `format: id flags from display_name` plus one line per account.
-- `list_folders` — returns `format: flags name` plus one line per visible folder. Folder names are the full IMAP path returned by the server, such as `Archive/2026` or `Archive.2026`.
+- `list_accounts` — returns `format: id flags from display_name...` plus one line per account.
+- `list_folders` — returns `format: name flags` plus one line per visible folder. Folder names are the full IMAP path returned by the server, such as `Archive/2026` or `Archive.2026`; whitespace in list row fields is percent-encoded so names remain single-column and reversible. Percent-decode token fields before passing them back as tool arguments.
 - `list_recent`
 - `list_by_uid`
 - `read`
@@ -274,7 +274,7 @@ The model-visible tool name is `email`. Commands are selected through the `comma
 - `trash`
 - `send`
 
-`list_recent` accepts optional `account`, `folder`, `limit`, `cursor`, and `days`; omitted `account` and `folder` default to the first configured account and INBOX, and `days` defaults to 7. `list_by_uid` accepts optional `account`, `folder`, `limit`, and `cursor` with the same account/folder defaults. List-style commands return a `format` header and one line per listed item. `read`, `request_full`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` take the same `account`/`folder`/`uid` target and default omitted account/folder the same way. `request_full` creates or reuses a pending incoming approval so the user can decide whether the agent may read the full message. Message-management commands do not require content approval. `trash` moves the message to the account's IMAP Trash mailbox.
+`list_recent` accepts optional `account`, `folder`, `limit`, `cursor`, and `days`; omitted `account` and `folder` default to the first configured account and INBOX, and `days` defaults to 7. `list_by_uid` accepts optional `account`, `folder`, `limit`, and `cursor` with the same account/folder defaults. List-style commands return a `format` header and one safe line per listed item, with the follow-up key first and whitespace/control-safe fields so rows cannot forge extra columns or lines; percent-decode token fields before reusing them as arguments. `read`, `request_full`, `mark_read`, `mark_unread`, `star`, `unstar`, and `trash` take the same `account`/`folder`/`uid` target and default omitted account/folder the same way. `request_full` creates or reuses a pending incoming approval so the user can decide whether the agent may read the full message. Message-management commands do not require content approval. `trash` moves the message to the account's IMAP Trash mailbox.
 
 Use `list_accounts` to inspect configured account ids; normal single-account use can omit `account`.
 
@@ -290,7 +290,7 @@ The model-visible tool name for calendars is `calendar`. Commands are selected t
 - `delete_event` — queues or applies a Google event delete; requires `event_id`.
 - `respond_invite` — queues or applies an RSVP response; requires `event_id` and `response`.
 
-Calendar results use the same `ok`, `command`, `status`, `data` envelope as email. Line-style data includes `data.format` and sanitized text arrays (`accounts`, `calendars`, `events`, `event`, or `busy`). `list_events` and `free_busy` include `data.next_cursor` and `data.truncated`; pass the cursor with the same account/calendar/range arguments to continue.
+Calendar list-style results render as headers, one blank line, then plain unindented rows. Headers include `format`; `list_events` and `free_busy` also include `next_cursor` and `truncated`, so pass the cursor with the same account/calendar/range arguments to continue. If a list has no rows, the payload is `(no matches found)`.
 
 Calendar writes target Google accounts only. The default write policy queues `/calendar change` approvals; ICS feed accounts remain read-only. `list_events` accepts an optional `title` substring filter. `start` and `end` accept RFC3339 date-times with offsets, local `YYYY-MM-DDTHH:MM:SS` date-times interpreted in the configured or system timezone, natural expressions like `today`, `tomorrow`, or `next week`, and `YYYY-MM-DD` all-day dates.
 

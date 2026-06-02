@@ -2761,7 +2761,11 @@ fn format_folder_line(folder: BackendFolder) -> CborValue {
     } else {
         name
     };
-    CborValue::Text(format!("{} {}", flags, name))
+    CborValue::Text(format!(
+        "{} {}",
+        list_token(&name, MAX_HEADER_VALUE_CHARS),
+        flags
+    ))
 }
 
 fn format_read_headers(
@@ -2857,10 +2861,18 @@ fn format_list_message_line(message: BackendMessage, access: &str) -> String {
 }
 
 fn list_token(value: &str, max_chars: usize) -> String {
-    let token = safe_model_line(value, max_chars)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_");
+    let value = safe_model_line(value, max_chars);
+    let mut token = String::new();
+    for ch in value.chars() {
+        if ch.is_whitespace() || ch == '%' {
+            let mut buf = [0; 4];
+            for byte in ch.encode_utf8(&mut buf).as_bytes() {
+                token.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            token.push(ch);
+        }
+    }
     if token.is_empty() {
         "-".to_owned()
     } else {
@@ -3126,23 +3138,28 @@ impl<B: EmailBackend> Engine<B> {
     }
 
     fn list_accounts(&self) -> CborValue {
-        let accounts = self
+        let accounts: Vec<CborValue> = self
             .config
             .account_order
             .iter()
             .filter_map(|id| self.config.accounts.get(id))
             .map(|account| format_account_line(account, self.config.enable))
             .collect();
-        ok_envelope(
+        ok_line_envelope(
             "list_accounts",
             "ok",
+            vec![(
+                "format",
+                CborValue::Text("id flags from display_name...".to_owned()),
+            )],
             cbor_map(vec![
                 (
                     "format",
-                    CborValue::Text("id flags from display_name".to_owned()),
+                    CborValue::Text("id flags from display_name...".to_owned()),
                 ),
-                ("accounts", CborValue::Array(accounts)),
+                ("accounts", CborValue::Array(accounts.clone())),
             ]),
+            &accounts,
         )
     }
 
@@ -3157,22 +3174,30 @@ impl<B: EmailBackend> Engine<B> {
         };
         match self.backend.list_folders(account_id) {
             Ok(folders) => {
-                let visible = folders
+                let visible: Vec<CborValue> = folders
                     .into_iter()
                     .filter(|f| account.folders.allows(&f.name))
                     .map(format_folder_line)
                     .collect();
-                ok_envelope(
+                ok_line_envelope(
                     "list_folders",
                     "ok",
+                    vec![
+                        (
+                            "account",
+                            CborValue::Text(safe_model_line(account_id, MAX_HEADER_VALUE_CHARS)),
+                        ),
+                        ("format", CborValue::Text("name flags".to_owned())),
+                    ],
                     cbor_map(vec![
                         (
                             "account",
                             CborValue::Text(safe_model_line(account_id, MAX_HEADER_VALUE_CHARS)),
                         ),
-                        ("format", CborValue::Text("flags name".to_owned())),
-                        ("folders", CborValue::Array(visible)),
+                        ("format", CborValue::Text("name flags".to_owned())),
+                        ("folders", CborValue::Array(visible.clone())),
                     ]),
+                    &visible,
                 )
             }
             Err(message) => backend_error_envelope(Some("list_folders"), "network_error", &message),
@@ -3261,7 +3286,7 @@ impl<B: EmailBackend> Engine<B> {
             .map(CborValue::Text)
             .unwrap_or(CborValue::Null);
         let truncated = page.truncated;
-        let data = page
+        let data: Vec<CborValue> = page
             .messages
             .into_iter()
             .map(|message| {
@@ -3275,9 +3300,25 @@ impl<B: EmailBackend> Engine<B> {
                 CborValue::Text(format_list_message_line(message, access))
             })
             .collect();
-        ok_envelope(
+        ok_line_envelope(
             command,
             "ok",
+            vec![
+                (
+                    "account",
+                    CborValue::Text(safe_model_line(account_id, MAX_HEADER_VALUE_CHARS)),
+                ),
+                (
+                    "folder",
+                    CborValue::Text(safe_model_line(folder, MAX_HEADER_VALUE_CHARS)),
+                ),
+                (
+                    "format",
+                    CborValue::Text("uid date from flags access attachments subject...".to_owned()),
+                ),
+                ("next_cursor", next_cursor.clone()),
+                ("truncated", CborValue::Bool(truncated)),
+            ],
             cbor_map(vec![
                 (
                     "account",
@@ -3289,12 +3330,13 @@ impl<B: EmailBackend> Engine<B> {
                 ),
                 (
                     "format",
-                    CborValue::Text("uid date from flags access attachments subject".to_owned()),
+                    CborValue::Text("uid date from flags access attachments subject...".to_owned()),
                 ),
-                ("messages", CborValue::Array(data)),
+                ("messages", CborValue::Array(data.clone())),
                 ("next_cursor", next_cursor),
                 ("truncated", CborValue::Bool(truncated)),
             ]),
+            &data,
         )
     }
 
@@ -3403,9 +3445,9 @@ impl<B: EmailBackend> Engine<B> {
             let attachments = msg
                 .attachments
                 .iter()
-                .cloned()
                 .enumerate()
-                .map(|(index, attachment)| attachment_cbor(index, attachment))
+                .map(|(index, attachment)| format_attachment_line(index, attachment))
+                .map(CborValue::Text)
                 .collect();
             return ok_envelope(
                 "read",
@@ -3449,6 +3491,12 @@ impl<B: EmailBackend> Engine<B> {
                     (
                         "body_shown_bytes",
                         CborValue::Integer(truncate.shown_bytes.into()),
+                    ),
+                    (
+                        "format",
+                        CborValue::Text(
+                            "attachment_index filename content_type size_bytes".to_owned(),
+                        ),
                     ),
                     ("attachments", CborValue::Array(attachments)),
                 ]),
@@ -5514,6 +5562,39 @@ fn ok_envelope(command: &str, status: &str, data: CborValue) -> CborValue {
         ("data", data),
     ])
 }
+fn ok_line_envelope(
+    command: &str,
+    status: &str,
+    headers: Vec<(&str, CborValue)>,
+    data: CborValue,
+    rows: &[CborValue],
+) -> CborValue {
+    let mut entries = vec![
+        ("ok", CborValue::Bool(true)),
+        ("command", CborValue::Text(command.to_owned())),
+        ("status", CborValue::Text(status.to_owned())),
+    ];
+    entries.extend(headers);
+    entries.push(("data", data));
+    entries.push(("output", CborValue::Text(line_rows_output(rows))));
+    cbor_map(entries)
+}
+
+fn line_rows_output(rows: &[CborValue]) -> String {
+    let lines = rows
+        .iter()
+        .filter_map(|value| match value {
+            CborValue::Text(line) => Some(line.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        "(no matches found)".to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
 fn error_envelope(command: Option<&str>, code: &str, message: &str) -> CborValue {
     error_envelope_with_details(command, code, message, CborValue::Map(Vec::new()))
 }
@@ -5600,35 +5681,25 @@ fn structured_error_with_details(code: &str, message: &str, details: CborValue) 
         ("details", details),
     ])
 }
-fn attachment_cbor(index: usize, attachment: BackendAttachment) -> CborValue {
-    cbor_map(vec![
-        ("index", CborValue::Integer((index as u64).into())),
-        (
-            "filename",
-            attachment
-                .filename
-                .map(|filename| {
-                    CborValue::Text(safe_model_line(&filename, MAX_ATTACHMENT_NAME_CHARS))
-                })
-                .unwrap_or(CborValue::Null),
-        ),
-        (
-            "content_type",
-            attachment
-                .content_type
-                .map(|content_type| {
-                    CborValue::Text(safe_model_line(&content_type, MAX_HEADER_VALUE_CHARS))
-                })
-                .unwrap_or(CborValue::Null),
-        ),
-        (
-            "size_bytes",
-            attachment
-                .size_bytes
-                .map(|size| CborValue::Integer(size.into()))
-                .unwrap_or(CborValue::Null),
-        ),
-    ])
+fn format_attachment_line(index: usize, attachment: &BackendAttachment) -> String {
+    format!(
+        "{} {} {} {}",
+        index,
+        attachment
+            .filename
+            .as_deref()
+            .map(|filename| list_token(filename, MAX_ATTACHMENT_NAME_CHARS))
+            .unwrap_or_else(|| "-".to_owned()),
+        attachment
+            .content_type
+            .as_deref()
+            .map(|content_type| list_token(content_type, MAX_HEADER_VALUE_CHARS))
+            .unwrap_or_else(|| "-".to_owned()),
+        attachment
+            .size_bytes
+            .map(|size| size.to_string())
+            .unwrap_or_else(|| "-".to_owned())
+    )
 }
 fn policy_cbor(decision: &PolicyDecision) -> CborValue {
     cbor_map(vec![
