@@ -242,6 +242,12 @@ tool for testing. The shell command and any wrapper prefix are configurable:
     // launched remotely via SSH and the harness-level cwd only affects
     // the local ssh process.
     working_directory: "/srv/project",
+    // Enforce read-only mode with a read-only bind mount. Default false: jj
+    // (https://github.com/jj-vcs/jj/issues/9579), nix-direnv
+    // (https://github.com/nix-community/nix-direnv/issues/749), and possibly
+    // other tools have compatibility issues, so read-only mode is advisory
+    // unless this is explicitly enabled.
+    enforce_ro_mode: false,
     shell: {
       command: "bash",
       prefix: ["nix", "develop", "-c"],

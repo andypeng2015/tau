@@ -168,7 +168,10 @@ pub(crate) fn apply_read_only_cwd_mount(
     _cmd: &mut Command,
     _cwd: &std::path::Path,
 ) -> std::io::Result<Option<ReadOnlyMountWarningPipe>> {
-    Ok(None)
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "read-only cwd mount is only supported on Linux",
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -188,8 +191,8 @@ fn apply_read_only_cwd_mount_child(
     warning_write_fd: libc::c_int,
 ) -> std::io::Result<()> {
     if cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) }).is_err() {
-        write_warning(warning_write_fd, b"unshare user namespace failed");
-        return Ok(());
+        let _ = warning_write_fd;
+        return Err(std::io::Error::last_os_error());
     }
     write_proc_file(c"/proc/self/setgroups", c"deny\n", true)?;
     write_proc_file(c"/proc/self/uid_map", uid_map, false)?;

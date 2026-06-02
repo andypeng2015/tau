@@ -80,7 +80,7 @@ pub(crate) fn run_command(
     arguments: &CborValue,
     shell_config: &ShellConfig,
 ) -> Result<ToolOutput, ToolFailure> {
-    match run_command_cancellable(arguments, shell_config, None)? {
+    match run_command_cancellable(arguments, shell_config, false, None)? {
         CommandOutcome::Finished(output) => Ok(*output),
         CommandOutcome::Cancelled => Err(ToolFailure::from("shell command cancelled".to_owned())),
     }
@@ -89,6 +89,7 @@ pub(crate) fn run_command(
 pub(crate) fn run_command_cancellable(
     arguments: &CborValue,
     shell_config: &ShellConfig,
+    enforce_ro_mode: bool,
     cancel_rx: Option<mpsc::Receiver<()>>,
 ) -> Result<CommandOutcome, ToolFailure> {
     let access_mode = parse_access_mode(arguments).map_err(ToolFailure::from)?;
@@ -111,6 +112,7 @@ pub(crate) fn run_command_cancellable(
             &command,
             cwd.as_deref(),
             access_mode == ShellAccessMode::ReadOnly,
+            enforce_ro_mode,
         )
         .map_err(|error| {
             ToolFailure::from(format!("failed to start shell command: {error}"))
@@ -230,7 +232,7 @@ pub(crate) fn dispatch_user_shell_command(
 ) {
     use std::io::Read;
 
-    let mut child = match shell_config.spawn_isolated(&cmd.command, None, false) {
+    let mut child = match shell_config.spawn_isolated(&cmd.command, None, false, false) {
         Ok(child) => child,
         Err(err) => {
             let _ = tx.send(Frame::Event(Event::ShellCommandFinished(

@@ -3366,6 +3366,20 @@ fn shell_extension_rejects_invalid_config() {
 }
 
 #[test]
+fn shell_enforce_ro_mode_defaults_false_and_can_be_enabled() {
+    // ro-mode namespace bind mounts are opt-in because jj, nix-direnv, and
+    // likely other tools currently have compatibility issues with them.
+    assert!(!ExtConfig::default().enforce_ro_mode);
+
+    let config = tau_extension::parse_config::<ExtConfig>(&CborValue::Map(vec![(
+        CborValue::Text("enforce_ro_mode".to_owned()),
+        CborValue::Bool(true),
+    )]))
+    .expect("parse enforce_ro_mode config");
+    assert!(config.enforce_ro_mode);
+}
+
+#[test]
 fn shell_working_directory_cannot_change_after_startup() {
     let current = ExtConfig {
         working_directory: Some(PathBuf::from("/srv/one")),
@@ -3424,6 +3438,34 @@ fn shell_extension_reports_invalid_working_directory_config() {
         .write_frame(&disconnect_frame(None))
         .expect("disconnect");
     writer.flush().expect("flush");
+}
+
+#[test]
+fn shell_ro_mode_is_advisory_by_default() {
+    // With enforce_ro_mode at its default false value, `mode: ro` affects the UI
+    // label only. The child is not run under a read-only bind mount.
+    let td = TempDir::new().expect("tempdir");
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text("printf ok > probe".to_owned()),
+        ),
+        (
+            CborValue::Text("mode".to_owned()),
+            CborValue::Text("ro".to_owned()),
+        ),
+        (
+            CborValue::Text("cwd".to_owned()),
+            CborValue::Text(td.path().to_string_lossy().into_owned()),
+        ),
+    ]);
+
+    let output = run_command(&args, &crate::config::ShellConfig::default()).expect("run");
+    assert_eq!(output.display.mode, "ro");
+    assert_eq!(
+        fs::read_to_string(td.path().join("probe")).expect("probe"),
+        "ok"
+    );
 }
 
 #[test]
@@ -3821,10 +3863,11 @@ fn shell_tool_rejects_negative_timeout() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn shell_tool_read_only_mode_bind_mounts_cwd_read_only() {
-    // Regression coverage for `mode: ro`: lock elision is not enough. The
-    // child must get a read-only bind mount over its cwd so accidental writes
-    // fail before they can alter the working tree.
+fn shell_tool_enforced_read_only_mode_bind_mounts_cwd_read_only() {
+    // Regression coverage for opt-in enforced `mode: ro`: lock elision is not
+    // enough. When `enforce_ro_mode` is true, the child must get a read-only
+    // bind mount over its cwd so accidental writes fail before they can alter
+    // the working tree.
     let dir = TempDir::new().expect("temp dir");
     fs::write(dir.path().join("input.txt"), "ok").expect("write fixture");
     let args = CborValue::Map(vec![
@@ -3846,8 +3889,14 @@ fn shell_tool_read_only_mode_bind_mounts_cwd_read_only() {
         ),
     ]);
 
-    let output = match run_command(&args, &crate::config::ShellConfig::default()) {
-        Ok(output) => output,
+    let output = match crate::tools::shell::run_command_cancellable(
+        &args,
+        &crate::config::ShellConfig::default(),
+        true,
+        None,
+    ) {
+        Ok(crate::tools::shell::CommandOutcome::Finished(output)) => *output,
+        Ok(crate::tools::shell::CommandOutcome::Cancelled) => panic!("unexpected cancellation"),
         Err(error) if error.message.contains("Operation not permitted") => return,
         Err(error) => panic!("unexpected shell start error: {error:?}"),
     };

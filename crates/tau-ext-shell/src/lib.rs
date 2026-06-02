@@ -551,6 +551,7 @@ where
                 }
                 let tx = tx.clone();
                 let shell_config = config.shell.clone();
+                let enforce_ro_mode = config.enforce_ro_mode;
                 let running_shells = Arc::clone(&running_shells);
                 if invoke.tool_name == DIR_LOCK_TOOL_NAME {
                     let lock_manager = lock_manager.clone();
@@ -576,6 +577,7 @@ where
                             &running_shells,
                             &lock_manager,
                             &sem,
+                            enforce_ro_mode,
                         );
                     });
                 } else {
@@ -586,7 +588,14 @@ where
                     let permit = sem.acquire();
                     std::thread::spawn(move || {
                         let _permit = permit;
-                        dispatch_tool_invoke(invoke, shell_config, &tx, &running_shells, None);
+                        dispatch_tool_invoke(
+                            invoke,
+                            shell_config,
+                            &tx,
+                            &running_shells,
+                            None,
+                            enforce_ro_mode,
+                        );
                     });
                 }
             }
@@ -790,6 +799,7 @@ fn dispatch_locked_tool_invoke(
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
     lock_manager: &DirLockManager,
     sem: &Arc<Semaphore>,
+    enforce_ro_mode: bool,
 ) {
     let dirs = match crate::dir_lock::automatic_lock_dirs_for_tool(
         invoke.tool_name.as_str(),
@@ -798,7 +808,14 @@ fn dispatch_locked_tool_invoke(
         Ok(Some(dirs)) => crate::dir_lock::normalize_lock_dirs(dirs),
         Ok(None) => {
             let _permit = sem.acquire();
-            dispatch_tool_invoke(invoke, shell_config, tx, running_shells, None);
+            dispatch_tool_invoke(
+                invoke,
+                shell_config,
+                tx,
+                running_shells,
+                None,
+                enforce_ro_mode,
+            );
             return;
         }
         Err(error) => {
@@ -846,6 +863,7 @@ fn dispatch_locked_tool_invoke(
         tx,
         running_shells,
         lock_wait_duration_seconds,
+        enforce_ro_mode,
     );
     drop(guard);
 }
@@ -945,6 +963,7 @@ fn dispatch_tool_invoke(
     tx: &mpsc::Sender<Frame>,
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
     lock_wait_duration_seconds: Option<u64>,
+    enforce_ro_mode: bool,
 ) {
     if invoke.tool_name == SHELL_TOOL_NAME || invoke.tool_name == GPT_SHELL_TOOL_NAME {
         dispatch_cancellable_shell_tool(
@@ -953,6 +972,7 @@ fn dispatch_tool_invoke(
             tx,
             running_shells,
             lock_wait_duration_seconds,
+            enforce_ro_mode,
         );
         return;
     }
@@ -980,6 +1000,7 @@ fn dispatch_cancellable_shell_tool(
     tx: &mpsc::Sender<Frame>,
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
     lock_wait_duration_seconds: Option<u64>,
+    enforce_ro_mode: bool,
 ) {
     let (cancel_tx, cancel_rx) = mpsc::channel();
     debug!(
@@ -1002,6 +1023,7 @@ fn dispatch_cancellable_shell_tool(
     let event = match crate::tools::shell::run_command_cancellable(
         &invoke.arguments,
         &shell_config,
+        enforce_ro_mode,
         Some(cancel_rx),
     ) {
         Ok(crate::tools::shell::CommandOutcome::Finished(output)) => {
