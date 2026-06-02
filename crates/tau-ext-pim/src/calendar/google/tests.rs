@@ -1,0 +1,276 @@
+use super::*;
+
+#[test]
+fn parses_calendar_list_items() {
+    let json = serde_json::json!({
+        "id": "primary",
+        "summary": "Primary",
+        "accessRole": "reader"
+    });
+
+    let calendar = parse_calendar(&json).expect("calendar parses");
+
+    assert_eq!(calendar.id, "primary");
+    assert!(calendar.read_only);
+}
+
+#[test]
+fn primary_alias_is_tool_facing_when_allowed() {
+    // Google calendarList returns the primary calendar's email-like id, but
+    // the events API accepts the stable `primary` alias. Keep list output
+    // consistent with configs that allow only that alias.
+    let account = google_account(vec!["primary"]);
+    let json = serde_json::json!({
+        "id": "user@example.com",
+        "summary": "Personal",
+        "primary": true,
+        "accessRole": "owner"
+    });
+
+    let calendar = allowed_google_calendar(&account, parse_calendar(&json).expect("calendar"))
+        .expect("primary alias allowed");
+
+    assert_eq!(calendar.id, "primary");
+    assert_eq!(calendar.summary, "Personal");
+}
+
+#[test]
+fn calendar_summary_does_not_grant_google_access() {
+    // Display names are mutable and not unique. Access checks intentionally
+    // use Google ids plus the explicit `primary` alias only.
+    let account = google_account(vec!["Work"]);
+    let json = serde_json::json!({
+        "id": "work@example.com",
+        "summary": "Work",
+        "accessRole": "reader"
+    });
+
+    let calendar = allowed_google_calendar(&account, parse_calendar(&json).expect("calendar"));
+
+    assert!(calendar.is_none());
+}
+
+#[test]
+fn google_event_page_cursor_is_backend_prefixed() {
+    // Google page tokens are opaque provider data. Keep the model-visible
+    // cursor namespaced so it cannot be confused with other backends.
+    let json = serde_json::json!({
+        "nextPageToken": "abc-123"
+    });
+
+    assert_eq!(
+        google_next_cursor(&json).expect("next cursor").as_deref(),
+        Some("google:abc-123")
+    );
+    assert_eq!(
+        parse_google_cursor(Some("google:abc-123")).expect("cursor"),
+        Some("abc-123")
+    );
+    assert!(parse_google_cursor(Some("ics:1")).is_err());
+}
+
+#[test]
+fn google_event_page_cursor_rejects_control_characters() {
+    let json = serde_json::json!({
+        "nextPageToken": "abc\n123"
+    });
+
+    assert!(google_next_cursor(&json).is_err());
+    assert!(parse_google_cursor(Some("google:abc\n123")).is_err());
+}
+
+#[test]
+fn parses_device_auth_response_and_oauth_errors() {
+    let start = parse_device_auth_start(
+        r#"{
+            "device_code":"device-code",
+            "user_code":"USER-CODE",
+            "verification_url":"https://www.google.com/device",
+            "expires_in":600
+        }"#,
+    )
+    .expect("device auth response");
+
+    assert_eq!(start.device_code, "device-code");
+    assert_eq!(start.user_code, "USER-CODE");
+    assert_eq!(start.verification_uri, "https://www.google.com/device");
+    assert_eq!(start.expires_in_secs, 600);
+    assert_eq!(start.interval_secs, 5);
+    assert_eq!(
+        google_oauth_error_message(r#"{"error":"authorization_pending"}"#).as_deref(),
+        Some(
+            "Google authorization is still pending; approve it in the browser, then run the finish action again"
+        )
+    );
+}
+
+#[test]
+fn parses_access_token_response_with_expiry() {
+    let token = parse_access_token_response(
+        r#"{"access_token":"access-token","expires_in":3600}"#,
+        "Google token response",
+    )
+    .expect("access token response");
+
+    assert_eq!(token.access_token, "access-token");
+    assert_eq!(token.expires_in_secs, Some(3600));
+}
+
+#[test]
+fn oauth_fields_reject_control_characters() {
+    let err = parse_access_token_response(
+        r#"{"access_token":"access\ntoken","expires_in":3600}"#,
+        "Google token response",
+    )
+    .expect_err("control character is rejected");
+
+    assert!(err.contains("access_token"), "{err}");
+}
+
+#[test]
+fn parses_event_date_times_dates_and_attendees() {
+    let json = serde_json::json!({
+        "id": "evt",
+        "etag": "abc",
+        "summary": "Meeting",
+        "visibility": "private",
+        "transparency": "transparent",
+        "start": { "dateTime": "2026-05-28T12:00:00Z" },
+        "end": { "date": "2026-05-29" },
+        "attendees": [
+            { "email": "a@example.com" },
+            { "email": "me@example.com", "self": true, "responseStatus": "accepted" }
+        ],
+        "recurringEventId": "series"
+    });
+
+    let event = parse_event(&json).expect("event parses");
+
+    assert_eq!(event.id, "evt");
+    assert_eq!(event.end, "2026-05-29");
+    assert_eq!(event.attendees, vec!["a@example.com", "me@example.com"]);
+    assert_eq!(event.visibility.as_deref(), Some("private"));
+    assert_eq!(event.transparency.as_deref(), Some("transparent"));
+    assert_eq!(event.self_response_status.as_deref(), Some("accepted"));
+    assert!(event.recurring);
+}
+
+#[test]
+fn event_write_body_supports_all_day_and_timed_events() {
+    let attendees = vec!["a@example.com".to_owned(), "b@example.com".to_owned()];
+    let body = google_event_body(&GoogleEventWrite {
+        title: Some("Trip"),
+        description: Some("desc"),
+        location: Some("There"),
+        start: Some("2026-05-28"),
+        end: Some("2026-05-29"),
+        timezone: None,
+        clear_opposite_time_kind: false,
+        attendees: Some(&attendees),
+    })
+    .expect("body");
+
+    assert_eq!(body["summary"], "Trip");
+    assert_eq!(body["start"], json!({ "date": "2026-05-28" }));
+    assert_eq!(body["end"], json!({ "date": "2026-05-29" }));
+    assert_eq!(body["attendees"][0]["email"], "a@example.com");
+
+    let body = google_event_body(&GoogleEventWrite {
+        start: Some("2026-05-28T12:00:00Z"),
+        end: Some("2026-05-28T13:00:00Z"),
+        timezone: Some("UTC"),
+        ..Default::default()
+    })
+    .expect("timed body");
+
+    assert_eq!(body["start"]["dateTime"], "2026-05-28T12:00:00Z");
+    assert_eq!(body["start"]["timeZone"], "UTC");
+    assert!(body["start"].get("date").is_none());
+
+    let body = google_event_body(&GoogleEventWrite {
+        start: Some("2026-05-28T12:00:00Z"),
+        end: Some("2026-05-28T13:00:00Z"),
+        clear_opposite_time_kind: true,
+        ..Default::default()
+    })
+    .expect("timed patch body");
+    assert_eq!(body["start"]["date"], Value::Null);
+    assert_eq!(body["end"]["date"], Value::Null);
+
+    let body = google_event_body(&GoogleEventWrite {
+        start: Some("2026-05-28"),
+        end: Some("2026-05-29"),
+        clear_opposite_time_kind: true,
+        ..Default::default()
+    })
+    .expect("all-day patch body");
+    assert_eq!(body["start"]["dateTime"], Value::Null);
+    assert_eq!(body["end"]["dateTime"], Value::Null);
+}
+
+#[test]
+fn event_write_body_rejects_invalid_time_pairs() {
+    let err = google_event_body(&GoogleEventWrite {
+        start: Some("2026-05-29"),
+        end: Some("2026-05-28"),
+        ..Default::default()
+    })
+    .expect_err("inverted date is invalid");
+
+    assert!(err.contains("before"), "{err}");
+}
+
+#[test]
+fn attendee_response_patch_preserves_other_attendees() {
+    // Google patch replaces array fields wholesale, so RSVP support must
+    // first read the full attendee list and then change only the self row.
+    let event = json!({
+        "attendees": [
+            { "email": "a@example.com", "responseStatus": "needsAction" },
+            { "email": "me@example.com", "self": true, "responseStatus": "needsAction" }
+        ]
+    });
+
+    let patch = attendee_response_patch(&event, "accepted").expect("patch");
+
+    assert_eq!(patch["attendees"][0]["responseStatus"], "needsAction");
+    assert_eq!(patch["attendees"][1]["responseStatus"], "accepted");
+}
+
+#[test]
+fn path_segments_encode_spaces_as_percent_twenty() {
+    assert_eq!(encode_path_segment("a b/c"), "a%20b%2Fc");
+}
+
+#[test]
+fn google_if_match_header_accepts_etags_without_quotes() {
+    // Google ETags are quoted in API responses. Preserve already-valid
+    // preconditions and repair stripped forms from legacy internal state.
+    assert_eq!(
+        google_if_match_header("3560073119029470"),
+        "\"3560073119029470\""
+    );
+    assert_eq!(
+        google_if_match_header("\"3560073119029470\""),
+        "\"3560073119029470\""
+    );
+    assert_eq!(google_if_match_header("W/\"weak\""), "W/\"weak\"");
+    assert_eq!(google_if_match_header("*"), "*");
+}
+
+fn google_account(allowed_calendars: Vec<&str>) -> ValidatedAccount {
+    ValidatedAccount {
+        id: "google".to_owned(),
+        enable: true,
+        display_name: None,
+        backend: Some(ValidatedBackendConfig::Google {
+            client_id_secret: "client".to_owned(),
+            client_secret_secret: None,
+            refresh_token_secret: Some("refresh".to_owned()),
+            api_base: None,
+        }),
+        default_calendar: None,
+        allowed_calendars: allowed_calendars.into_iter().map(str::to_owned).collect(),
+        timezone: None,
+    }
+}
