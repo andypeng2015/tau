@@ -808,7 +808,14 @@ fn private_event_details_are_busy_only_by_default() {
         },
     };
 
-    let detail = format_event_detail(&policy, &account, "primary", &event).join("\n");
+    let detail = format_event_detail(
+        &policy,
+        &account,
+        "primary",
+        timezone_for_read("event output", account.timezone.as_deref()).expect("timezone"),
+        &event,
+    )
+    .join("\n");
 
     assert!(detail.contains("summary (private)"), "{detail}");
     assert!(
@@ -867,9 +874,124 @@ fn google_event_details_hide_etag_from_agent() {
     };
 
     assert_eq!(
-        format_event_detail(&policy, &account, "primary", &event).join("\n"),
+        format_event_detail(
+            &policy,
+            &account,
+            "primary",
+            timezone_for_read("event output", account.timezone.as_deref()).expect("timezone"),
+            &event,
+        )
+        .join("\n"),
         "calendar google/primary\nevent_id evt\nstart 2026-05-28T12:00:00Z\nend 2026-05-28T13:00:00Z\nflags read_only,recurring\nsummary Team_Sync\nuid uid@example.com\nstatus confirmed\nlocation Room_1\norganizer org@example.com\nattendees a@example.com,b@example.com\ndescription line 1 line 2"
     );
+}
+
+#[test]
+fn calendar_event_output_uses_account_timezone() {
+    // Calendar reads already interpret date-only query bounds in the account
+    // timezone. Event rows should use the same timezone instead of handing UTC
+    // rows to the model and expecting it to convert them correctly.
+    let account = ValidatedAccount {
+        id: "feed".to_owned(),
+        enable: true,
+        display_name: None,
+        backend: Some(ValidatedBackendConfig::IcsFeed {
+            url_secret: None,
+            url: Some("https://example.test/calendar.ics".to_owned()),
+        }),
+        default_calendar: Some("main".to_owned()),
+        allowed_calendars: vec!["main".to_owned()],
+        timezone: Some("America/Los_Angeles".to_owned()),
+    };
+    let event = BackendEvent::Ics(IcsEvent {
+        id: "evt".to_owned(),
+        uid: "uid".to_owned(),
+        summary: "Local meeting".to_owned(),
+        description: None,
+        location: None,
+        start: "2026-06-04T16:00:00Z".to_owned(),
+        end: "2026-06-04T17:00:00Z".to_owned(),
+        start_utc: Some(
+            time::OffsetDateTime::parse(
+                "2026-06-04T16:00:00Z",
+                &time::format_description::well_known::Rfc3339,
+            )
+            .expect("time"),
+        ),
+        end_utc: Some(
+            time::OffsetDateTime::parse(
+                "2026-06-04T17:00:00Z",
+                &time::format_description::well_known::Rfc3339,
+            )
+            .expect("time"),
+        ),
+        status: Some("confirmed".to_owned()),
+        organizer: None,
+        attendees: Vec::new(),
+        private: false,
+        recurring: false,
+        time_unparsed: false,
+    });
+    let policy = ValidatedPolicy {
+        read: ValidatedReadPolicy {
+            private_events: PrivateEventsPolicy::BusyOnly,
+            descriptions: DescriptionPolicy::ApprovedOnly,
+        },
+        write: ValidatedWritePolicy {
+            require_approval: true,
+            max_attendees: 50,
+        },
+    };
+    let timezone =
+        timezone_for_read("event output", account.timezone.as_deref()).expect("timezone");
+
+    let line = format_event_line(&policy, timezone, &event);
+    let detail = format_event_detail(&policy, &account, "main", timezone, &event).join("\n");
+
+    assert!(line.contains("2026-06-04T09:00:00-07:00"), "{line}");
+    assert!(line.contains("2026-06-04T10:00:00-07:00"), "{line}");
+    assert!(
+        detail.contains("start 2026-06-04T09:00:00-07:00"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn read_event_validates_output_timezone_before_backend_access() {
+    // If configured output timezone is broken, fail before touching provider
+    // state or network. This keeps configuration errors deterministic and
+    // avoids partial side effects such as ETag cache updates.
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = test_engine(temp.path());
+    engine.config.accounts.insert(
+        "bad-tz".to_owned(),
+        ValidatedAccount {
+            id: "bad-tz".to_owned(),
+            enable: true,
+            display_name: None,
+            backend: Some(ValidatedBackendConfig::IcsFeed {
+                url_secret: None,
+                url: Some("not a url".to_owned()),
+            }),
+            default_calendar: Some("main".to_owned()),
+            allowed_calendars: vec!["main".to_owned()],
+            timezone: Some("Not/AZone".to_owned()),
+        },
+    );
+    engine.config.account_order.push("bad-tz".to_owned());
+
+    let err = engine
+        .read_event(
+            &ReadEventArgs {
+                calendar: Some("bad-tz/main".to_owned()),
+                event_id: Some("evt".to_owned()),
+            },
+            &AgentId::from("agent"),
+        )
+        .expect_err("invalid timezone should fail before backend access");
+
+    assert!(err.contains("account timezone `Not/AZone`"), "{err}");
+    assert!(!err.contains("iCalendar feed URL"), "{err}");
 }
 
 #[test]

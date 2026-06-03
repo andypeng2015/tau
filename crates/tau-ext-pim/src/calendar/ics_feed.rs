@@ -52,15 +52,19 @@ pub struct IcsEvent {
     pub description: Option<String>,
     /// Event location.
     pub location: Option<String>,
-    /// Model-visible start value.
+    /// Backend-normalized start value.
     ///
-    /// Timed events use UTC RFC3339. All-day events preserve `YYYY-MM-DD` date
-    /// shape so callers do not treat them as midnight appointments.
+    /// Timed events use UTC RFC3339 internally and are converted to the account
+    /// output timezone by the calendar runtime. All-day events preserve
+    /// `YYYY-MM-DD` date shape so callers do not treat them as midnight
+    /// appointments.
     pub start: String,
-    /// Model-visible end value.
+    /// Backend-normalized end value.
     ///
-    /// Timed events use UTC RFC3339. All-day events preserve `YYYY-MM-DD` date
-    /// shape so callers do not treat them as midnight appointments.
+    /// Timed events use UTC RFC3339 internally and are converted to the account
+    /// output timezone by the calendar runtime. All-day events preserve
+    /// `YYYY-MM-DD` date shape so callers do not treat them as midnight
+    /// appointments.
     pub end: String,
     /// Parsed start instant, when the event has a concrete time range.
     pub start_utc: Option<OffsetDateTime>,

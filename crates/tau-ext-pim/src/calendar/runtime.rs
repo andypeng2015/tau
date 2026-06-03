@@ -686,6 +686,7 @@ impl Engine {
         let (account, calendar) = self.resolve_calendar_arg(args.calendar.as_deref())?;
         let calendar = calendar.as_str();
         let range = parse_range(args, account)?;
+        let output_timezone = timezone_for_read("event output", account.timezone.as_deref())?;
         let range_start = format_optional_read_bound(range.min, "start")?;
         let range_end = format_optional_read_bound(range.max, "end")?;
         let page =
@@ -697,7 +698,11 @@ impl Engine {
         let mut rows = Vec::new();
         for event in events {
             self.remember_event_etag(account, calendar, event);
-            rows.push(format_event_line(&self.config.policy, event));
+            rows.push(format_event_line(
+                &self.config.policy,
+                output_timezone,
+                event,
+            ));
         }
         let data = cbor_map(vec![
             (
@@ -765,6 +770,7 @@ impl Engine {
     fn read_event(&self, args: &ReadEventArgs, agent_id: &AgentId) -> Result<CborValue, String> {
         let (account, calendar) = self.resolve_calendar_arg(args.calendar.as_deref())?;
         let calendar = calendar.as_str();
+        let output_timezone = timezone_for_read("event output", account.timezone.as_deref())?;
         let implicit_event_id = args.event_id.is_none();
         let event_id =
             self.resolve_read_event_id(agent_id, account, calendar, args.event_id.as_deref())?;
@@ -806,6 +812,7 @@ impl Engine {
                     &self.config.policy,
                     account,
                     calendar,
+                    output_timezone,
                     &event,
                 )),
             ),
@@ -829,6 +836,7 @@ impl Engine {
         let (account, calendar) = self.resolve_calendar_arg(args.calendar.as_deref())?;
         let calendar = calendar.as_str();
         let range = parse_range(args, account)?;
+        let output_timezone = timezone_for_read("event output", account.timezone.as_deref())?;
         let range_start = format_optional_read_bound(range.min, "start")?;
         let range_end = format_optional_read_bound(range.max, "end")?;
         let page =
@@ -838,7 +846,11 @@ impl Engine {
         let mut rows = Vec::new();
         for event in events {
             self.remember_event_etag(account, calendar, event);
-            rows.push(format_free_busy_line(&self.config.policy, event));
+            rows.push(format_free_busy_line(
+                &self.config.policy,
+                output_timezone,
+                event,
+            ));
         }
         let data = cbor_map(vec![
             (
@@ -2035,25 +2047,33 @@ fn push_log_field(fields: &mut Vec<String>, name: &str, value: Option<&str>) {
     }
 }
 
-fn format_event_line(policy: &ValidatedPolicy, event: &BackendEvent) -> String {
+fn format_event_line(
+    policy: &ValidatedPolicy,
+    output_timezone: &time_tz::Tz,
+    event: &BackendEvent,
+) -> String {
     let status = event_status(event).unwrap_or("-");
     format!(
         "{} {} {} {} {} {}",
         safe_field(event_id(event)),
-        safe_field(event_start(event)),
-        safe_field(event_end(event)),
+        safe_field(&event_start_for_output(event, output_timezone)),
+        safe_field(&event_end_for_output(event, output_timezone)),
         event_flags(policy, event),
         safe_field(status),
         safe_field(event_summary_for_policy(policy, event))
     )
 }
 
-fn format_free_busy_line(policy: &ValidatedPolicy, event: &BackendEvent) -> String {
+fn format_free_busy_line(
+    policy: &ValidatedPolicy,
+    output_timezone: &time_tz::Tz,
+    event: &BackendEvent,
+) -> String {
     format!(
         "{} {} {} {}",
         safe_field(event_id(event)),
-        safe_field(event_start(event)),
-        safe_field(event_end(event)),
+        safe_field(&event_start_for_output(event, output_timezone)),
+        safe_field(&event_end_for_output(event, output_timezone)),
         event_flags(policy, event)
     )
 }
@@ -2062,6 +2082,7 @@ fn format_event_detail(
     policy: &ValidatedPolicy,
     account: &ValidatedAccount,
     calendar: &str,
+    output_timezone: &time_tz::Tz,
     event: &BackendEvent,
 ) -> Vec<String> {
     let mut lines = vec![
@@ -2070,8 +2091,14 @@ fn format_event_detail(
             safe_field(&flatten_calendar_id(&account.id, calendar))
         ),
         format!("event_id {}", safe_field(event_id(event))),
-        format!("start {}", safe_field(event_start(event))),
-        format!("end {}", safe_field(event_end(event))),
+        format!(
+            "start {}",
+            safe_field(&event_start_for_output(event, output_timezone))
+        ),
+        format!(
+            "end {}",
+            safe_field(&event_end_for_output(event, output_timezone))
+        ),
         format!("flags {}", event_flags(policy, event)),
         format!(
             "summary {}",
@@ -2192,6 +2219,25 @@ fn event_end(event: &BackendEvent) -> &str {
         BackendEvent::Ics(event) => &event.end,
         BackendEvent::Google(event) => &event.end,
     }
+}
+
+fn event_start_for_output(event: &BackendEvent, timezone: &time_tz::Tz) -> String {
+    event_time_for_output(event_start(event), timezone)
+}
+
+fn event_end_for_output(event: &BackendEvent, timezone: &time_tz::Tz) -> String {
+    event_time_for_output(event_end(event), timezone)
+}
+
+fn event_time_for_output(value: &str, timezone: &time_tz::Tz) -> String {
+    let Ok(time) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    else {
+        return value.to_owned();
+    };
+    time.to_timezone(timezone)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| value.to_owned())
 }
 
 fn event_status(event: &BackendEvent) -> Option<&str> {
