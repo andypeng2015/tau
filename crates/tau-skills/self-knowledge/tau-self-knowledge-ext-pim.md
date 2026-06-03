@@ -1,12 +1,12 @@
 ---
 name: tau-self-knowledge-ext-pim
-description: Use this extension skill when the user asks how to configure Tau's std-pim extension, email tool, calendar tool, Google Calendar OAuth, ICS calendars, PIM actions, approval workflow, audit logs, or PIM security policy.
+description: Use this extension skill when the user asks how to configure Tau's std-pim extension, split email/calendar tools, Google Calendar OAuth, ICS calendars, PIM actions, approval workflow, audit logs, or PIM security policy.
 advertise: false
 ---
 
 # Tau std-pim extension self-knowledge
 
-`std-pim` is Tau's built-in personal information management extension. It runs `tau-ext-pim`, registers the model-visible `email` and `calendar` tools, and publishes `/email` and `/calendar` user actions.
+`std-pim` is Tau's built-in personal information management extension. It runs `tau-ext-pim`, registers model-visible split tools such as `email_list_folders`, `email_get`, `email_send`, `calendar_search`, and `calendar_create`, and publishes `/email` and `/calendar` user actions.
 
 The legacy `std-email` built-in alias remains for old email-only configs. Prefer `std-pim` for new configs, especially when calendar support is needed. Do not enable both `std-pim` and `std-email` for the same account set.
 
@@ -17,8 +17,8 @@ Use this skill when helping a user configure PIM. Do not include personal addres
 
 Email:
 
-- list folders across accounts as flattened `<account>/<folder>` ids
-- list recent messages or UID-ordered pages
+- list folders as opaque `<folder>` ids
+- list recent messages
 - read full mail only when policy or exact user approval allows it
 - send, trash, star/unstar, mark read/unread
 - queue unsafe incoming reads and outgoing sends for `/email` approval actions
@@ -26,7 +26,7 @@ Email:
 
 Calendar:
 
-- list calendars across accounts as flattened `<account>/<calendar>` ids
+- list calendars as opaque ids
 - list bounded event rows and free/busy rows with cursor pagination
 - read one event by id
 - read-only ICS feed accounts for standard `.ics` calendars, including timezone-aware event times and bounded recurrence expansion
@@ -49,7 +49,7 @@ Important migration from old email-only config:
 - Move old email fields from `extensions.std-email.config.*` to `extensions.std-pim.config.email.*`.
 - Put calendar config under `extensions.std-pim.config.calendar.*`.
 - Keep secret declarations under `extensions.std-pim.secrets`.
-- Add `calendar` to any role's `enableTools` list when the role should use calendars.
+- Add the needed split tool names to any role's `enableTools` list, for example `email_list_folders`, `email_get`, `email_send`, `calendar_list_calendars`, `calendar_search`, and `calendar_get`.
 
 
 ## Secrets
@@ -93,7 +93,7 @@ Recommended defaults:
 - `calendar.policy.write.require_approval: true`
 - keep `calendar.accounts[*].calendars.allow` narrow
 
-PIM list-style tool results should follow Tau's standard header-then-payload shape: headers such as `format: ...` first, one empty line, then plain unindented rows. The `format` header describes the space-separated payload columns, and each item row starts with the main item id. Empty lists use a single `(no matches found)` payload line. Email folder ids and calendar ids flatten account into `<account>/<folder>` or `<account>/<calendar>`; there is no separate model-visible account argument. Email token fields percent-encode whitespace so follow-up keys stay one-column and reversible; percent-decode those email token fields before passing them back as tool arguments. Implicit/default values such as selected folder/calendar or defaulted calendar range bounds are response headers instead of repeated in every row. Calendar `list_events` and `free_busy` are bounded reads; if `start` is omitted they default to midnight 2 days before the current date, and if `end` is omitted it defaults to 7 days after `start`. Range read results include effective `start`/`end` headers; reuse those while paginating.
+PIM list-style tool results should follow Tau's standard header-then-payload shape: headers such as `format: ...` first, one empty line, then plain unindented rows. The `format` header describes the space-separated payload columns, and each item row starts with the main item id. Empty lists use a single `(no matches found)` payload line. Email folder ids and calendar ids are opaque ids returned by list tools. Email token fields percent-encode whitespace so follow-up keys stay one-column and reversible; percent-decode those email token fields before passing them back as tool arguments. Email list rows still name the first column `uid`; pass that value as `email_id` to message-targeting tools such as `email_get`. Implicit/default values such as selected folder/calendar or defaulted calendar range bounds are response headers instead of repeated in every row. `calendar_search` and `calendar_free_busy` are bounded reads; if `start` is omitted they default to midnight 2 days before the current date, and if `end` is omitted it defaults to 7 days after `start`. Range read results include effective `start`/`end` headers; reuse those while paginating.
 
 Calendar writes should normally return `approval_required`; then the agent should wait for the user to inspect and approve with `/calendar change list`, `/calendar change open <id>`, and `/calendar change approve <id>`. Existing Google event writes use internally cached ETags; if the event changed, the agent should re-read it and retry.
 
@@ -106,7 +106,7 @@ Recommended defaults:
 - keep `email.policy.incoming_auth.allow_dmarc_only: false` unless the user explicitly accepts the weaker policy
 - keep `incoming_allow`, `outgoing_allow`, and `folders.allow` narrow
 
-Incoming email body reads are fail-closed. If policy does not allow full access, the model should use `email.request_full`, then wait for `/email in open <id>` and `/email in approve <id>`. Outgoing sends that violate recipient policy queue under `/email out` actions.
+Incoming email body reads are fail-closed. If policy does not allow full access, the model should use `email_request_full`, then wait for `/email in open <id>` and `/email in approve <id>`. Outgoing `email_send` calls that violate recipient policy queue under `/email out` actions.
 
 
 ## Troubleshooting
@@ -115,7 +115,7 @@ If PIM tools are unavailable:
 
 - Check `extensions.std-pim.enable: true`.
 - Check module enables: `config.email.enable: true` and/or `config.calendar.enable: true`.
-- Check the role has `enableTools: [email, calendar]` or equivalent.
+- Check the role enables the relevant split tools, for example `email_get` or `calendar_search`.
 - Check startup config errors for missing required secrets.
 
 If Google Calendar says the account is not authorized, run `/calendar auth google start <account>` and `/calendar auth google finish <account>`. If start returns `invalid_client: Invalid client type`, replace the client id with one from a Google OAuth client of type `TVs and Limited Input devices`. If it still fails, confirm the Google OAuth client is valid and has Calendar API access/scopes.

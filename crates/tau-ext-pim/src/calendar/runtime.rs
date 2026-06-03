@@ -40,6 +40,88 @@ const MAX_EVENT_DESCRIPTION_BYTES: usize = 64 * 1024;
 const MAX_EVENT_DESCRIPTION_LINES: usize = 1000;
 const MAX_ATTENDEE_CHARS: usize = 320;
 
+const CALENDAR_TOOL_COMMANDS: &[(&str, &str)] = &[
+    ("list_calendars", "list_calendars"),
+    ("search", "list_events"),
+    ("get", "read_event"),
+    ("free_busy", "free_busy"),
+    ("create", "create_event"),
+    ("update", "update_event"),
+    ("delete", "delete_event"),
+    ("respond", "respond_invite"),
+];
+
+fn command_for_tool_name(tool_name: &str) -> Option<&'static str> {
+    if tool_name == super::TOOL_NAME {
+        return None;
+    }
+    let tool_suffix = tool_name.strip_prefix(super::TOOL_PREFIX)?;
+    CALENDAR_TOOL_COMMANDS
+        .iter()
+        .find_map(|(tool_name, command)| (*tool_name == tool_suffix).then_some(*command))
+}
+
+fn command_arguments(command: &str, args: CborValue) -> CborValue {
+    let args = split_tool_args_to_command_args(command, args);
+    CborValue::Map(vec![
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text(command.to_owned()),
+        ),
+        (CborValue::Text("args".to_owned()), args),
+    ])
+}
+
+fn split_tool_args_to_command_args(command: &str, args: CborValue) -> CborValue {
+    if command != "update_event" {
+        return args;
+    }
+    let CborValue::Map(entries) = args else {
+        return args;
+    };
+    let mut field_value = None;
+    let mut new_value = None;
+    let mut out = Vec::new();
+    for (key, value) in entries {
+        match (&key, &value) {
+            (CborValue::Text(key), CborValue::Text(value)) if key == "field" => {
+                field_value = Some(value.clone());
+            }
+            (CborValue::Text(key), CborValue::Text(value)) if key == "new_value" => {
+                new_value = Some(value.clone());
+            }
+            _ => out.push((key, value)),
+        }
+    }
+    if let (Some(field), Some(new_value)) = (field_value, new_value) {
+        let value = if field == "attendees" {
+            CborValue::Array(
+                new_value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| CborValue::Text(value.to_owned()))
+                    .collect(),
+            )
+        } else {
+            CborValue::Text(new_value)
+        };
+        out.push((CborValue::Text(field), value));
+    }
+    CborValue::Map(out)
+}
+
+fn invoke_with_command(mut invoke: ToolStarted) -> ToolStarted {
+    if let Some(command) = command_for_tool_name(invoke.tool_name.as_str()) {
+        invoke.arguments = command_arguments(command, invoke.arguments);
+    }
+    invoke
+}
+
+pub(crate) fn is_tool_name(tool_name: &str) -> bool {
+    command_for_tool_name(tool_name).is_some()
+}
+
 /// Runtime state for the calendar module.
 pub struct RuntimeState {
     config_state: ConfigState,
@@ -119,6 +201,7 @@ impl RuntimeState {
 
     /// Dispatch a model-visible `calendar` tool invocation.
     pub fn dispatch(&mut self, invoke: ToolStarted) -> Event {
+        let invoke = invoke_with_command(invoke);
         let result = match &self.config_state {
             ConfigState::Configured(engine) => engine.dispatch(&invoke.arguments, &invoke.agent_id),
             ConfigState::Unconfigured => error_envelope(
@@ -832,7 +915,7 @@ impl Engine {
         let limit = normalized_limit(args.limit)?;
         if args.title.is_some() {
             return Err(
-                "free_busy does not accept `title`; use list_events for title filtering".to_owned(),
+                "calendar_free_busy does not accept `title`; use calendar_search for title filtering".to_owned(),
             );
         }
         let (account, calendar) = self.resolve_calendar_arg(args.calendar.as_deref())?;
@@ -1113,7 +1196,7 @@ impl Engine {
         match candidates.as_slice() {
             [event] => Ok(event.event_id.clone()),
             [] => Err(
-                "event_id is required; retry like {\"command\":\"read_event\",\"args\":{\"event_id\":\"EVENT_ID\"}}".to_owned(),
+                "event_id is required; retry calendar_get with event_id set to the event id from calendar_search".to_owned(),
             ),
             events => Err(format!(
                 "event_id is required; choose one of: {}",
@@ -2464,10 +2547,10 @@ fn flatten_calendar_id(account: &str, calendar: &str) -> String {
 
 fn split_flattened_calendar_id(calendar_id: &str) -> Result<(&str, &str), String> {
     let Some((account, calendar)) = calendar_id.split_once('/') else {
-        return Err("calendar must be a flattened `<account>/<calendar>` id".to_owned());
+        return Err("calendar must be a calendar id from calendar_list_calendars".to_owned());
     };
     if account.trim().is_empty() || calendar.trim().is_empty() {
-        return Err("calendar must be a flattened `<account>/<calendar>` id".to_owned());
+        return Err("calendar must be a calendar id from calendar_list_calendars".to_owned());
     }
     Ok((account, calendar))
 }
@@ -2713,13 +2796,23 @@ pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
     }
 }
 
+pub(crate) fn initial_display_for_tool(tool_name: &str, arguments: &CborValue) -> ToolUseState {
+    if let Some(command) = command_for_tool_name(tool_name) {
+        return initial_display(&command_arguments(command, arguments.clone()));
+    }
+    initial_display(arguments)
+}
+
 pub(crate) fn initial_progress(invoke: &ToolStarted) -> Event {
     Event::ToolProgress(ToolProgress {
         call_id: invoke.call_id.clone(),
         tool_name: invoke.tool_name.clone(),
         message: None,
         progress: None,
-        display: Some(initial_display(&invoke.arguments)),
+        display: Some(initial_display_for_tool(
+            invoke.tool_name.as_str(),
+            &invoke.arguments,
+        )),
     })
 }
 

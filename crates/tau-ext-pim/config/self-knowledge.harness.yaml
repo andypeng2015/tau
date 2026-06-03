@@ -83,4 +83,12 @@ roleGroups:
   user:
     roles:
       assistant:
-        enableTools: [email, calendar]
+        enableTools:
+          - email_list_folders
+          - email_search
+          - email_get
+          - email_request_full
+          - email_send
+          - calendar_list_calendars
+          - calendar_search
+          - calendar_get

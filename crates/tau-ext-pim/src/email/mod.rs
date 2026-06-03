@@ -55,8 +55,24 @@ use tau_proto::{
 /// `tracing` target for events emitted from this extension.
 pub const LOG_TARGET: &str = "email";
 
-/// Tau-internal and model-visible tool name for email commands.
+/// Legacy envelope tool name for email commands.
 pub const TOOL_NAME: &str = "email";
+
+/// Prefix for model-visible split email command tools.
+pub const TOOL_PREFIX: &str = "email_";
+
+const EMAIL_TOOL_COMMANDS: &[(&str, &str)] = &[
+    ("list_folders", "list_folders"),
+    ("search", "list_recent"),
+    ("get", "read"),
+    ("request_full", "request_full"),
+    ("mark_read", "mark_read"),
+    ("mark_unread", "mark_unread"),
+    ("star", "star"),
+    ("unstar", "unstar"),
+    ("delete", "trash"),
+    ("send", "send"),
+];
 
 /// Run the extension over stdio.
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
@@ -74,12 +90,17 @@ where
     let mut writer = FrameWriter::new(BufWriter::new(writer));
     let mut runtime = RuntimeState::default();
 
-    tau_extension::Handshake::tool("tau-ext-pim")
-        .subscribe([
-            tau_proto::EventName::TOOL_STARTED,
-            tau_proto::EventName::ACTION_INVOKE,
-        ])
-        .register_tool_with_prompt_fragment(email_tool_spec(), Some(email_prompt_fragment()))
+    let handshake = tau_extension::Handshake::tool("tau-ext-pim").subscribe([
+        tau_proto::EventName::TOOL_STARTED,
+        tau_proto::EventName::ACTION_INVOKE,
+    ]);
+    let handshake = register_tools_with_prompt_fragment(
+        handshake,
+        email_tool_specs(),
+        "email_get",
+        email_prompt_fragment(),
+    );
+    handshake
         .publish_actions(email_action_schema())
         .ready_message("email extension ready")
         .run(&mut writer)?;
@@ -95,7 +116,7 @@ where
                     writer.flush()?;
                 }
             }
-            Frame::Event(Event::ToolStarted(invoke)) if invoke.tool_name.as_str() == TOOL_NAME => {
+            Frame::Event(Event::ToolStarted(invoke)) if is_tool_name(invoke.tool_name.as_str()) => {
                 writer.write_frame(&Frame::Event(initial_progress(&invoke)))?;
                 let event = runtime.dispatch(invoke);
                 writer.write_frame(&Frame::Event(event))?;
@@ -115,6 +136,23 @@ where
     }
 
     Ok(())
+}
+
+fn register_tools_with_prompt_fragment(
+    mut handshake: tau_extension::Handshake,
+    tools: Vec<ToolSpec>,
+    prompt_tool_name: &str,
+    prompt_fragment: PromptFragment,
+) -> tau_extension::Handshake {
+    for tool in tools {
+        let prompt_fragment = if tool.name.as_str() == prompt_tool_name {
+            Some(prompt_fragment.clone())
+        } else {
+            None
+        };
+        handshake = handshake.register_tool_with_prompt_fragment(tool, prompt_fragment);
+    }
+    handshake
 }
 
 /// Top-level email extension configuration.
@@ -4145,7 +4183,7 @@ impl<B: EmailBackend> Engine<B> {
             Ok(approval) => {
                 self.state.approve_incoming(id)?;
                 Ok(format!(
-                    "Approved incoming email read {id}; repeat the matching email.read for account={} folder={} uid={} to fetch content.",
+                    "Approved incoming email read {id}; repeat the matching email_get with folder={}/{} email_id={} to fetch content.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4154,7 +4192,7 @@ impl<B: EmailBackend> Engine<B> {
             Err(_) => {
                 let approval = self.state.approved_incoming_by_id(id)?;
                 Ok(format!(
-                    "Incoming email read {id} is already approved; repeat the matching email.read for account={} folder={} uid={} to fetch content.",
+                    "Incoming email read {id} is already approved; repeat the matching email_get with folder={}/{} email_id={} to fetch content.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4195,7 +4233,7 @@ impl<B: EmailBackend> Engine<B> {
             Ok(approval) => {
                 self.state.deny_incoming(id)?;
                 Ok(format!(
-                    "Denied incoming email read {id}; future matching email.read requests for account={} folder={} uid={} report access=none. Explicit email.request_full can ask again.",
+                    "Denied incoming email read {id}; future matching email_get requests with folder={}/{} email_id={} report access=none. Explicit email_request_full can ask again.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4204,7 +4242,7 @@ impl<B: EmailBackend> Engine<B> {
             Err(pending_error) => {
                 if let Ok(approval) = self.state.denied_incoming_by_id(id) {
                     return Ok(format!(
-                        "Incoming email read {id} is already denied; matching email.read requests for account={} folder={} uid={} report access=none. Explicit email.request_full can ask again.",
+                        "Incoming email read {id} is already denied; matching email_get requests with folder={}/{} email_id={} report access=none. Explicit email_request_full can ask again.",
                         safe_display_line(&approval.account),
                         safe_display_line(&approval.folder),
                         safe_display_line(&approval.uid)
@@ -4532,6 +4570,7 @@ impl RuntimeState {
 
     /// Dispatch a model-visible `email` tool invocation.
     pub fn dispatch(&mut self, invoke: ToolStarted) -> Event {
+        let invoke = invoke_with_command(invoke);
         match &mut self.config_state {
             ConfigState::Configured(engine) => match parse_command(&invoke.arguments) {
                 Ok(command) => finish_tool_result(invoke, engine.dispatch(command)),
@@ -4599,62 +4638,152 @@ fn ack_log_event<W: Write>(
     writer.flush().map_err(tau_proto::EncodeError::Io)
 }
 
-/// Return the model-visible email tool specification.
+/// Return the model-visible split email tool specifications.
+pub fn email_tool_specs() -> Vec<ToolSpec> {
+    EMAIL_TOOL_COMMANDS
+        .iter()
+        .map(|(tool_name, command)| email_command_tool_spec(tool_name, command))
+        .collect()
+}
+
+/// Return the legacy model-visible email envelope tool specification.
 pub fn email_tool_spec() -> ToolSpec {
+    email_envelope_tool_spec(TOOL_NAME)
+}
+
+fn email_command_tool_spec(tool_name: &str, command: &str) -> ToolSpec {
+    let mut spec = email_envelope_tool_spec(&format!("{TOOL_PREFIX}{tool_name}"));
+    spec.description = Some(email_tool_description(tool_name, command).to_owned());
+    spec.parameters = Some(email_command_parameters(command));
+    spec
+}
+
+fn email_envelope_tool_spec(name: &str) -> ToolSpec {
     ToolSpec {
-        name: tau_proto::ToolName::new(TOOL_NAME),
+        name: tau_proto::ToolName::new(name),
         model_visible_name: None,
-        description: Some("Controlled email access. Folder ids are flattened `<account>/<folder>` values returned by list_folders; omit folder to use the first configured account and INBOX. Commands: list_folders (line-oriented), list_recent (optional folder/limit/days), list_by_uid (optional folder/limit/cursor), read, request_full, mark_read, mark_unread, star, unstar, trash, send. List results are line-oriented and include a format header. request_full and sends can require approval; message-management commands do not.".to_owned()),
+        description: Some("Controlled email access. Folder ids are opaque values returned by email_list_folders; omit folder to use INBOX. request_full and sends can require approval; message-management commands do not.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": ["list_folders", "list_recent", "list_by_uid", "read", "request_full", "mark_read", "mark_unread", "star", "unstar", "trash", "send"],
+                    "enum": EMAIL_TOOL_COMMANDS.iter().map(|(_, command)| command).collect::<Vec<_>>(),
                     "description": "Email operation to perform."
                 },
-                "args": {
-                    "type": "object",
-                    "description": "Command arguments. May be omitted when every command argument has a default. Folder targets use flattened `<account>/<folder>` ids returned by list_folders; omitted folder defaults to the first configured account and INBOX.",
-                    "properties": {
-                        "folder": {"type": "string", "description": "Flattened `<account>/<folder>` id from list_folders. Optional for folder-targeting commands; defaults to first account/INBOX."},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to list. Optional; defaults to 100 and is capped at 100."},
-                        "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "For list_recent, include messages with IMAP internal date in the last N calendar days. Optional; defaults to 7 and is capped at 365."},
-                        "cursor": {"type": "string", "description": "Pagination cursor returned by list_recent or list_by_uid."},
-                        "uid": {"type": "string", "description": "Message UID. Required for read, request_full, mark_read, mark_unread, star, unstar, and trash."},
-                        "to": {"type": "array", "items": {"type": "string"}, "description": "Recipients. Required for send."},
-                        "cc": {"type": "array", "items": {"type": "string"}},
-                        "bcc": {"type": "array", "items": {"type": "string"}},
-                        "subject": {"type": "string", "description": "Subject. Required for send; may be empty."},
-                        "body_text": {"type": "string", "description": "Plain text body. Required for send; may be empty."},
-                        "from": {"type": "string", "description": "Optional From identity; normally omit to use the account default."},
-                        "reply_to": {"type": ["string", "null"]},
-                        "in_reply_to": {"type": ["string", "null"]}
-                    },
-                    "additionalProperties": false
-                }
+                "args": email_common_arg_properties()
             },
             "required": ["command"],
-            "allOf": [
-                {
-                    "if": {"properties": {"command": {"const": "list_folders"}}, "required": ["command"]},
-                    "then": {"properties": {"args": {"maxProperties": 0}}}
-                },
-                {
-                    "if": {"properties": {"command": {"enum": ["read", "request_full", "mark_read", "mark_unread", "star", "unstar", "trash"]}}, "required": ["command"]},
-                    "then": {"required": ["args"], "properties": {"args": {"required": ["uid"]}}}
-                },
-                {
-                    "if": {"properties": {"command": {"const": "send"}}, "required": ["command"]},
-                    "then": {"required": ["args"], "properties": {"args": {"required": ["to", "subject", "body_text"]}}}
-                }
-            ],
             "additionalProperties": false
         })),
         format: None,
         enabled_by_default: false,
         background_support: None,
+    }
+}
+
+fn email_command_parameters(command: &str) -> serde_json::Value {
+    let required = match command {
+        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            serde_json::json!(["email_id"])
+        }
+        "send" => serde_json::json!(["to", "subject", "body_text"]),
+        _ => serde_json::json!([]),
+    };
+    serde_json::json!({
+        "type": "object",
+        "description": email_args_description(command),
+        "properties": email_command_properties(command),
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn email_common_arg_properties() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional for folder-targeting commands; defaults to INBOX."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to list. Optional; defaults to 100 and is capped at 100."},
+            "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "For email_search, include messages with IMAP internal date in the last N calendar days. Optional; defaults to 7 and is capped at 365."},
+            "cursor": {"type": "string", "description": "Pagination cursor returned by email_search."},
+            "email_id": {"type": "string", "description": "Message id from email list results."},            "to": {"type": "array", "items": {"type": "string"}, "description": "Recipients. Required for email_send."},
+            "cc": {"type": "array", "items": {"type": "string"}},
+            "bcc": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": "string", "description": "Subject. Required for email_send; may be empty."},
+            "body_text": {"type": "string", "description": "Plain text body. Required for email_send; may be empty."},
+            "from": {"type": "string", "description": "Optional From identity; normally omit to use the account default."},
+            "reply_to": {"type": ["string", "null"]},
+            "in_reply_to": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+    })
+}
+
+fn email_command_properties(command: &str) -> serde_json::Value {
+    match command {
+        "list_folders" => serde_json::json!({}),
+        "list_recent" => serde_json::json!({
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "days": {"type": "integer", "minimum": 1, "maximum": 365},
+            "cursor": {"type": "string"}
+        }),
+        "list_by_uid" => serde_json::json!({
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "cursor": {"type": "string"}
+        }),
+        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            serde_json::json!({
+                "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
+                "email_id": {"type": "string", "description": "Message id from email list results."}
+            })
+        }
+        "send" => serde_json::json!({
+            "to": {"type": "array", "items": {"type": "string"}},
+            "cc": {"type": "array", "items": {"type": "string"}},
+            "bcc": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": "string"},
+            "body_text": {"type": "string"},
+            "from": {"type": "string"},
+            "reply_to": {"type": ["string", "null"]},
+            "in_reply_to": {"type": ["string", "null"]}
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn email_tool_description(tool_name: &str, command: &str) -> &'static str {
+    match (tool_name, command) {
+        ("list_folders", _) => {
+            "List configured email folders. Returns folder ids for other email tools."
+        }
+        ("search", _) => {
+            "Search/list recent email messages by internal date. Optional folder, limit, days, and cursor."
+        }
+        ("get", _) => {
+            "Get an email message preview or allowed full content by folder and email_id."
+        }
+        ("request_full", _) => {
+            "Request user approval to read full content for an email message by folder and email_id."
+        }
+        ("mark_read", _) => "Mark an email message as read by folder and email_id.",
+        ("mark_unread", _) => "Mark an email message as unread by folder and email_id.",
+        ("star", _) => "Star an email message by folder and email_id.",
+        ("unstar", _) => "Unstar an email message by folder and email_id.",
+        ("delete", _) => "Delete/move an email message to trash by folder and email_id.",
+        ("send", _) => "Send a plain-text email draft. May require user approval.",
+        _ => "Run an email command.",
+    }
+}
+
+fn email_args_description(command: &str) -> &'static str {
+    match command {
+        "list_folders" => "No arguments.",
+        "send" => "Outgoing message fields.",
+        _ => "Folder/message arguments. Omit folder to use INBOX.",
     }
 }
 
@@ -5026,6 +5155,72 @@ fn command_from_arguments(arguments: &CborValue) -> Option<&str> {
 type CborMapEntries<'a> = &'a [(CborValue, CborValue)];
 type CommandEnvelope<'a> = (String, CborMapEntries<'a>);
 
+fn command_for_tool_name(tool_name: &str) -> Option<&'static str> {
+    if tool_name == TOOL_NAME {
+        return None;
+    }
+    let tool_suffix = tool_name.strip_prefix(TOOL_PREFIX)?;
+    EMAIL_TOOL_COMMANDS
+        .iter()
+        .find_map(|(tool_name, command)| (*tool_name == tool_suffix).then_some(*command))
+}
+
+fn command_arguments(command: &str, args: CborValue) -> CborValue {
+    let args = split_tool_args_to_command_args(command, args);
+    CborValue::Map(vec![
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text(command.to_owned()),
+        ),
+        (CborValue::Text("args".to_owned()), args),
+    ])
+}
+
+fn split_tool_args_to_command_args(command: &str, args: CborValue) -> CborValue {
+    if !uses_email_id(command) {
+        return args;
+    }
+    let CborValue::Map(entries) = args else {
+        return args;
+    };
+    CborValue::Map(
+        entries
+            .into_iter()
+            .map(|(key, value)| match key {
+                CborValue::Text(key) if key == "email_id" => {
+                    (CborValue::Text("uid".to_owned()), value)
+                }
+                other => (other, value),
+            })
+            .collect(),
+    )
+}
+
+fn uses_email_id(command: &str) -> bool {
+    matches!(
+        command,
+        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash"
+    )
+}
+
+fn invoke_with_command(mut invoke: ToolStarted) -> ToolStarted {
+    if let Some(command) = command_for_tool_name(invoke.tool_name.as_str()) {
+        invoke.arguments = command_arguments(command, invoke.arguments);
+    }
+    invoke
+}
+
+pub(crate) fn is_tool_name(tool_name: &str) -> bool {
+    command_for_tool_name(tool_name).is_some()
+}
+
+pub(crate) fn initial_display_for_tool(tool_name: &str, arguments: &CborValue) -> ToolUseState {
+    if let Some(command) = command_for_tool_name(tool_name) {
+        return initial_display(&command_arguments(command, arguments.clone()));
+    }
+    initial_display(arguments)
+}
+
 fn parse_command(arguments: &CborValue) -> Result<EmailCommand, CborValue> {
     let (command, args) = parse_command_envelope(arguments)?;
     match command.as_str() {
@@ -5163,14 +5358,14 @@ fn parse_flattened_folder_arg(
         return Err(error_envelope(
             Some(command),
             "invalid_input",
-            "folder must be a flattened `<account>/<folder>` id",
+            "folder must be a folder id from email_list_folders",
         ));
     };
     if account.trim().is_empty() || folder.trim().is_empty() {
         return Err(error_envelope(
             Some(command),
             "invalid_input",
-            "folder must be a flattened `<account>/<folder>` id",
+            "folder must be a folder id from email_list_folders",
         ));
     }
     Ok((account.to_owned(), folder.to_owned()))
@@ -5820,7 +6015,10 @@ fn initial_progress(invoke: &ToolStarted) -> Event {
         tool_name: invoke.tool_name.clone(),
         message: None,
         progress: None,
-        display: Some(initial_display(&invoke.arguments)),
+        display: Some(initial_display_for_tool(
+            invoke.tool_name.as_str(),
+            &invoke.arguments,
+        )),
     })
 }
 

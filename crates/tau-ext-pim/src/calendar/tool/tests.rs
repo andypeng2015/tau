@@ -2,46 +2,61 @@ use super::*;
 
 #[test]
 fn calendar_schema_hides_timezone_and_has_command_conditionals() {
-    // Weak local models need command-specific schema constraints rather
-    // than prose-only guidance. Keep timezone out of model-visible args, but
-    // keep range starts optional because the runtime supplies a bounded default.
-    let schema = calendar_tool_spec().parameters.expect("parameters");
-    let args_properties = schema
-        .pointer("/properties/args/properties")
-        .and_then(serde_json::Value::as_object)
-        .expect("args properties");
-
-    assert!(!args_properties.contains_key("timezone"));
-    let rules = schema
-        .get("allOf")
-        .and_then(serde_json::Value::as_array)
-        .expect("command rules");
-    assert!(7 < rules.len());
-
-    let list_events_rule = rule_for_command(rules, "list_events");
-    assert!(list_events_rule.pointer("/then/required").is_none());
-    assert!(
-        list_events_rule
-            .pointer("/then/properties/args/required")
-            .is_none()
-    );
-
-    let free_busy_rule = rule_for_command(rules, "free_busy");
-    assert!(free_busy_rule.pointer("/then/required").is_none());
-    assert!(
-        free_busy_rule
-            .pointer("/then/properties/args/required")
-            .is_none()
-    );
-}
-
-fn rule_for_command<'a>(rules: &'a [serde_json::Value], command: &str) -> &'a serde_json::Value {
-    rules
+    // Weak local models need command-specific split-tool schemas rather than
+    // prose-only guidance. Keep timezone out of model-visible args, but keep
+    // range starts optional because the runtime supplies a bounded default.
+    let schemas = calendar_tool_specs();
+    let list_events_schema = schemas
         .iter()
-        .find(|rule| {
-            rule.pointer("/if/properties/command/const")
-                .and_then(serde_json::Value::as_str)
-                == Some(command)
-        })
-        .expect("command rule")
+        .find(|spec| spec.name.as_str() == "calendar_search")
+        .and_then(|spec| spec.parameters.as_ref())
+        .expect("search parameters");
+    let properties = list_events_schema
+        .pointer("/properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("list events properties");
+
+    assert!(!properties.contains_key("timezone"));
+    assert!(
+        list_events_schema
+            .pointer("/required")
+            .is_some_and(|required| {
+                required
+                    .as_array()
+                    .is_some_and(|required| required.is_empty())
+            })
+    );
+
+    let free_busy_schema = schemas
+        .iter()
+        .find(|spec| spec.name.as_str() == "calendar_free_busy")
+        .and_then(|spec| spec.parameters.as_ref())
+        .expect("free busy parameters");
+    assert!(
+        free_busy_schema
+            .pointer("/required")
+            .is_some_and(|required| {
+                required
+                    .as_array()
+                    .is_some_and(|required| required.is_empty())
+            })
+    );
+
+    let update_schema = schemas
+        .iter()
+        .find(|spec| spec.name.as_str() == "calendar_update")
+        .and_then(|spec| spec.parameters.as_ref())
+        .expect("update parameters");
+    assert_eq!(
+        update_schema.pointer("/required").expect("required"),
+        &serde_json::json!(["event_id", "field", "new_value"])
+    );
+    assert!(update_schema.pointer("/dependentRequired/end").is_none());
+    assert_eq!(
+        update_schema
+            .pointer("/properties/field/enum")
+            .expect("fields"),
+        &serde_json::json!(["title", "description", "location", "start", "attendees"])
+    );
+    assert!(update_schema.pointer("/anyOf").is_none());
 }

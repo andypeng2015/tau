@@ -1,8 +1,7 @@
 //! Calendar module for the standard PIM extension.
 //!
-//! This module establishes the model-visible `calendar` tool surface and
-//! extension-owned slash actions. Real backends land in later commits; this
-//! initial core keeps configuration, routing, and policy boundaries in place.
+//! This module establishes the model-visible split `calendar_*` tool surface
+//! and extension-owned slash actions.
 
 mod actions;
 mod config;
@@ -21,8 +20,11 @@ pub use config::{
 pub use google::GoogleBackend;
 pub use ics_feed::IcsFeedBackend;
 pub use runtime::RuntimeState;
-pub(crate) use runtime::initial_progress;
-pub use tool::{calendar_prompt_fragment, calendar_tool_spec};
+pub(crate) use runtime::{initial_progress, is_tool_name};
+pub use tool::{calendar_prompt_fragment, calendar_tool_spec, calendar_tool_specs};
 
-/// Tau-internal and model-visible tool name for calendar commands.
+/// Legacy envelope tool name for calendar commands.
 pub const TOOL_NAME: &str = "calendar";
+
+/// Prefix for model-visible split calendar command tools.
+pub const TOOL_PREFIX: &str = "calendar_";

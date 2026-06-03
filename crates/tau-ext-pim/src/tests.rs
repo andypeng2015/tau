@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use tau_proto::{EventName, EventSelector, ToolName};
+use tau_proto::{EventName, EventSelector};
 
 use super::*;
 
@@ -55,33 +55,40 @@ fn action_schema_contains_email_and_calendar_roots() {
 #[test]
 fn ignores_tool_started_for_tools_owned_by_other_extensions() {
     let mut runtime = RuntimeState::default();
-    let invoke = tau_proto::ToolStarted {
-        call_id: tau_proto::ToolCallId::new("call-read"),
-        tool_name: tau_proto::ToolName::new("read"),
-        arguments: CborValue::Map(vec![]),
-        agent_id: tau_proto::AgentId::new("agent-1"),
-        originator: tau_proto::PromptOriginator::User,
-    };
+    for tool_name in ["read", email::TOOL_NAME, calendar::TOOL_NAME] {
+        let invoke = tau_proto::ToolStarted {
+            call_id: tau_proto::ToolCallId::new(format!("call-{tool_name}")),
+            tool_name: tau_proto::ToolName::new(tool_name),
+            arguments: CborValue::Map(vec![]),
+            agent_id: tau_proto::AgentId::new("agent-1"),
+            originator: tau_proto::PromptOriginator::User,
+        };
 
-    assert!(runtime.dispatch_tool(invoke).is_none());
+        assert!(runtime.dispatch_tool(invoke).is_none());
+    }
 }
 
 #[test]
 fn handshake_registers_email_and_calendar_tools() {
     let mut bytes = Vec::new();
-    tau_extension::Handshake::tool("tau-ext-pim")
-        .subscribe([
-            tau_proto::EventName::TOOL_STARTED,
-            tau_proto::EventName::ACTION_INVOKE,
-        ])
-        .register_tool_with_prompt_fragment(
-            email::email_tool_spec(),
-            Some(email::email_prompt_fragment()),
-        )
-        .register_tool_with_prompt_fragment(
-            calendar::calendar_tool_spec(),
-            Some(calendar::calendar_prompt_fragment()),
-        )
+    let handshake = tau_extension::Handshake::tool("tau-ext-pim").subscribe([
+        tau_proto::EventName::TOOL_STARTED,
+        tau_proto::EventName::ACTION_INVOKE,
+    ]);
+    let handshake = register_tools_with_prompt_fragment(
+        handshake,
+        email::email_tool_specs(),
+        "email_get",
+        email::email_prompt_fragment(),
+    );
+    let handshake = register_tools_with_prompt_fragment(
+        handshake,
+        calendar::calendar_tool_specs(),
+        "calendar_get",
+        calendar::calendar_prompt_fragment(),
+    );
+
+    handshake
         .publish_actions(action_schema())
         .ready_message("pim extension ready")
         .run(&mut FrameWriter::new(&mut bytes))
@@ -89,6 +96,7 @@ fn handshake_registers_email_and_calendar_tools() {
 
     let mut reader = FrameReader::new(bytes.as_slice());
     let mut tools = Vec::new();
+    let mut prompt_tools = Vec::new();
     let mut saw_subscription = false;
     while let Some(frame) = reader.read_frame().expect("frame decodes") {
         match frame {
@@ -99,17 +107,50 @@ fn handshake_registers_email_and_calendar_tools() {
                         EventSelector::Exact(EventName::ACTION_INVOKE),
                     ];
             }
-            Frame::Event(Event::ToolRegister(register)) => tools.push(register.tool.name),
+            Frame::Event(Event::ToolRegister(register)) => {
+                if register.prompt_fragment.is_some() {
+                    prompt_tools.push(register.tool.name.clone());
+                }
+                tools.push(register.tool.name);
+            }
             _ => {}
         }
     }
 
     assert!(saw_subscription);
-    assert_eq!(
-        tools,
-        vec![
-            ToolName::new(email::TOOL_NAME),
-            ToolName::new(calendar::TOOL_NAME)
-        ]
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.as_str() == "email_list_folders")
     );
+    assert!(tools.iter().any(|tool| tool.as_str() == "email_send"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.as_str() == "calendar_list_calendars")
+    );
+    assert!(tools.iter().any(|tool| tool.as_str() == "calendar_respond"));
+    assert!(prompt_tools.iter().any(|tool| tool.as_str() == "email_get"));
+    assert!(
+        prompt_tools
+            .iter()
+            .any(|tool| tool.as_str() == "calendar_get")
+    );
+    assert!(
+        !prompt_tools
+            .iter()
+            .any(|tool| tool.as_str() == "email_send")
+    );
+    assert!(
+        !prompt_tools
+            .iter()
+            .any(|tool| tool.as_str() == "calendar_respond")
+    );
+    assert!(!tools.iter().any(|tool| tool.as_str() == email::TOOL_NAME));
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool.as_str() == calendar::TOOL_NAME)
+    );
+    assert_eq!(tools.len(), 18);
 }

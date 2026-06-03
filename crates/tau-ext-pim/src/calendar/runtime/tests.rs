@@ -385,7 +385,7 @@ fn free_busy_rejects_title_filter_instead_of_ignoring_it() {
     let message = cbor_nested_text_field(&output, "error", "message").expect("message");
     assert_eq!(
         message,
-        "free_busy does not accept `title`; use list_events for title filtering"
+        "calendar_free_busy does not accept `title`; use calendar_search for title filtering"
     );
 }
 

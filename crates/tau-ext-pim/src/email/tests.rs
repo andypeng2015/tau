@@ -237,7 +237,7 @@ fn spawn_extension() -> FramePair {
     let (ext_stream, harness_stream) = UnixStream::pair().expect("pair");
     let reader_stream = ext_stream.try_clone().expect("clone");
     thread::spawn(move || {
-        run(reader_stream, ext_stream).expect("run");
+        let _ = run(reader_stream, ext_stream);
     });
     FramePair {
         reader: FrameReader::new(BufReader::new(
@@ -451,49 +451,64 @@ fn pending_outgoing_id(engine: &Engine<FakeBackend>, index: usize) -> String {
 }
 
 #[test]
-fn registers_single_email_tool() {
+fn registers_split_email_tools() {
     let mut pair = spawn_extension();
     let tool = drain_startup(&mut pair.reader);
-    assert_eq!(tool.name.as_str(), TOOL_NAME);
+    assert_eq!(tool.name.as_str(), "email_list_folders");
     assert!(!tool.enabled_by_default);
-    let parameters = tool.parameters.expect("parameters");
+
+    let specs = email_tool_specs();
+    assert!(specs.iter().any(|spec| spec.name.as_str() == "email_get"));
+    let read_parameters = specs
+        .iter()
+        .find(|spec| spec.name.as_str() == "email_get")
+        .and_then(|spec| spec.parameters.as_ref())
+        .expect("read parameters");
     assert_eq!(
-        parameters.pointer("/required").expect("required"),
-        &serde_json::json!(["command"])
+        read_parameters.pointer("/required").expect("read required"),
+        &serde_json::json!(["email_id"])
     );
+    let send_parameters = specs
+        .iter()
+        .find(|spec| spec.name.as_str() == "email_send")
+        .and_then(|spec| spec.parameters.as_ref())
+        .expect("send parameters");
     assert_eq!(
-        parameters
-            .pointer("/allOf/1/then/properties/args/required")
-            .expect("uid target requirements"),
-        &serde_json::json!(["uid"])
-    );
-    assert_eq!(
-        parameters
-            .pointer("/allOf/2/then/properties/args/required")
-            .expect("send requirements"),
+        send_parameters.pointer("/required").expect("send required"),
         &serde_json::json!(["to", "subject", "body_text"])
     );
 }
 
 #[test]
-fn registers_email_tool_prompt_fragment() {
-    // Email has approval semantics that the JSON schema alone cannot explain
-    // well. Keep that guidance attached to the tool registration so it appears
-    // only for roles that can use the email tool.
+fn registers_email_get_tool_prompt_fragment() {
+    // Email read can expose hostile message content. Keep the safety notice on
+    // that split tool only, without duplicating it across unrelated email tools.
     let mut pair = spawn_extension();
-    let register = drain_startup_register(&mut pair.reader);
-    let fragment = register.prompt_fragment.expect("prompt fragment");
+    let mut saw_read_prompt = false;
+    let mut saw_send_prompt = false;
+    loop {
+        match pair.reader.read_frame().expect("read").expect("frame") {
+            Frame::Event(Event::ToolRegister(register)) => {
+                if register.tool.name.as_str() == "email_get" {
+                    let fragment = register.prompt_fragment.expect("read prompt fragment");
+                    assert_eq!(fragment.name, "email.instructions");
+                    assert!(fragment.template.contains("external data"));
+                    saw_read_prompt = true;
+                } else if register.tool.name.as_str() == "email_send" {
+                    saw_send_prompt = register.prompt_fragment.is_some();
+                }
+            }
+            Frame::Message(Message::Ready(_)) => break,
+            _ => {}
+        }
+    }
 
-    assert_eq!(fragment.name, "email.instructions");
-    assert!(fragment.template.contains("approval_required"));
-    assert!(fragment.template.contains("request_full"));
-    assert!(fragment.template.contains("do not repeat it"));
+    assert!(saw_read_prompt);
+    assert!(!saw_send_prompt);
 }
-
 #[test]
 fn publishes_email_action_schema_at_startup() {
     let mut pair = spawn_extension();
-    let _tool = drain_startup(&mut pair.reader);
     let schema = drain_action_schema(&mut pair.reader);
     schema.validate().expect("email action schema validates");
     assert_eq!(

@@ -1,8 +1,7 @@
 //! Standard personal information management extension.
 //!
-//! The extension currently preserves the existing controlled `email` tool and
-//! introduces the `calendar` tool surface. Calendar backends are added
-//! incrementally behind the same extension boundary.
+//! The extension exposes split email and calendar command tools while keeping
+//! shared configuration, approval, and runtime boundaries inside one extension.
 
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -35,19 +34,24 @@ where
     let mut writer = FrameWriter::new(BufWriter::new(writer));
     let mut runtime = RuntimeState::default();
 
-    tau_extension::Handshake::tool("tau-ext-pim")
-        .subscribe([
-            tau_proto::EventName::TOOL_STARTED,
-            tau_proto::EventName::ACTION_INVOKE,
-        ])
-        .register_tool_with_prompt_fragment(
-            email::email_tool_spec(),
-            Some(email::email_prompt_fragment()),
-        )
-        .register_tool_with_prompt_fragment(
-            calendar::calendar_tool_spec(),
-            Some(calendar::calendar_prompt_fragment()),
-        )
+    let handshake = tau_extension::Handshake::tool("tau-ext-pim").subscribe([
+        tau_proto::EventName::TOOL_STARTED,
+        tau_proto::EventName::ACTION_INVOKE,
+    ]);
+    let handshake = register_tools_with_prompt_fragment(
+        handshake,
+        email::email_tool_specs(),
+        "email_get",
+        email::email_prompt_fragment(),
+    );
+    let handshake = register_tools_with_prompt_fragment(
+        handshake,
+        calendar::calendar_tool_specs(),
+        "calendar_get",
+        calendar::calendar_prompt_fragment(),
+    );
+
+    handshake
         .publish_actions(action_schema())
         .ready_message("pim extension ready")
         .run(&mut writer)?;
@@ -114,22 +118,27 @@ impl RuntimeState {
 
     fn initial_tool_progress(&self, invoke: &tau_proto::ToolStarted) -> Option<Event> {
         match invoke.tool_name.as_str() {
-            email::TOOL_NAME => Some(Event::ToolProgress(tau_proto::ToolProgress {
-                call_id: invoke.call_id.clone(),
-                tool_name: invoke.tool_name.clone(),
-                message: None,
-                progress: None,
-                display: Some(email::initial_display(&invoke.arguments)),
-            })),
-            calendar::TOOL_NAME => Some(calendar::initial_progress(invoke)),
+            name if email::is_tool_name(name) => {
+                Some(Event::ToolProgress(tau_proto::ToolProgress {
+                    call_id: invoke.call_id.clone(),
+                    tool_name: invoke.tool_name.clone(),
+                    message: None,
+                    progress: None,
+                    display: Some(email::initial_display_for_tool(
+                        invoke.tool_name.as_str(),
+                        &invoke.arguments,
+                    )),
+                }))
+            }
+            name if calendar::is_tool_name(name) => Some(calendar::initial_progress(invoke)),
             _ => None,
         }
     }
 
     fn dispatch_tool(&mut self, invoke: tau_proto::ToolStarted) -> Option<Event> {
         match invoke.tool_name.as_str() {
-            email::TOOL_NAME => Some(self.email.dispatch(invoke)),
-            calendar::TOOL_NAME => Some(self.calendar.dispatch(invoke)),
+            name if email::is_tool_name(name) => Some(self.email.dispatch(invoke)),
+            name if calendar::is_tool_name(name) => Some(self.calendar.dispatch(invoke)),
             _ => None,
         }
     }
@@ -158,6 +167,22 @@ fn has_pim_module_keys(config: &CborValue) -> bool {
         CborValue::Text(key) => key == "email" || key == "calendar",
         _ => false,
     })
+}
+fn register_tools_with_prompt_fragment(
+    mut handshake: tau_extension::Handshake,
+    tools: Vec<tau_proto::ToolSpec>,
+    prompt_tool_name: &str,
+    prompt_fragment: tau_proto::PromptFragment,
+) -> tau_extension::Handshake {
+    for tool in tools {
+        let prompt_fragment = if tool.name.as_str() == prompt_tool_name {
+            Some(prompt_fragment.clone())
+        } else {
+            None
+        };
+        handshake = handshake.register_tool_with_prompt_fragment(tool, prompt_fragment);
+    }
+    handshake
 }
 
 fn action_schema() -> ActionSchema {
