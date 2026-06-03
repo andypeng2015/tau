@@ -279,6 +279,35 @@ fn calendar_success_display_keeps_list_events_compact() {
     assert_eq!(display.stats.bytes, None);
     assert!(display.info_chips.is_empty());
 
+    let filtered_output = ok_envelope(
+        "list_events",
+        "ok",
+        cbor_map(vec![
+            ("calendar", CborValue::Text("proton/main".to_owned())),
+            ("title_filter", CborValue::Text("dpc".to_owned())),
+            ("events", CborValue::Array(Vec::new())),
+        ]),
+    );
+    assert_eq!(
+        success_display(&filtered_output).args,
+        "list_events proton/main title=dpc"
+    );
+
+    let filtered_invocation = cbor_map(vec![
+        ("command", CborValue::Text("list_events".to_owned())),
+        (
+            "args",
+            cbor_map(vec![
+                ("calendar", CborValue::Text("proton/main".to_owned())),
+                ("title", CborValue::Text("dpc".to_owned())),
+            ]),
+        ),
+    ]);
+    assert_eq!(
+        initial_display(&filtered_invocation).args,
+        "list_events proton/main title=dpc"
+    );
+
     let empty_output = ok_envelope(
         "list_events",
         "ok",

@@ -716,6 +716,7 @@ impl Engine {
             ("start", optional_text(range_start.clone())),
             ("end", optional_text(range_end.clone())),
             ("events", line_array(rows.clone())),
+            ("title_filter", optional_text(title_filter.clone())),
             (
                 "returned_events",
                 CborValue::Integer(returned_events.into()),
@@ -746,6 +747,7 @@ impl Engine {
                 ("format", CborValue::Text(LIST_EVENTS_FORMAT.to_owned())),
                 ("start", optional_text(range_start)),
                 ("end", optional_text(range_end)),
+                ("title_filter", optional_text(title_filter)),
                 (
                     "returned_events",
                     CborValue::Integer(returned_events.into()),
@@ -2746,9 +2748,16 @@ fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
         text.push_str(" event=");
         text.push_str(&safe_display_line(event_id));
     }
+    if command == "list_events"
+        && let Some(title_filter) = args
+            .and_then(|args| cbor_text_field(args, "title_filter"))
+            .or_else(|| args.and_then(|args| cbor_text_field(args, "title")))
+    {
+        text.push_str(" title=");
+        text.push_str(&safe_field(title_filter));
+    }
     text
 }
-
 fn calendar_scope_text(args: Option<&CborValue>) -> Option<String> {
     args.and_then(|args| cbor_text_field(args, "calendar"))
         .map(safe_display_line)
