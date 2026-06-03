@@ -4614,6 +4614,25 @@ fn render_tool_use_state_assembles_chips_in_order() {
 }
 
 #[test]
+fn render_tool_use_state_keeps_range_separate_from_args() {
+    use tau_proto::{ToolUseRange, ToolUseState, ToolUseStatus};
+
+    let display = ToolUseState {
+        args: "feed/main".into(),
+        range: Some(ToolUseRange {
+            start: Some("2026-05-29".into()),
+            end: Some("2026-05-30".into()),
+        }),
+        status: ToolUseStatus::Success,
+        status_text: "ok".into(),
+        ..Default::default()
+    };
+
+    let rendered = render_tool_use_state("calendar", &display);
+    assert_eq!(rendered.args, "feed/main");
+    assert_eq!(rendered.range.as_deref(), Some("2026-05-29..2026-05-30"));
+}
+#[test]
 fn running_shell_display_keeps_mode_separate_for_dedicated_style() {
     let theme = tau_themes::Theme::builtin();
     let display = tau_proto::ToolUseState {

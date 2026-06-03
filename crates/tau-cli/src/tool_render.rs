@@ -271,12 +271,13 @@ pub(crate) struct ToolSuffixSegment {
 }
 
 /// Decomposed tool-call label, painted as themed spans:
-/// `<tool_name> <mode> <args> <suffix...>`.
+/// `<tool_name> <mode> <args> <range> <suffix...>`.
 #[derive(Clone)]
 pub(crate) struct ToolCallDisplay {
     pub(crate) tool_name: String,
     pub(crate) mode: String,
     pub(crate) args: String,
+    pub(crate) range: Option<String>,
     pub(crate) suffixes: Vec<ToolSuffixSegment>,
     pub(crate) payload: Option<ToolUsePayload>,
 }
@@ -359,6 +360,7 @@ pub(crate) fn pending_tool_call_display(tool_name: &str) -> ToolCallDisplay {
         tool_name: tool_name.to_owned(),
         mode: String::new(),
         args: String::new(),
+        range: None,
         suffixes: vec![tool_suffix("pending".to_owned(), ToolStatus::Pending)],
         payload: None,
     }
@@ -621,6 +623,7 @@ pub(crate) fn render_tool_use_state(tool_name: &str, display: &ToolUseState) -> 
         tool_name: tool_name.to_owned(),
         mode: display.mode.clone(),
         args: display.args.clone(),
+        range: display.range.as_ref().and_then(format_tool_use_range),
         suffixes,
         payload: display.payload.clone(),
     }
@@ -652,6 +655,15 @@ fn format_progress_counter(counter: &tau_proto::ProgressCounter) -> ToolSuffixSe
         Some("tools") => tool_suffix(format!("%{body}"), ToolStatus::Tools),
         Some(label) => info_suffix(format!("{label}: {body}")),
         None => info_suffix(body),
+    }
+}
+
+fn format_tool_use_range(range: &tau_proto::ToolUseRange) -> Option<String> {
+    match (range.start.as_deref(), range.end.as_deref()) {
+        (Some(start), Some(end)) => Some(format!("{start}..{end}")),
+        (Some(start), None) => Some(format!("{start}..")),
+        (None, Some(end)) => Some(format!("..{end}")),
+        (None, None) => None,
     }
 }
 
@@ -770,6 +782,7 @@ pub(crate) fn build_tool_summary_display(summary: &ToolSummaryDisplay) -> ToolCa
         tool_name: "tools".to_owned(),
         mode: String::new(),
         args: format!("{}/{}", summary.completed, summary.total),
+        range: None,
         suffixes,
         payload: None,
     }
@@ -848,6 +861,15 @@ pub(crate) fn render_tool_block(
             vec![
                 SpanTree::text(" "),
                 SpanTree::text(abbreviate_inline_text(&display.args)),
+            ],
+        ));
+    }
+    if let Some(range) = &display.range {
+        children.push(SpanTree::span(
+            args,
+            vec![
+                SpanTree::text(" "),
+                SpanTree::text(abbreviate_inline_text(range)),
             ],
         ));
     }

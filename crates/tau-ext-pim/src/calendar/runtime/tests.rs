@@ -141,9 +141,14 @@ fn calendar_success_display_keeps_queued_event_target() {
 
     let result = format_change_queued("change1", &change);
 
+    let display = success_display(&result);
+    assert_eq!(display.args, "update_event google/primary event=evt1");
     assert_eq!(
-        success_display(&result).args,
-        "update_event google/primary 2026-05-29T10:00:00Z..2026-05-29T11:00:00Z event=evt1"
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-05-29T10:00".to_owned()),
+            end: Some("2026-05-29T11:00".to_owned()),
+        })
     );
 }
 
@@ -161,7 +166,147 @@ fn calendar_initial_display_shows_scope_and_range() {
         ],
     ));
 
-    assert_eq!(display.args, "list_events feed/main 2026-05-29..2026-05-30");
+    assert_eq!(display.args, "list_events feed/main");
+    assert_eq!(
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-05-29".to_owned()),
+            end: Some("2026-05-30".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn calendar_display_preserves_non_midnight_range_times() {
+    // Date-only and midnight bounds are compacted to dates, but meaningful
+    // non-midnight times must remain visible for hourly reads and writes.
+    let display = initial_display(&command_args(
+        "list_events",
+        vec![
+            ("account", CborValue::Text("feed".to_owned())),
+            ("calendar", CborValue::Text("main".to_owned())),
+            (
+                "start",
+                CborValue::Text("2026-05-29T13:30:00-07:00".to_owned()),
+            ),
+            (
+                "end",
+                CborValue::Text("2026-05-29T15:00:00-07:00".to_owned()),
+            ),
+        ],
+    ));
+
+    assert_eq!(
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-05-29T13:30".to_owned()),
+            end: Some("2026-05-29T15:00".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn calendar_display_does_not_panic_on_non_ascii_date_suffix() {
+    // Initial display runs on raw invocation arguments before validation. A
+    // value with an ISO-looking date prefix but non-ASCII suffix must not panic
+    // while trying to compact it.
+    let display = initial_display(&command_args(
+        "list_events",
+        vec![
+            ("account", CborValue::Text("feed".to_owned())),
+            ("start", CborValue::Text("2026-05-29éééééé".to_owned())),
+            ("end", CborValue::Text("2026-05-30Tnot-a-date".to_owned())),
+        ],
+    ));
+
+    assert_eq!(
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-05-29éééééé".to_owned()),
+            end: Some("2026-05-30Tnot-a-date".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn calendar_error_display_keeps_range_separate_from_args() {
+    // Error displays use invocation arguments rather than result data. Keep the
+    // same range field there so failed ranged calls do not lose context.
+    let arguments = command_args(
+        "free_busy",
+        vec![
+            ("account", CborValue::Text("feed".to_owned())),
+            ("calendar", CborValue::Text("main".to_owned())),
+            ("start", CborValue::Text("2026-05-29".to_owned())),
+            ("end", CborValue::Text("2026-05-30".to_owned())),
+        ],
+    );
+    let details = cbor_map(vec![("command", CborValue::Text("free_busy".to_owned()))]);
+
+    let display = error_display(&arguments, &details, "boom");
+
+    assert_eq!(display.args, "free_busy feed/main");
+    assert_eq!(
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-05-29".to_owned()),
+            end: Some("2026-05-30".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn calendar_success_display_keeps_list_events_compact() {
+    // List-event display already has generic item stats, so avoid repeating the
+    // same count in labelled chips and keep the date range separate from the
+    // calendar scope.
+    let output = ok_envelope(
+        "list_events",
+        "ok",
+        cbor_map(vec![
+            ("account", CborValue::Text("proton".to_owned())),
+            ("calendar", CborValue::Text("main".to_owned())),
+            (
+                "start",
+                CborValue::Text("2026-06-10T00:00:00-07:00".to_owned()),
+            ),
+            (
+                "end",
+                CborValue::Text("2026-06-17T00:00:00-07:00".to_owned()),
+            ),
+            (
+                "events",
+                CborValue::Array(vec![
+                    CborValue::Text("evt1".to_owned()),
+                    CborValue::Text("evt2".to_owned()),
+                ]),
+            ),
+            ("returned_events", CborValue::Integer(2.into())),
+            ("scanned_events", CborValue::Integer(2.into())),
+        ]),
+    );
+
+    let display = success_display(&output);
+
+    assert_eq!(display.args, "list_events proton/main");
+    assert_eq!(
+        display.range,
+        Some(ToolUseRange {
+            start: Some("2026-06-10".to_owned()),
+            end: Some("2026-06-17".to_owned()),
+        })
+    );
+    assert_eq!(display.stats.matches, Some(2));
+    assert_eq!(display.stats.lines, None);
+    assert_eq!(display.stats.bytes, None);
+    assert!(display.info_chips.is_empty());
+
+    let empty_output = ok_envelope(
+        "list_events",
+        "ok",
+        cbor_map(vec![("events", CborValue::Array(Vec::new()))]),
+    );
+    assert_eq!(success_display(&empty_output).stats.matches, Some(0));
 }
 
 #[test]

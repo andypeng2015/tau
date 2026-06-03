@@ -1142,6 +1142,10 @@ pub struct ToolUseState {
     /// separate from `args` so themes can style mode chips distinctly.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mode: String,
+    /// Optional display-oriented range rendered separately from `args`, for
+    /// tools whose primary object and range should remain distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ToolUseRange>,
     /// Compact `NM, NL, NkB`-style stats. Each field is optional
     /// so the renderer can omit a slot rather than emit `(0M, 1L)`.
     #[serde(default, skip_serializing_if = "ToolUseStats::is_empty")]
@@ -1171,6 +1175,24 @@ pub struct ToolUseState {
     /// Optional rich content rendered in a block below the chip row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<ToolUsePayload>,
+}
+
+/// Display-oriented range attached to a tool use.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ToolUseRange {
+    /// Inclusive or lower range bound, already normalized for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    /// Exclusive/upper range bound, already normalized for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+}
+
+impl ToolUseRange {
+    /// Return true when both range bounds are absent.
+    pub fn is_empty(&self) -> bool {
+        self.start.is_none() && self.end.is_none()
+    }
 }
 
 /// One labelled counter rendered as an info chip. Shape depends on

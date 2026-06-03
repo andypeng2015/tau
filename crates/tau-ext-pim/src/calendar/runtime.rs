@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use tau_proto::{
     ActionError, ActionInvoke, ActionOutput, ActionResult, AgentId, CborValue, Event, SecretValue,
-    ToolError, ToolProgress, ToolResult, ToolStarted, ToolUseState, ToolUseStats, ToolUseStatus,
+    ToolError, ToolProgress, ToolResult, ToolStarted, ToolUseRange, ToolUseState, ToolUseStats,
+    ToolUseStatus,
 };
 use time_tz::{OffsetDateTimeExt, OffsetResult, PrimitiveDateTimeExt, TimeZone};
 
@@ -2636,6 +2637,7 @@ fn success_display(result: &CborValue) -> ToolUseState {
     let data = cbor_field(result, "data");
     ToolUseState {
         args: calendar_display_args(command, data).unwrap_or_default(),
+        range: calendar_display_range(command, data),
         stats: calendar_display_stats(command, data),
         info_chips: calendar_display_info(command, data),
         status: ToolUseStatus::Success,
@@ -2648,6 +2650,7 @@ fn error_display(arguments: &CborValue, details: &CborValue, message: &str) -> T
     let command = cbor_text_field(details, "command").unwrap_or("calendar");
     ToolUseState {
         args: invocation_display_args(arguments).unwrap_or_else(|| safe_display_line(command)),
+        range: invocation_display_range(arguments),
         status: ToolUseStatus::Error,
         status_text: message.to_owned(),
         ..Default::default()
@@ -2663,46 +2666,27 @@ fn calendar_display_stats(command: &str, data: Option<&CborValue>) -> ToolUseSta
         return ToolUseStats::default();
     };
     match command {
-        "list_accounts" => line_array_stats(data, "accounts"),
-        "list_calendars" => line_array_stats(data, "calendars"),
-        "list_events" => line_array_stats(data, "events"),
-        "read_event" => line_array_stats(data, "event"),
-        "free_busy" => line_array_stats(data, "busy"),
+        "list_accounts" => line_array_count_stats(data, "accounts"),
+        "list_calendars" => line_array_count_stats(data, "calendars"),
+        "list_events" => line_array_count_stats(data, "events"),
+        "read_event" => line_array_count_stats(data, "event"),
+        "free_busy" => line_array_count_stats(data, "busy"),
         _ => ToolUseStats::default(),
     }
 }
 
-fn calendar_display_info(command: &str, data: Option<&CborValue>) -> Vec<String> {
-    let Some(data) = data else {
-        return Vec::new();
-    };
-    let mut chips = Vec::new();
-    match command {
-        "list_accounts" => push_count_chip(&mut chips, cbor_array_len(data, "accounts"), "account"),
-        "list_calendars" => {
-            push_count_chip(&mut chips, cbor_array_len(data, "calendars"), "calendar")
-        }
-        "list_events" => {
-            push_count_chip(
-                &mut chips,
-                cbor_u32_field(data, "returned_events").map(u64::from),
-                "event",
-            );
-            if let Some(total_events) = cbor_u32_field(data, "total_events") {
-                chips.push(format!("{total_events} total"));
-            } else if let Some(scanned_events) = cbor_u32_field(data, "scanned_events") {
-                chips.push(format!("{scanned_events} scanned"));
-            }
-        }
-        "free_busy" => push_count_chip(&mut chips, cbor_array_len(data, "busy"), "busy block"),
-        _ => {}
-    }
-    chips
+fn calendar_display_info(_command: &str, _data: Option<&CborValue>) -> Vec<String> {
+    Vec::new()
+}
+
+fn calendar_display_range(command: &str, data: Option<&CborValue>) -> Option<ToolUseRange> {
+    calendar_range_display(command, data)
 }
 
 pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
     ToolUseState {
         args: invocation_display_args(arguments).unwrap_or_default(),
+        range: invocation_display_range(arguments),
         status: ToolUseStatus::InProgress,
         status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
         ..Default::default()
@@ -2725,19 +2709,16 @@ fn invocation_display_args(arguments: &CborValue) -> Option<String> {
     Some(calendar_args_text(command, args))
 }
 
+fn invocation_display_range(arguments: &CborValue) -> Option<ToolUseRange> {
+    let command = cbor_text_field(arguments, "command")?;
+    let args = cbor_field(arguments, "args");
+    calendar_range_display(command, args)
+}
 fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
     let mut text = safe_display_line(command);
     if let Some(scope) = calendar_scope_text(args) {
         text.push(' ');
         text.push_str(&scope);
-    }
-    if matches!(
-        command,
-        "list_events" | "free_busy" | "create_event" | "update_event"
-    ) && let Some(range) = calendar_range_text(args)
-    {
-        text.push(' ');
-        text.push_str(&range);
     }
     if matches!(
         command,
@@ -2766,20 +2747,72 @@ fn calendar_scope_text(args: Option<&CborValue>) -> Option<String> {
     }
 }
 
-fn calendar_range_text(args: Option<&CborValue>) -> Option<String> {
-    let args = args?;
-    let start = cbor_text_field(args, "start");
-    let end = cbor_text_field(args, "end");
-    match (start, end) {
-        (Some(start), Some(end)) => Some(format!(
-            "{}..{}",
-            safe_display_line(start),
-            safe_display_line(end)
-        )),
-        (Some(start), None) => Some(format!("{}..", safe_display_line(start))),
-        (None, Some(end)) => Some(format!("..{}", safe_display_line(end))),
-        (None, None) => None,
+fn calendar_range_display(command: &str, args: Option<&CborValue>) -> Option<ToolUseRange> {
+    if !matches!(
+        command,
+        "list_events" | "free_busy" | "create_event" | "update_event"
+    ) {
+        return None;
     }
+    let args = args?;
+    let range = ToolUseRange {
+        start: cbor_text_field(args, "start").map(display_date_bound),
+        end: cbor_text_field(args, "end").map(display_date_bound),
+    };
+    (!range.is_empty()).then_some(range)
+}
+
+fn display_date_bound(value: &str) -> String {
+    let value = safe_display_line(value);
+    if !looks_like_iso_date_prefix(&value) {
+        return value;
+    }
+    if is_date_only_or_midnight_bound(&value) {
+        return value[..10].to_owned();
+    }
+    if !matches!(value.as_bytes().get(10), Some(b'T' | b' ')) {
+        return value;
+    }
+    if !looks_like_iso_minute_prefix(&value) {
+        return value;
+    }
+    if let Some(compact) = value.get(..16) {
+        compact.to_owned()
+    } else {
+        value
+    }
+}
+
+fn is_date_only_or_midnight_bound(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        || (19 <= bytes.len() && matches!(bytes[10], b'T' | b' ') && &bytes[11..19] == b"00:00:00")
+}
+
+fn looks_like_iso_minute_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    16 <= bytes.len()
+        && matches!(bytes[10], b'T' | b' ')
+        && bytes[11].is_ascii_digit()
+        && bytes[12].is_ascii_digit()
+        && bytes[13] == b':'
+        && bytes[14].is_ascii_digit()
+        && bytes[15].is_ascii_digit()
+}
+
+fn looks_like_iso_date_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    10 <= bytes.len()
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+        && bytes[3].is_ascii_digit()
+        && bytes[4] == b'-'
+        && bytes[5].is_ascii_digit()
+        && bytes[6].is_ascii_digit()
+        && bytes[7] == b'-'
+        && bytes[8].is_ascii_digit()
+        && bytes[9].is_ascii_digit()
 }
 
 fn line_array(rows: Vec<String>) -> CborValue {
@@ -2790,35 +2823,16 @@ fn optional_text(value: Option<String>) -> CborValue {
     value.map(CborValue::Text).unwrap_or(CborValue::Null)
 }
 
-fn line_array_stats(data: &CborValue, field: &str) -> ToolUseStats {
+fn line_array_count_stats(data: &CborValue, field: &str) -> ToolUseStats {
     let Some(lines) = cbor_array_field(data, field) else {
         return ToolUseStats::default();
     };
     let line_count = lines.len() as u64;
-    let byte_count = lines
-        .iter()
-        .filter_map(|line| match line {
-            CborValue::Text(text) => Some(text.len() as u64),
-            _ => None,
-        })
-        .sum();
     ToolUseStats {
         matches: Some(line_count),
-        lines: (0 < line_count).then_some(line_count),
-        bytes: (0 < line_count).then_some(byte_count),
+        lines: None,
+        bytes: None,
     }
-}
-
-fn push_count_chip(chips: &mut Vec<String>, count: Option<u64>, singular: &str) {
-    let Some(count) = count else {
-        return;
-    };
-    let suffix = if count == 1 {
-        singular.to_owned()
-    } else {
-        format!("{singular}s")
-    };
-    chips.push(format!("{count} {suffix}"));
 }
 
 fn cbor_map(entries: Vec<(&str, CborValue)>) -> CborValue {
