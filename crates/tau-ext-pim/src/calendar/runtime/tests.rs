@@ -317,6 +317,70 @@ fn calendar_success_display_keeps_list_events_compact() {
 }
 
 #[test]
+fn split_calendar_tool_displays_do_not_repeat_internal_command() {
+    let output = ok_envelope(
+        "list_events",
+        "ok",
+        cbor_map(vec![
+            ("calendar", CborValue::Text("proton/main".to_owned())),
+            ("title_filter", CborValue::Text("dpc".to_owned())),
+            (
+                "events",
+                CborValue::Array(vec![CborValue::Text("evt1".to_owned())]),
+            ),
+        ]),
+    );
+    let event = finish_tool_result(
+        invoke_with_command(tool_started(
+            "calendar_search",
+            vec![
+                ("calendar", CborValue::Text("proton/main".to_owned())),
+                ("title", CborValue::Text("dpc".to_owned())),
+            ],
+        )),
+        output,
+    );
+
+    let Event::ToolResult(result) = event else {
+        panic!("successful split calendar command should be a tool result")
+    };
+    let display = result.display.expect("display");
+    assert_eq!(display.args, "proton/main title=dpc");
+    assert_eq!(display.stats.matches, Some(1));
+
+    let initial = initial_display_for_tool(
+        "calendar_get",
+        &cbor_map(vec![
+            ("calendar", CborValue::Text("proton/main".to_owned())),
+            ("event_id", CborValue::Text("evt1".to_owned())),
+        ]),
+    );
+    assert_eq!(initial.args, "proton/main event_id=evt1");
+}
+
+#[test]
+fn split_calendar_tool_error_display_uses_external_tool_name() {
+    let event = finish_tool_result(
+        invoke_with_command(tool_started(
+            "calendar_get",
+            vec![
+                ("calendar", CborValue::Text("proton/main".to_owned())),
+                ("event_id", CborValue::Text("evt1".to_owned())),
+            ],
+        )),
+        error_envelope(Some("read_event"), "network_error", "backend failed"),
+    );
+
+    let Event::ToolError(error) = event else {
+        panic!("failed split calendar command should be a tool error")
+    };
+    let display = error.display.expect("display");
+    let expected = "calendar_get failed (network_error): backend failed";
+    assert_eq!(error.message, expected);
+    assert_eq!(display.status_text, expected);
+    assert_eq!(display.args, "proton/main event_id=evt1");
+}
+#[test]
 fn list_events_uses_start_end_range_names_and_rejects_old_names() {
     // Range reads now use the same `start`/`end` names as event payloads,
     // parsed through a command-specific struct. The old time_min/time_max
@@ -1310,6 +1374,15 @@ fn command_args(command: &str, args: Vec<(&str, CborValue)>) -> CborValue {
     ])
 }
 
+fn tool_started(tool_name: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
+    ToolStarted {
+        call_id: tau_proto::ToolCallId::from("call-1"),
+        tool_name: tau_proto::ToolName::new(tool_name),
+        arguments: cbor_map(args),
+        agent_id: Default::default(),
+        originator: tau_proto::PromptOriginator::User,
+    }
+}
 fn cbor_map(entries: Vec<(&str, CborValue)>) -> CborValue {
     CborValue::Map(
         entries

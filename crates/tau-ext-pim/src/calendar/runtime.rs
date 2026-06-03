@@ -2572,7 +2572,7 @@ fn finish_tool_result(invoke: ToolStarted, result: CborValue) -> Event {
     if cbor_bool_field(&result, "ok") == Some(false) {
         return tool_error(invoke, result);
     }
-    let display = success_display(&result);
+    let display = success_display_for_tool(invoke.tool_name.as_str(), &result);
     Event::ToolResult(ToolResult {
         call_id: invoke.call_id,
         tool_name: invoke.tool_name,
@@ -2585,8 +2585,13 @@ fn finish_tool_result(invoke: ToolStarted, result: CborValue) -> Event {
 }
 
 fn tool_error(invoke: ToolStarted, details: CborValue) -> Event {
-    let message = calendar_error_message(&details);
-    let display = error_display(&invoke.arguments, &details, &message);
+    let message = calendar_error_message_for_tool(invoke.tool_name.as_str(), &details);
+    let display = error_display_for_tool(
+        invoke.tool_name.as_str(),
+        &invoke.arguments,
+        &details,
+        &message,
+    );
     Event::ToolError(ToolError {
         call_id: invoke.call_id,
         tool_name: invoke.tool_name,
@@ -2705,12 +2710,18 @@ fn calendar_error_code(message: &str) -> &'static str {
     }
 }
 
-fn calendar_error_message(details: &CborValue) -> String {
+fn calendar_error_message_for_tool(tool_name: &str, details: &CborValue) -> String {
     let message = cbor_nested_text_field(details, "error", "message")
         .unwrap_or("invalid calendar tool request");
     let Some(code) = cbor_nested_text_field(details, "error", "code") else {
         return message.to_owned();
     };
+    if command_for_tool_name(tool_name).is_some() {
+        return format!(
+            "{} failed ({code}): {message}",
+            safe_display_line(tool_name)
+        );
+    }
     match cbor_text_field(details, "command") {
         Some(command) => format!(
             "calendar {} failed ({code}): {message}",
@@ -2718,6 +2729,11 @@ fn calendar_error_message(details: &CborValue) -> String {
         ),
         None => format!("calendar failed ({code}): {message}"),
     }
+}
+
+#[cfg(test)]
+fn calendar_error_message(details: &CborValue) -> String {
+    calendar_error_message_for_tool(super::TOOL_NAME, details)
 }
 
 fn calendar_log_status(result: &CborValue) -> String {
@@ -2735,6 +2751,24 @@ fn calendar_log_error_message(result: &CborValue) -> Option<&str> {
     }
 }
 
+fn success_display_for_tool(tool_name: &str, result: &CborValue) -> ToolUseState {
+    let command = cbor_text_field(result, "command").unwrap_or("calendar");
+    if command_for_tool_name(tool_name).is_some() {
+        let status_text = cbor_text_field(result, "status").unwrap_or("ok");
+        let data = cbor_field(result, "data");
+        return ToolUseState {
+            args: split_calendar_display_args(command, data).unwrap_or_default(),
+            range: calendar_display_range(command, data),
+            stats: calendar_display_stats(command, data),
+            info_chips: calendar_display_info(command, data),
+            status: ToolUseStatus::Success,
+            status_text: status_text.to_owned(),
+            ..Default::default()
+        };
+    }
+    success_display(result)
+}
+
 fn success_display(result: &CborValue) -> ToolUseState {
     let command = cbor_text_field(result, "command").unwrap_or("calendar");
     let status_text = cbor_text_field(result, "status").unwrap_or("ok");
@@ -2748,6 +2782,25 @@ fn success_display(result: &CborValue) -> ToolUseState {
         status_text: status_text.to_owned(),
         ..Default::default()
     }
+}
+
+fn error_display_for_tool(
+    tool_name: &str,
+    arguments: &CborValue,
+    details: &CborValue,
+    message: &str,
+) -> ToolUseState {
+    if let Some(command) = command_for_tool_name(tool_name) {
+        let args = cbor_field(arguments, "args");
+        return ToolUseState {
+            args: split_invocation_display_args(command, args).unwrap_or_default(),
+            range: calendar_range_display(command, args),
+            status: ToolUseStatus::Error,
+            status_text: message.to_owned(),
+            ..Default::default()
+        };
+    }
+    error_display(arguments, details, message)
 }
 
 fn error_display(arguments: &CborValue, details: &CborValue, message: &str) -> ToolUseState {
@@ -2798,7 +2851,13 @@ pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
 
 pub(crate) fn initial_display_for_tool(tool_name: &str, arguments: &CborValue) -> ToolUseState {
     if let Some(command) = command_for_tool_name(tool_name) {
-        return initial_display(&command_arguments(command, arguments.clone()));
+        return ToolUseState {
+            args: split_invocation_display_args(command, Some(arguments)).unwrap_or_default(),
+            range: calendar_range_display(command, Some(arguments)),
+            status: ToolUseStatus::InProgress,
+            status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+            ..Default::default()
+        };
     }
     initial_display(arguments)
 }
@@ -2829,8 +2888,34 @@ fn invocation_display_range(arguments: &CborValue) -> Option<ToolUseRange> {
 }
 fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
     let mut text = safe_display_line(command);
+    append_calendar_args_text(&mut text, command, args, false);
+    text
+}
+
+fn split_invocation_display_args(command: &str, args: Option<&CborValue>) -> Option<String> {
+    Some(split_calendar_args_text(command, args))
+}
+
+fn split_calendar_display_args(command: &str, data: Option<&CborValue>) -> Option<String> {
+    Some(split_calendar_args_text(command, data))
+}
+
+fn split_calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
+    let mut text = String::new();
+    append_calendar_args_text(&mut text, command, args, true);
+    text
+}
+
+fn append_calendar_args_text(
+    text: &mut String,
+    command: &str,
+    args: Option<&CborValue>,
+    split: bool,
+) {
     if let Some(scope) = calendar_scope_text(args) {
-        text.push(' ');
+        if !text.is_empty() {
+            text.push(' ');
+        }
         text.push_str(&scope);
     }
     if matches!(
@@ -2838,7 +2923,10 @@ fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
         "read_event" | "update_event" | "delete_event" | "respond_invite"
     ) && let Some(event_id) = args.and_then(|args| cbor_text_field(args, "event_id"))
     {
-        text.push_str(" event=");
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(if split { "event_id=" } else { "event=" });
         text.push_str(&safe_display_line(event_id));
     }
     if command == "list_events"
@@ -2846,10 +2934,12 @@ fn calendar_args_text(command: &str, args: Option<&CborValue>) -> String {
             .and_then(|args| cbor_text_field(args, "title_filter"))
             .or_else(|| args.and_then(|args| cbor_text_field(args, "title")))
     {
-        text.push_str(" title=");
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str("title=");
         text.push_str(&safe_field(title_filter));
     }
-    text
 }
 fn calendar_scope_text(args: Option<&CborValue>) -> Option<String> {
     args.and_then(|args| cbor_text_field(args, "calendar"))

@@ -4662,7 +4662,7 @@ fn email_envelope_tool_spec(name: &str) -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(name),
         model_visible_name: None,
-        description: Some("Controlled email access. Folder ids are opaque values returned by email_list_folders; omit folder to use INBOX. request_full and sends can require approval; message-management commands do not.".to_owned()),
+        description: Some("Controlled email access. Folder ids are opaque values returned by email_list_folders; omit folder to use the default folder. request_full and sends can require approval; message-management commands do not.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
@@ -4704,7 +4704,7 @@ fn email_common_arg_properties() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional for folder-targeting commands; defaults to INBOX."},
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional for folder-targeting commands; defaults to the default folder."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to list. Optional; defaults to 100 and is capped at 100."},
             "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "For email_search, include messages with IMAP internal date in the last N calendar days. Optional; defaults to 7 and is capped at 365."},
             "cursor": {"type": "string", "description": "Pagination cursor returned by email_search."},
@@ -4725,19 +4725,21 @@ fn email_command_properties(command: &str) -> serde_json::Value {
     match command {
         "list_folders" => serde_json::json!({}),
         "list_recent" => serde_json::json!({
-            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "days": {"type": "integer", "minimum": 1, "maximum": 365},
-            "cursor": {"type": "string"}
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to the default folder."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to return. Optional; defaults to 100."},
+            "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "Search messages from the last N days. Optional; defaults to 7."},
+            "cursor": {"type": "string", "description": "Pagination cursor returned by email_search."}
+
         }),
         "list_by_uid" => serde_json::json!({
-            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            "cursor": {"type": "string"}
+            "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to the default folder."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to return. Optional; defaults to 100."},
+            "cursor": {"type": "string", "description": "Pagination cursor."}
+
         }),
         "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             serde_json::json!({
-                "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to INBOX."},
+                "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to the default folder."},
                 "email_id": {"type": "string", "description": "Message id from email list results."}
             })
         }
@@ -4761,7 +4763,7 @@ fn email_tool_description(tool_name: &str, command: &str) -> &'static str {
             "List configured email folders. Returns folder ids for other email tools."
         }
         ("search", _) => {
-            "Search/list recent email messages by internal date. Optional folder, limit, days, and cursor."
+            "List recent email messages. Optional folder, days, limit, and cursor; omit folder to use the default folder."
         }
         ("get", _) => {
             "Get an email message preview or allowed full content by folder and email_id."
@@ -4783,7 +4785,7 @@ fn email_args_description(command: &str) -> &'static str {
     match command {
         "list_folders" => "No arguments.",
         "send" => "Outgoing message fields.",
-        _ => "Folder/message arguments. Omit folder to use INBOX.",
+        _ => "Email target arguments. Omit folder to use the default folder.",
     }
 }
 
@@ -5216,7 +5218,12 @@ pub(crate) fn is_tool_name(tool_name: &str) -> bool {
 
 pub(crate) fn initial_display_for_tool(tool_name: &str, arguments: &CborValue) -> ToolUseState {
     if let Some(command) = command_for_tool_name(tool_name) {
-        return initial_display(&command_arguments(command, arguments.clone()));
+        return ToolUseState {
+            args: split_invocation_display_args(command, Some(arguments)).unwrap_or_default(),
+            status: ToolUseStatus::InProgress,
+            status_text: tau_proto::PROGRESS_INDICATOR_TEXT.to_owned(),
+            ..Default::default()
+        };
     }
     initial_display(arguments)
 }
@@ -5684,7 +5691,7 @@ fn finish_tool_result(invoke: ToolStarted, result: CborValue) -> Event {
     if cbor_bool_field(&result, "ok") == Some(false) {
         return tool_error(invoke, result);
     }
-    let display = success_display(&result);
+    let display = success_display_for_tool(invoke.tool_name.as_str(), &result);
     Event::ToolResult(ToolResult {
         call_id: invoke.call_id,
         tool_name: invoke.tool_name,
@@ -5697,8 +5704,13 @@ fn finish_tool_result(invoke: ToolStarted, result: CborValue) -> Event {
 }
 
 fn tool_error(invoke: ToolStarted, details: CborValue) -> Event {
-    let message = email_error_message(&details);
-    let display = error_display(&invoke.arguments, &details, &message);
+    let message = email_error_message_for_tool(invoke.tool_name.as_str(), &details);
+    let display = error_display_for_tool(
+        invoke.tool_name.as_str(),
+        &invoke.arguments,
+        &details,
+        &message,
+    );
     Event::ToolError(ToolError {
         call_id: invoke.call_id,
         tool_name: invoke.tool_name,
@@ -5709,12 +5721,18 @@ fn tool_error(invoke: ToolStarted, details: CborValue) -> Event {
         originator: tau_proto::PromptOriginator::User,
     })
 }
-fn email_error_message(details: &CborValue) -> String {
+fn email_error_message_for_tool(tool_name: &str, details: &CborValue) -> String {
     let message =
         cbor_nested_text_field(details, "error", "message").unwrap_or("invalid email tool request");
     let Some(code) = cbor_nested_text_field(details, "error", "code") else {
         return message.to_owned();
     };
+    if command_for_tool_name(tool_name).is_some() {
+        return format!(
+            "{} failed ({code}): {message}",
+            safe_model_line(tool_name, MAX_HEADER_VALUE_CHARS)
+        );
+    }
     match cbor_text_field(details, "command") {
         Some(command) => format!(
             "email {} failed ({code}): {message}",
@@ -5722,6 +5740,11 @@ fn email_error_message(details: &CborValue) -> String {
         ),
         None => format!("email failed ({code}): {message}"),
     }
+}
+
+#[cfg(test)]
+fn email_error_message(details: &CborValue) -> String {
+    email_error_message_for_tool(TOOL_NAME, details)
 }
 fn ok_envelope(command: &str, status: &str, data: CborValue) -> CborValue {
     cbor_map(vec![
@@ -5950,6 +5973,23 @@ fn cbor_nested_text_field<'a>(value: &'a CborValue, outer: &str, inner: &str) ->
     })?;
     cbor_text_field(nested, inner)
 }
+fn success_display_for_tool(tool_name: &str, result: &CborValue) -> ToolUseState {
+    let command = cbor_text_field(result, "command").unwrap_or("email");
+    if command_for_tool_name(tool_name).is_some() {
+        let status_text = cbor_text_field(result, "status").unwrap_or("ok");
+        let data = cbor_field(result, "data");
+        return ToolUseState {
+            args: split_email_display_args(command, data).unwrap_or_default(),
+            stats: email_display_stats(command, data),
+            info_chips: email_display_info(command, data),
+            status: ToolUseStatus::Success,
+            status_text: status_text.to_owned(),
+            ..Default::default()
+        };
+    }
+    success_display(result)
+}
+
 fn success_display(result: &CborValue) -> ToolUseState {
     let command = cbor_text_field(result, "command").unwrap_or("email");
     let status_text = cbor_text_field(result, "status").unwrap_or("ok");
@@ -5963,6 +6003,35 @@ fn success_display(result: &CborValue) -> ToolUseState {
         status_text: status_text.to_owned(),
         ..Default::default()
     }
+}
+
+fn error_display_for_tool(
+    tool_name: &str,
+    arguments: &CborValue,
+    details: &CborValue,
+    message: &str,
+) -> ToolUseState {
+    let command = cbor_text_field(details, "command").unwrap_or("email");
+    if command_for_tool_name(tool_name).is_some() {
+        let data = cbor_field(details, "data").or_else(|| {
+            let details =
+                cbor_field(details, "error").and_then(|error| cbor_field(error, "details"))?;
+            match details {
+                CborValue::Map(entries) if entries.is_empty() => None,
+                _ => Some(details),
+            }
+        });
+        return ToolUseState {
+            args: split_invocation_display_args(command, cbor_field(arguments, "args"))
+                .filter(|args| !args.is_empty())
+                .or_else(|| split_email_display_args(command, data).filter(|args| !args.is_empty()))
+                .unwrap_or_default(),
+            status: ToolUseStatus::Error,
+            status_text: message.to_owned(),
+            ..Default::default()
+        };
+    }
+    error_display(arguments, details, message)
 }
 
 fn error_display(arguments: &CborValue, details: &CborValue, message: &str) -> ToolUseState {
@@ -6000,6 +6069,23 @@ fn message_target_display(command: &str, args: Option<&CborValue>) -> Option<Str
     Some(display)
 }
 
+fn split_message_target_display(args: Option<&CborValue>) -> Option<String> {
+    let args = args?;
+    let folder = cbor_text_field(args, "folder");
+    let email_id = cbor_text_field(args, "email_id")
+        .map(str::to_owned)
+        .or_else(|| cbor_integer_field_string(args, "email_id"))
+        .or_else(|| cbor_text_field(args, "uid").map(str::to_owned))
+        .or_else(|| cbor_integer_field_string(args, "uid"));
+    let mut parts = Vec::new();
+    if let Some(folder) = folder {
+        parts.push(safe_display_line(folder));
+    }
+    if let Some(email_id) = email_id {
+        parts.push(format!("email_id={}", safe_display_line(&email_id)));
+    }
+    Some(parts.join(" "))
+}
 pub(crate) fn initial_display(arguments: &CborValue) -> ToolUseState {
     ToolUseState {
         args: invocation_display_args(arguments).unwrap_or_default(),
@@ -6055,6 +6141,40 @@ fn list_display_args(command: &str, args: Option<&CborValue>) -> Option<String> 
     })
 }
 
+fn split_list_display_args(args: Option<&CborValue>) -> Option<String> {
+    let folder = args.and_then(|args| cbor_text_field(args, "folder"));
+    Some(folder.map(safe_display_line).unwrap_or_default())
+}
+
+fn split_invocation_display_args(command: &str, args: Option<&CborValue>) -> Option<String> {
+    match command {
+        "list_folders" => Some(String::new()),
+        "list" | "list_by_uid" | "list_recent" => split_list_display_args(args),
+        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            split_message_target_display(args)
+        }
+        "send" => {
+            let recipients = args
+                .and_then(|args| cbor_array_len(args, "to"))
+                .map(|count| format!("to={count}"))
+                .unwrap_or_default();
+            Some(recipients)
+        }
+        _ => Some(String::new()),
+    }
+}
+
+fn split_email_display_args(command: &str, data: Option<&CborValue>) -> Option<String> {
+    match command {
+        "list_folders" => Some(String::new()),
+        "list" | "list_by_uid" | "list_recent" => split_list_display_args(data),
+        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+            split_message_target_display(data)
+        }
+        "send" => Some(String::new()),
+        _ => Some(String::new()),
+    }
+}
 fn email_display_args(command: &str, data: Option<&CborValue>) -> Option<String> {
     match command {
         "list_folders" => Some("list_folders".to_owned()),

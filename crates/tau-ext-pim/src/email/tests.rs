@@ -404,6 +404,15 @@ fn tool_started(command: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
     }
 }
 
+fn split_tool_started(tool_name: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
+    ToolStarted {
+        call_id: tau_proto::ToolCallId::from("call-1"),
+        tool_name: tau_proto::ToolName::new(tool_name),
+        arguments: cbor_map(args),
+        agent_id: Default::default(),
+        originator: tau_proto::PromptOriginator::User,
+    }
+}
 fn data_field<'a>(value: &'a CborValue, name: &str) -> &'a CborValue {
     let data = map_get(value, "data").expect("data");
     map_get(data, name).expect("field")
@@ -876,6 +885,70 @@ fn successful_email_tool_results_show_command_scope_and_counts() {
     assert_eq!(display.stats.lines, Some(2));
     assert_eq!(display.stats.bytes, Some(expected_bytes));
     assert_eq!(display.info_chips, vec!["2 messages".to_owned()]);
+}
+
+#[test]
+fn split_email_tool_displays_do_not_repeat_internal_command() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = engine(&temp);
+    let result = engine.dispatch(EmailCommand::ListRecent {
+        account: "work".to_owned(),
+        folder: "INBOX".to_owned(),
+        limit: 10,
+        cursor: None,
+        days: 7,
+    });
+
+    let event = finish_tool_result(
+        split_tool_started(
+            "email_search",
+            vec![
+                ("folder", CborValue::Text("work/INBOX".to_owned())),
+                ("limit", CborValue::Integer(10.into())),
+            ],
+        ),
+        result,
+    );
+
+    let Event::ToolResult(result) = event else {
+        panic!("successful split email command should be a tool result")
+    };
+    let display = result.display.expect("display");
+    assert_eq!(display.status, ToolUseStatus::Success);
+    assert_eq!(display.args, "work/INBOX");
+    assert_eq!(display.info_chips, vec!["2 messages".to_owned()]);
+
+    let initial = initial_display_for_tool(
+        "email_get",
+        &cbor_map(vec![
+            ("folder", CborValue::Text("work/INBOX".to_owned())),
+            ("email_id", CborValue::Text("6218".to_owned())),
+        ]),
+    );
+    assert_eq!(initial.args, "work/INBOX email_id=6218");
+}
+#[test]
+fn split_email_tool_error_display_uses_external_tool_name_and_email_id() {
+    let invoke = invoke_with_command(split_tool_started(
+        "email_get",
+        vec![
+            ("folder", CborValue::Text("work/INBOX".to_owned())),
+            ("email_id", CborValue::Text("6218".to_owned())),
+        ],
+    ));
+    let event = finish_tool_result(
+        invoke,
+        backend_error_envelope(Some("read"), "network_error", "IMAP parser failed"),
+    );
+
+    let Event::ToolError(error) = event else {
+        panic!("failed split email command should be a tool error")
+    };
+    let display = error.display.expect("display");
+    let expected = "email_get failed (network_error): IMAP parser failed";
+    assert_eq!(error.message, expected);
+    assert_eq!(display.status_text, expected);
+    assert_eq!(display.args, "work/INBOX email_id=6218");
 }
 
 #[test]
