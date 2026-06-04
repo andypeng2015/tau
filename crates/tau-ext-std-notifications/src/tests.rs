@@ -132,19 +132,52 @@ fn configure_frame(config: tau_proto::CborValue) -> Frame {
     }))
 }
 
+fn default_idle_payload_template() -> String {
+    r#"{"title":"Agent idle: {{host}}:{{cwd_basename}}","body":"Waiting for user input"}"#
+        .to_owned()
+}
+
+fn idle_osc_config(delay_seconds: u64, agent_summary: bool) -> serde_json::Value {
+    let value = if agent_summary {
+        r#"{"summary":"{{turn.agent_summary}}"}"#.to_owned()
+    } else {
+        default_idle_payload_template()
+    };
+    serde_json::json!({
+        "delay_seconds": delay_seconds,
+        "agent_summary": agent_summary,
+        "osc1337": {
+            "key": TEXT_VAR_NAME,
+            "value": value,
+        },
+    })
+}
+
+fn default_notifications_config_frame() -> Frame {
+    configure_frame(tau_proto::json_to_cbor(&serde_json::json!({
+        "agent-start": [{ "osc1337": { "key": SOUND_VAR_NAME, "value": VALUE_AGENT_START } }],
+        "agent-end": [{ "osc1337": { "key": SOUND_VAR_NAME, "value": VALUE_AGENT_END } }],
+        "agent-idle": [{
+            "osc1337": {
+                "key": TEXT_VAR_NAME,
+                "value": default_idle_payload_template(),
+            },
+        }],
+    })))
+}
+
 fn immediate_idle_agent_summary_config_frame() -> Frame {
     configure_frame(tau_proto::json_to_cbor(&serde_json::json!({
-        "idle_seconds": 0,
-        "idle_agent_summary": true,
+        "agent-end": [{ "osc1337": { "key": SOUND_VAR_NAME, "value": VALUE_AGENT_END } }],
+        "agent-idle": [idle_osc_config(0, true)],
     })))
 }
 
 fn bell_mode_config_frame() -> Frame {
     configure_frame(tau_proto::json_to_cbor(&serde_json::json!({
-        "mode": "bell",
-        "idle_seconds": 0,
-        "idle_agent_summary": true,
-        "idle_command": ["must-not-run-in-bell-mode"],
+        "agent-start": [],
+        "agent-end": [{ "bell": true }],
+        "agent-idle": [],
     })))
 }
 
@@ -249,9 +282,47 @@ fn tool_call_finished_response(
 fn drain_lifecycle<R: std::io::Read>(_reader: &mut EventReader<R>) {}
 
 #[test]
+fn empty_config_emits_no_notifications() {
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&configure_frame(tau_proto::json_to_cbor(
+            &serde_json::json!({
+                "agent-start": [],
+                "agent-end": [],
+                "agent-idle": [],
+            }),
+        )))
+        .expect("write config");
+    writer
+        .write_event(&user_prompt_submitted(
+            "hello",
+            tau_proto::PromptOriginator::User,
+        ))
+        .expect("write");
+    writer
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
+        .expect("write");
+    writer.write_frame(&disconnect_frame(None)).expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_millis(1)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    drain_lifecycle(&mut reader);
+    assert!(reader.read_event().expect("read").is_none());
+}
+
+#[test]
 fn emits_start_and_end_user_var_in_order() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&user_prompt_submitted(
             "hello",
@@ -297,7 +368,7 @@ fn emits_start_and_end_user_var_in_order() {
 /// Bell mode is an intentionally narrow transport: it only asks the
 /// terminal to ring when the agent turn is complete. It must not emit
 /// prompt-start bells, OSC user-var sound events, arm the idle text
-/// notification, request an agent summary, or run `idle_command`.
+/// notification, request an agent summary, or run an idle command.
 #[test]
 fn bell_mode_emits_only_completion_bell() {
     let mut input = Vec::new();
@@ -334,6 +405,49 @@ fn bell_mode_emits_only_completion_bell() {
     );
 }
 
+/// Configured hook arrays must allow multiple actions and render
+/// templates with the current agent id/name. This locks in the new
+/// structured hook schema instead of the old single global mode.
+#[test]
+fn agent_start_hook_renders_multiple_configured_actions() {
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&configure_frame(tau_proto::json_to_cbor(&serde_json::json!({
+            "agent-start": [
+                { "bell": true },
+                { "osc1337": { "key": "agent-{{agent.id}}", "value": "{{hook}}:{{agent.name}}" } },
+            ],
+            "agent-end": [],
+            "agent-idle": [],
+        }))))
+        .expect("write config");
+    writer
+        .write_event(&user_prompt_submitted(
+            "hello",
+            tau_proto::PromptOriginator::User,
+        ))
+        .expect("write prompt");
+    writer.write_frame(&disconnect_frame(None)).expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_secs(3600)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    drain_lifecycle(&mut reader);
+
+    let bell = reader.read_event().expect("read").expect("bell");
+    assert!(matches!(bell, Event::TermBell(_)));
+    let osc = reader.read_event().expect("read").expect("osc");
+    match osc {
+        Event::Osc1337SetUserVar(osc) => {
+            assert_eq!(osc.name, "agent-main");
+            assert_eq!(osc.value, "agent-start:main");
+        }
+        other => panic!("expected Osc1337SetUserVar, got {other:?}"),
+    }
+}
 /// Mid-turn `ProviderResponseFinished` events (those carrying
 /// pending tool calls) must NOT trigger the end-of-turn sound.
 /// The agent emits one of those per LLM call when it's looping
@@ -344,6 +458,9 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
     use tau_proto::CborValue;
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&user_prompt_submitted(
             "hello",
@@ -395,6 +512,9 @@ fn mid_turn_finish_with_tool_calls_does_not_emit_end_sound() {
 fn final_response_waits_for_background_tools_before_end_sound() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&user_prompt_submitted(
             "run slow thing",
@@ -448,6 +568,9 @@ fn new_prompt_does_not_forget_previous_background_tool() {
     // can emit the end sound before prompt 1's background work is done.
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     for (text, spid) in [("run slow thing", "sp-0"), ("next prompt", "sp-1")] {
         writer
             .write_event(&user_prompt_submitted(
@@ -496,6 +619,9 @@ fn final_response_without_background_completion_does_not_emit_end_sound() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
     writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
+    writer
         .write_event(&user_prompt_submitted(
             "run slow thing",
             tau_proto::PromptOriginator::User,
@@ -534,11 +660,14 @@ fn final_response_without_background_completion_does_not_emit_end_sound() {
 /// further input, the text-notification OSC carrying a JSON
 /// payload that mirrors `user-text-notification.sh`. By default
 /// the extension does not ask the agent for a summary; it emits the
-/// static [`FALLBACK_BODY`] immediately when the idle window elapses.
+/// configured idle payload immediately when the idle window elapses.
 #[test]
 fn idle_timeout_defaults_to_static_notification() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&Event::ProviderResponseFinished(
             assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
@@ -575,7 +704,6 @@ fn idle_timeout_defaults_to_static_notification() {
     assert_eq!(osc.name, TEXT_VAR_NAME);
     let payload: serde_json::Value =
         serde_json::from_str(&osc.value).expect("fallback payload is JSON");
-    assert_eq!(payload["urgency"], "normal");
     assert!(
         payload["title"]
             .as_str()
@@ -584,14 +712,13 @@ fn idle_timeout_defaults_to_static_notification() {
         "title should start with `Agent idle: `, got {:?}",
         payload["title"],
     );
-    assert_eq!(payload["body"], FALLBACK_BODY);
-    assert_eq!(payload["app_name"], NOTIFY_APP_NAME);
+    assert_eq!(payload["body"], "Waiting for user input");
 }
 
-/// When `idle_agent_summary` is enabled, idle window elapsing must
+/// When `agent_summary` is enabled, idle window elapsing must
 /// trigger an `StartAgentRequest` to the agent for a one-sentence summary.
 /// When no result arrives within the summary timeout, the extension
-/// falls back to the static [`FALLBACK_BODY`] so the user still gets
+/// then fires the configured idle payload so the user still gets
 /// nudged.
 #[test]
 fn idle_timeout_requests_summary_when_enabled_then_falls_back() {
@@ -646,7 +773,7 @@ fn idle_timeout_requests_summary_when_enabled_then_falls_back() {
     assert_eq!(osc.name, TEXT_VAR_NAME);
     let payload: serde_json::Value =
         serde_json::from_str(&osc.value).expect("fallback payload is JSON");
-    assert_eq!(payload["body"], FALLBACK_BODY);
+    assert_eq!(payload["summary"], "");
 }
 
 /// When a matching `StartAgentResult` arrives before the
@@ -659,7 +786,7 @@ fn idle_timeout_requests_summary_when_enabled_then_falls_back() {
 /// so the result lands while the extension is in the
 /// `WaitingSummary` state (not the earlier `WaitingIdle`).
 #[test]
-fn summary_result_populates_notification_body() {
+fn summary_result_populates_notification_template() {
     use std::os::unix::net::UnixStream;
 
     let (test_side, ext_side) = UnixStream::pair().expect("pair");
@@ -713,10 +840,9 @@ fn summary_result_populates_notification_body() {
     };
     let payload: serde_json::Value = serde_json::from_str(&osc.value).expect("payload is JSON");
     assert_eq!(
-        payload["body"], "refactoring the harness state, awaiting next prompt",
-        "summary body should be trimmed",
+        payload["summary"], "refactoring the harness state, awaiting next prompt",
+        "summary template variable should be trimmed",
     );
-
     // Cleanly disconnect so the extension exits.
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
@@ -756,6 +882,9 @@ fn prompt_draft_extends_idle_deadline() {
     drain_lifecycle(&mut reader);
 
     // Arm the idle deadline.
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&Event::ProviderResponseFinished(
             assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
@@ -879,13 +1008,13 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
         .expect("write");
     writer.flush().expect("flush");
 
-    // Notification must use the summary body, not be cancelled.
+    // Notification must expose the summary template variable, not be cancelled.
     let text = reader.read_event().expect("read").expect("text");
     let Event::Osc1337SetUserVar(osc) = text else {
         panic!("expected populated text OSC, got {text:?}");
     };
     let payload: serde_json::Value = serde_json::from_str(&osc.value).expect("payload is JSON");
-    assert_eq!(payload["body"], "the model's summary");
+    assert_eq!(payload["summary"], "the model's summary");
 
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
@@ -894,13 +1023,11 @@ fn prompt_draft_during_waiting_summary_does_not_cancel() {
     handle.join().expect("ext thread");
 }
 
-/// When `idle_command` is configured, it must run alongside the
-/// OSC notification, receive the title as `argv[1]`, the body
-/// on stdin, and the `NOTIFY_*` env vars set. Uses a tiny shell
-/// command that writes its argv + env + stdin into a temp file
-/// the test reads back.
+/// When an idle hook command is configured, it must run alongside the
+/// OSC notification after rendering configured template args into argv.
+/// Uses a tiny shell command that writes the rendered args into a temp file
 #[test]
-fn idle_command_runs_with_title_body_and_env() {
+fn idle_command_runs_with_rendered_template_args() {
     use std::os::unix::net::UnixStream;
 
     use tempfile::TempDir;
@@ -908,13 +1035,10 @@ fn idle_command_runs_with_title_body_and_env() {
     let td = TempDir::new().expect("tempdir");
     let out_path = td.path().join("out.txt");
 
-    // bash one-liner: writes the appended title arg (always the final argv
-    // element), env vars, and stdin into the output file, separated by `|||`
-    // so the test can assert each piece without depending on `bash -c`
-    // positional-parameter quirks in different packaging environments.
+    // bash one-liner: writes rendered agent/turn args into the output file,
+    // separated by `|||` so the test can assert each piece without stdin.
     let cmd = format!(
-        "printf '%s|||%s|||%s|||' \"${{!#}}\" \"$NOTIFY_URGENCY\" \"$NOTIFY_APP_NAME\" >> {dest}; \
-             cat >> {dest}",
+        "printf '%s|||%s' \"$1\" \"$2\" >> {dest}",
         dest = out_path.display(),
     );
 
@@ -938,9 +1062,18 @@ fn idle_command_runs_with_title_body_and_env() {
     drain_lifecycle(&mut reader);
 
     // Configure the extension with the test command.
+    let mut idle_hook = idle_osc_config(0, false);
+    idle_hook["command"] = serde_json::json!([
+        "bash",
+        "-c",
+        cmd,
+        "_marker",
+        "{{agent.id}}",
+        "{{turn.agent_response}}"
+    ]);
     let cfg = tau_proto::json_to_cbor(&serde_json::json!({
-        "idle_seconds": 0,
-        "idle_command": ["bash", "-c", cmd, "_marker"],
+        "agent-end": [{ "osc1337": { "key": SOUND_VAR_NAME, "value": VALUE_AGENT_END } }],
+        "agent-idle": [idle_hook],
     }));
     writer.write_frame(&configure_frame(cfg)).expect("write");
     writer
@@ -964,20 +1097,16 @@ fn idle_command_runs_with_title_body_and_env() {
             && let Ok(contents) = std::fs::read_to_string(&out_path)
             && contents.contains("|||")
         {
-            let mut parts = contents.splitn(4, "|||");
-            let title = parts.next().expect("title field");
-            let urgency = parts.next().expect("urgency field");
-            let app_name = parts.next().expect("app_name field");
-            let body = parts.next().expect("body field");
-            assert!(title.starts_with("Agent idle: "), "title arg {title:?}",);
-            assert_eq!(urgency, "normal");
-            assert_eq!(app_name, NOTIFY_APP_NAME);
-            assert_eq!(body, FALLBACK_BODY);
+            let mut parts = contents.splitn(2, "|||");
+            let agent_id = parts.next().expect("agent id field");
+            let response = parts.next().expect("response field");
+            assert_eq!(agent_id, "main");
+            assert_eq!(response, "done");
             break;
         }
         assert!(
             started.elapsed() < Duration::from_secs(2),
-            "idle_command never produced output",
+            "idle hook command never produced output",
         );
         thread::sleep(Duration::from_millis(20));
     }
@@ -1029,6 +1158,84 @@ fn invalid_config_emits_lifecycle_config_error() {
     assert!(!e.message.is_empty(), "config error must carry a message");
 }
 
+/// Bad hook templates must be rejected during Configure instead of
+/// crashing the extension later when the hook fires.
+#[test]
+fn invalid_hook_template_emits_config_error() {
+    let bad_config = tau_proto::json_to_cbor(&serde_json::json!({
+        "agent-start": [{ "osc1337": { "key": "ok", "value": "{{missing}}" } }],
+    }));
+
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&configure_frame(bad_config))
+        .expect("write");
+    writer.write_frame(&disconnect_frame(None)).expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_secs(3600)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    let err_frame = loop {
+        let frame = reader
+            .read_frame()
+            .expect("read")
+            .expect("config error frame");
+        if matches!(frame, Frame::Message(Message::ConfigError(_))) {
+            break frame;
+        }
+    };
+    let Frame::Message(Message::ConfigError(e)) = err_frame else {
+        unreachable!()
+    };
+    assert!(e.message.contains("missing"));
+}
+
+/// Applying a new config while an idle deadline is pending must clear
+/// old pending hook indexes so later drafts or timeouts cannot index
+/// into the replacement config and panic.
+#[test]
+fn config_reload_clears_pending_idle_hooks() {
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
+    writer
+        .write_event(&Event::ProviderResponseFinished(
+            assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
+        ))
+        .expect("write response");
+    writer
+        .write_frame(&configure_frame(tau_proto::json_to_cbor(
+            &serde_json::json!({
+                "agent-idle": [],
+            }),
+        )))
+        .expect("write config");
+    writer
+        .write_event(&Event::UiPromptDraft(tau_proto::UiPromptDraft {
+            session_id: "session".into(),
+            text: "still typing".to_owned(),
+        }))
+        .expect("write draft");
+    writer.write_frame(&disconnect_frame(None)).expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_secs(3600)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    drain_lifecycle(&mut reader);
+    let end = reader.read_event().expect("read").expect("end event");
+    match end {
+        Event::Osc1337SetUserVar(osc) => assert_eq!(osc.value, VALUE_AGENT_END),
+        other => panic!("expected Osc1337SetUserVar, got {other:?}"),
+    }
+    assert!(reader.read_event().expect("read").is_none());
+}
 /// A user prompt arriving inside the idle window must cancel the
 /// pending text notification — only the end-sound OSC should be
 /// emitted before stdin closes.
@@ -1036,6 +1243,9 @@ fn invalid_config_emits_lifecycle_config_error() {
 fn user_prompt_during_idle_window_cancels_text_notification() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&Event::ProviderResponseFinished(
             assistant_finished_response("sp-0", "done", tau_proto::PromptOriginator::User),
@@ -1088,6 +1298,9 @@ fn sub_agent_prompts_and_responses_are_ignored() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
 
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     // User starts a turn → expect agent_start sound.
     writer
         .write_event(&user_prompt_submitted(
@@ -1185,6 +1398,9 @@ fn sub_agent_prompts_and_responses_are_ignored() {
 fn duplicate_agent_prompt_submitted_during_same_turn_emits_one_start_sound() {
     let mut input = Vec::new();
     let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&default_notifications_config_frame())
+        .expect("write config");
     writer
         .write_event(&user_prompt_submitted(
             "hello",

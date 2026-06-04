@@ -3,22 +3,15 @@
 //! `notification-sounds.ts` and `user-text-notification.sh` Pi
 //! extensions.
 //!
-//! Events emitted in the default `osc1337` mode:
-//! - `ui.prompt_submitted` → `user-notification = protoss-probe-ack`
+//! Tau's built-in config disables all hooks. Users can configure hook actions
+//! for:
+//! - `agent.prompt_submitted`
 //! - final `provider.response_finished` (only when `stop_reason` does not
-//!   request tools and no backgrounded main-agent tools remain active) →
-//!   `user-notification = protoss-upgrade-complete`
-//! - After `idle_seconds` (default 60) of inactivity following a final response
-//!   → `user-text-notification = {"urgency": "normal", "title": "Agent idle:
-//!   <host>:<cwd>", "body": "Waiting for user input", "app_name": "tau"}`. If
-//!   `config.idle_agent_summary` is true, the extension first sends an
-//!   `StartAgentRequest` side-prompt asking for a one-sentence summary and uses
-//!   the result as the body, falling back to the static text after 10s.
-//!   `app_name` follows the schema `user-text-notification.sh` emits so
-//!   downstream consumers can use it as the desktop notification's source-app
-//!   indicator instead of us baking it into the title. The idle timer resets on
-//!   every user-originated `ui.prompt_submitted` / `provider.prompt_submitted`.
-//!   Tunable via the extension's `config.idle_seconds` field in `harness.yaml`.
+//!   request tools and no backgrounded main-agent tools remain active)
+//! - idle deadlines after a final response
+//!
+//! The idle timer resets on every user-originated `agent.prompt_submitted` /
+//! `provider.prompt_submitted`.
 //!
 //! The downstream tooling (typically a terminal multiplexer status
 //! line or a `user-notification.sh` consumer wired to a sound file)
@@ -29,6 +22,7 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,13 +44,6 @@ pub const SOUND_VAR_NAME: &str = "user-notification";
 /// `user-text-notification.sh`).
 pub const TEXT_VAR_NAME: &str = "user-text-notification";
 
-/// `app_name` field on the text-notification payload. Mirrors what
-/// `user-text-notification.sh`'s `NOTIFY_APP_NAME` env var sets, so
-/// downstream consumers can route or filter notifications by source
-/// app and surface the source in the desktop notification UI without
-/// us having to re-state it inside the title text.
-pub const NOTIFY_APP_NAME: &str = "tau";
-
 /// Sound key emitted when the user submits a prompt.
 pub const VALUE_AGENT_START: &str = "protoss-probe-ack";
 
@@ -64,8 +51,8 @@ pub const VALUE_AGENT_START: &str = "protoss-probe-ack";
 pub const VALUE_AGENT_END: &str = "protoss-upgrade-complete";
 
 /// Default idle window before the extension nudges the user via a
-/// text notification, in seconds. Override via the `idle_seconds`
-/// field of the extension's `config` block in `harness.yaml`.
+/// text notification, in seconds. Override with an `agent-idle` hook's
+/// `delay_seconds` field in `harness.yaml`.
 pub const DEFAULT_IDLE_SECONDS: u64 = 60;
 
 /// How long to wait for the agent to summarize the conversation
@@ -81,19 +68,9 @@ const SUMMARY_INSTRUCTION: &str = "Summarize in one short sentence: what \
 is the last thing you did or what do you need from the user now? Keep it \
 under 200 characters. Output only the summary, nothing else.";
 
-/// Static fallback body used when the summary request errors out,
-/// returns empty text, or doesn't arrive within
-/// [`SUMMARY_TIMEOUT_SECONDS`]. Matches Pi's
-/// `idle-notification.ts` so downstream `user-text-notification.sh`
-/// consumers see the same wording across the two implementations.
-const FALLBACK_BODY: &str = "Waiting for user input";
-
 /// Returns the system hostname via `gethostname(2)`. Falls back to
 /// `"host"` if the syscall fails or the bytes aren't UTF-8.
 fn hostname() -> String {
-    // Safety: `gethostname` writes at most `buf.len()` bytes into
-    // `buf` and POSIX guarantees NUL termination on success when
-    // the result fits.
     let mut buf = [0_u8; 256];
     #[allow(unsafe_code)]
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<libc::c_char>(), buf.len()) };
@@ -107,11 +84,7 @@ fn hostname() -> String {
         .unwrap_or_else(|| "host".to_owned())
 }
 
-/// Build the notification title: `Agent idle: <host>:<basename(cwd)>`.
-/// Mirrors Pi's `idle-notification.ts` so the wording matches across
-/// both implementations of the extension.
-fn build_title() -> String {
-    let host = hostname();
+fn cwd_parts() -> (String, String) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd_short = cwd
         .file_name()
@@ -123,15 +96,61 @@ fn build_title() -> String {
     } else {
         cwd_short
     };
-    format!("Agent idle: {host}:{cwd_short}")
+    (cwd.to_string_lossy().into_owned(), cwd_short)
 }
 
-/// Phase of the idle-watch state machine. `WaitingIdle` is the base
-/// "agent finished, count down to nudge" state. When it elapses we
-/// either emit the static idle text immediately, or — if
-/// `idle_agent_summary` is enabled — send a side-query to the agent
-/// and transition to `WaitingSummary`; whichever of (result, timeout)
-/// arrives first decides what body the user sees.
+fn template_context<'a>(
+    hook: &'a str,
+    agent_id: &'a tau_proto::AgentId,
+    user_prompt: &'a str,
+    agent_response: &'a str,
+    agent_summary: &'a str,
+) -> TemplateContext<'a> {
+    let host = hostname();
+    let (cwd, cwd_basename) = cwd_parts();
+    TemplateContext {
+        hook,
+        agent: AgentTemplateContext {
+            id: agent_id.as_ref(),
+            name: agent_id.as_ref(),
+        },
+        host,
+        cwd,
+        cwd_basename,
+        turn: TurnTemplateContext {
+            user_prompt,
+            agent_response,
+            agent_summary,
+        },
+    }
+}
+
+/// Runtime template context available to all configured hook actions.
+#[derive(serde::Serialize)]
+struct TemplateContext<'a> {
+    hook: &'a str,
+    agent: AgentTemplateContext<'a>,
+    host: String,
+    cwd: String,
+    cwd_basename: String,
+    turn: TurnTemplateContext<'a>,
+}
+
+/// Agent fields exposed to notification hook templates.
+#[derive(serde::Serialize)]
+struct AgentTemplateContext<'a> {
+    id: &'a str,
+    name: &'a str,
+}
+
+/// Last known turn text exposed to notification hook templates.
+#[derive(serde::Serialize)]
+struct TurnTemplateContext<'a> {
+    user_prompt: &'a str,
+    agent_response: &'a str,
+    agent_summary: &'a str,
+}
+/// Phase of a single configured idle hook in the idle-watch state machine.
 enum IdleState {
     WaitingIdle { deadline: Instant },
     WaitingSummary { query_id: String, deadline: Instant },
@@ -145,56 +164,107 @@ impl IdleState {
     }
 }
 
-/// User-supplied configuration for this extension. See the crate's
-/// `README.md` for the full schema and worked examples.
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-#[serde(default, deny_unknown_fields)]
-struct ExtConfig {
-    /// Notification transport to use. `Osc1337` preserves the existing
-    /// user-var based integration; `Bell` emits only terminal BEL events.
-    mode: NotificationMode,
-    /// Idle window, in seconds, before the extension nudges the
-    /// user. `None` keeps the [`DEFAULT_IDLE_SECONDS`] default. The
-    /// wire format is integer seconds; for sub-second test windows
-    /// the test entry points take a `Duration` directly.
-    idle_seconds: Option<u64>,
-    /// Whether an idle notification should ask the agent for a
-    /// one-sentence conversation summary before notifying. Disabled by
-    /// default to avoid extra agent turns and context replay while the
-    /// user is idle.
-    idle_agent_summary: bool,
-    /// Optional argv to invoke whenever the extension would normally
-    /// emit the OSC text notification (idle-summary or fallback). The
-    /// command runs *in addition to* the OSC, never instead of it,
-    /// so existing terminal-side consumers keep working.
-    ///
-    /// Calling convention mirrors `user-text-notification.sh`:
-    /// - `argv[0]` is the program; the title is appended as the next argument
-    ///   (`argv[1]` if no extra args, otherwise the first trailing arg).
-    /// - The body is piped to the command's stdin.
-    /// - `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau` are set in the
-    ///   child's environment.
-    ///
-    /// Spawned detached: we don't wait for it, and stdout/stderr are
-    /// silently discarded. A failing command logs at `warn` and is
-    /// otherwise ignored.
-    idle_command: Option<Vec<String>>,
+/// Pending runtime state for one configured `agent-idle` hook.
+struct PendingIdleHook {
+    hook_index: usize,
+    agent_id: tau_proto::AgentId,
+    user_prompt: String,
+    agent_response: String,
+    state: IdleState,
 }
 
-#[derive(serde::Deserialize, Debug, Default, Clone, Copy, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum NotificationMode {
-    #[default]
-    Osc1337,
-    Bell,
+fn response_text(items: &[tau_proto::ContextItem]) -> String {
+    let mut out = String::new();
+    for item in items {
+        let tau_proto::ContextItem::Message(message) = item else {
+            continue;
+        };
+        if message.role != tau_proto::ContextRole::Assistant {
+            continue;
+        }
+        for part in &message.content {
+            let tau_proto::ContentPart::Text { text } = part;
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(text);
+        }
+    }
+    out
 }
 
-impl ExtConfig {
-    fn idle_duration(&self) -> Duration {
-        Duration::from_secs(self.idle_seconds.unwrap_or(DEFAULT_IDLE_SECONDS))
+impl PendingIdleHook {
+    fn deadline(&self) -> Instant {
+        self.state.deadline()
     }
 }
 
+/// User-supplied configuration for this extension. See the crate's
+/// `README.md` for the full schema and worked examples.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+struct ExtConfig {
+    /// Actions to run when a user-authored prompt starts a main-agent turn.
+    agent_start: Vec<HookConfig>,
+    /// Actions to run when the main-agent turn reaches its final response.
+    agent_end: Vec<HookConfig>,
+    /// Actions to run after the agent remains idle past a configured delay.
+    agent_idle: Vec<IdleHookConfig>,
+}
+
+impl ExtConfig {
+    fn validate(&self) -> Result<(), String> {
+        validate_hooks("agent-start", &self.agent_start)?;
+        validate_hooks("agent-end", &self.agent_end)?;
+        for idle in &self.agent_idle {
+            validate_hook("agent-idle", &idle.hook)?;
+        }
+        Ok(())
+    }
+}
+
+/// One notification action run by a hook.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, deny_unknown_fields)]
+struct HookConfig {
+    /// Emit a terminal bell when this action runs.
+    bell: bool,
+    /// Optional command argv. Every argv element is rendered as a Handlebars
+    /// template.
+    command: Option<Vec<String>>,
+    /// Optional OSC 1337 SetUserVar action. Both key and value are templates.
+    osc1337: Option<Osc1337Config>,
+}
+
+/// OSC 1337 SetUserVar action templates.
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct Osc1337Config {
+    /// User-var key template.
+    key: String,
+    /// User-var value template.
+    value: String,
+}
+
+/// One `agent-idle` hook with idle-specific settings.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+#[serde(default, deny_unknown_fields)]
+struct IdleHookConfig {
+    /// Base action fields for this idle hook.
+    #[serde(flatten)]
+    hook: HookConfig,
+    /// Idle delay, in seconds, before this hook fires.
+    delay_seconds: Option<u64>,
+    /// Whether this idle hook first asks the agent for a one-sentence summary.
+    agent_summary: bool,
+}
+impl IdleHookConfig {
+    fn delay_duration(&self, default_delay: Duration) -> Duration {
+        self.delay_seconds
+            .map(Duration::from_secs)
+            .unwrap_or(default_delay)
+    }
+}
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
     tau_extension::init_logging_for(LOG_TARGET);
     run(std::io::stdin(), std::io::stdout())
@@ -245,7 +315,7 @@ where
 pub fn run_with_idle_and_summary_timeout<R, W>(
     reader: R,
     writer: W,
-    mut idle_duration: Duration,
+    idle_duration: Duration,
     summary_timeout: Duration,
 ) -> Result<(), Box<dyn Error>>
 where
@@ -253,14 +323,9 @@ where
     W: Write,
 {
     let mut writer = FrameWriter::new(BufWriter::new(writer));
-    // Live config — fields other than `idle_seconds` ride on it past
-    // the parse: `idle_seconds` is reflected into the local
-    // `idle_duration` Duration so we keep sub-second test precision
-    // (the wire schema is integer seconds, which is fine for users
-    // but rounds out millisecond test windows). `Configure`
-    // from the harness overwrites both on receipt.
+    // Live config. `idle_duration` is the default delay supplied by tests or
+    // production startup; explicit per-hook `delay_seconds` values override it.
     let mut config = ExtConfig::default();
-
     // No past events requested: notifications start from fresh live state.
     // Replaying prior prompts/results would replay sounds and idle nudges.
     tau_extension::Handshake::tool("tau-ext-std-notifications")
@@ -312,17 +377,20 @@ where
         }
     });
 
-    let mut idle: Option<IdleState> = None;
+    let mut idle: Vec<PendingIdleHook> = Vec::new();
     let mut input_closed = false;
     let mut waiting_for_final_response = false;
     let mut turn_end_emitted = false;
     let mut final_response_pending_background_tools = false;
     let mut pending_final_response_prompt: Option<tau_proto::AgentPromptId> = None;
+    let mut pending_final_response_agent: Option<tau_proto::AgentId> = None;
+    let mut pending_final_response_text = String::new();
+    let mut last_user_prompt = String::new();
     let mut completed_response_prompts: HashSet<tau_proto::AgentPromptId> = HashSet::new();
     let mut active_background_tools: HashSet<tau_proto::ToolCallId> = HashSet::new();
     let mut next_query_id: u64 = 0;
     loop {
-        let recv_result = match (idle.as_ref().map(IdleState::deadline), input_closed) {
+        let recv_result = match (next_idle_deadline(&idle), input_closed) {
             (Some(deadline), false) => {
                 let wait = deadline.saturating_duration_since(Instant::now());
                 rx.recv_timeout(wait)
@@ -354,13 +422,20 @@ where
                     Frame::Message(Message::Configure(msg)) => {
                         match tau_extension::parse_config::<ExtConfig>(&msg.config) {
                             Ok(cfg) => {
-                                idle_duration = cfg.idle_duration();
+                                if let Err(message) = cfg.validate() {
+                                    tracing::warn!(target: LOG_TARGET, error = %message, "rejecting config");
+                                    writer.write_frame(&Frame::Message(Message::ConfigError(
+                                        ConfigError { message },
+                                    )))?;
+                                    writer.flush()?;
+                                    continue;
+                                }
+                                idle.clear();
                                 tracing::info!(
                                     target: LOG_TARGET,
-                                    idle_seconds = idle_duration.as_secs(),
-                                    has_idle_command = cfg.idle_command.is_some(),
-                                    idle_agent_summary = cfg.idle_agent_summary,
-                                    mode = ?cfg.mode,
+                                    agent_start = cfg.agent_start.len(),
+                                    agent_end = cfg.agent_end.len(),
+                                    agent_idle = cfg.agent_idle.len(),
                                     "applied config",
                                 );
                                 config = cfg;
@@ -411,10 +486,10 @@ where
                 }
                 match inner {
                     Event::ProviderPromptSubmitted(_submitted) => {
-                        idle = None;
+                        idle.clear();
                     }
                     Event::AgentPromptSubmitted(prompt) => {
-                        idle = None;
+                        idle.clear();
                         if prompt.message_class.is_internal() {
                             tracing::trace!(target: LOG_TARGET, "skipping internal prompt submit");
                             continue;
@@ -428,13 +503,15 @@ where
                             turn_end_emitted = false;
                         }
                         if !waiting_for_final_response {
-                            if config.mode == NotificationMode::Osc1337 {
-                                writer.write_frame(&Frame::Event(sound_event(
-                                    config.mode,
-                                    VALUE_AGENT_START,
-                                )))?;
-                                writer.flush()?;
-                            }
+                            last_user_prompt = prompt.text.clone();
+                            let ctx = template_context(
+                                "agent-start",
+                                &prompt.agent_id,
+                                &last_user_prompt,
+                                "",
+                                "",
+                            );
+                            emit_hooks(&mut writer, &config.agent_start, &ctx)?;
                             waiting_for_final_response = true;
                             turn_end_emitted = false;
                         }
@@ -450,12 +527,14 @@ where
                         // billed for nothing. TODO: when prompt
                         // cancellation lands, cancel the in-flight
                         // side query here too.
-                        if let Some(IdleState::WaitingIdle { deadline }) = idle.as_mut() {
-                            *deadline = Instant::now() + idle_duration;
-                            tracing::trace!(
-                                target: LOG_TARGET,
-                                "extended idle deadline on prompt draft",
-                            );
+                        for pending in &mut idle {
+                            if let IdleState::WaitingIdle { deadline } = &mut pending.state {
+                                let hook = &config.agent_idle[pending.hook_index];
+                                *deadline = Instant::now() + hook.delay_duration(idle_duration);
+                            }
+                        }
+                        if !idle.is_empty() {
+                            tracing::trace!(target: LOG_TARGET, "extended idle deadlines on prompt draft");
                         }
                     }
                     Event::ProviderResponseFinished(finished) => {
@@ -490,18 +569,25 @@ where
                             continue;
                         }
                         if active_background_tools.is_empty() {
+                            let agent_id = finished.agent_id.clone();
+                            let agent_response = response_text(&finished.output_items);
                             emit_agent_end(
                                 &mut writer,
                                 &mut waiting_for_final_response,
                                 &mut turn_end_emitted,
                                 &mut idle,
                                 idle_duration,
-                                config.mode,
+                                &config,
+                                agent_id,
+                                last_user_prompt.clone(),
+                                agent_response,
                             )?;
                             completed_response_prompts.insert(finished.agent_prompt_id);
                         } else {
                             final_response_pending_background_tools = true;
                             pending_final_response_prompt = Some(finished.agent_prompt_id);
+                            pending_final_response_agent = Some(finished.agent_id);
+                            pending_final_response_text = response_text(&finished.output_items);
                             tracing::debug!(
                                 target: LOG_TARGET,
                                 active_background_tools = active_background_tools.len(),
@@ -531,8 +617,11 @@ where
                                 &mut final_response_pending_background_tools,
                                 &mut idle,
                                 idle_duration,
-                                config.mode,
+                                &config,
                                 &active_background_tools,
+                                &mut pending_final_response_agent,
+                                &last_user_prompt,
+                                &mut pending_final_response_text,
                             )? && let Some(prompt_id) = pending_final_response_prompt.take()
                             {
                                 completed_response_prompts.insert(prompt_id);
@@ -549,8 +638,11 @@ where
                                 &mut final_response_pending_background_tools,
                                 &mut idle,
                                 idle_duration,
-                                config.mode,
+                                &config,
                                 &active_background_tools,
+                                &mut pending_final_response_agent,
+                                &last_user_prompt,
+                                &mut pending_final_response_text,
                             )? && let Some(prompt_id) = pending_final_response_prompt.take()
                             {
                                 completed_response_prompts.insert(prompt_id);
@@ -563,33 +655,34 @@ where
                             query_id = %result.query_id,
                             text_len = result.text.len(),
                             error = ?result.error,
-                            idle_state = match &idle {
-                                None => "none",
-                                Some(IdleState::WaitingIdle { .. }) => "waiting_idle",
-                                Some(IdleState::WaitingSummary { .. }) => "waiting_summary",
-                            },
+                            idle_hooks = idle.len(),
                             "received StartAgentResult",
                         );
                         // Match against the in-flight query id; ignore
-                        // stragglers from cancelled / superseded
-                        // requests.
-                        if let Some(IdleState::WaitingSummary { query_id, .. }) = idle.as_ref()
-                            && result.query_id == *query_id
-                        {
-                            let body = result.text.trim().to_owned();
-                            let body = if body.is_empty() || result.error.is_some() {
-                                FALLBACK_BODY.to_owned()
+                        // stragglers from cancelled / superseded requests.
+                        let matching = idle.iter().position(|pending| {
+                            matches!(
+                                &pending.state,
+                                IdleState::WaitingSummary { query_id, .. } if result.query_id == *query_id
+                            )
+                        });
+                        if let Some(index) = matching {
+                            let pending = idle.remove(index);
+                            let hook = &config.agent_idle[pending.hook_index];
+                            let agent_summary = if result.error.is_some() {
+                                String::new()
                             } else {
-                                body
+                                result.text.trim().to_owned()
                             };
-                            let title = build_title();
-                            writer.write_frame(&Frame::Event(summary_text_event_with(
-                                &title, &body,
-                            )))?;
-                            writer.flush()?;
-                            spawn_idle_command(&config, &title, &body);
-                            idle = None;
-                            if input_closed {
+                            emit_idle_hook(
+                                &mut writer,
+                                hook,
+                                &pending.agent_id,
+                                &pending.user_prompt,
+                                &pending.agent_response,
+                                &agent_summary,
+                            )?;
+                            if input_closed && idle.is_empty() {
                                 break;
                             }
                         }
@@ -603,78 +696,78 @@ where
             }
             Ok(InMsg::EndOfStream) => {
                 input_closed = true;
-                if idle.is_none() {
+                if idle.is_empty() {
                     break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => match idle.take() {
-                Some(IdleState::WaitingIdle { .. }) => {
-                    if config.idle_agent_summary {
-                        let query_id = format!("idle-{next_query_id}");
-                        next_query_id += 1;
-                        tracing::info!(
-                            target: LOG_TARGET,
-                            query_id = %query_id,
-                            "idle deadline elapsed, requesting agent summary",
-                        );
-                        writer.write_frame(&Frame::Event(Event::StartAgentRequest(
-                            StartAgentRequest {
-                                query_id: query_id.clone(),
-                                instruction: SUMMARY_INSTRUCTION.to_owned(),
-                                role: None,
-                                input_stats: tau_proto::ToolUseStats::default(),
-                                // Notifications doesn't implement a tool —
-                                // these fields are only meaningful for the
-                                // `delegate` flow.
-                                tool_call_id: None,
-                                task_name: None,
-                            },
-                        )))?;
-                        writer.flush()?;
-                        idle = Some(IdleState::WaitingSummary {
-                            query_id,
-                            deadline: Instant::now() + summary_timeout,
-                        });
-                    } else {
-                        tracing::info!(
-                            target: LOG_TARGET,
-                            "idle deadline elapsed, emitting static text notification",
-                        );
-                        let title = build_title();
-                        writer.write_frame(&Frame::Event(summary_text_event_with(
-                            &title,
-                            FALLBACK_BODY,
-                        )))?;
-                        writer.flush()?;
-                        spawn_idle_command(&config, &title, FALLBACK_BODY);
-                        if input_closed {
-                            break;
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                while let Some(index) = idle.iter().position(|pending| pending.deadline() <= now) {
+                    let mut pending = idle.remove(index);
+                    let hook = &config.agent_idle[pending.hook_index];
+                    match pending.state {
+                        IdleState::WaitingIdle { .. } if hook.agent_summary => {
+                            let query_id = format!("idle-{next_query_id}");
+                            next_query_id += 1;
+                            tracing::info!(
+                                target: LOG_TARGET,
+                                query_id = %query_id,
+                                "idle deadline elapsed, requesting agent summary",
+                            );
+                            writer.write_frame(&Frame::Event(Event::StartAgentRequest(
+                                StartAgentRequest {
+                                    query_id: query_id.clone(),
+                                    instruction: SUMMARY_INSTRUCTION.to_owned(),
+                                    role: None,
+                                    input_stats: tau_proto::ToolUseStats::default(),
+                                    tool_call_id: None,
+                                    task_name: None,
+                                },
+                            )))?;
+                            writer.flush()?;
+                            pending.state = IdleState::WaitingSummary {
+                                query_id,
+                                deadline: Instant::now() + summary_timeout,
+                            };
+                            idle.push(pending);
+                        }
+                        IdleState::WaitingIdle { .. } => {
+                            tracing::info!(
+                                target: LOG_TARGET,
+                                "idle deadline elapsed, emitting static notification",
+                            );
+                            emit_idle_hook(
+                                &mut writer,
+                                hook,
+                                &pending.agent_id,
+                                &pending.user_prompt,
+                                &pending.agent_response,
+                                "",
+                            )?;
+                        }
+                        IdleState::WaitingSummary { .. } => {
+                            tracing::info!(
+                                target: LOG_TARGET,
+                                "summary timed out, falling back to static notification",
+                            );
+                            emit_idle_hook(
+                                &mut writer,
+                                hook,
+                                &pending.agent_id,
+                                &pending.user_prompt,
+                                &pending.agent_response,
+                                "",
+                            )?;
                         }
                     }
                 }
-                Some(IdleState::WaitingSummary { .. }) => {
-                    tracing::info!(
-                        target: LOG_TARGET,
-                        "summary timed out, falling back to static text",
-                    );
-                    let title = build_title();
-                    writer.write_frame(&Frame::Event(summary_text_event_with(
-                        &title,
-                        FALLBACK_BODY,
-                    )))?;
-                    writer.flush()?;
-                    spawn_idle_command(&config, &title, FALLBACK_BODY);
-                    if input_closed {
-                        break;
-                    }
+                if input_closed && idle.is_empty() {
+                    break;
                 }
-                None => {
-                    // Spurious wake-up; nothing to do.
-                }
-            },
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 input_closed = true;
-                if idle.is_none() {
+                if idle.is_empty() {
                     break;
                 }
             }
@@ -684,28 +777,30 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_agent_end<W: Write>(
     writer: &mut FrameWriter<BufWriter<W>>,
     waiting_for_final_response: &mut bool,
     turn_end_emitted: &mut bool,
-    idle: &mut Option<IdleState>,
-    idle_duration: Duration,
-    mode: NotificationMode,
+    idle: &mut Vec<PendingIdleHook>,
+    default_idle_duration: Duration,
+    config: &ExtConfig,
+    agent_id: tau_proto::AgentId,
+    user_prompt: String,
+    agent_response: String,
 ) -> Result<(), Box<dyn Error>> {
-    writer.write_frame(&Frame::Event(sound_event(mode, VALUE_AGENT_END)))?;
-    writer.flush()?;
+    let ctx = template_context("agent-end", &agent_id, &user_prompt, &agent_response, "");
+    emit_hooks(writer, &config.agent_end, &ctx)?;
     *waiting_for_final_response = false;
     *turn_end_emitted = true;
-    if mode == NotificationMode::Osc1337 {
-        *idle = Some(IdleState::WaitingIdle {
-            deadline: Instant::now() + idle_duration,
-        });
-        tracing::debug!(
-            target: LOG_TARGET,
-            seconds = idle_duration.as_secs(),
-            "idle deadline armed",
-        );
-    }
+    arm_idle_hooks(
+        idle,
+        default_idle_duration,
+        config,
+        agent_id,
+        user_prompt,
+        agent_response,
+    );
     Ok(())
 }
 
@@ -715,36 +810,143 @@ fn maybe_emit_deferred_agent_end<W: Write>(
     waiting_for_final_response: &mut bool,
     turn_end_emitted: &mut bool,
     final_response_pending_background_tools: &mut bool,
-    idle: &mut Option<IdleState>,
-    idle_duration: Duration,
-    mode: NotificationMode,
+    idle: &mut Vec<PendingIdleHook>,
+    default_idle_duration: Duration,
+    config: &ExtConfig,
     active_background_tools: &HashSet<tau_proto::ToolCallId>,
+    pending_agent_id: &mut Option<tau_proto::AgentId>,
+    user_prompt: &str,
+    pending_response: &mut String,
 ) -> Result<bool, Box<dyn Error>> {
     if *final_response_pending_background_tools && active_background_tools.is_empty() {
         *final_response_pending_background_tools = false;
+        let agent_id = pending_agent_id.take().unwrap_or_default();
+        let agent_response = std::mem::take(pending_response);
         emit_agent_end(
             writer,
             waiting_for_final_response,
             turn_end_emitted,
             idle,
-            idle_duration,
-            mode,
+            default_idle_duration,
+            config,
+            agent_id,
+            user_prompt.to_owned(),
+            agent_response,
         )?;
         return Ok(true);
     }
     Ok(false)
 }
 
-fn sound_event(mode: NotificationMode, value: &str) -> Event {
-    match mode {
-        NotificationMode::Osc1337 => Event::Osc1337SetUserVar(Osc1337SetUserVar {
-            name: SOUND_VAR_NAME.to_owned(),
-            value: value.to_owned(),
-        }),
-        NotificationMode::Bell => Event::TermBell(TermBell {}),
+fn arm_idle_hooks(
+    idle: &mut Vec<PendingIdleHook>,
+    default_idle_duration: Duration,
+    config: &ExtConfig,
+    agent_id: tau_proto::AgentId,
+    user_prompt: String,
+    agent_response: String,
+) {
+    idle.clear();
+    let now = Instant::now();
+    for (hook_index, hook) in config.agent_idle.iter().enumerate() {
+        idle.push(PendingIdleHook {
+            hook_index,
+            agent_id: agent_id.clone(),
+            user_prompt: user_prompt.clone(),
+            agent_response: agent_response.clone(),
+            state: IdleState::WaitingIdle {
+                deadline: now + hook.delay_duration(default_idle_duration),
+            },
+        });
+    }
+    if !idle.is_empty() {
+        tracing::debug!(target: LOG_TARGET, count = idle.len(), "idle deadlines armed");
     }
 }
 
+fn next_idle_deadline(idle: &[PendingIdleHook]) -> Option<Instant> {
+    idle.iter().map(PendingIdleHook::deadline).min()
+}
+
+fn emit_hooks<W: Write>(
+    writer: &mut FrameWriter<BufWriter<W>>,
+    hooks: &[HookConfig],
+    ctx: &TemplateContext<'_>,
+) -> Result<(), Box<dyn Error>> {
+    for hook in hooks {
+        emit_hook(writer, hook, ctx)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn emit_hook<W: Write>(
+    writer: &mut FrameWriter<BufWriter<W>>,
+    hook: &HookConfig,
+    ctx: &TemplateContext<'_>,
+) -> Result<(), Box<dyn Error>> {
+    if hook.bell {
+        writer.write_frame(&Frame::Event(Event::TermBell(TermBell {})))?;
+    }
+    if let Some(osc) = &hook.osc1337 {
+        let name = render_template(&osc.key, ctx)?;
+        let value = render_template(&osc.value, ctx)?;
+        writer.write_frame(&Frame::Event(Event::Osc1337SetUserVar(Osc1337SetUserVar {
+            name,
+            value,
+        })))?;
+    }
+    if let Some(command) = &hook.command {
+        spawn_command(command, ctx);
+    }
+    Ok(())
+}
+
+fn validate_hooks(name: &str, hooks: &[HookConfig]) -> Result<(), String> {
+    for hook in hooks {
+        validate_hook(name, hook)?;
+    }
+    Ok(())
+}
+
+fn validate_hook(name: &str, hook: &HookConfig) -> Result<(), String> {
+    if !hook.bell && hook.command.is_none() && hook.osc1337.is_none() {
+        return Err(format!(
+            "{name} hook item must set bell, command, or osc1337"
+        ));
+    }
+    let agent_id: tau_proto::AgentId = "agent".into();
+    let ctx = template_context(
+        name,
+        &agent_id,
+        "user prompt",
+        "agent response",
+        "agent summary",
+    );
+    if let Some(osc) = &hook.osc1337 {
+        render_template(&osc.key, &ctx)
+            .map_err(|e| format!("{name} osc1337.key template failed: {e}"))?;
+        render_template(&osc.value, &ctx)
+            .map_err(|e| format!("{name} osc1337.value template failed: {e}"))?;
+    }
+    if let Some(command) = &hook.command {
+        if command.is_empty() {
+            return Err(format!("{name} command must not be empty"));
+        }
+        for part in command {
+            render_template(part, &ctx)
+                .map_err(|e| format!("{name} command template failed: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn render_template(template: &str, ctx: &TemplateContext<'_>) -> Result<String, Box<dyn Error>> {
+    let mut handlebars = handlebars::Handlebars::new();
+    handlebars.set_strict_mode(true);
+    handlebars.register_escape_fn(handlebars::no_escape);
+    Ok(handlebars.render_template(template, ctx)?)
+}
 /// True when `event` belongs to a side conversation spawned by an
 /// extension (`PromptOriginator::Extension`). Side conversations
 /// share the bus with the user's interactive turn; this extension
@@ -762,84 +964,60 @@ fn is_sub_agent_event(event: &Event) -> bool {
     }
 }
 
-/// Build the OSC `SetUserVar` event whose payload is the JSON
-/// schema `user-text-notification.sh` emits. The `app_name` field
-/// gives downstream consumers a stable source-app indicator, so we
-/// don't need to repeat "tau" inside the title text.
-fn summary_text_event_with(title: &str, body: &str) -> Event {
-    let payload = serde_json::json!({
-        "urgency": "normal",
-        "title": title,
-        "body": body,
-        "app_name": NOTIFY_APP_NAME,
-    })
-    .to_string();
-    Event::Osc1337SetUserVar(Osc1337SetUserVar {
-        name: TEXT_VAR_NAME.to_owned(),
-        value: payload,
-    })
+fn emit_idle_hook<W: Write>(
+    writer: &mut FrameWriter<BufWriter<W>>,
+    hook: &IdleHookConfig,
+    agent_id: &tau_proto::AgentId,
+    user_prompt: &str,
+    agent_response: &str,
+    agent_summary: &str,
+) -> Result<(), Box<dyn Error>> {
+    let ctx = template_context(
+        "agent-idle",
+        agent_id,
+        user_prompt,
+        agent_response,
+        agent_summary,
+    );
+    emit_hook(writer, &hook.hook, &ctx)?;
+    writer.flush()?;
+    Ok(())
 }
 
-/// If the user configured `idle_command`, spawn it detached. Mirrors
-/// `user-text-notification.sh`'s calling convention so the script
-/// itself (or anything that follows the same shape) can be plugged
-/// in directly:
-/// - `argv[0]` is the program; the *title* is appended as the next argument.
-/// - The body is piped to the command's stdin.
-/// - `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau` are set in the child's
-///   environment.
-///
-/// Spawned in a worker thread that handles wait/reap; failures log
-/// at `warn` and never propagate to the main loop.
-fn spawn_idle_command(config: &ExtConfig, title: &str, body: &str) {
-    let Some(argv) = config.idle_command.clone() else {
-        return;
-    };
-    if argv.is_empty() {
-        tracing::warn!(
-            target: LOG_TARGET,
-            "idle_command is set but empty; ignoring",
-        );
+fn spawn_command(command_template: &[String], ctx: &TemplateContext<'_>) {
+    if command_template.is_empty() {
+        tracing::warn!(target: LOG_TARGET, "hook command is set but empty; ignoring");
         return;
     }
-    let title = title.to_owned();
-    let body = body.to_owned();
-    std::thread::spawn(move || {
-        let program = &argv[0];
-        let mut command = std::process::Command::new(program);
-        command
-            .args(&argv[1..])
-            .arg(&title)
-            .env("NOTIFY_URGENCY", "normal")
-            .env("NOTIFY_APP_NAME", NOTIFY_APP_NAME)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let mut child = match command.spawn() {
-            Ok(c) => c,
+    let mut argv = Vec::with_capacity(command_template.len());
+    for part in command_template {
+        match render_template(part, ctx) {
+            Ok(rendered) => argv.push(rendered),
             Err(e) => {
                 tracing::warn!(
                     target: LOG_TARGET,
-                    program = %program,
                     error = %e,
-                    "idle_command failed to spawn",
+                    "failed to render notification command template",
                 );
                 return;
             }
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(body.as_bytes());
-            // Dropping `stdin` here closes the pipe so the command
-            // sees EOF and exits.
         }
-        match child.wait() {
+    }
+    std::thread::spawn(move || {
+        let program = &argv[0];
+        let mut command = Command::new(program);
+        command
+            .args(&argv[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match command.status() {
             Ok(status) if !status.success() => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     program = %program,
                     status = ?status,
-                    "idle_command exited non-zero",
+                    "notification command exited non-zero",
                 );
             }
             Err(e) => {
@@ -847,7 +1025,7 @@ fn spawn_idle_command(config: &ExtConfig, title: &str, body: &str) {
                     target: LOG_TARGET,
                     program = %program,
                     error = %e,
-                    "idle_command failed to wait",
+                    "notification command failed",
                 );
             }
             _ => {}

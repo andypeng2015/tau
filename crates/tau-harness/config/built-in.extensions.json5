@@ -29,7 +29,7 @@
         suffix: ["ext", "ext-std-notifications"],
         role: "tool",
         enable: true,
-        config: { idle_seconds: 60, idle_agent_summary: false },
+        config: { "agent-start": [], "agent-end": [], "agent-idle": [] },
     },
     {
         name: "std-websearch",

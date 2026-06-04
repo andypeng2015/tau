@@ -624,7 +624,7 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
         .expect("built-in notifications extension skill");
     assert!(!notifications.add_to_prompt);
     assert!(notifications.content.contains("std-notifications"));
-    assert!(notifications.content.contains("idle_seconds"));
+    assert!(notifications.content.contains("agent-idle"));
 
     let test_dummy = skills
         .iter()

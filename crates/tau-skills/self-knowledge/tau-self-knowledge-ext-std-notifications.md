@@ -11,15 +11,15 @@ advertise: false
 
 ## Features
 
-Default `osc1337` mode emits iTerm2-style `SetUserVar` events:
+Tau's built-in configuration enables no notifications by default. A typical OSC 1337 hook configuration emits:
 
-- On user prompt submit: `user-notification = protoss-probe-ack`.
-- On final provider response when no tool call is requested and no main-agent background tools remain: `user-notification = protoss-upgrade-complete`.
-- After an idle window following a final response: `user-text-notification` JSON with urgency `normal`, title `Agent idle: <host>:<cwd>`, body `Waiting for user input`, and `app_name: tau`.
+- `agent-start`, on user prompt submit: `user-notification = protoss-probe-ack`.
+- `agent-end`, on final provider response when no tool call is requested and no main-agent background tools remain: `user-notification = protoss-upgrade-complete`.
+- `agent-idle`, after an idle window following a final response, whatever `user-text-notification` payload the user configured.
 
-If `idle_agent_summary` is true, the idle path first asks the agent for a one-sentence summary and uses it as the notification body, falling back after 10 seconds. If `idle_command` is set, the extension also spawns that command for idle text notifications, appending the title as an argument, piping the body on stdin, and setting `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau`.
+If an idle hook's `agent_summary` is true, the idle path first asks the agent for a one-sentence summary before firing that hook. Hook commands are detached argv arrays rendered as Handlebars templates.
 
-`bell` mode emits terminal bell events instead of OSC user vars for prompt/response sounds.
+Hook items can also emit `term.bell` with `bell: true`.
 
 
 ## Configuration
@@ -30,13 +30,36 @@ Configured under `extensions.std-notifications.config`:
 extensions: {
   "std-notifications": {
     config: {
-      mode: "osc1337",          // or "bell"
-      idle_seconds: 60,
-      idle_agent_summary: false,
-      idle_command: ["notify-send", "--app-name=tau"],
+      "agent-start": [
+        { osc1337: { key: "user-notification", value: "protoss-probe-ack" } },
+      ],
+      "agent-end": [
+        { osc1337: { key: "user-notification", value: "protoss-upgrade-complete" } },
+      ],
+      "agent-idle": [
+        {
+          delay_seconds: 60,
+          agent_summary: false,
+          osc1337: { key: "user-text-notification", value: "...template..." },
+        },
+      ],
     },
   },
 }
 ```
 
-The built-in default config sets `idle_seconds: 60` and `idle_agent_summary: false`. Downstream terminal or desktop tooling is responsible for turning OSC user-var changes into audible or visual notifications.
+Each hook item must set at least one of `bell`, `command`, or `osc1337`. The `command`, `osc1337.key`, and `osc1337.value` fields are Handlebars templates.
+
+Template variables:
+
+- `hook` — hook currently firing: `agent-start`, `agent-end`, or `agent-idle`.
+- `agent.id` — durable Tau agent id for the main conversation.
+- `agent.name` — current display name for the agent; currently the same value as `agent.id`.
+- `host` — hostname observed by the extension process.
+- `cwd` — current working directory observed by the extension process.
+- `cwd_basename` — final path component of `cwd`.
+- `turn.user_prompt` — last user prompt text accepted into the agent transcript.
+- `turn.agent_response` — final assistant text from the last completed provider response.
+- `turn.agent_summary` — one-sentence side-query summary for `agent-idle` hooks with `agent_summary: true`; empty on timeout or error.
+
+Downstream terminal or desktop tooling is responsible for turning OSC user-var changes into audible or visual notifications.

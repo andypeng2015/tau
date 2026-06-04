@@ -7,23 +7,21 @@ shape of dpc's Pi extensions
 [`idle-notification.ts`][pi-idle], adapted to tau's harness-mediated
 event bus.
 
-The extension itself does not play sounds or pop notifications. It
-only writes user-vars; downstream tooling — typically a terminal
-multiplexer status line, or shell scripts like
-`user-notification.sh` / `user-text-notification.sh` watching for
-those user-vars — is what actually plays a sound or fires a desktop
-notification.
+The extension itself does not play sounds or pop desktop notifications. It
+emits configured terminal-facing side effects — OSC 1337 user-vars, terminal
+bells, and detached commands. Downstream tooling is what turns those side
+effects into audible or visual notifications.
 
 ## What it does
 
-In the default `mode: "osc1337"`, three classes of event are emitted via the
-[`term.osc1337_set_user_var`][var] protocol event:
+Tau's built-in configuration enables no notifications by default. When
+configured, the three hook groups map to these trigger points:
 
-| Trigger | User-var | Value |
-|---|---|---|
-| `ui.prompt_submitted` (originator: User) | `user-notification` | `protoss-probe-ack` |
-| Final `provider.response_finished` (no pending tool calls, originator: User) | `user-notification` | `protoss-upgrade-complete` |
-| Idle window elapses after a final response | `user-text-notification` | JSON payload (see below) |
+| Hook | Trigger | Typical OSC user-var | Typical value |
+|---|---|---|---|
+| `agent-start` | `agent.prompt_submitted` (originator: User) | `user-notification` | `protoss-probe-ack` |
+| `agent-end` | Final `provider.response_finished` (no pending tool calls, originator: User) | `user-notification` | `protoss-upgrade-complete` |
+| `agent-idle` | Idle window elapses after a final response | `user-text-notification` | JSON payload (see below) |
 
 The "final response" filter only treats responses with `tool_calls`
 empty as the end of an agent turn. Mid-turn finishes (tool-call
@@ -36,58 +34,44 @@ the sounds or perturb the idle state machine.
 
 ## Idle text notification
 
-After `idle_seconds` (default 60) of inactivity following a final
-agent response, the extension fires the `user-text-notification`
-user-var with the static "Waiting for user input" body.
+After `delay_seconds` (default 60 when omitted on a configured idle hook) of
+inactivity following a final agent response, the example `agent-idle` hook fires
+the `user-text-notification` user-var with the static "Waiting for user
+input" body.
 
-If `idle_agent_summary` is set to `true`, the extension uses the old
-summary path instead:
+If an idle hook sets `agent_summary` to `true`, the extension first asks the
+agent for a one-sentence summary before firing that hook:
 
-1. The extension sends an `agent.start_request` to the harness
-   asking the agent for a one-sentence summary of the conversation
-   (instruction is hard-coded; matches Pi's wording).
-2. The harness spawns a side conversation off the user's current
-   branch, dispatches the prompt to the agent, and routes the
-   matching `agent.start_result` back point-to-point.
-3. The extension fires the `user-text-notification` user-var with
-   the model's summary as the body. If the result doesn't arrive
-   within `SUMMARY_TIMEOUT_SECONDS` (10s) — wedged agent, no
-   model, etc. — it falls back to the static "Waiting for user
-   input" body so the user always gets nudged.
+1. The extension sends an `agent.start_request` to the harness asking for a
+   one-sentence summary of the conversation.
+2. The harness spawns a side conversation off the user's current branch,
+   dispatches the prompt to the agent, and routes the matching
+   `agent.start_result` back point-to-point.
+3. The extension exposes the result as `turn.agent_summary` while rendering the
+   configured hook templates. On timeout or error, `turn.agent_summary` is an
+   empty string. The configured template decides how, or whether, to include it.
 
 The idle deadline resets on:
 
-- `ui.prompt_submitted` (originator: User) — the user just sent a
-  prompt;
+- `agent.prompt_submitted` (originator: User) — the user prompt was
+  accepted into the agent transcript;
 - `provider.prompt_submitted` (originator: User) — the provider is
   starting a real turn;
 - `ui.prompt_draft` — trailing-edge debounced typing pings from
-  the UI; the deadline jumps back by `idle_seconds` so the
-  notification doesn't fire mid-sentence while the user is
+  the UI; the deadline jumps back by that idle hook's `delay_seconds`
+  so the notification doesn't fire mid-sentence while the user is
   composing. Only applies in the `WaitingIdle` state; an
   in-flight side-query summary (`WaitingSummary`, only possible when
-  `idle_agent_summary` is enabled) is left alone because we don't
+  `agent_summary` is enabled) is left alone because we don't
   currently have a way to cancel the agent's in-flight prompt without
   billing for it.
 
-## Text-notification payload schema
+## Text notification payloads
 
-The `user-text-notification` user-var carries a JSON object that
-matches what `user-text-notification.sh` emits, so the same
-downstream consumers handle both sources:
-
-```json
-{
-  "urgency": "normal",
-  "title":   "Agent idle: <hostname>:<basename(cwd)>",
-  "body":    "<model summary, or static fallback>",
-  "app_name": "tau"
-}
-```
-
-`app_name` lets desktop-notification consumers (libnotify et al.)
-group, route, or style tau notifications distinctly without us
-having to bake "tau" into the title text.
+The extension does not impose a text-notification schema. If you want to drive
+`user-text-notification.sh` or another downstream consumer, configure the
+`osc1337.key` and `osc1337.value` templates to whatever payload that consumer
+expects.
 
 ## Configuration
 
@@ -102,80 +86,52 @@ surface typos to the user.
     "std-notifications": {
       enable: true,
       config: {
-        // Notification transport. "osc1337" is the default. "bell"
-        // emits only terminal BEL events when a turn completes and
-        // disables idle text notifications, idle summaries, and
-        // idle_command.
-        mode: "osc1337",
-
-        // Idle window (seconds) before the extension nudges the
-        // user. Default: 60.
-        idle_seconds: 60,
-
-        // Ask the agent for a one-sentence idle summary before
-        // notifying. Default: false; the default notification body is
-        // the static "Waiting for user input" text.
-        idle_agent_summary: false,
-
-        // Optional argv to invoke when the text notification
-        // would normally fire (idle summary or fallback). The
-        // command runs *in addition to* the OSC user-var write,
-        // never instead of it, so existing terminal-side
-        // consumers keep working.
-        idle_command: ["user-text-notification.sh"],
+        "agent-start": [
+          { osc1337: { key: "user-notification", value: "protoss-probe-ack" } },
+        ],
+        "agent-end": [
+          { osc1337: { key: "user-notification", value: "protoss-upgrade-complete" } },
+        ],
+        "agent-idle": [
+          {
+            delay_seconds: 60,
+            agent_summary: false,
+            osc1337: {
+              key: "user-text-notification",
+              value: "{\"title\":\"Agent idle: {{host}}:{{cwd_basename}}\",\"body\":\"Waiting for user input\"}",
+            },
+          },
+        ],
       },
     },
   },
 }
 ```
 
-### `idle_command` calling convention
+Each hook is an array, so a single trigger can emit multiple side
+effects. Each item must set at least one action and supports:
 
-Mirrors `user-text-notification.sh` so the script itself — or
-anything that follows the same shape — can be plugged in directly:
+- `bell: true` to emit `term.bell`;
+- `command: ["program", "arg template", ...]` to spawn a detached command;
+- `osc1337: { key, value }` to emit `term.osc1337_set_user_var`.
 
-- `argv[0]` is the program; any extra elements you put in the
-  array are passed as additional arguments *before* the title.
-- The notification **title** is appended as the next argument.
-- The notification **body** is piped to the command's stdin.
-- `NOTIFY_URGENCY=normal` and `NOTIFY_APP_NAME=tau` are set in the
-  child's environment.
+The `command`, `key`, and `value` strings are Handlebars templates in
+strict mode. Current variables include `hook`, `agent.id`, `agent.name`
+(currently the id), `host`, `cwd`, `cwd_basename`, `turn.user_prompt`,
+`turn.agent_response`, and `turn.agent_summary` (set only for idle hooks with
+`agent_summary: true`, empty on timeout/error).
 
-The command runs detached on a worker thread; stdout and stderr
-are discarded, and a non-zero exit logs at `warn` but is otherwise
-ignored. The main extension loop is never blocked on it.
-
-Examples:
-
-```json5
-// Plug in user-text-notification.sh directly.
-idle_command: ["user-text-notification.sh"]
-
-// Wrap in a custom dispatcher with extra args before the title.
-idle_command: ["my-notify.sh", "--channel", "tau-agent"]
-
-// Use anything that reads stdin: notify-send needs the body as an
-// arg, so wrap it in a shell:
-idle_command: [
-  "bash", "-c",
-  "body=$(cat); notify-send --app-name=tau \"$1\" \"$body\"",
-  "_tau",
-]
-```
-
-### Bell-only mode
-
-Set `mode: "bell"` to avoid all OSC user-vars, idle text notifications,
-agent idle-summary requests, and `idle_command` execution. In this mode the
-extension emits only `term.bell` when the agent turn is complete, which the UI
-renders as ASCII BEL (`\x07`). Terminal behavior then depends on the user's
-terminal bell settings.
+### Bell-only completion example
 
 ```json5
 {
   extensions: {
     "std-notifications": {
-      config: { mode: "bell" },
+      config: {
+        "agent-start": [],
+        "agent-end": [{ bell: true }],
+        "agent-idle": [],
+      },
     },
   },
 }
@@ -186,10 +142,10 @@ terminal bell settings.
 The extension uses the `std-notifications` tracing target:
 
 ```sh
-TAU_EXT_LOG=std-notifications=debug tau …
+TAU_LOG=std-notifications=debug tau …
 ```
 
-`debug` shows `received StartAgentResult { idle_state, query_id,
+`debug` shows `received StartAgentResult { idle_hooks, query_id,
 text_len, error }` and idle-deadline transitions; `trace` adds one
 line per ignored event for protocol-level debugging.
 
