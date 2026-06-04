@@ -110,6 +110,15 @@ pub(crate) enum AgentState {
     Suspended,
 }
 
+fn agent_runtime_state_for_turn(state: &AgentTurnState) -> tau_proto::AgentRuntimeState {
+    match state {
+        AgentTurnState::Idle => tau_proto::AgentRuntimeState::Idle,
+        AgentTurnState::AgentThinking { .. } | AgentTurnState::ToolsRunning { .. } => {
+            tau_proto::AgentRuntimeState::Running
+        }
+    }
+}
+
 /// Text for the one-shot model-visible notice folded into the first user turn
 /// after a cold session resume.
 pub(crate) fn restore_notice_prompt(
@@ -2439,9 +2448,7 @@ impl Harness {
             );
             self.clear_tool_call_tracking(call_id.as_str());
         }
-        if let Some(conv) = self.agents.get_mut(cid) {
-            conv.turn_state = AgentTurnState::Idle;
-        }
+        self.set_agent_turn_state(cid, AgentTurnState::Idle);
     }
 
     /// Persists `event` to its durable semantic log and folds it into the
@@ -4237,8 +4244,8 @@ impl Harness {
                     conv.pending_cancel = None;
                     conv.pending_prompts.clear();
                     conv.in_flight_prompt = None;
-                    conv.turn_state = AgentTurnState::Idle;
                 }
+                self.set_agent_turn_state(cid, AgentTurnState::Idle);
                 self.emit_info("cancelled current turn");
                 self.try_advance_queue();
             }
@@ -4270,8 +4277,8 @@ impl Harness {
             conv.pending_cancel = None;
             conv.pending_prompts.clear();
             conv.in_flight_prompt = None;
-            conv.turn_state = AgentTurnState::Idle;
         }
+        self.set_agent_turn_state(cid, AgentTurnState::Idle);
     }
 
     fn cancel_remaining_tool_calls(
@@ -6275,9 +6282,9 @@ impl Harness {
             self.canceled_prompts.insert(spid.clone());
             if let Some(conv) = self.agents.get_mut(cid) {
                 conv.in_flight_prompt = None;
-                conv.turn_state = AgentTurnState::Idle;
                 conv.pending_prompts.clear();
             }
+            self.set_agent_turn_state(cid, AgentTurnState::Idle);
             self.release_start_agent_request(cid);
             self.publish_prompt_terminated(
                 prompt_session_id.clone(),
@@ -6428,10 +6435,13 @@ impl Harness {
         // for it are abandoned (the user explicitly switched away), and
         // each agent's per-turn state is reset.
         self.turn_state = TurnState::Idle;
-        for conv in self.agents.values_mut() {
-            conv.pending_prompts.clear();
-            conv.in_flight_prompt = None;
-            conv.turn_state = AgentTurnState::Idle;
+        let agent_ids = self.agents.keys().cloned().collect::<Vec<_>>();
+        for cid in agent_ids {
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                conv.pending_prompts.clear();
+                conv.in_flight_prompt = None;
+            }
+            self.set_agent_turn_state(&cid, AgentTurnState::Idle);
         }
         self.tool_turn.clear();
         self.tool_agents.clear();
@@ -7069,6 +7079,32 @@ impl Harness {
         self.agent_states.insert(agent_id.to_owned(), state);
     }
 
+    fn set_agent_turn_state(&mut self, cid: &AgentId, state: AgentTurnState) {
+        let new_state = agent_runtime_state_for_turn(&state);
+        let changed_agent_id = self.agents.get(cid).and_then(|agent| {
+            let old_state = agent_runtime_state_for_turn(&agent.turn_state);
+            if old_state == new_state {
+                return None;
+            }
+            agent.agent_id.clone()
+        });
+
+        if let Some(agent) = self.agents.get_mut(cid) {
+            agent.turn_state = state;
+        }
+
+        let Some(agent_id) = changed_agent_id else {
+            return;
+        };
+        self.publish_event(
+            Some(HARNESS_CONNECTION_ID),
+            Event::AgentState(tau_proto::AgentStateChanged {
+                agent_id: agent_id.into(),
+                state: new_state,
+            }),
+        );
+    }
+
     fn remove_agent(&mut self, cid: &AgentId) -> Option<Agent> {
         if let Some(conv) = self.agents.get(cid)
             && let Some(agent_id) = conv.agent_id.clone()
@@ -7440,10 +7476,13 @@ impl Harness {
         let ctx_id = self.agents.get_mut(cid).and_then(|c| c.next_ctx_id.take());
         if let Some(c) = self.agents.get_mut(cid) {
             c.in_flight_prompt = Some(agent_prompt_id.clone());
-            c.turn_state = AgentTurnState::AgentThinking {
-                agent_prompt_id: agent_prompt_id.clone(),
-            };
         }
+        self.set_agent_turn_state(
+            cid,
+            AgentTurnState::AgentThinking {
+                agent_prompt_id: agent_prompt_id.clone(),
+            },
+        );
 
         self.current_session_state.token_usage.start_request(&model);
         self.prompt_models
@@ -7999,7 +8038,6 @@ impl Harness {
             .remove(&response.agent_prompt_id);
         if let Some(conv) = self.agents.get_mut(&cid) {
             conv.in_flight_prompt = None;
-            conv.turn_state = AgentTurnState::Idle;
         }
 
         // Side-conversation handling: if this prompt originated from
@@ -8075,6 +8113,7 @@ impl Harness {
             // Release before removing or detaching the side agent so
             // queued descendants can still resolve their parent agent
             // while starting. Active descendants keep their own copied state.
+            self.set_agent_turn_state(&cid, AgentTurnState::Idle);
             self.release_start_agent_request(&cid);
             if keep_tool_backed_conversation {
                 if should_auto_suspend_delegate
@@ -8121,9 +8160,7 @@ impl Harness {
                     },
                 );
             }
-            if let Some(conv) = self.agents.get_mut(&cid) {
-                conv.turn_state = AgentTurnState::ToolsRunning { remaining_calls };
-            }
+            self.set_agent_turn_state(&cid, AgentTurnState::ToolsRunning { remaining_calls });
             if self
                 .agents
                 .get(&cid)
@@ -8140,6 +8177,7 @@ impl Harness {
             }
             self.drain_pending_tool_invocations()?;
         } else {
+            self.set_agent_turn_state(&cid, AgentTurnState::Idle);
             // No tool calls — this agent's turn is done. Drain
             // any queued prompts (on this or other agents) that
             // are now eligible to dispatch.

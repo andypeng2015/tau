@@ -1622,6 +1622,23 @@ pub struct StartAgentResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeState {
+    #[default]
+    Idle,
+    Running,
+}
+
+/// Current runtime state for an agent.
+///
+/// This is a transient agent-state snapshot: it describes live work owned by
+/// the harness and is not part of the durable agent transcript.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentStateChanged {
+    pub agent_id: AgentId,
+    pub state: AgentRuntimeState,
+}
 /// Metadata for one model currently served by a provider extension.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderModelInfo {
@@ -2706,6 +2723,8 @@ pub enum Event {
     HarnessContextUsageChanged(HarnessContextUsageChanged),
     #[serde(rename = "harness.agent_context_usage_changed")]
     HarnessAgentContextUsageChanged(HarnessAgentContextUsageChanged),
+    #[serde(rename = "agent.state")]
+    AgentState(AgentStateChanged),
     #[serde(rename = "harness.efforts_available")]
     HarnessEffortsAvailable(HarnessEffortsAvailable),
     #[serde(rename = "harness.verbosities_available")]
@@ -2853,6 +2872,7 @@ impl Event {
             Self::HarnessAgentContextUsageChanged(_) => {
                 EventName::HARNESS_AGENT_CONTEXT_USAGE_CHANGED
             }
+            Self::AgentState(_) => EventName::AGENT_STATE,
             Self::HarnessEffortsAvailable(_) => EventName::HARNESS_EFFORTS_AVAILABLE,
             Self::HarnessVerbositiesAvailable(_) => EventName::HARNESS_VERBOSITIES_AVAILABLE,
             Self::HarnessThinkingSummariesAvailable(_) => {
@@ -2920,6 +2940,7 @@ impl Event {
                 | Self::AgentPromptCreated(_)
                 | Self::AgentPromptTerminated(_)
                 | Self::AgentPromptPrewarmRequested(_)
+                | Self::AgentState(_)
                 | Self::UiCompactRequest(_)
                 | Self::UiCreateAgent(_)
                 | Self::UiPromptDraft(_)

@@ -170,8 +170,8 @@ impl Harness {
                 // AgentThinking with no in-flight prompt.
                 if let Some(conv) = self.agents.get_mut(&agent_id) {
                     conv.in_flight_prompt = None;
-                    conv.turn_state = AgentTurnState::Idle;
                 }
+                self.set_agent_turn_state(&agent_id, AgentTurnState::Idle);
             }
         }
     }

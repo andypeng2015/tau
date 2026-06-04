@@ -17,7 +17,7 @@ use tau_proto::{
     Message,
 };
 
-use super::session_dir_status_from_reason;
+use super::{agent_runtime_state_for_turn, session_dir_status_from_reason};
 use crate::extension::ExtensionState;
 use crate::harness::{Harness, selector_matches_event};
 use crate::model::{
@@ -147,6 +147,32 @@ impl Harness {
             let _ = self
                 .bus
                 .send_to(client_id, None, Frame::Event(session_dir_event));
+        }
+
+        let mut agent_state_events = self
+            .agents
+            .values()
+            .filter(|agent| agent.session_id == self.current_session_id)
+            .filter_map(|agent| {
+                let agent_id = agent.agent_id.as_ref()?;
+                Some(Event::AgentState(tau_proto::AgentStateChanged {
+                    agent_id: agent_id.clone().into(),
+                    state: agent_runtime_state_for_turn(&agent.turn_state),
+                }))
+            })
+            .collect::<Vec<_>>();
+        agent_state_events.sort_by(|left, right| match (left, right) {
+            (Event::AgentState(left), Event::AgentState(right)) => {
+                left.agent_id.as_str().cmp(right.agent_id.as_str())
+            }
+            _ => std::cmp::Ordering::Equal,
+        });
+        for event in agent_state_events {
+            if selector_matches_event(selectors, &event) {
+                let _ = self
+                    .bus
+                    .send_to(client_id, Some("harness"), Frame::Event(event));
+            }
         }
 
         for info in &self.replayable_harness_infos {
