@@ -105,6 +105,8 @@ pub(crate) struct Agent {
     /// routing map can be cleared before teardown needs to hand background
     /// completions back to the parent.
     pub(crate) parent_agent_id: Option<AgentId>,
+    /// Human-friendly name shown in UIs. Falls back to the durable agent id.
+    pub(crate) display_name: Option<String>,
     /// Display name supplied by the parent agent for the delegated
     /// task, surfaced in the UI alongside `parent_tool_call_id`. Only
     /// set when `parent_tool_call_id` is.
@@ -245,6 +247,7 @@ impl Agent {
             turn_state: AgentTurnState::Idle,
             parent_tool_call_id: None,
             parent_agent_id: None,
+            display_name: None,
             task_name: None,
             delegate_input_stats: ToolUseStats::default(),
             role: None,

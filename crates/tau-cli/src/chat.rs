@@ -12,7 +12,7 @@ use tau_harness::SessionLaunchStatus;
 use tau_proto::{
     CborValue, ClientKind, Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter,
     Hello, Message, PROTOCOL_VERSION, Subscribe, UiCreateAgent, UiFocusChanged, UiPromptDraft,
-    UiPromptSubmitted, UnixMicros,
+    UiPromptSubmitted, UiSetAgentDisplayName, UnixMicros,
 };
 
 use crate::action_commands::ActionCommandState;
@@ -657,12 +657,14 @@ pub(crate) fn run_chat(
     let current_role_state = renderer.current_role_state();
     let current_agent_state = renderer.current_agent_state();
     let known_agents = renderer.known_agents();
+    let agent_display_names = renderer.agent_display_names();
     let live_agents = renderer.live_agents();
     let suspended_agents = renderer.suspended_agents();
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/agent"),
         build_agent_arg_completer(
             known_agents.clone(),
+            agent_display_names.clone(),
             live_agents.clone(),
             suspended_agents.clone(),
         ),
@@ -1301,7 +1303,7 @@ impl<'a> TerminalInputSession<'a> {
                 &self.ctx.suspended_agents,
             );
             self.output.system_info(&format!(
-                "/agent <new|switch|suspend|resume> [agent_id]; current: {current}; active: {active_count}; known: {}",
+                "/agent <new|switch|suspend|resume|name> [agent_id]; current: {current}; active: {active_count}; known: {}",
                 known_agents.join(", ")
             ));
             return;
@@ -1312,9 +1314,13 @@ impl<'a> TerminalInputSession<'a> {
             return;
         };
         let target = parts.next();
+        if subcommand == "name" {
+            self.handle_agent_name(rest);
+            return;
+        }
         if parts.next().is_some() {
             self.output.system_info(
-                "/agent: too many arguments (use /agent <new|switch|suspend|resume> [agent_id])",
+                "/agent: too many arguments (use /agent <new|switch|suspend|resume|name> [agent_id])",
             );
             return;
         }
@@ -1324,8 +1330,44 @@ impl<'a> TerminalInputSession<'a> {
             "suspend" => self.handle_agent_suspend(target),
             "resume" => self.handle_agent_resume(target),
             _ => self.output.system_info(
-                "/agent <new|switch|suspend|resume> [agent_id]; use /agent switch <agent_id>",
+                "/agent <new|switch|suspend|resume|name> [agent_id]; use /agent switch <agent_id>",
             ),
+        }
+    }
+
+    fn handle_agent_name(&self, rest: &str) {
+        let Some(rest) = rest.strip_prefix("name") else {
+            self.output
+                .system_info("/agent name <agent_id> <display_name>");
+            return;
+        };
+        let rest = rest.trim();
+        let Some((agent_id, display_name)) = rest.split_once(char::is_whitespace) else {
+            self.output
+                .system_info("/agent name <agent_id> <display_name>");
+            return;
+        };
+        let agent_id = agent_id.trim();
+        let display_name = display_name.trim();
+        if agent_id.is_empty() || display_name.is_empty() {
+            self.output
+                .system_info("/agent name <agent_id> <display_name>");
+            return;
+        }
+        if !self.agent_is_known(agent_id) {
+            self.output
+                .system_info(&format!("unknown agent: {agent_id}"));
+            return;
+        }
+        let event = Event::UiSetAgentDisplayName(UiSetAgentDisplayName {
+            session_id: self.session_id.as_str().into(),
+            agent_id: agent_id.into(),
+            display_name: display_name.to_owned(),
+        });
+        if send_event(self.writer, &event).is_ok() {
+            self.output.system_info(&format!(
+                "requested agent {agent_id} display name set to: {display_name}"
+            ));
         }
     }
 
@@ -1905,13 +1947,14 @@ fn build_session_arg_completer() -> tau_cli_term::ArgCompleter {
 
 fn build_agent_arg_completer(
     known_agents: Arc<Mutex<Vec<String>>>,
+    agent_display_names: Arc<Mutex<HashMap<String, String>>>,
     live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
     suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
     Arc::new(move |args: &[&str]| {
-        let subcommands = ["new", "switch", "suspend", "resume"];
+        let subcommands = ["new", "switch", "suspend", "resume", "name"];
         match args.len() {
             0 | 1 => {
                 let needle = args.first().copied().unwrap_or("").to_lowercase();
@@ -1925,6 +1968,10 @@ fn build_agent_arg_completer(
                 let known = known_agents
                     .lock()
                     .map(|agents| agents.clone())
+                    .unwrap_or_default();
+                let display_names = agent_display_names
+                    .lock()
+                    .map(|names| names.clone())
                     .unwrap_or_default();
                 let live = live_agents
                     .lock()
@@ -1942,7 +1989,13 @@ fn build_agent_arg_completer(
                 agent_completion_candidates(args[0], known, active)
                     .into_iter()
                     .filter(|agent| completion_matches(agent, &needle))
-                    .map(|agent| CompletionItem::new(agent, "agent"))
+                    .map(|agent| {
+                        let description = display_names
+                            .get(&agent)
+                            .cloned()
+                            .unwrap_or_else(|| agent.clone());
+                        CompletionItem::new(agent, description)
+                    })
                     .collect()
             }
             _ => Vec::new(),
@@ -2014,6 +2067,7 @@ fn agent_completion_candidates(
             .into_iter()
             .filter(|agent| !active_agents.contains(agent))
             .collect(),
+        "name" => known_agents,
         _ => Vec::new(),
     }
 }

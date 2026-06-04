@@ -83,6 +83,7 @@ impl Harness {
                 text: prompt.text,
                 message_class: prompt.message_class,
                 originator,
+                display_name: self.agent_display_name_for_cid(agent_id),
                 ctx_id: None,
             }),
         );

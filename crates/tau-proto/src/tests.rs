@@ -154,6 +154,7 @@ fn representative_events() -> Vec<Event> {
             text: "hello".to_owned(),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
+            display_name: None,
             ctx_id: None,
         }),
         Event::AgentCompactionTriggered(AgentCompactionTriggered {
@@ -871,6 +872,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             text: "hi".to_owned(),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
+            display_name: None,
             ctx_id: None,
         }),
         Event::SessionAgentLoaded(SessionAgentLoaded {

@@ -1547,6 +1547,19 @@ pub struct AgentStarted {
     pub agent_id: AgentId,
     /// Agent role used to build prompts for this agent.
     pub role: String,
+    /// Optional human-friendly name for presenting this agent in UIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// Durable fact that updates an agent's human-friendly display name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentDisplayNameSet {
+    /// Agent whose display name changed.
+    pub agent_id: AgentId,
+    /// New human-friendly display name. Empty names are rejected by the
+    /// harness.
+    pub display_name: String,
 }
 
 /// Durable session membership fact: an agent is now loaded in a session.
@@ -1909,6 +1922,17 @@ pub struct UiCreateAgent {
     pub ctx_id: Option<String>,
 }
 
+/// UI request to set a durable agent display name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UiSetAgentDisplayName {
+    /// Session in which the target agent must be loaded or known.
+    pub session_id: SessionId,
+    /// Agent whose display name should be changed.
+    pub agent_id: AgentId,
+    /// New human-friendly display name.
+    pub display_name: String,
+}
+
 /// The user typed `/tree`: render an agent's branching tree (one
 /// `harness.info` line per node) to the chat output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2102,6 +2126,9 @@ pub struct AgentPromptSubmitted {
     /// Who initiated the prompt.
     #[serde(default)]
     pub originator: PromptOriginator,
+    /// Human-friendly display name known when the prompt was submitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// Echo of [`UiPromptSubmitted::ctx_id`] when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctx_id: Option<String>,
@@ -2761,6 +2788,8 @@ pub enum Event {
     UiCancelPrompt(UiCancelPrompt),
     #[serde(rename = "ui.recall_queued_prompt")]
     UiRecallQueuedPrompt(UiRecallQueuedPrompt),
+    #[serde(rename = "ui.set_agent_display_name")]
+    UiSetAgentDisplayName(UiSetAgentDisplayName),
 
     // Term (terminal-output side effects)
     #[serde(rename = "term.osc1337_set_user_var")]
@@ -2797,6 +2826,8 @@ pub enum Event {
     AgentHeadMoved(AgentHeadMoved),
     #[serde(rename = "agent.started")]
     AgentStarted(AgentStarted),
+    #[serde(rename = "agent.display_name_set")]
+    AgentDisplayNameSet(AgentDisplayNameSet),
 
     // Session lifecycle/membership
     #[serde(rename = "session.started")]
@@ -2892,6 +2923,7 @@ impl Event {
             Self::UiCompactRequest(_) => EventName::UI_COMPACT_REQUEST,
             Self::UiCancelPrompt(_) => EventName::UI_CANCEL_PROMPT,
             Self::UiRecallQueuedPrompt(_) => EventName::UI_RECALL_QUEUED_PROMPT,
+            Self::UiSetAgentDisplayName(_) => EventName::UI_SET_AGENT_DISPLAY_NAME,
             Self::Osc1337SetUserVar(_) => EventName::TERM_OSC1337_SET_USER_VAR,
             Self::TermBell(_) => EventName::TERM_BELL,
             Self::ShellCommandProgress(_) => EventName::SHELL_COMMAND_PROGRESS,
@@ -2902,6 +2934,7 @@ impl Event {
             Self::AgentPromptSteered(_) => EventName::AGENT_PROMPT_STEERED,
             Self::AgentCompactionTriggered(_) => EventName::AGENT_COMPACTION_TRIGGERED,
             Self::AgentStarted(_) => EventName::AGENT_STARTED,
+            Self::AgentDisplayNameSet(_) => EventName::AGENT_DISPLAY_NAME_SET,
             Self::SessionStarted(_) => EventName::SESSION_STARTED,
             Self::SessionShutdown(_) => EventName::SESSION_SHUTDOWN,
             Self::SessionAgentLoaded(_) => EventName::SESSION_AGENT_LOADED,
@@ -2945,6 +2978,7 @@ impl Event {
                 | Self::UiCreateAgent(_)
                 | Self::UiPromptDraft(_)
                 | Self::UiFocusChanged(_)
+                | Self::UiSetAgentDisplayName(_)
         )
     }
 }

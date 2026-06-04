@@ -21,6 +21,7 @@ fn user_prompt(text: &str) -> Event {
         text: text.to_owned(),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::default(),
+        display_name: None,
         ctx_id: None,
     })
 }

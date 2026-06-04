@@ -19,7 +19,7 @@
 //! this extension just publishes the user-var change so a UI further
 //! up the stack can forward it to the terminal.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::process::{Command, Stdio};
@@ -102,6 +102,7 @@ fn cwd_parts() -> (String, String) {
 fn template_context<'a>(
     hook: &'a str,
     agent_id: &'a tau_proto::AgentId,
+    agent_name: &'a str,
     user_prompt: &'a str,
     agent_response: &'a str,
     agent_summary: &'a str,
@@ -112,7 +113,7 @@ fn template_context<'a>(
         hook,
         agent: AgentTemplateContext {
             id: agent_id.as_ref(),
-            name: agent_id.as_ref(),
+            name: agent_name,
         },
         host,
         cwd,
@@ -171,6 +172,17 @@ struct PendingIdleHook {
     user_prompt: String,
     agent_response: String,
     state: IdleState,
+}
+
+fn display_name_for_agent(
+    display_names: &HashMap<tau_proto::AgentId, String>,
+    agent_id: &tau_proto::AgentId,
+) -> String {
+    display_names
+        .get(agent_id)
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| agent_id.to_string())
 }
 
 fn response_text(items: &[tau_proto::ContextItem]) -> String {
@@ -333,6 +345,8 @@ where
             tau_proto::EventName::PROVIDER_PROMPT_SUBMITTED,
             tau_proto::EventName::PROVIDER_RESPONSE_FINISHED,
             tau_proto::EventName::AGENT_PROMPT_SUBMITTED,
+            tau_proto::EventName::AGENT_STARTED,
+            tau_proto::EventName::AGENT_DISPLAY_NAME_SET,
             // Trailing-edge debounced typing pings from the UI:
             // bumps the idle deadline so the desktop notification
             // doesn't fire while the user is mid-sentence.
@@ -378,6 +392,7 @@ where
     });
 
     let mut idle: Vec<PendingIdleHook> = Vec::new();
+    let mut agent_display_names: HashMap<tau_proto::AgentId, String> = HashMap::new();
     let mut input_closed = false;
     let mut waiting_for_final_response = false;
     let mut turn_end_emitted = false;
@@ -485,10 +500,36 @@ where
                     continue;
                 }
                 match inner {
+                    Event::AgentStarted(started) => {
+                        if let Some(display_name) = started
+                            .display_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                        {
+                            agent_display_names.insert(started.agent_id, display_name.to_owned());
+                        }
+                    }
+                    Event::AgentDisplayNameSet(name) => {
+                        if let Some(display_name) = (!name.display_name.trim().is_empty())
+                            .then(|| name.display_name.trim().to_owned())
+                        {
+                            agent_display_names.insert(name.agent_id, display_name);
+                        }
+                    }
                     Event::ProviderPromptSubmitted(_submitted) => {
                         idle.clear();
                     }
                     Event::AgentPromptSubmitted(prompt) => {
+                        if let Some(display_name) = prompt
+                            .display_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                        {
+                            agent_display_names
+                                .insert(prompt.agent_id.clone(), display_name.to_owned());
+                        }
                         idle.clear();
                         if prompt.message_class.is_internal() {
                             tracing::trace!(target: LOG_TARGET, "skipping internal prompt submit");
@@ -504,9 +545,12 @@ where
                         }
                         if !waiting_for_final_response {
                             last_user_prompt = prompt.text.clone();
+                            let agent_name =
+                                display_name_for_agent(&agent_display_names, &prompt.agent_id);
                             let ctx = template_context(
                                 "agent-start",
                                 &prompt.agent_id,
+                                &agent_name,
                                 &last_user_prompt,
                                 "",
                                 "",
@@ -570,6 +614,8 @@ where
                         }
                         if active_background_tools.is_empty() {
                             let agent_id = finished.agent_id.clone();
+                            let agent_name =
+                                display_name_for_agent(&agent_display_names, &agent_id);
                             let agent_response = response_text(&finished.output_items);
                             emit_agent_end(
                                 &mut writer,
@@ -579,6 +625,7 @@ where
                                 idle_duration,
                                 &config,
                                 agent_id,
+                                agent_name,
                                 last_user_prompt.clone(),
                                 agent_response,
                             )?;
@@ -619,6 +666,7 @@ where
                                 idle_duration,
                                 &config,
                                 &active_background_tools,
+                                &agent_display_names,
                                 &mut pending_final_response_agent,
                                 &last_user_prompt,
                                 &mut pending_final_response_text,
@@ -640,6 +688,7 @@ where
                                 idle_duration,
                                 &config,
                                 &active_background_tools,
+                                &agent_display_names,
                                 &mut pending_final_response_agent,
                                 &last_user_prompt,
                                 &mut pending_final_response_text,
@@ -674,10 +723,13 @@ where
                             } else {
                                 result.text.trim().to_owned()
                             };
+                            let agent_name =
+                                display_name_for_agent(&agent_display_names, &pending.agent_id);
                             emit_idle_hook(
                                 &mut writer,
                                 hook,
                                 &pending.agent_id,
+                                &agent_name,
                                 &pending.user_prompt,
                                 &pending.agent_response,
                                 &agent_summary,
@@ -736,10 +788,13 @@ where
                                 target: LOG_TARGET,
                                 "idle deadline elapsed, emitting static notification",
                             );
+                            let agent_name =
+                                display_name_for_agent(&agent_display_names, &pending.agent_id);
                             emit_idle_hook(
                                 &mut writer,
                                 hook,
                                 &pending.agent_id,
+                                &agent_name,
                                 &pending.user_prompt,
                                 &pending.agent_response,
                                 "",
@@ -750,10 +805,13 @@ where
                                 target: LOG_TARGET,
                                 "summary timed out, falling back to static notification",
                             );
+                            let agent_name =
+                                display_name_for_agent(&agent_display_names, &pending.agent_id);
                             emit_idle_hook(
                                 &mut writer,
                                 hook,
                                 &pending.agent_id,
+                                &agent_name,
                                 &pending.user_prompt,
                                 &pending.agent_response,
                                 "",
@@ -786,10 +844,18 @@ fn emit_agent_end<W: Write>(
     default_idle_duration: Duration,
     config: &ExtConfig,
     agent_id: tau_proto::AgentId,
+    agent_name: String,
     user_prompt: String,
     agent_response: String,
 ) -> Result<(), Box<dyn Error>> {
-    let ctx = template_context("agent-end", &agent_id, &user_prompt, &agent_response, "");
+    let ctx = template_context(
+        "agent-end",
+        &agent_id,
+        &agent_name,
+        &user_prompt,
+        &agent_response,
+        "",
+    );
     emit_hooks(writer, &config.agent_end, &ctx)?;
     *waiting_for_final_response = false;
     *turn_end_emitted = true;
@@ -814,6 +880,7 @@ fn maybe_emit_deferred_agent_end<W: Write>(
     default_idle_duration: Duration,
     config: &ExtConfig,
     active_background_tools: &HashSet<tau_proto::ToolCallId>,
+    agent_display_names: &HashMap<tau_proto::AgentId, String>,
     pending_agent_id: &mut Option<tau_proto::AgentId>,
     user_prompt: &str,
     pending_response: &mut String,
@@ -821,6 +888,7 @@ fn maybe_emit_deferred_agent_end<W: Write>(
     if *final_response_pending_background_tools && active_background_tools.is_empty() {
         *final_response_pending_background_tools = false;
         let agent_id = pending_agent_id.take().unwrap_or_default();
+        let agent_name = display_name_for_agent(agent_display_names, &agent_id);
         let agent_response = std::mem::take(pending_response);
         emit_agent_end(
             writer,
@@ -830,6 +898,7 @@ fn maybe_emit_deferred_agent_end<W: Write>(
             default_idle_duration,
             config,
             agent_id,
+            agent_name,
             user_prompt.to_owned(),
             agent_response,
         )?;
@@ -919,6 +988,7 @@ fn validate_hook(name: &str, hook: &HookConfig) -> Result<(), String> {
     let ctx = template_context(
         name,
         &agent_id,
+        "Agent",
         "user prompt",
         "agent response",
         "agent summary",
@@ -968,6 +1038,7 @@ fn emit_idle_hook<W: Write>(
     writer: &mut FrameWriter<BufWriter<W>>,
     hook: &IdleHookConfig,
     agent_id: &tau_proto::AgentId,
+    agent_name: &str,
     user_prompt: &str,
     agent_response: &str,
     agent_summary: &str,
@@ -975,6 +1046,7 @@ fn emit_idle_hook<W: Write>(
     let ctx = template_context(
         "agent-idle",
         agent_id,
+        agent_name,
         user_prompt,
         agent_response,
         agent_summary,

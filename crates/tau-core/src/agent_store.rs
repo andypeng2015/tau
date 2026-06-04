@@ -577,10 +577,26 @@ fn touch_meta_for_event(path: &Path, event: &Event) -> Result<(), AgentStoreErro
         meta.created_at = now;
     }
     meta.last_touched = now;
+    if let Some(display_name) = display_name_for_event(event).and_then(normalize_display_name) {
+        meta.display_name = Some(display_name);
+    }
     if let Some(text) = user_prompt_text(event) {
         meta.latest_user_prompt_preview = Some(preview_text(text, 48));
     }
     write_meta(path, &meta)
+}
+
+fn normalize_display_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn display_name_for_event(event: &Event) -> Option<&str> {
+    match event {
+        Event::AgentStarted(started) => started.display_name.as_deref(),
+        Event::AgentDisplayNameSet(name) => Some(&name.display_name),
+        _ => None,
+    }
 }
 
 fn user_prompt_text(event: &Event) -> Option<&str> {

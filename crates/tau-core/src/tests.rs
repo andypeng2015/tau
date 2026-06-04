@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use tau_proto::{
-    AgentHeadMoved, AgentId, AgentPromptSubmitted, Event, PromptMessageClass, PromptOriginator,
-    SessionAgentLoaded, SessionAgentUnloaded, SessionId,
+    AgentDisplayNameSet, AgentHeadMoved, AgentId, AgentPromptSubmitted, Event, PromptMessageClass,
+    PromptOriginator, SessionAgentLoaded, SessionAgentUnloaded, SessionId,
 };
 
 use crate::{
@@ -45,8 +45,31 @@ fn agent_prompt(agent_id: &str, text: &str) -> Event {
         text: text.to_owned(),
         message_class: PromptMessageClass::User,
         originator: PromptOriginator::User,
+        display_name: None,
         ctx_id: None,
     })
+}
+
+#[test]
+fn agent_store_rejects_empty_display_name() {
+    // Display names are user-visible labels. Blank durable updates must not
+    // suppress the id fallback in UIs or extensions.
+    let agents_dir = temp_dir("empty-display-name");
+    let mut store = AgentStore::open(&agents_dir).expect("open agent store");
+
+    let error = store
+        .append_agent_event(
+            "agent-1",
+            None,
+            Event::AgentDisplayNameSet(AgentDisplayNameSet {
+                agent_id: "agent-1".into(),
+                display_name: "   ".to_owned(),
+            }),
+        )
+        .expect_err("blank display names are invalid");
+
+    assert!(matches!(error, AgentStoreError::InvalidEvent { .. }));
+    let _ = std::fs::remove_dir_all(agents_dir);
 }
 
 #[test]

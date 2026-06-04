@@ -225,6 +225,7 @@ pub struct AgentTree {
     pub(crate) agent_id: AgentId,
     pub(crate) nodes: Vec<AgentNode>,
     pub(crate) head: Option<NodeId>,
+    pub(crate) display_name: Option<String>,
     /// Sequence the next durable event appended to this agent's log
     /// should receive. Cached here so that
     /// [`AgentStore::append_agent_event_at`] doesn't have to
@@ -234,6 +235,13 @@ pub struct AgentTree {
     pub(crate) next_event_seq: PersistedAgentEventSeq,
     pending_tool_rounds: HashMap<NodeId, PendingToolRound>,
     tool_call_rounds: HashMap<ToolCallId, NodeId>,
+}
+
+fn normalize_display_name(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 impl AgentTree {
@@ -251,6 +259,12 @@ impl AgentTree {
     #[must_use]
     pub fn head(&self) -> Option<NodeId> {
         self.head
+    }
+
+    /// Returns the current human-friendly display name, if one was set.
+    #[must_use]
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
     }
 
     /// Returns a node by id.
@@ -514,6 +528,7 @@ impl AgentTree {
             agent_id,
             nodes: Vec::new(),
             head: None,
+            display_name: None,
             next_event_seq: PersistedAgentEventSeq::new(0),
             pending_tool_rounds: HashMap::new(),
             tool_call_rounds: HashMap::new(),
@@ -568,6 +583,19 @@ impl AgentTree {
     pub fn apply_event_at(&mut self, parent: AgentEventParent, event: &Event) -> Option<NodeId> {
         let parent = parent.resolve(self.head);
         match event {
+            Event::AgentStarted(started) => {
+                if let Some(display_name) = normalize_display_name(started.display_name.as_deref())
+                {
+                    self.display_name = Some(display_name);
+                }
+                None
+            }
+            Event::AgentDisplayNameSet(name) => {
+                if let Some(display_name) = normalize_display_name(Some(&name.display_name)) {
+                    self.display_name = Some(display_name);
+                }
+                None
+            }
             Event::AgentPromptSubmitted(prompt) => Some(self.append_node_at(
                 parent,
                 AgentEntry::UserInput {
@@ -748,7 +776,28 @@ impl AgentTree {
     /// appending it to the durable log.
     pub fn validate_event(&self, event: &Event) -> Result<(), AgentEventValidationError> {
         match event {
-            Event::AgentStarted(started) if started.agent_id == self.agent_id => Ok(()),
+            Event::AgentStarted(started) if started.agent_id == self.agent_id => {
+                if started
+                    .display_name
+                    .as_deref()
+                    .is_some_and(|name| name.trim().is_empty())
+                {
+                    Err(AgentEventValidationError::new(
+                        "agent display name must not be empty",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            Event::AgentDisplayNameSet(name) if name.agent_id == self.agent_id => {
+                if name.display_name.trim().is_empty() {
+                    Err(AgentEventValidationError::new(
+                        "agent display name must not be empty",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
             Event::AgentPromptSubmitted(prompt) if prompt.agent_id == self.agent_id => Ok(()),
             Event::AgentUserMessageInjected(injected) if injected.agent_id == self.agent_id => {
                 Ok(())
@@ -785,6 +834,7 @@ impl AgentTree {
             Event::ToolBackgroundResult(result) => self.validate_known_tool_call(&result.call_id),
             Event::ToolBackgroundError(error) => self.validate_known_tool_call(&error.call_id),
             Event::AgentStarted(_)
+            | Event::AgentDisplayNameSet(_)
             | Event::AgentPromptSubmitted(_)
             | Event::AgentUserMessageInjected(_)
             | Event::AgentPromptSteered(_)
@@ -964,6 +1014,9 @@ pub struct AgentMeta {
     pub created_at: u64,
     /// Unix epoch seconds of the most recent append.
     pub last_touched: u64,
+    /// Optional human-friendly name shown in UIs. Falls back to the agent id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// Preview of the latest user-authored prompt, used by the resume picker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_user_prompt_preview: Option<String>,

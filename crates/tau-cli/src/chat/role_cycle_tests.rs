@@ -6,6 +6,7 @@ fn agent_completer_offers_subcommands_first() {
     // to the concrete action instead of switching immediately.
     let completer = build_agent_arg_completer(
         Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(Default::default())),
         Arc::new(Mutex::new(Default::default())),
     );
@@ -13,7 +14,7 @@ fn agent_completer_offers_subcommands_first() {
     let completions = completer(&[""]);
 
     let values: Vec<_> = completions.iter().map(|item| item.value.as_str()).collect();
-    assert_eq!(values, vec!["new", "switch", "suspend", "resume"]);
+    assert_eq!(values, vec!["new", "switch", "suspend", "resume", "name"]);
 }
 
 #[test]
@@ -36,6 +37,7 @@ fn agent_new_takes_no_agent_id_completion() {
     // accept an agent-id argument like switch/suspend/resume do.
     let completer = build_agent_arg_completer(
         Arc::new(Mutex::new(vec!["worker".to_owned()])),
+        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(std::collections::HashSet::from([
             "worker".to_owned()
         ]))),
@@ -105,7 +107,8 @@ fn agent_completer_filters_active_and_suspended_agents() {
     let suspended = Arc::new(Mutex::new(std::collections::HashSet::from([
         "helper".to_owned()
     ])));
-    let completer = build_agent_arg_completer(known, live, suspended);
+    let completer =
+        build_agent_arg_completer(known, Arc::new(Mutex::new(HashMap::new())), live, suspended);
 
     let switch_values: Vec<_> = completer(&["switch", ""])
         .into_iter()
@@ -123,6 +126,27 @@ fn agent_completer_filters_active_and_suspended_agents() {
     assert_eq!(switch_values, vec!["none", "worker"]);
     assert_eq!(suspend_values, vec!["worker"]);
     assert_eq!(resume_values, vec!["helper"]);
+}
+
+#[test]
+fn agent_completer_uses_display_names_as_descriptions() {
+    // `/agent ... <agent_id>` keeps ids as values but shows the durable
+    // display name in the completion description so long names remain visible.
+    let known = Arc::new(Mutex::new(vec!["worker".to_owned()]));
+    let names = Arc::new(Mutex::new(HashMap::from([(
+        "worker".to_owned(),
+        "Investigate worker".to_owned(),
+    )])));
+    let live = Arc::new(Mutex::new(std::collections::HashSet::from([
+        "worker".to_owned()
+    ])));
+    let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let completer = build_agent_arg_completer(known, names, live, suspended);
+
+    let completions = completer(&["switch", "worker"]);
+
+    assert_eq!(completions[0].value, "worker");
+    assert_eq!(completions[0].description, "Investigate worker");
 }
 
 fn groups() -> Vec<tau_proto::HarnessRoleGroup> {

@@ -587,6 +587,13 @@ pub(crate) struct PendingTool {
 const AGENT_ID_MIN_SUFFIX_NIBBLES: usize = 1;
 const AGENT_ID_MAX_SUFFIX_NIBBLES: usize = 8;
 
+fn normalize_display_name(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn random_agent_id_suffix_search_start(candidate_count: u64) -> u64 {
     use rand::RngCore as _;
 
@@ -2541,9 +2548,17 @@ impl Harness {
         })
     }
 
+    pub(crate) fn agent_display_name_for_cid(&self, cid: &AgentId) -> Option<String> {
+        self.agents.get(cid).and_then(|conv| {
+            normalize_display_name(conv.display_name.as_deref())
+                .or_else(|| conv.agent_id.as_ref().cloned())
+        })
+    }
+
     fn agent_id_for_event(&self, event: &Event) -> Option<tau_proto::AgentId> {
         match event {
             Event::AgentStarted(started) => Some(started.agent_id.clone()),
+            Event::AgentDisplayNameSet(name) => Some(name.agent_id.clone()),
             Event::AgentPromptSubmitted(prompt) => Some(prompt.agent_id.clone()),
             Event::AgentPromptSteered(prompt) => Some(prompt.agent_id.clone()),
             Event::AgentCompactionTriggered(triggered) => Some(triggered.agent_id.clone()),
@@ -2604,6 +2619,8 @@ impl Harness {
             Event::UiNavigateTree(req) => Some(req.session_id.clone()),
             Event::UiCompactRequest(req) => Some(req.session_id.clone()),
             Event::UiCancelPrompt(req) => Some(req.session_id.clone()),
+            Event::UiRecallQueuedPrompt(req) => Some(req.session_id.clone()),
+            Event::UiSetAgentDisplayName(req) => Some(req.session_id.clone()),
             _ => None,
         }
     }
@@ -3887,6 +3904,7 @@ impl Harness {
             }
             Event::UiSwitchSession(req) => self.handle_ui_switch_session(client_id, req),
             Event::UiCreateAgent(req) => self.handle_ui_create_agent(req),
+            Event::UiSetAgentDisplayName(req) => self.handle_ui_set_agent_display_name(req),
             Event::UiTreeRequest(req) => self.handle_ui_tree_request(client_id, req),
             Event::UiNavigateTree(req) => self.handle_ui_navigate_tree(client_id, req),
             Event::UiCompactRequest(req) => self.handle_ui_compact_request(client_id, req),
@@ -4034,6 +4052,41 @@ impl Harness {
         if matches!(submission, PromptSubmission::Queued) && !prompt.message_class.is_internal() {
             self.interrupt_active_waits();
         }
+        Ok(true)
+    }
+
+    fn handle_ui_set_agent_display_name(
+        &mut self,
+        req: tau_proto::UiSetAgentDisplayName,
+    ) -> Result<bool, HarnessError> {
+        if req.session_id != self.current_session_id {
+            self.emit_info(&format!(
+                "harness is bound to session `{}`; agent-name request for `{}` rejected",
+                self.current_session_id.as_str(),
+                req.session_id.as_str()
+            ));
+            return Ok(true);
+        }
+        let display_name = normalize_display_name(Some(&req.display_name));
+        let Some(display_name) = display_name else {
+            self.emit_info("agent display name must not be empty");
+            return Ok(true);
+        };
+        let agent_id = req.agent_id.to_string();
+        let Some(cid) = self.agent_routes.get(&agent_id).cloned() else {
+            self.emit_info(&format!("unknown agent: {agent_id}"));
+            return Ok(true);
+        };
+        if let Some(conv) = self.agents.get_mut(&cid) {
+            conv.display_name = Some(display_name.clone());
+        }
+        self.publish_for_agent(
+            &cid,
+            Event::AgentDisplayNameSet(tau_proto::AgentDisplayNameSet {
+                agent_id: req.agent_id,
+                display_name,
+            }),
+        );
         Ok(true)
     }
 
@@ -5669,6 +5722,7 @@ impl Harness {
         let parent_call_id = query.tool_call_id.clone();
         let is_tool_backed = parent_call_id.is_some();
         let task_name = query.task_name.clone();
+        let display_name = normalize_display_name(task_name.as_deref());
         let conversation_role = if query.tool_call_id.is_some() || query.role.is_some() {
             Some(role)
         } else {
@@ -5705,6 +5759,7 @@ impl Harness {
         // that tool block via `DelegateProgress`.
         conv.parent_tool_call_id = parent_call_id;
         conv.parent_agent_id = parent_agent_id;
+        conv.display_name = display_name;
         conv.task_name = task_name;
         conv.delegate_input_stats = query.input_stats;
         conv.role = conversation_role;
@@ -5713,6 +5768,19 @@ impl Harness {
         self.agent_routes.insert(agent_id.clone(), cid.clone());
         self.agents.insert(cid.clone(), conv);
         self.ensure_loaded_agent_for_agent(&cid, &agent_id);
+        if let Some(display_name) = self
+            .agents
+            .get(&cid)
+            .and_then(|conv| normalize_display_name(conv.display_name.as_deref()))
+        {
+            self.publish_for_agent(
+                &cid,
+                Event::AgentDisplayNameSet(tau_proto::AgentDisplayNameSet {
+                    agent_id: agent_id.clone().into(),
+                    display_name,
+                }),
+            );
+        }
         if is_tool_backed {
             self.set_agent_state(&agent_id, AgentState::ActiveDelegated);
         }
@@ -7170,17 +7238,26 @@ impl Harness {
                         .and_then(|tree| tree.head())
                 });
             let cid: AgentId = agent_id_string.clone().into();
-            if let Ok(Some(meta)) = self.agent_store.agent_meta(agent_id.as_str())
-                && let Some(cwd) = meta.cwd
-            {
+            let meta = self
+                .agent_store
+                .agent_meta(agent_id.as_str())
+                .ok()
+                .flatten();
+            if let Some(cwd) = meta.as_ref().and_then(|meta| meta.cwd.clone()) {
                 self.agent_working_directories.insert(agent_id.clone(), cwd);
             }
+            let display_name = self
+                .agent_store
+                .agent(agent_id.as_str())
+                .and_then(|tree| tree.display_name().map(str::to_owned))
+                .or_else(|| meta.and_then(|meta| meta.display_name));
             let role = self.agent_role_from_log(agent_id.as_str());
             let originator = self.agent_originator_from_log(agent_id.as_str());
             if let Some(conv) = self.agents.get_mut(&cid) {
                 conv.agent_id = Some(agent_id_string.clone());
                 conv.head = head;
                 conv.role = role.clone();
+                conv.display_name = display_name.clone();
             } else {
                 let mut conv = Agent::new(
                     cid.clone(),
@@ -7191,6 +7268,7 @@ impl Harness {
                 );
                 conv.agent_id = Some(agent_id_string.clone());
                 conv.role = role.clone();
+                conv.display_name = display_name.clone();
                 self.agents.insert(cid.clone(), conv);
             }
             self.agent_routes.insert(agent_id_string.clone(), cid);
@@ -7350,16 +7428,22 @@ impl Harness {
                     .insert(agent_id_proto.clone(), waiting_on);
             }
             if let Some(role) = role.as_deref() {
+                let started = Event::AgentStarted(tau_proto::AgentStarted {
+                    agent_id: agent_id_proto.clone(),
+                    role: role.to_owned(),
+                    display_name: self
+                        .agents
+                        .get(cid)
+                        .and_then(|conv| normalize_display_name(conv.display_name.as_deref())),
+                });
                 let _ = self.agent_store.append_agent_event_at(
                     agent_id,
                     None,
                     tau_core::AgentEventParent::Root,
-                    Event::AgentStarted(tau_proto::AgentStarted {
-                        agent_id: agent_id_proto.clone(),
-                        role: role.to_owned(),
-                    }),
+                    started.clone(),
                     tau_proto::UnixMicros::now(),
                 );
+                self.enqueue_publish(None, started, true, false, None);
             }
             self.publish_event(
                 None,
@@ -9119,6 +9203,7 @@ impl Harness {
                 text: user_message.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
+                display_name: None,
                 ctx_id: None,
             }),
         );

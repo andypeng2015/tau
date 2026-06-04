@@ -246,6 +246,7 @@ fn user_prompt_submitted(
         text: text.into(),
         message_class: tau_proto::PromptMessageClass::User,
         originator,
+        display_name: None,
         ctx_id: None,
     })
 }
@@ -423,10 +424,14 @@ fn agent_start_hook_renders_multiple_configured_actions() {
         }))))
         .expect("write config");
     writer
-        .write_event(&user_prompt_submitted(
-            "hello",
-            tau_proto::PromptOriginator::User,
-        ))
+        .write_event(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
+            agent_id: "main".into(),
+            text: "hello".to_owned(),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            display_name: Some("Friendly main".to_owned()),
+            ctx_id: None,
+        }))
         .expect("write prompt");
     writer.write_frame(&disconnect_frame(None)).expect("write");
     writer.flush().expect("flush");
@@ -443,11 +448,59 @@ fn agent_start_hook_renders_multiple_configured_actions() {
     match osc {
         Event::Osc1337SetUserVar(osc) => {
             assert_eq!(osc.name, "agent-main");
-            assert_eq!(osc.value, "agent-start:main");
+            assert_eq!(osc.value, "agent-start:Friendly main");
         }
         other => panic!("expected Osc1337SetUserVar, got {other:?}"),
     }
 }
+#[test]
+fn agent_start_hook_uses_display_name_set_with_id_fallback_for_blank_prompt_name() {
+    let mut input = Vec::new();
+    let mut writer = EventWriter::new(&mut input);
+    writer
+        .write_frame(&configure_frame(tau_proto::json_to_cbor(
+            &serde_json::json!({
+                "agent-start": [
+                    { "osc1337": { "key": "agent", "value": "{{agent.name}}" } },
+                ],
+                "agent-end": [],
+                "agent-idle": [],
+            }),
+        )))
+        .expect("write config");
+    writer
+        .write_event(&Event::AgentDisplayNameSet(
+            tau_proto::AgentDisplayNameSet {
+                agent_id: "main".into(),
+                display_name: "Renamed main".to_owned(),
+            },
+        ))
+        .expect("write name");
+    writer
+        .write_event(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
+            agent_id: "main".into(),
+            text: "hello".to_owned(),
+            message_class: tau_proto::PromptMessageClass::User,
+            originator: tau_proto::PromptOriginator::User,
+            display_name: Some("   ".to_owned()),
+            ctx_id: None,
+        }))
+        .expect("write prompt");
+    writer.write_frame(&disconnect_frame(None)).expect("write");
+    writer.flush().expect("flush");
+
+    let mut output = Vec::new();
+    run_with_idle(Cursor::new(input), &mut output, Duration::from_secs(3600)).expect("run");
+
+    let mut reader = EventReader::new(Cursor::new(output));
+    drain_lifecycle(&mut reader);
+    let osc = reader.read_event().expect("read").expect("osc");
+    match osc {
+        Event::Osc1337SetUserVar(osc) => assert_eq!(osc.value, "Renamed main"),
+        other => panic!("expected Osc1337SetUserVar, got {other:?}"),
+    }
+}
+
 /// Mid-turn `ProviderResponseFinished` events (those carrying
 /// pending tool calls) must NOT trigger the end-of-turn sound.
 /// The agent emits one of those per LLM call when it's looping

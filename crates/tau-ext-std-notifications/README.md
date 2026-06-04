@@ -117,8 +117,9 @@ effects. Each item must set at least one action and supports:
 
 The `command`, `key`, and `value` strings are Handlebars templates in
 strict mode. Current variables include `hook`, `agent.id`, `agent.name`
-(currently the id), `host`, `cwd`, `cwd_basename`, `turn.user_prompt`,
-`turn.agent_response`, and `turn.agent_summary` (set only for idle hooks with
+(the durable display name, falling back to the id), `host`, `cwd`,
+`cwd_basename`, `turn.user_prompt`, `turn.agent_response`, and
+`turn.agent_summary` (set only for idle hooks with
 `agent_summary: true`, empty on timeout/error).
 
 ### Bell-only completion example

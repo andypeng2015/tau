@@ -50,6 +50,8 @@ pub(crate) struct EventRenderer {
     agents_ui_state: HashMap<String, AgentUiState>,
     /// Agent ids known to the UI for `/agent` completion.
     known_agents: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Human-friendly display names keyed by agent id.
+    agent_display_names: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
     /// Agent ids that the harness has announced as live.
     live_agents: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     /// Agent ids locally hidden from active prompt targets until explicitly
@@ -934,6 +936,7 @@ impl EventRenderer {
             no_agent_ui_state: AgentUiState::default(),
             agents_ui_state: HashMap::new(),
             known_agents: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            agent_display_names: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             live_agents: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             suspended_agents: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
             query_agents: HashMap::new(),
@@ -1013,6 +1016,12 @@ impl EventRenderer {
 
     pub(crate) fn known_agents(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         self.known_agents.clone()
+    }
+
+    pub(crate) fn agent_display_names(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> {
+        self.agent_display_names.clone()
     }
 
     pub(crate) fn live_agents(&self) -> std::sync::Arc<std::sync::Mutex<HashSet<String>>> {
@@ -1175,12 +1184,32 @@ impl EventRenderer {
         self.agent_activity = state.agent_activity;
     }
 
+    fn agent_display_label(&self, agent_id: &str) -> String {
+        self.agent_display_names
+            .lock()
+            .ok()
+            .and_then(|names| names.get(agent_id).cloned())
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty() && name != agent_id)
+            .map(|name| format!("{agent_id} ({name})"))
+            .unwrap_or_else(|| agent_id.to_owned())
+    }
+
     fn remember_agent(&mut self, agent_id: String) {
         if let Ok(mut agents) = self.known_agents.lock()
             && !agents.iter().any(|known| known == &agent_id)
         {
             agents.push(agent_id);
             agents.sort();
+        }
+    }
+
+    fn remember_agent_display_name(&mut self, agent_id: &str, display_name: &str) {
+        if let Ok(mut names) = self.agent_display_names.lock() {
+            let display_name = display_name.trim();
+            if !display_name.is_empty() {
+                names.insert(agent_id.to_owned(), display_name.to_owned());
+            }
         }
     }
 
@@ -1786,7 +1815,7 @@ impl EventRenderer {
                 &mut themed,
                 role_style,
                 &mut needs_space,
-                format!("@{agent_id}"),
+                format!("@{}", self.agent_display_label(agent_id)),
             ),
             (None, Some(role), _) => push_status_chip(
                 &mut themed,
@@ -2425,9 +2454,35 @@ impl EventRenderer {
                 let agent_id = accepted.agent_id.to_string();
                 self.query_agents
                     .insert(accepted.query_id.clone(), agent_id.clone());
-                self.remember_agent(agent_id);
+                self.mark_agent_live(agent_id);
             }
-            Event::StartAgentResult(_) => {}
+            Event::AgentStarted(started) => {
+                let agent_id = started.agent_id.to_string();
+                self.remember_agent(agent_id.clone());
+                if let Some(display_name) = started.display_name.as_ref() {
+                    self.remember_agent_display_name(&agent_id, display_name);
+                }
+            }
+            Event::AgentDisplayNameSet(name) => {
+                let agent_id = name.agent_id.to_string();
+                self.remember_agent(agent_id.clone());
+                self.remember_agent_display_name(&agent_id, &name.display_name);
+                if self.current_agent_id.as_deref() == Some(agent_id.as_str()) {
+                    self.render_model_status_if_present();
+                }
+            }
+            Event::StartAgentResult(result) => {
+                if let Some(agent_id) = self.query_agents.get(&result.query_id).cloned() {
+                    self.mark_agent_suspended(&agent_id);
+                }
+            }
+            Event::ToolDelegateProgress(progress) => {
+                if let Some(agent_id) = progress.agent_id.as_deref() {
+                    self.remember_agent(agent_id.to_owned());
+                    self.remember_agent_display_name(agent_id, &progress.task_name);
+                    self.mark_agent_live(agent_id.to_owned());
+                }
+            }
             Event::UiPromptSubmitted(prompt) => {
                 let agent_id = prompt.agent_id.to_string();
                 if prompt.originator.is_user() {
@@ -2466,11 +2521,7 @@ impl EventRenderer {
             }
             Event::AgentPromptSubmitted(prompt) => {
                 let agent_id = prompt.agent_id.to_string();
-                if prompt.originator.is_user() {
-                    self.mark_agent_live(agent_id.clone());
-                } else {
-                    self.remember_agent(agent_id.clone());
-                }
+                self.mark_agent_live(agent_id.clone());
                 if let tau_proto::PromptOriginator::Extension { query_id, .. } = &prompt.originator
                 {
                     self.query_agents.insert(query_id.clone(), agent_id);
@@ -2486,26 +2537,39 @@ impl EventRenderer {
             }
             Event::AgentPromptCreated(prompt) => {
                 let agent_id = prompt.agent_id.to_string();
-                self.remember_agent(agent_id.clone());
-                if prompt.originator.is_user() {
-                    self.mark_agent_live(agent_id.clone());
-                }
+                self.mark_agent_live(agent_id.clone());
                 self.prompt_agents
                     .insert(prompt.agent_prompt_id.to_string(), agent_id);
             }
             Event::ProviderResponseFinished(finished) => {
                 let agent_id = finished.agent_id.to_string();
-                if finished.originator.is_user() {
+                let requested_tools = tool_calls_from_output_items(&finished.output_items);
+                if finished.originator.is_user()
+                    || (finished.error.is_none()
+                        && (finished.stop_reason == tau_proto::ProviderStopReason::ToolCalls
+                            || !requested_tools.is_empty()))
+                {
                     self.mark_agent_live(agent_id.clone());
                 } else {
-                    self.remember_agent(agent_id.clone());
+                    self.mark_agent_suspended(&agent_id);
                 }
                 self.prompt_agents
                     .insert(finished.agent_prompt_id.to_string(), agent_id.clone());
-                for call in tool_calls_from_output_items(&finished.output_items) {
+                for call in requested_tools {
                     self.tool_agents
                         .insert(call.call_id.to_string(), agent_id.clone());
                 }
+            }
+            Event::AgentPromptTerminated(terminated) => {
+                let agent_id = terminated.agent_id.to_string();
+                if terminated.originator.is_user() {
+                    self.mark_agent_live(agent_id);
+                } else {
+                    self.mark_agent_suspended(&agent_id);
+                }
+            }
+            Event::SessionAgentUnloaded(unloaded) => {
+                self.mark_agent_suspended(unloaded.agent_id.as_str());
             }
             Event::HarnessAgentContextUsageChanged(changed) => {
                 self.remember_agent(changed.agent_id.to_string());
@@ -2560,6 +2624,8 @@ impl EventRenderer {
             }
             Event::AgentMessageSent(message) => Some(message.sender_id.to_string()),
             Event::AgentMessageReceived(message) => Some(message.recipient_id.to_string()),
+            Event::AgentStarted(started) => Some(started.agent_id.to_string()),
+            Event::AgentDisplayNameSet(name) => Some(name.agent_id.to_string()),
             Event::UiPromptSubmitted(prompt) => Some(prompt.agent_id.to_string()),
             Event::AgentPromptSubmitted(prompt) => Some(prompt.agent_id.to_string()),
             Event::AgentPromptQueued(queued) => Some(queued.agent_id.to_string()),

@@ -69,7 +69,7 @@ Template variables:
 
 - `hook` — hook currently firing: `agent-start`, `agent-end`, or `agent-idle`.
 - `agent.id` — durable Tau agent id for the main conversation.
-- `agent.name` — current display name for the agent; currently the same value as `agent.id`.
+- `agent.name` — current display name for the agent, falling back to `agent.id` when unset.
 - `host` — hostname observed by the extension process.
 - `cwd` — current working directory observed by the extension process.
 - `cwd_basename` — final path component of `cwd`.

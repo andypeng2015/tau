@@ -358,7 +358,9 @@ fn should_replay_agent_event_to_late_subscriber(event: &Event) -> bool {
     // agent-owned user/assistant/tool facts needed to reconstruct transcript UI.
     matches!(
         event,
-        Event::AgentPromptSubmitted(_)
+        Event::AgentStarted(_)
+            | Event::AgentDisplayNameSet(_)
+            | Event::AgentPromptSubmitted(_)
             | Event::AgentPromptSteered(_)
             | Event::AgentUserMessageInjected(_)
             | Event::AgentCompactionTriggered(_)

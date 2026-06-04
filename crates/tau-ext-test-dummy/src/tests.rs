@@ -199,6 +199,7 @@ fn intercepted_prompt(text: &str) -> Frame {
                 text: text.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
+                display_name: None,
                 ctx_id: None,
             },
         )),

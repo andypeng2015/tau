@@ -203,6 +203,7 @@ fn resume_ignores_later_side_queued_or_steered_default_agent_candidates() {
                     text: "default prompt".to_owned(),
                     message_class: tau_proto::PromptMessageClass::User,
                     originator: tau_proto::PromptOriginator::User,
+                    display_name: None,
                     ctx_id: None,
                 }),
             )
@@ -458,6 +459,7 @@ fn seed_prior_user_message_at(state_dir: &Path, text: &str, recorded_at: tau_pro
                 text: text.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
+                display_name: None,
                 ctx_id: None,
             }),
             recorded_at,
@@ -543,6 +545,7 @@ fn seed_background_placeholder(state_dir: &Path, call_id: &str, tool_name: &str)
                 text: format!("run {tool_name}"),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
+                display_name: None,
                 ctx_id: None,
             }),
         )
@@ -4479,6 +4482,7 @@ fn start_background_tool_and_finish_placeholder_turn(
             text: format!("run {tool_name}"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
+            display_name: None,
             ctx_id: None,
         }),
     );
@@ -7476,6 +7480,15 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     .expect("main response");
 
     let sink = collect_event_sink(&mut h);
+    h.bus
+        .set_subscriptions(
+            "test-delegate-progress-sink",
+            vec![
+                tau_proto::EventSelector::Exact(tau_proto::EventName::TOOL_DELEGATE_PROGRESS),
+                tau_proto::EventSelector::Exact(tau_proto::EventName::AGENT_DISPLAY_NAME_SET),
+            ],
+        )
+        .expect("subscribe display names");
     let input_stats = tau_proto::ToolUseStats::for_text("prompt\nbody");
     h.handle_start_agent_request(
         "conn-delegate",
@@ -7496,6 +7509,19 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("initial DelegateProgress on side conv spawn");
     assert_eq!(initial.task_name, "look it up");
     assert!(initial.agent_id.is_some());
+    let side_agent_id = initial.agent_id.as_deref().expect("side agent id");
+    let side_events = h
+        .agent_store
+        .agent_events(side_agent_id)
+        .expect("side agent events");
+    assert!(side_events.iter().any(|record| matches!(
+        &record.event,
+        Event::AgentDisplayNameSet(name) if name.display_name == "look it up"
+    )));
+    assert!(sink.lock().expect("sink").iter().any(|routed| matches!(
+        peel_inner_event(&routed.frame),
+        Some(Event::AgentDisplayNameSet(name)) if name.display_name == "look it up"
+    )));
     assert_eq!(initial.role.as_deref(), Some("senior-engineer"));
     assert_eq!(initial.tools_in_flight, 0);
     assert_eq!(initial.tools_total, 0);

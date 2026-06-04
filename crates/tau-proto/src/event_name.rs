@@ -282,6 +282,8 @@ impl EventName {
     pub const UI_CANCEL_PROMPT: Self = Self::from_static(EventCategory::Ui, "cancel_prompt");
     pub const UI_RECALL_QUEUED_PROMPT: Self =
         Self::from_static(EventCategory::Ui, "recall_queued_prompt");
+    pub const UI_SET_AGENT_DISPLAY_NAME: Self =
+        Self::from_static(EventCategory::Ui, "set_agent_display_name");
 
     pub const TERM_OSC1337_SET_USER_VAR: Self =
         Self::from_static(EventCategory::Term, "osc1337_set_user_var");
@@ -302,6 +304,8 @@ impl EventName {
     pub const AGENT_COMPACTION_TRIGGERED: Self =
         Self::from_static(EventCategory::Agent, "compaction_triggered");
     pub const AGENT_STARTED: Self = Self::from_static(EventCategory::Agent, "started");
+    pub const AGENT_DISPLAY_NAME_SET: Self =
+        Self::from_static(EventCategory::Agent, "display_name_set");
     pub const SESSION_STARTED: Self = Self::from_static(EventCategory::Session, "started");
     pub const SESSION_SHUTDOWN: Self = Self::from_static(EventCategory::Session, "shutdown");
     pub const SESSION_AGENT_LOADED: Self =

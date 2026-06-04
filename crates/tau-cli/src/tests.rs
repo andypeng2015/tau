@@ -578,6 +578,7 @@ fn replayed_durable_first_user_prompt_selects_live_agent() {
         text: "hello".to_owned(),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
+        display_name: None,
         ctx_id: None,
     }));
     sync(&handle);
@@ -762,6 +763,11 @@ fn first_agent_event_does_not_force_full_redraw() {
     renderer.handle(&Event::SessionStarted(tau_proto::SessionStarted {
         session_id: "s1".into(),
         reason: tau_proto::SessionStartReason::Initial,
+    }));
+    renderer.handle(&Event::AgentStarted(tau_proto::AgentStarted {
+        agent_id: "engineer_abc12345".to_owned().into(),
+        role: "engineer".to_owned(),
+        display_name: None,
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
         agent_id: "engineer_abc12345".to_owned().into(),
@@ -955,7 +961,18 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
         agent_id: "worker-1".to_owned().into(),
     }));
     renderer.suspend_agent("worker-1");
-
+    renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
+        call_id: "delegate-call".into(),
+        task_name: "still running".into(),
+        agent_id: Some("worker-1".to_owned()),
+        role: Some("engineer".to_owned()),
+        ctx_percent: None,
+        ctx_input_tokens: None,
+        ctx_window: None,
+        tools_in_flight: 1,
+        tools_total: 1,
+        display: None,
+    }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
         agent_id: "worker-1".to_owned().into(),
         ..agent_prompt_created("worker-sp", "s1")
@@ -998,6 +1015,132 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
     assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
 }
 
+#[test]
+fn delegated_agent_is_active_until_start_agent_result() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: "worker-1".to_owned().into(),
+    }));
+
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
+    assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
+
+    renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
+        query_id: "q-worker".to_owned(),
+        text: "done".to_owned(),
+        error: None,
+    }));
+
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
+    assert!(live.contains("worker-1"));
+    assert!(suspended.contains("worker-1"));
+    assert!(!agent_is_active_in_sets(&live, &suspended, "worker-1"));
+}
+
+#[test]
+fn extension_agent_prompt_lifecycle_is_active_until_response_finishes() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
+        agent_id: "worker-1".to_owned().into(),
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-worker".to_owned(),
+        },
+        ..agent_prompt_created("worker-sp", "s1")
+    }));
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
+    assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
+
+    renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        agent_id: "worker-1".to_owned().into(),
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-worker".to_owned(),
+        },
+        ..finished_response(
+            "worker-sp",
+            vec![ContextItem::ToolCall(ToolCallItem {
+                call_id: "worker-tool".into(),
+                name: tau_proto::ToolName::new("read"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            })],
+        )
+    }));
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
+    assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
+
+    renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        agent_id: "worker-1".to_owned().into(),
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "core-subagents".into(),
+            query_id: "q-worker".to_owned(),
+        },
+        ..finished_response("worker-sp", vec![assistant_message_item("done")])
+    }));
+    let live = renderer
+        .live_agents()
+        .lock()
+        .expect("live agents lock poisoned")
+        .clone();
+    let suspended = renderer
+        .suspended_agents()
+        .lock()
+        .expect("suspended agents lock poisoned")
+        .clone();
+    assert!(live.contains("worker-1"));
+    assert!(suspended.contains("worker-1"));
+    assert!(!agent_is_active_in_sets(&live, &suspended, "worker-1"));
+}
 #[test]
 fn clearing_selected_agent_preserves_previous_transcript() {
     let (_term, handle, vt) = setup(80, 24);
@@ -1370,6 +1513,7 @@ fn replay_learns_side_agent_from_durable_agent_prompt_submission() {
             text: "side task".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
             originator: originator.clone(),
+            display_name: None,
             ctx_id: None,
         },
     ));
@@ -2114,6 +2258,43 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
 }
 
 #[test]
+fn status_agent_chip_keeps_id_primary_and_display_name_secondary() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::SessionStarted(SessionStarted {
+        session_id: "s1".into(),
+        reason: SessionStartReason::New,
+    }));
+    renderer.handle(&Event::AgentStarted(tau_proto::AgentStarted {
+        agent_id: "junior-engineer_b".to_owned().into(),
+        role: "junior-engineer".to_owned(),
+        display_name: Some("sleep 6".to_owned()),
+    }));
+    renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
+        session_id: "s1".into(),
+        text: "hello".into(),
+        agent_id: "junior-engineer_b".into(),
+        message_class: tau_proto::PromptMessageClass::User,
+        originator: tau_proto::PromptOriginator::User,
+        ctx_id: None,
+    }));
+    sync(&handle);
+
+    let status_row = vt
+        .screen_text(100)
+        .into_iter()
+        .find(|row| row.contains("&s1"))
+        .expect("status row after agent selection");
+    assert!(status_row.starts_with("&s1 @junior-engineer_b (sleep 6)"));
+    assert!(!status_row.contains("@sleep 6 (junior-engineer_b)"));
+}
+
+#[test]
 fn model_status_shows_context_window_until_usage_is_known() {
     let (_term, handle, vt) = setup(100, 24);
     let mut renderer = EventRenderer::new(
@@ -2264,7 +2445,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .find(|row| row.contains("@main"))
         .expect("status row after main response");
     assert!(
-        status_row.ends_with("%0/2 @1 #12k/200k"),
+        status_row.ends_with("%0/2 @2 #12k/200k"),
         "unexpected status row: {status_row:?}"
     );
 
@@ -2297,7 +2478,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row after tool result");
-    assert!(status_row.ends_with("%1/2 @1 #12k/200k"));
+    assert!(status_row.ends_with("%1/2 @2 #12k/200k"));
 
     // Regression coverage for turn visibility: once an extension/sub-agent
     // prompt becomes active, it must not steal the main transcript's tool chip;
@@ -2318,7 +2499,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .find(|row| row.contains("@main"))
         .expect("status row after side prompt starts");
     assert!(
-        status_row.ends_with("%1/2 @1 #12k/200k"),
+        status_row.ends_with("%1/2 @3 #12k/200k"),
         "unexpected status row: {status_row:?}"
     );
     assert!(status_row.contains('%'));
@@ -2339,7 +2520,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row after second main tool result during side turn");
-    assert!(status_row.ends_with("%2/2 @1 #12k/200k"));
+    assert!(status_row.ends_with("%2/2 @3 #12k/200k"));
     assert!(status_row.contains('%'));
 
     // Main tool completions that arrive while a side conversation is active
@@ -2355,7 +2536,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row after main prompt resumes");
-    assert!(status_row.ends_with("%2/2 @1 #12k/200k"));
+    assert!(status_row.ends_with("%2/2 @3 #12k/200k"));
 
     // The main agent's final no-tool response ends the tool-using turn and
     // hides the chip while preserving context stats.
@@ -2369,7 +2550,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row after final main response");
-    assert!(status_row.ends_with("@1 #12k/200k"));
+    assert!(status_row.ends_with("@3 #12k/200k"));
     assert!(!status_row.contains('%'));
 
     // Starting a new user task in the same session also keeps the chip hidden
@@ -2388,7 +2569,7 @@ fn model_status_shows_main_tool_usage_before_context() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row after next prompt");
-    assert!(status_row.ends_with("@1 #12k/200k"));
+    assert!(status_row.ends_with("@3 #12k/200k"));
     assert!(!status_row.contains('%'));
 }
 
@@ -2532,9 +2713,15 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         CborValue::Map(Vec::new()),
     ));
 
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q1".to_owned(),
+        agent_id: "engineer_1".to_owned().into(),
+    }));
+
     // A running parent `delegate` call is the visible main-agent work while
-    // the sub-agent side conversation is active. Regression coverage: the
-    // side prompt lifecycle must not hide `%0/1` from the status bar, because
+    // the sub-agent side conversation is active. The side agent is also active
+    // while its delegated request is running. Regression coverage: the side
+    // prompt lifecycle must not hide `%0/1` from the status bar, because
     // otherwise users lose the only bottom-bar indication that delegation is
     // still in progress.
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
@@ -2560,7 +2747,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         .into_iter()
         .find(|row| row.contains("@main"))
         .expect("status row during delegate side conversation");
-    assert!(status_row.ends_with("%0/1 @1 #12k/200k"));
+    assert!(status_row.ends_with("%0/1 @2 #12k/200k"));
 
     // Once the delegated side conversation reports its own tool progress,
     // the status bar should prefer that live `%complete/total` chip over the
@@ -2589,7 +2776,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         }),
     }));
     assert!(
-        eventually_screen_contains(&vt, 100, "%1/3 @1 #12k/200k"),
+        eventually_screen_contains(&vt, 100, "%1/3 @2 #12k/200k"),
         "delegate progress should repaint the status bar with sub-agent tool progress: {:?}",
         vt.screen_text(100)
     );
@@ -2599,12 +2786,17 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         .find(|row| row.contains("#12k/200k"))
         .expect("status row after delegate progress");
     assert!(status_row.contains("@main"));
-    assert!(status_row.ends_with("%1/3 @1 #12k/200k"));
+    assert!(status_row.ends_with("%1/3 @2 #12k/200k"));
 
     renderer.handle(&Event::ToolCancelled(ToolCancelled {
         call_id: "delegate-call".into(),
         tool_name: tau_proto::ToolName::new("delegate"),
         tool_type: tau_proto::ToolType::Function,
+    }));
+    renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
+        query_id: "q1".to_owned(),
+        text: String::new(),
+        error: None,
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
         originator: tau_proto::PromptOriginator::Extension {
