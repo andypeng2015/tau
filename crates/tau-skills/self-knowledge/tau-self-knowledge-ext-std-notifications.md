@@ -48,6 +48,21 @@ extensions: {
 }
 ```
 
+Example `harness.yaml` idle hook that asks downstream terminal tooling to speak a short text-to-speech notification:
+
+```yaml
+extensions:
+  std-notifications:
+    enable: true
+    config:
+      agent-idle:
+        - delay_seconds: 5
+          agent_summary: false
+          osc1337:
+            key: user-tts-notification
+            value: 'The agent {{agent.id}} on {{host}} in {{cwd_basename}} is waiting.'
+```
+
 Each hook item must set at least one of `bell`, `command`, or `osc1337`. The `command`, `osc1337.key`, and `osc1337.value` fields are Handlebars templates.
 
 Template variables:
