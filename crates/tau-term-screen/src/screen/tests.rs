@@ -1,5 +1,5 @@
 use super::*;
-use crate::style::{Color, Span};
+use crate::style::{Color, Span, display_width};
 
 /// Test harness: pairs our `Screen` with a `vt100::Parser` acting as
 /// a headless terminal emulator. We feed our escape-sequence output
@@ -144,6 +144,31 @@ fn layout_counts_emoji_grapheme_sequences_as_clusters() {
     }
 }
 
+/// Too-wide graphemes cannot be emitted into a narrower terminal row without
+/// forcing physical autowrap outside the renderer model, so they are replaced
+/// with a safe visible placeholder.
+#[test]
+fn layout_replaces_graphemes_wider_than_row() {
+    let lines = layout_lines()
+        .content(&StyledText::from("🙂a"))
+        .width(1)
+        .call();
+
+    assert_eq!(line_chars(&lines), vec!["�", "a"]);
+    for line in &lines {
+        assert!(cols(line) <= 1);
+    }
+
+    let lines = layout_lines()
+        .content(&StyledText::from("a🙂"))
+        .width(1)
+        .call();
+    assert_eq!(line_chars(&lines), vec!["a", "�"]);
+    for line in &lines {
+        assert!(cols(line) <= 1);
+    }
+}
+
 /// CRLF and bare carriage returns must be treated as line separators before
 /// cell emission; otherwise raw control characters would be printed inside a
 /// modeled row.
@@ -210,6 +235,30 @@ fn layout_newline_and_wrap() {
     assert_eq!(line_chars(&lines), vec!["abc", "def"]);
 }
 
+/// Non-newline control characters must be sanitized before cell emission so
+/// untrusted styled text cannot inject terminal controls such as CSI clears.
+#[test]
+fn layout_sanitizes_non_newline_control_characters() {
+    let lines = layout_lines()
+        .content(&StyledText::from("a\t\x1b[2J\x08\u{85}b"))
+        .width(80)
+        .call();
+
+    assert_eq!(line_chars(&lines), vec!["a �[2J��b"]);
+    assert_eq!(display_width("\t\x1b\x08\u{85}"), 4);
+    assert_eq!(StyledText::from("\t\x1b\x08\u{85}").char_count(), 4);
+    let mut buf = Vec::new();
+    emit_styled_cells(&mut buf, &lines[0]).expect("cell emission should succeed");
+    assert!(
+        !buf.contains(&0x09),
+        "sanitized content must not emit raw tab: {buf:?}"
+    );
+    assert!(
+        !buf.contains(&0x1b),
+        "sanitized content must not emit raw ESC: {buf:?}"
+    );
+}
+
 // --- layout_block tests ---
 
 /// Documents the block layout invariant: rows are padded to terminal width so
@@ -239,6 +288,19 @@ fn layout_block_with_margins() {
     assert_eq!(&text[..2], "  ", "left margin");
     assert_eq!(&text[2..4], "hi", "content");
     assert_eq!(&text[17..20], "   ", "right margin");
+}
+
+/// Oversized margins are clamped so every block row still fits the terminal
+/// width and leaves at least one column for content.
+#[test]
+fn layout_block_clamps_margins_to_width() {
+    let block = StyledBlock::new("hi").margin_left(10).margin_right(10);
+    let lines = layout_block(&block, 5);
+
+    for line in &lines {
+        assert_eq!(cols(line), 5);
+        assert_eq!(line.len(), 5);
+    }
 }
 
 /// Center alignment splits spare cells evenly so status/header blocks stay

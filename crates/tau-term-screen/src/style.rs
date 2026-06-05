@@ -10,9 +10,13 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Display width of a string in terminal columns, measured by grapheme cluster.
+///
+/// The measurement uses the same control-character policy as cell conversion:
+/// line breaks have no inline width, tabs render as one space, and other
+/// control graphemes render as a visible replacement cell.
 pub fn display_width(text: &str) -> usize {
     UnicodeSegmentation::graphemes(text, true)
-        .map(UnicodeWidthStr::width)
+        .map(screen_grapheme_width)
         .sum()
 }
 
@@ -33,7 +37,7 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     let mut width = 0;
     let prefix_width = max_width - 1;
     for grapheme in UnicodeSegmentation::graphemes(text, true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        let grapheme_width = screen_grapheme_width(grapheme);
         if prefix_width < width + grapheme_width {
             break;
         }
@@ -72,8 +76,26 @@ pub(crate) fn is_line_break_grapheme(grapheme: &str) -> bool {
     matches!(grapheme, "\n" | "\r\n" | "\r")
 }
 
+pub(crate) fn screen_grapheme_width(grapheme: &str) -> usize {
+    if is_line_break_grapheme(grapheme) {
+        0
+    } else if grapheme == "\t" || grapheme.chars().any(char::is_control) {
+        1
+    } else {
+        UnicodeWidthStr::width(grapheme)
+    }
+}
+
 pub(crate) fn push_grapheme_cells(cells: &mut Vec<Cell>, grapheme: &str, style: Style) {
-    let grapheme_width = UnicodeWidthStr::width(grapheme);
+    if grapheme == "\t" {
+        cells.push(Cell::new(' ', style));
+        return;
+    }
+    if grapheme.chars().any(char::is_control) {
+        cells.push(Cell::new('�', style));
+        return;
+    }
+    let grapheme_width = screen_grapheme_width(grapheme);
     for (idx, ch) in grapheme.chars().enumerate() {
         let width = if idx == 0 { grapheme_width } else { 0 };
         cells.push(Cell::new(ch, style).with_width(width));

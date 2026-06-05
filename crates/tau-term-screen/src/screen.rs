@@ -511,10 +511,27 @@ pub fn layout_lines(
             result.push(Vec::new());
         } else {
             let mut row = Vec::new();
+            let mut skip_zero_width_suffix = false;
             let mut col = 0usize;
             for cell in line {
                 let w = cell.col_width();
-                if col + w > width && !row.is_empty() {
+                if skip_zero_width_suffix && w == 0 {
+                    continue;
+                }
+                skip_zero_width_suffix = false;
+                if width < w {
+                    if !row.is_empty() {
+                        result.push(row);
+                        row = Vec::new();
+                    }
+                    row.push(Cell::new('�', cell.style));
+                    result.push(row);
+                    row = Vec::new();
+                    col = 0;
+                    skip_zero_width_suffix = true;
+                    continue;
+                }
+                if width < col + w && !row.is_empty() {
                     result.push(row);
                     row = Vec::new();
                     col = 0;
@@ -542,8 +559,11 @@ pub fn layout_lines(
 /// is exactly `width` cells wide.
 pub fn layout_block(block: &StyledBlock, width: usize) -> Vec<Vec<Cell>> {
     let width = width.max(1);
-    let ml = block.margin_left as usize;
-    let mr = block.margin_right as usize;
+    let requested_ml = block.margin_left as usize;
+    let requested_mr = block.margin_right as usize;
+    let ml = requested_ml.min(width.saturating_sub(1));
+    let remaining_after_ml = width.saturating_sub(ml);
+    let mr = requested_mr.min(remaining_after_ml.saturating_sub(1));
     let content_width = width.saturating_sub(ml + mr).max(1);
 
     let mut content_lines = layout_lines()
