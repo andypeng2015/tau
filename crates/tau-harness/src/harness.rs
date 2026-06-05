@@ -8674,16 +8674,17 @@ impl Harness {
     }
 
     fn handle_background_tool_cancelled(&mut self, source_id: &str, cancelled: ToolCancelled) {
-        let call_id = cancelled.call_id.clone();
-        let owner = self.finish_tool_call_runtime_state(call_id.as_str());
-        self.record_wait_tool_cancelled(&std::collections::HashSet::from([call_id.clone()]));
-        if let Some(cid) = owner {
-            self.publish_for_agent_from(&cid, Some(source_id), Event::ToolCancelled(cancelled));
-        }
-        self.drain_pending_tool_invocations_or_report();
-        self.clear_tool_call_tracking(call_id.as_str());
+        let error = ToolError {
+            call_id: cancelled.call_id,
+            tool_name: cancelled.tool_name,
+            tool_type: cancelled.tool_type,
+            message: "Tool cancelled".to_owned(),
+            details: None,
+            display: None,
+            originator: PromptOriginator::User,
+        };
+        self.handle_background_tool_error(Some(source_id), error);
     }
-
     fn handle_background_tool_error_without_advancing(
         &mut self,
         source: Option<&str>,

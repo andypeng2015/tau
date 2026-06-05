@@ -1273,7 +1273,8 @@ fn background_error_clears_actual_running_call() {
 }
 
 /// Regression: a cancelled backgrounded call clears actual-running state
-/// without publishing a terminal background result.
+/// and publishes a background error instead of an invalid terminal
+/// cancellation.
 #[test]
 fn background_cancel_clears_actual_running_call() {
     let td = TempDir::new().expect("tempdir");
@@ -1374,11 +1375,21 @@ fn background_cancel_clears_actual_running_call() {
         h.pending_tool_providers
             .contains_key("queued-update-after-cancel")
     );
-    assert!(event_log_contains_any_source(&h, |event| matches!(
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolCancelled(cancelled)
             if cancelled.call_id.as_str() == "bg-exclusive-cancel-running"
     )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ToolBackgroundError(error)
+            if error.call_id.as_str() == "bg-exclusive-cancel-running"
+                && error.message == "Tool cancelled"
+    )));
+    assert!(
+        h.background_completion_targets
+            .contains_key("bg-exclusive-cancel-running")
+    );
     assert!(!event_log_contains_any_source(&h, |event| matches!(
         event,
         Event::ToolBackgroundResult(result)
