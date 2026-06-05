@@ -1,10 +1,9 @@
 //! Headless command submission client.
 
-use std::io::{self, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use tau_proto::{ClientKind, Event, Frame, FrameWriter, Hello, Message, PROTOCOL_VERSION};
+use tau_proto::Event;
 
 use crate::CliError;
 use crate::ui_prompt::{DEFAULT_AGENT_ROLE, create_user_agent_prompt};
@@ -18,28 +17,16 @@ pub(crate) fn run_send(session_id: &str, line: &str) -> Result<(), CliError> {
     let daemon_dir = find_daemon_for_session(session_id).ok_or_else(|| {
         CliError::Participant(format!("no running daemon for session `{session_id}`"))
     })?;
-    let stream = UnixStream::connect(tau_harness::runtime_dir::socket_path(&daemon_dir))?;
-    let mut writer = FrameWriter::new(BufWriter::new(stream));
-
-    send_frame(
-        &mut writer,
-        &Frame::Message(Message::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: "tau-dev-send".into(),
-            client_kind: ClientKind::Ui,
-        })),
+    let mut writer = crate::ui_client::connect_ui_writer(
+        &tau_harness::runtime_dir::socket_path(&daemon_dir),
+        "tau-dev-send",
     )?;
 
     if let Some(event) = event_for_line(session_id, text) {
-        send_frame(&mut writer, &Frame::Event(event))?;
+        crate::ui_client::send_frame(&mut writer, &tau_proto::Frame::Event(event))?;
     }
 
     Ok(())
-}
-
-fn send_frame(writer: &mut FrameWriter<BufWriter<UnixStream>>, frame: &Frame) -> io::Result<()> {
-    writer.write_frame(frame).map_err(io::Error::other)?;
-    writer.flush()
 }
 
 fn event_for_line(session_id: &str, text: &str) -> Option<Event> {

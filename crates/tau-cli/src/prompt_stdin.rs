@@ -1,14 +1,12 @@
 //! One-shot stdin prompt client.
 
 use std::collections::HashMap;
-use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self, Read, Write};
 
 use tau_harness::SessionLaunchStatus;
 use tau_proto::{
-    AgentPromptTerminated, ClientKind, ContentPart, ContextItem, ContextRole, Event, EventName,
-    EventSelector, Frame, FrameReader, FrameWriter, Hello, Message, PROTOCOL_VERSION,
-    ProviderResponseFinished, ProviderResponseUpdated, Subscribe,
+    AgentPromptTerminated, ContentPart, ContextItem, ContextRole, Event, EventName, EventSelector,
+    Frame, Message, ProviderResponseFinished, ProviderResponseUpdated,
 };
 
 use crate::CliError;
@@ -68,8 +66,8 @@ pub(crate) fn run_prompt_stdin(
     result
 }
 
-type OneShotReader = FrameReader<BufReader<UnixStream>>;
-type OneShotWriter = FrameWriter<BufWriter<UnixStream>>;
+type OneShotReader = crate::ui_client::UiFrameReader;
+type OneShotWriter = crate::ui_client::UiFrameWriter;
 
 fn print_prompt_stdin_headers(session_id: &str, startup_role: Option<&str>) {
     eprintln!("session_id: {session_id}");
@@ -83,51 +81,33 @@ fn prompt_stdin_role(startup_role: Option<&str>) -> &str {
 fn connect_prompt_stdin_client(
     socket_path: &std::path::Path,
 ) -> io::Result<(OneShotReader, OneShotWriter)> {
-    let stream = UnixStream::connect(socket_path)?;
-    let read_stream = stream.try_clone()?;
-    let mut writer = FrameWriter::new(BufWriter::new(stream));
-    let reader = FrameReader::new(BufReader::new(read_stream));
-    send_prompt_stdin_hello(&mut writer)?;
+    let (reader, mut writer) =
+        crate::ui_client::connect_ui_client(socket_path, "tau-prompt-stdin")?;
     subscribe_to_prompt_stdin_events(&mut writer)?;
     Ok((reader, writer))
 }
 
-fn send_prompt_stdin_hello(writer: &mut OneShotWriter) -> io::Result<()> {
-    send_frame(
-        writer,
-        &Frame::Message(Message::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: "tau-prompt-stdin".into(),
-            client_kind: ClientKind::Ui,
-        })),
-    )
-}
-
 fn subscribe_to_prompt_stdin_events(writer: &mut OneShotWriter) -> io::Result<()> {
-    send_frame(
+    crate::ui_client::subscribe(
         writer,
-        &Frame::Message(Message::Subscribe(Subscribe {
-            selectors: vec![
-                EventSelector::Exact(EventName::PROVIDER_RESPONSE_UPDATED),
-                EventSelector::Exact(EventName::PROVIDER_RESPONSE_FINISHED),
-                EventSelector::Exact(EventName::AGENT_PROMPT_TERMINATED),
-            ],
-        })),
+        vec![
+            EventSelector::Exact(EventName::PROVIDER_RESPONSE_UPDATED),
+            EventSelector::Exact(EventName::PROVIDER_RESPONSE_FINISHED),
+            EventSelector::Exact(EventName::AGENT_PROMPT_TERMINATED),
+        ],
     )
 }
-
 fn submit_prompt(
     writer: &mut OneShotWriter,
     session_id: &str,
     role: &str,
     prompt: String,
 ) -> io::Result<()> {
-    send_frame(
+    crate::ui_client::send_frame(
         writer,
         &Frame::Event(create_user_agent_prompt(session_id, role, prompt)),
     )
 }
-
 fn read_one_shot_result(
     reader: &mut OneShotReader,
     output: &mut OneShotOutput,
@@ -175,17 +155,12 @@ fn handle_prompt_terminated(terminated: &AgentPromptTerminated) -> Result<bool, 
 }
 
 fn disconnect_prompt_stdin_client(writer: &mut OneShotWriter) {
-    let _ = send_frame(
+    let _ = crate::ui_client::send_frame(
         writer,
         &Frame::Message(Message::Disconnect(tau_proto::Disconnect {
             reason: Some("prompt-stdin done".to_owned()),
         })),
     );
-}
-
-fn send_frame(writer: &mut OneShotWriter, frame: &Frame) -> io::Result<()> {
-    writer.write_frame(frame).map_err(io::Error::other)?;
-    writer.flush()
 }
 
 #[derive(Default)]

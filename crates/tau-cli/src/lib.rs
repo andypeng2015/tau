@@ -15,6 +15,7 @@ mod send;
 mod settings_registry;
 mod theme;
 mod tool_render;
+mod ui_client;
 mod ui_logging;
 mod ui_prompt;
 
