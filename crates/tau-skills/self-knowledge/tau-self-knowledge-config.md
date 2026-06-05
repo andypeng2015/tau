@@ -41,6 +41,22 @@ Tau layers these defaults underneath user config and `*.d/*.yaml` drop-ins.
 {ui_config}
 ```
 
+## Agent IDs
+
+Tau mints durable agent IDs from the harness setting `agents.idTemplate`:
+
+```yaml
+agents:
+  idTemplate: "{{role}}-{{random_alphanumeric 4}}"
+```
+
+The built-in default is `{{random_alphanumeric 6}}`. Templates are rendered with Handlebars in strict mode and currently receive:
+
+- `role` — the role name for the new agent.
+- `random_alphanumeric <len>` — helper that emits an ASCII alphanumeric random suffix of at least `<len>` characters.
+
+Rendered IDs must use only ASCII letters, digits, `_`, or `-`, and must fit Tau's agent ID length limit. If a configured template fails to render, renders an invalid ID, or keeps colliding, Tau warns and falls back to the built-in random template.
+
 ## Providers
 
 Use `tau provider add` for the interactive provider setup wizard. It prompts for provider kind, provider namespace, auth, and model details as needed.
