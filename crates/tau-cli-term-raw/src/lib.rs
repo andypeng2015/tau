@@ -207,6 +207,9 @@ struct SharedState {
     /// Nested redraw suppression counter used while the CLI renderer updates
     /// an off-screen agent transcript snapshot.
     redraw_suppression: u32,
+    /// A redraw request arrived while notifications were suppressed. The
+    /// outermost suppression guard flushes this request when it drops.
+    redraw_dirty_while_suppressed: bool,
     full_render_count: u64,
 }
 
@@ -244,6 +247,7 @@ impl SharedState {
             sync_completed: 0,
             pending_raw: Vec::new(),
             redraw_suppression: 0,
+            redraw_dirty_while_suppressed: false,
             full_render_count: 0,
         }
     }
@@ -737,8 +741,19 @@ impl<'a> RedrawSuppressionGuard<'a> {
 
 impl Drop for RedrawSuppressionGuard<'_> {
     fn drop(&mut self) {
-        let mut st = self.handle.lock();
-        st.redraw_suppression = st.redraw_suppression.saturating_sub(1);
+        let notify = {
+            let mut st = self.handle.lock();
+            st.redraw_suppression = st.redraw_suppression.saturating_sub(1);
+            if st.redraw_suppression == 0 && st.redraw_dirty_while_suppressed {
+                st.redraw_dirty_while_suppressed = false;
+                true
+            } else {
+                false
+            }
+        };
+        if notify {
+            self.handle.redraw.notify();
+        }
     }
 }
 
@@ -747,8 +762,21 @@ impl TermHandle {
         self.state.lock().expect("term state mutex poisoned")
     }
 
+    fn request_redraw_locked(st: &mut SharedState) -> bool {
+        if st.redraw_suppression == 0 {
+            true
+        } else {
+            st.redraw_dirty_while_suppressed = true;
+            false
+        }
+    }
+
     fn notify_redraw(&self) {
-        if self.lock().redraw_suppression == 0 {
+        let notify = {
+            let mut st = self.lock();
+            Self::request_redraw_locked(&mut st)
+        };
+        if notify {
             self.redraw.notify();
         }
     }
@@ -830,7 +858,7 @@ impl TermHandle {
         if invalidate_screen {
             st.invalidate_screen = true;
         }
-        let notify = notify && st.redraw_suppression == 0;
+        let notify = notify && Self::request_redraw_locked(&mut st);
         drop(st);
         if notify {
             self.redraw.notify();
@@ -1030,7 +1058,7 @@ impl TermHandle {
         st.history.push(id);
         st.add_history_ref(id);
         tracing::trace!(target: "tau_cli_term_raw::blocks", ?id, debug_id, content_empty, zone = "history", "print output");
-        let notify = st.redraw_suppression == 0;
+        let notify = Self::request_redraw_locked(&mut st);
         drop(st);
         if notify {
             self.redraw.notify();
@@ -1119,8 +1147,14 @@ impl TermHandle {
     /// pass. Goes through the redraw loop so the bytes never
     /// interleave with an in-flight frame.
     pub fn print_terminal_escape(&self, sequence: impl Into<String>) {
-        self.lock().pending_raw.push(sequence.into());
-        self.redraw.notify();
+        let notify = {
+            let mut st = self.lock();
+            st.pending_raw.push(sequence.into());
+            Self::request_redraw_locked(&mut st)
+        };
+        if notify {
+            self.redraw.notify();
+        }
     }
 }
 
@@ -1318,10 +1352,10 @@ impl Term {
             match raw {
                 RawEvent::Key(key) => {
                     if let Some(event) = self.handle_key(key)? {
-                        self.handle.redraw.notify();
+                        self.handle.redraw();
                         return Ok(event);
                     }
-                    self.handle.redraw.notify();
+                    self.handle.redraw();
                 }
                 RawEvent::Resize(w, h) => {
                     let (width, height) = {
@@ -1332,7 +1366,7 @@ impl Term {
                         st.height = height;
                         (width, height)
                     };
-                    self.handle.redraw.notify();
+                    self.handle.redraw();
                     return Ok(Event::Resize {
                         width: size_event_dimension(width),
                         height: size_event_dimension(height),
@@ -1348,7 +1382,7 @@ impl Term {
                     // would expose embedded `\n` bytes to the Enter
                     // handler and submit the line mid-paste.
                     if text.is_empty() {
-                        self.handle.redraw.notify();
+                        self.handle.redraw();
                         continue;
                     }
                     let text = normalize_paste_text(text);
@@ -1361,7 +1395,7 @@ impl Term {
                         st.sync_buffer_to_history_nav();
                     }
                     self.refresh_completion();
-                    self.handle.redraw.notify();
+                    self.handle.redraw();
                     return Ok(Event::BufferChanged);
                 }
             }
@@ -1378,33 +1412,35 @@ impl Term {
         if let Some(rx) = self.term_input_rx.as_ref() {
             return rx.recv().ok();
         }
-        let raw = event::read().ok()?;
-        tracing::trace!(target: "tau_cli_term_raw::input", ?raw, "terminal raw input event");
-        match raw {
-            CtEvent::Key(key) => {
-                // The kitty protocol surfaces Press/Repeat/Release
-                // events; drop Release here so each keystroke fires
-                // exactly once downstream. (On terminals that don't
-                // support the protocol, only Press is ever emitted —
-                // this branch is a no-op there.)
-                if key.kind == KeyEventKind::Release {
-                    return self.next_raw();
+        loop {
+            let raw = event::read().ok()?;
+            tracing::trace!(target: "tau_cli_term_raw::input", ?raw, "terminal raw input event");
+            match raw {
+                CtEvent::Key(key) => {
+                    // The kitty protocol surfaces Press/Repeat/Release
+                    // events; drop Release here so each keystroke fires
+                    // exactly once downstream. (On terminals that don't
+                    // support the protocol, only Press is ever emitted —
+                    // this branch is a no-op there.)
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    return Some(RawEvent::Key(key));
                 }
-                Some(RawEvent::Key(key))
+                CtEvent::Resize(w, h) => {
+                    let (actual_w, actual_h) = raw_term_size().unwrap_or((0, 0));
+                    return Some(RawEvent::Resize(
+                        resample_resize_dimension(w, actual_w),
+                        resample_resize_dimension(h, actual_h),
+                    ));
+                }
+                CtEvent::FocusGained => return Some(RawEvent::FocusChanged { focused: true }),
+                CtEvent::FocusLost => return Some(RawEvent::FocusChanged { focused: false }),
+                CtEvent::Paste(text) => return Some(RawEvent::Paste(text)),
+                // Mouse events: skip so the caller still observes stdin as
+                // "blocking" without unbounded recursion under noisy input.
+                _ => {}
             }
-            CtEvent::Resize(w, h) => {
-                let (actual_w, actual_h) = raw_term_size().unwrap_or((0, 0));
-                Some(RawEvent::Resize(
-                    resample_resize_dimension(w, actual_w),
-                    resample_resize_dimension(h, actual_h),
-                ))
-            }
-            CtEvent::FocusGained => Some(RawEvent::FocusChanged { focused: true }),
-            CtEvent::FocusLost => Some(RawEvent::FocusChanged { focused: false }),
-            CtEvent::Paste(text) => Some(RawEvent::Paste(text)),
-            // Mouse events: skip and recurse so the caller still
-            // observes the channel/stdin as "blocking".
-            _ => self.next_raw(),
         }
     }
 
@@ -1498,6 +1534,10 @@ impl Term {
             let mut st = self.handle.lock();
             st.external_paused = true;
         }
+        // Wait until any redraw frame that already passed the paused-state
+        // check has finished writing before releasing the terminal to an
+        // external program.
+        self.handle.redraw_sync();
         let _ = crossterm::execute!(
             io::stdout(),
             PopKeyboardEnhancementFlags,
@@ -1536,11 +1576,14 @@ impl Term {
             crossterm::cursor::MoveTo(0, 0)
         );
         {
+            let (width, height) = term_size();
             let mut st = self.handle.lock();
+            st.width = width;
+            st.height = height;
             st.external_paused = false;
             st.invalidate_screen = true;
         }
-        self.handle.redraw.notify();
+        self.handle.redraw();
         Ok(())
     }
 

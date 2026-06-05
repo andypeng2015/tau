@@ -487,10 +487,39 @@ fn redraw_suppression_is_scoped() {
         Term::new_virtual(80, 24, "> ", Box::new(buf), CursorShape::Bar);
 
     handle.with_redraw_suppressed(|| {
-        assert_eq!(handle.lock().redraw_suppression, 1);
+        handle.redraw();
+        {
+            let mut st = handle.lock();
+            assert_eq!(st.redraw_suppression, 1);
+            assert!(st.redraw_dirty_while_suppressed);
+            st.redraw_dirty_while_suppressed = false;
+        }
+
+        handle.print_output("suppressed-output", plain_block("hidden update"));
+        {
+            let mut st = handle.lock();
+            assert!(st.redraw_dirty_while_suppressed);
+            st.redraw_dirty_while_suppressed = false;
+        }
+
+        handle.print_terminal_escape("\x1b]1337;CurrentDir=/tmp\x07");
+        {
+            let mut st = handle.lock();
+            assert!(st.redraw_dirty_while_suppressed);
+            st.redraw_dirty_while_suppressed = false;
+        }
+
+        let snapshot = handle.output_snapshot();
+        handle.replace_output_snapshot(snapshot);
+        let st = handle.lock();
+        assert!(st.redraw_dirty_while_suppressed);
     });
 
-    assert_eq!(handle.lock().redraw_suppression, 0);
+    {
+        let st = handle.lock();
+        assert_eq!(st.redraw_suppression, 0);
+        assert!(!st.redraw_dirty_while_suppressed);
+    }
 
     drop(term);
 }
