@@ -296,6 +296,13 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
         };
         if register.tool.name == ECHO_TOOL_NAME {
             assert!(!register.tool.enabled_by_default);
+            assert_eq!(
+                register
+                    .tool_group
+                    .as_ref()
+                    .map(|group| group.name.as_str()),
+                Some("test")
+            );
             found_echo_disabled = true;
         }
         if register.tool.name == GPT_SHELL_TOOL_NAME {
@@ -306,6 +313,13 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             found_gpt_shell_visible_name = true;
         }
         if register.tool.name == READ_TOOL_NAME {
+            assert_eq!(
+                register
+                    .tool_group
+                    .as_ref()
+                    .map(|group| group.name.as_str()),
+                Some("shell")
+            );
             let parameters = register.tool.parameters.as_ref().expect("parameters");
             let range_item = &parameters["properties"]["ranges"]["items"];
             assert_eq!(

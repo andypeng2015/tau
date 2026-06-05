@@ -7898,6 +7898,7 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 enabled_by_default: false,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "allowed_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -7918,6 +7919,7 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 enabled_by_default: false,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "enabled_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -7938,6 +7940,7 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "default_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -7958,6 +7961,7 @@ fn delegate_explicit_role_uses_role_model_params_prompt_and_tools() {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "denied_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -9309,4 +9313,83 @@ fn inbound_agent_message_events_are_ignored() {
     assert!(durable_agent_message_received_events(&h).is_empty());
 
     h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn tool_group_overrides_apply_before_individual_tool_overrides() {
+    // Role group toggles are coarse-grained defaults. Individual tool toggles
+    // must run after them so a role can enable a whole group and exclude one
+    // dangerous tool, or disable a group and keep one explicit exception.
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    h.available_roles.insert(
+        h.selected_role.clone(),
+        tau_config::settings::AgentRole {
+            enable_tool_groups: vec![tau_proto::ToolGroupName::new("pim")],
+            disable_tools: vec![ToolName::new("email_delete")],
+            disable_tool_groups: vec![tau_proto::ToolGroupName::new("shell")],
+            enable_tools: vec![ToolName::new("shell_safe")],
+            ..Default::default()
+        },
+    );
+
+    for (name, group) in [
+        ("email_get", "pim"),
+        ("email_delete", "pim"),
+        ("shell_exec", "shell"),
+        ("shell_safe", "shell"),
+    ] {
+        h.registry.register_with_prompt_fragment(
+            "conn-grouped",
+            tau_proto::ToolRegister {
+                tool: ToolSpec {
+                    name: ToolName::new(name),
+                    model_visible_name: None,
+                    description: Some(name.to_owned()),
+                    tool_type: tau_proto::ToolType::Function,
+                    parameters: None,
+                    format: None,
+                    enabled_by_default: false,
+                    background_support: None,
+                },
+                tool_group: Some(tau_proto::ToolGroup {
+                    name: tau_proto::ToolGroupName::new(group),
+                    prompt_fragment: (name == "email_delete").then(|| {
+                        tau_proto::PromptFragment::new(
+                            format!("{group}.instructions"),
+                            tau_proto::PromptPriority::new(10),
+                            format!("{group} GROUP PROMPT"),
+                        )
+                    }),
+                }),
+                prompt_fragment: None,
+            },
+        );
+    }
+
+    let defs = h.gather_tool_definitions_for_role(&h.selected_role);
+    let names = defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>();
+    assert!(
+        names.contains(&"email_get"),
+        "expected group-enabled tool: {names:?}"
+    );
+    assert!(
+        !names.contains(&"email_delete"),
+        "individual disable must win: {names:?}"
+    );
+    assert!(
+        !names.contains(&"shell_exec"),
+        "group disable should hide tool: {names:?}"
+    );
+    assert!(
+        names.contains(&"shell_safe"),
+        "individual enable must win: {names:?}"
+    );
+    let prompt_fragments = h.gather_prompt_fragments();
+    let pim_group_prompts = prompt_fragments
+        .iter()
+        .filter(|fragment| fragment.template.as_str() == "pim GROUP PROMPT")
+        .count();
+    assert_eq!(pim_group_prompts, 1, "group prompt renders once");
 }

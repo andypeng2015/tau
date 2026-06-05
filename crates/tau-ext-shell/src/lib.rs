@@ -468,8 +468,22 @@ where
         tau_proto::EventName::AGENT_START_RESULT,
         tau_proto::EventName::UI_SHELL_COMMAND,
     ]);
+    let shell_tool_group = tau_proto::ToolGroup {
+        name: tau_proto::ToolGroupName::new("shell"),
+        prompt_fragment: None,
+    };
+    let test_tool_group = tau_proto::ToolGroup {
+        name: tau_proto::ToolGroupName::new("test"),
+        prompt_fragment: None,
+    };
     for tool in tools {
-        handshake = handshake.register_tool(tool);
+        let tool_group = if tool.name.as_str() == "echo" {
+            test_tool_group.clone()
+        } else {
+            shell_tool_group.clone()
+        };
+        handshake =
+            handshake.register_tool_with_group_and_prompt_fragment(tool, Some(tool_group), None);
     }
     handshake = handshake.announce_event(Event::ExtensionContextProviderRegister(
         tau_proto::ExtensionContextProviderRegister {},
@@ -528,6 +542,10 @@ where
                         if dir_lock_changed {
                             tx.send(Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
                                 tool: dir_lock_tool_spec(config.dir_lock.enable),
+                                tool_group: Some(tau_proto::ToolGroup {
+                                    name: tau_proto::ToolGroupName::new("shell"),
+                                    prompt_fragment: None,
+                                }),
                                 prompt_fragment: None,
                             })))?;
                         }

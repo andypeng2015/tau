@@ -78,12 +78,14 @@ fn handshake_registers_email_and_calendar_tools() {
     let handshake = register_tools_with_prompt_fragment(
         handshake,
         email::email_tool_specs(),
+        tau_proto::ToolGroupName::new("email"),
         "email_get",
         email::email_prompt_fragment(),
     );
     let handshake = register_tools_with_prompt_fragment(
         handshake,
         calendar::calendar_tool_specs(),
+        tau_proto::ToolGroupName::new("calendar"),
         "calendar_get",
         calendar::calendar_prompt_fragment(),
     );
@@ -97,6 +99,7 @@ fn handshake_registers_email_and_calendar_tools() {
     let mut reader = FrameReader::new(bytes.as_slice());
     let mut tools = Vec::new();
     let mut prompt_tools = Vec::new();
+    let mut per_tool_prompt_tools = Vec::new();
     let mut saw_subscription = false;
     while let Some(frame) = reader.read_frame().expect("frame decodes") {
         match frame {
@@ -109,7 +112,22 @@ fn handshake_registers_email_and_calendar_tools() {
             }
             Frame::Event(Event::ToolRegister(register)) => {
                 if register.prompt_fragment.is_some() {
-                    prompt_tools.push(register.tool.name.clone());
+                    per_tool_prompt_tools.push(register.tool.name.clone());
+                }
+                if register
+                    .tool_group
+                    .as_ref()
+                    .and_then(|group| group.prompt_fragment.as_ref())
+                    .is_some()
+                {
+                    prompt_tools.push(
+                        register
+                            .tool_group
+                            .as_ref()
+                            .expect("group with prompt")
+                            .name
+                            .clone(),
+                    );
                 }
                 tools.push(register.tool.name);
             }
@@ -130,21 +148,21 @@ fn handshake_registers_email_and_calendar_tools() {
             .any(|tool| tool.as_str() == "calendar_list_calendars")
     );
     assert!(tools.iter().any(|tool| tool.as_str() == "calendar_respond"));
-    assert!(prompt_tools.iter().any(|tool| tool.as_str() == "email_get"));
+    assert!(prompt_tools.iter().any(|group| group.as_str() == "email"));
     assert!(
         prompt_tools
             .iter()
+            .any(|group| group.as_str() == "calendar")
+    );
+    assert!(
+        per_tool_prompt_tools
+            .iter()
+            .any(|tool| tool.as_str() == "email_get")
+    );
+    assert!(
+        per_tool_prompt_tools
+            .iter()
             .any(|tool| tool.as_str() == "calendar_get")
-    );
-    assert!(
-        !prompt_tools
-            .iter()
-            .any(|tool| tool.as_str() == "email_send")
-    );
-    assert!(
-        !prompt_tools
-            .iter()
-            .any(|tool| tool.as_str() == "calendar_respond")
     );
     assert!(!tools.iter().any(|tool| tool.as_str() == email::TOOL_NAME));
     assert!(

@@ -241,6 +241,32 @@ fn describe_role_inner(
             )
         })
         .unwrap_or_default();
+    let enable_tool_groups = current
+        .filter(|r| !r.enable_tool_groups.is_empty())
+        .map(|r| {
+            format!(
+                ", enable-tool-groups={}",
+                r.enable_tool_groups
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )
+        })
+        .unwrap_or_default();
+    let disable_tool_groups = current
+        .filter(|r| !r.disable_tool_groups.is_empty())
+        .map(|r| {
+            format!(
+                ", disable-tool-groups={}",
+                r.disable_tool_groups
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )
+        })
+        .unwrap_or_default();
     let enable_tools = current
         .filter(|r| !r.enable_tools.is_empty())
         .map(|r| {
@@ -268,13 +294,15 @@ fn describe_role_inner(
         })
         .unwrap_or_default();
     format!(
-        "model={}, effort={}, verbosity={}, thinking-summary={}{}{}{}{}",
+        "model={}, effort={}, verbosity={}, thinking-summary={}{}{}{}{}{}{}",
         model,
         params.effort,
         params.verbosity,
         params.thinking_summary,
         service_tier,
         tools,
+        enable_tool_groups,
+        disable_tool_groups,
         enable_tools,
         disable_tools
     )
@@ -303,6 +331,12 @@ pub(crate) fn role_infos(
                     model,
                     params,
                     tools: role.and_then(|role| role.tools.clone()),
+                    enable_tool_groups: role
+                        .map(|role| role.enable_tool_groups.clone())
+                        .unwrap_or_default(),
+                    disable_tool_groups: role
+                        .map(|role| role.disable_tool_groups.clone())
+                        .unwrap_or_default(),
                     enable_tools: role
                         .map(|role| role.enable_tools.clone())
                         .unwrap_or_default(),

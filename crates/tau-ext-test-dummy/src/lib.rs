@@ -112,23 +112,30 @@ where
             EventSelector::Exact(tau_proto::EventName::AGENT_PROMPT_SUBMITTED),
             InterceptionPriority::new(0),
         )
-        .register_tool(ToolSpec {
-            name: tau_proto::ToolName::new(RESTART_TEST_DUMMY_TOOL_NAME),
-            model_visible_name: None,
-            description: Some(
-                "Test-only tool that randomly restarts the dummy extension or returns an error"
-                    .to_owned(),
-            ),
-            tool_type: tau_proto::ToolType::Function,
-            parameters: Some(serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false,
-            })),
-            format: None,
-            enabled_by_default: true,
-            background_support: None,
-        })
+        .register_tool_with_group_and_prompt_fragment(
+            ToolSpec {
+                name: tau_proto::ToolName::new(RESTART_TEST_DUMMY_TOOL_NAME),
+                model_visible_name: None,
+                description: Some(
+                    "Test-only tool that randomly restarts the dummy extension or returns an error"
+                        .to_owned(),
+                ),
+                tool_type: tau_proto::ToolType::Function,
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                })),
+                format: None,
+                enabled_by_default: true,
+                background_support: None,
+            },
+            Some(tau_proto::ToolGroup {
+                name: tau_proto::ToolGroupName::new("test"),
+                prompt_fragment: None,
+            }),
+            None,
+        )
         .ready_message("test dummy tools ready")
         .run(&mut writer)?;
 

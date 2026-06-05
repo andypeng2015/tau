@@ -18,12 +18,12 @@ use tau_proto::{
     AgentPromptCreated, AgentPromptId, AgentPromptQueued, AgentPromptRecalled,
     AgentPromptTerminated, AgentPromptTerminationReason, BackgroundSupport, CborValue, ClientKind,
     ContentPart, ContextItem, ContextRole, Disconnect, Event, EventSelector, ExtensionName, Frame,
-    HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessRoleSelected, Message,
-    MessageItem, ModelId, PromptFragment, PromptOriginator, ProviderModelInfo,
-    ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage, SessionId, TokenUsageStats,
-    ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled,
-    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult,
-    ToolResultKind, ToolType, UiCancelPrompt,
+    HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessRoleSelected, Hello,
+    Message, MessageItem, ModelId, PROTOCOL_VERSION, PromptFragment, PromptOriginator,
+    ProviderModelInfo, ProviderResponseFinished, ProviderStopReason, ProviderTokenUsage, SessionId,
+    TokenUsageStats, ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem,
+    ToolCancelled, ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest,
+    ToolResult, ToolResultKind, ToolType, UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -912,6 +912,15 @@ fn response_requests_tool_calls(response: &ProviderResponseFinished) -> bool {
         .output_items
         .iter()
         .any(|item| matches!(item, ContextItem::ToolCall(_)))
+}
+fn validate_protocol_version(hello: &Hello) -> Result<(), HarnessError> {
+    if hello.protocol_version == PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(HarnessError::Participant(format!(
+        "unsupported protocol version from {}: got {}, expected {}",
+        hello.client_name, hello.protocol_version, PROTOCOL_VERSION
+    )))
 }
 
 #[cfg(test)]
@@ -3535,7 +3544,8 @@ impl Harness {
                     entry.last_acked = ack.up_to;
                 }
             }
-            Message::Hello(_hello) => {
+            Message::Hello(hello) => {
+                validate_protocol_version(&hello)?;
                 self.set_extension_state(source_id, ExtensionState::Handshaking);
                 self.send_lifecycle_configure(source_id);
             }
@@ -4009,7 +4019,19 @@ impl Harness {
         message: Message,
     ) -> Result<bool, HarnessError> {
         match message {
-            Message::Hello(_hello) => Ok(true),
+            Message::Hello(hello) => {
+                if let Err(error) = validate_protocol_version(&hello) {
+                    let _ = self.bus.send_to(
+                        client_id,
+                        None,
+                        Frame::Message(Message::Disconnect(Disconnect {
+                            reason: Some(error.to_string()),
+                        })),
+                    );
+                    return Ok(false);
+                }
+                Ok(true)
+            }
             Message::Subscribe(subscribe) => {
                 // Socket/UI clients replay selected past state after subscribing.
                 // Extensions use `handle_extension_message`, which is live-only.
@@ -6199,6 +6221,14 @@ impl Harness {
             tau_proto::UiRoleUpdateAction::SetTools { tools } => {
                 next_role.tools = tools;
             }
+            tau_proto::UiRoleUpdateAction::SetEnableToolGroups { enable_tool_groups } => {
+                next_role.enable_tool_groups = enable_tool_groups;
+            }
+            tau_proto::UiRoleUpdateAction::SetDisableToolGroups {
+                disable_tool_groups,
+            } => {
+                next_role.disable_tool_groups = disable_tool_groups;
+            }
             tau_proto::UiRoleUpdateAction::SetEnableTools { enable_tools } => {
                 next_role.enable_tools = enable_tools;
             }
@@ -7951,7 +7981,6 @@ impl Harness {
     }
 
     #[cfg(test)]
-    #[expect(dead_code)]
     fn gather_prompt_fragments(&self) -> Vec<PromptFragment> {
         self.gather_prompt_fragments_for_role(&self.selected_role)
     }
@@ -8012,39 +8041,80 @@ impl Harness {
                     }),
             );
         }
-        let tool_fragments = self
-            .registry
-            .all_tool_providers()
-            .into_iter()
-            .filter(|provider| self.is_tool_enabled_for_role(&provider.tool, role_name))
+        let providers = self.registry.all_tool_providers();
+        let enabled_group_keys = providers
+            .iter()
+            .filter(|provider| self.is_tool_provider_enabled_for_role(provider, role_name))
             .filter_map(|provider| {
-                provider.prompt_fragment.as_ref().map(|fragment| {
-                    let visible_name = self.tool_model_visible_name(&provider.tool);
-                    SourcedToolPromptFragment {
-                        source: PromptFragmentSource::Tool {
-                            connection_id: provider.connection_id.clone(),
-                        },
-                        tool_name: visible_name.clone(),
-                        fragment: fragment.clone(),
-                    }
-                })
+                provider
+                    .tool_group
+                    .as_ref()
+                    .map(|group| (provider.connection_id.clone(), group.name.clone()))
             })
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
+        let mut seen_group_fragments = HashSet::new();
+        let mut tool_fragments = Vec::new();
+        for provider in providers {
+            let tool_prompt_repeated_by_group = provider
+                .tool_group
+                .as_ref()
+                .and_then(|group| group.prompt_fragment.as_ref())
+                .is_some_and(|group_fragment| {
+                    provider
+                        .prompt_fragment
+                        .as_ref()
+                        .is_some_and(|tool_fragment| tool_fragment.name == group_fragment.name)
+                });
+            if !tool_prompt_repeated_by_group
+                && self.is_tool_provider_enabled_for_role(provider, role_name)
+                && let Some(fragment) = &provider.prompt_fragment
+            {
+                let visible_name = self.tool_model_visible_name(&provider.tool);
+                tool_fragments.push(SourcedToolPromptFragment {
+                    source: PromptFragmentSource::Tool {
+                        connection_id: provider.connection_id.clone(),
+                    },
+                    tool_name: visible_name.clone(),
+                    fragment: fragment.clone(),
+                });
+            }
+            if let Some(group) = &provider.tool_group
+                && let Some(fragment) = &group.prompt_fragment
+                && enabled_group_keys
+                    .contains(&(provider.connection_id.clone(), group.name.clone()))
+                && seen_group_fragments.insert((
+                    provider.connection_id.clone(),
+                    group.name.clone(),
+                    fragment.name.clone(),
+                ))
+            {
+                tool_fragments.push(SourcedToolPromptFragment {
+                    source: PromptFragmentSource::Tool {
+                        connection_id: provider.connection_id.clone(),
+                    },
+                    tool_name: ToolName::new(group.name.as_str()),
+                    fragment: fragment.clone(),
+                });
+            }
+        }
         (fragments, tool_fragments)
     }
 
     fn gather_tool_definitions_for_role(&self, role_name: &str) -> Vec<ToolDefinition> {
         self.registry
-            .all_tools()
+            .all_tool_providers()
             .into_iter()
-            .filter(|spec| self.is_tool_enabled_for_role(spec, role_name))
-            .map(|spec| ToolDefinition {
-                name: spec.name.clone(),
-                model_visible_name: spec.model_visible_name.clone(),
-                description: spec.description.clone(),
-                tool_type: spec.tool_type,
-                parameters: spec.parameters.clone(),
-                format: spec.format.clone(),
+            .filter(|provider| self.is_tool_provider_enabled_for_role(provider, role_name))
+            .map(|provider| {
+                let spec = &provider.tool;
+                ToolDefinition {
+                    name: spec.name.clone(),
+                    model_visible_name: spec.model_visible_name.clone(),
+                    description: spec.description.clone(),
+                    tool_type: spec.tool_type,
+                    parameters: spec.parameters.clone(),
+                    format: spec.format.clone(),
+                }
             })
             .collect()
     }
@@ -8077,7 +8147,7 @@ impl Harness {
         }
         self.extension_activation_staging.values().any(|stage| {
             stage.tool_registrations.iter().any(|registration| {
-                self.is_tool_enabled_for_role(&registration.tool, &role_name)
+                self.is_registered_tool_enabled_for_role(registration, &role_name)
                     && (registration.tool.name == *requested_name
                         || self.tool_model_visible_name(&registration.tool) == requested_name)
             })
@@ -8090,8 +8160,9 @@ impl Harness {
         role_name: &str,
     ) -> Option<&tau_proto::ToolSpec> {
         let mut visible_match: Option<&tau_proto::ToolSpec> = None;
-        for spec in self.registry.all_tools() {
-            if !self.is_tool_enabled_for_role(spec, role_name) {
+        for provider in self.registry.all_tool_providers() {
+            let spec = &provider.tool;
+            if !self.is_tool_provider_enabled_for_role(provider, role_name) {
                 continue;
             }
             if spec.name == *requested_name {
@@ -8118,7 +8189,32 @@ impl Harness {
             })
     }
 
-    fn is_tool_enabled_for_role(&self, spec: &tau_proto::ToolSpec, role_name: &str) -> bool {
+    fn is_registered_tool_enabled_for_role(
+        &self,
+        registration: &ToolRegister,
+        role_name: &str,
+    ) -> bool {
+        self.is_tool_enabled_for_role(
+            &registration.tool,
+            registration.tool_group.as_ref(),
+            role_name,
+        )
+    }
+
+    fn is_tool_provider_enabled_for_role(
+        &self,
+        provider: &tau_core::ToolProvider,
+        role_name: &str,
+    ) -> bool {
+        self.is_tool_enabled_for_role(&provider.tool, provider.tool_group.as_ref(), role_name)
+    }
+
+    fn is_tool_enabled_for_role(
+        &self,
+        spec: &tau_proto::ToolSpec,
+        group: Option<&tau_proto::ToolGroup>,
+        role_name: &str,
+    ) -> bool {
         #[cfg(any(test, feature = "echo-agent"))]
         if spec.name.as_str() == "echo" {
             return true;
@@ -8127,11 +8223,33 @@ impl Harness {
         let Some(role) = self.available_roles.get(role_name) else {
             return spec.enabled_by_default;
         };
-        let enabled = match role.tools.as_ref() {
+        let mut enabled = match role.tools.as_ref() {
             Some(tools) => tools.iter().any(|name| name == &spec.name),
             None => spec.enabled_by_default,
-        } || role.enable_tools.iter().any(|name| name == &spec.name);
-        enabled && !role.disable_tools.iter().any(|name| name == &spec.name)
+        };
+        if let Some(group) = group {
+            if role
+                .enable_tool_groups
+                .iter()
+                .any(|name| name == &group.name)
+            {
+                enabled = true;
+            }
+            if role
+                .disable_tool_groups
+                .iter()
+                .any(|name| name == &group.name)
+            {
+                enabled = false;
+            }
+        }
+        if role.enable_tools.iter().any(|name| name == &spec.name) {
+            enabled = true;
+        }
+        if role.disable_tools.iter().any(|name| name == &spec.name) {
+            enabled = false;
+        }
+        enabled
     }
 
     fn compaction_original_input_tokens_for_prompt(

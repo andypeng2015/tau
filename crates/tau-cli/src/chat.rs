@@ -2122,7 +2122,7 @@ fn handle_role_command(text: &str, writer: &WriterHandle, print_local: &impl Fn(
     match crate::ui_commands::parse_role_command(rest) {
         Ok(None) => {
             print_local(
-                "/role <role> [delete|model|effort|verbosity|thinking-summary|service-tier|compaction-threshold|tools|enable-tools|disable-tools] [value]",
+                "/role <role> [delete|model|effort|verbosity|thinking-summary|service-tier|compaction-threshold|tools|enable-tool-groups|disable-tool-groups|enable-tools|disable-tools] [value]",
             );
         }
         Ok(Some(event)) => {

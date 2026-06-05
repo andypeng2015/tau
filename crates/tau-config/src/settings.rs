@@ -519,6 +519,10 @@ struct RawRoleGroup {
     #[serde(alias = "promptOverride")]
     prompt_override: Option<String>,
     tools: Option<Vec<ToolName>>,
+    #[serde(alias = "enableToolGroups")]
+    enable_tool_groups: Vec<tau_proto::ToolGroupName>,
+    #[serde(alias = "disableToolGroups")]
+    disable_tool_groups: Vec<tau_proto::ToolGroupName>,
     #[serde(alias = "enableTools")]
     enable_tools: Vec<ToolName>,
     #[serde(alias = "disableTools")]
@@ -540,6 +544,8 @@ impl RawRoleGroup {
             prompt_fragments: self.prompt_fragments.clone(),
             prompt_override: self.prompt_override.clone(),
             tools: self.tools.clone(),
+            enable_tool_groups: self.enable_tool_groups.clone(),
+            disable_tool_groups: self.disable_tool_groups.clone(),
             enable_tools: self.enable_tools.clone(),
             disable_tools: self.disable_tools.clone(),
         }
@@ -863,6 +869,22 @@ pub struct AgentRole {
     /// use their own default enablement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolName>>,
+    /// Tool group names enabled in addition to the `tools` allow-list or the
+    /// default tool set. Group changes are applied before individual tool
+    /// changes.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "enableToolGroups"
+    )]
+    pub enable_tool_groups: Vec<tau_proto::ToolGroupName>,
+    /// Tool group names disabled before individual tool changes are applied.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "disableToolGroups"
+    )]
+    pub disable_tool_groups: Vec<tau_proto::ToolGroupName>,
     /// Internal tool names enabled in addition to the `tools` allow-list or the
     /// default tool set.
     #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "enableTools")]
@@ -922,6 +944,12 @@ impl AgentRole {
         }
         if let Some(tools) = &override_role.tools {
             self.tools = Some(tools.clone());
+        }
+        if !override_role.enable_tool_groups.is_empty() {
+            self.enable_tool_groups = override_role.enable_tool_groups.clone();
+        }
+        if !override_role.disable_tool_groups.is_empty() {
+            self.disable_tool_groups = override_role.disable_tool_groups.clone();
         }
         if !override_role.enable_tools.is_empty() {
             self.enable_tools = override_role.enable_tools.clone();
@@ -1231,6 +1259,8 @@ fn normalize_role_config_keys(value: &mut serde_json::Value) {
     normalize_alias_key(map, "serviceTier", "service_tier");
     normalize_alias_key(map, "promptFragments", "prompt_fragments");
     normalize_alias_key(map, "promptOverride", "prompt_override");
+    normalize_alias_key(map, "enableToolGroups", "enable_tool_groups");
+    normalize_alias_key(map, "disableToolGroups", "disable_tool_groups");
     normalize_alias_key(map, "enableTools", "enable_tools");
     normalize_alias_key(map, "disableTools", "disable_tools");
 }

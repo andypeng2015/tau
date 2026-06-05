@@ -41,12 +41,14 @@ where
     let handshake = register_tools_with_prompt_fragment(
         handshake,
         email::email_tool_specs(),
+        tau_proto::ToolGroupName::new("email"),
         "email_get",
         email::email_prompt_fragment(),
     );
     let handshake = register_tools_with_prompt_fragment(
         handshake,
         calendar::calendar_tool_specs(),
+        tau_proto::ToolGroupName::new("calendar"),
         "calendar_get",
         calendar::calendar_prompt_fragment(),
     );
@@ -171,16 +173,25 @@ fn has_pim_module_keys(config: &CborValue) -> bool {
 fn register_tools_with_prompt_fragment(
     mut handshake: tau_extension::Handshake,
     tools: Vec<tau_proto::ToolSpec>,
+    group_name: tau_proto::ToolGroupName,
     prompt_tool_name: &str,
     prompt_fragment: tau_proto::PromptFragment,
 ) -> tau_extension::Handshake {
+    let tool_group = tau_proto::ToolGroup {
+        name: group_name,
+        prompt_fragment: Some(prompt_fragment.clone()),
+    };
     for tool in tools {
         let prompt_fragment = if tool.name.as_str() == prompt_tool_name {
             Some(prompt_fragment.clone())
         } else {
             None
         };
-        handshake = handshake.register_tool_with_prompt_fragment(tool, prompt_fragment);
+        handshake = handshake.register_tool_with_group_and_prompt_fragment(
+            tool,
+            Some(tool_group.clone()),
+            prompt_fragment,
+        );
     }
     handshake
 }

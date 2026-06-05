@@ -14,7 +14,7 @@ use crate::{
     ActionInvocationId, AgentContextKey, AgentId, AgentMessageId, AgentPromptId, CborValue,
     ContextItem, DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId,
     PromptContext, PromptFragment, ProviderResponseItem, ProviderTokenUsage, SessionId, SkillName,
-    ToolCallId, ToolDefinition, ToolName,
+    ToolCallId, ToolDefinition, ToolGroupName, ToolName,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -152,6 +152,12 @@ pub struct HarnessRoleDetails {
     /// Explicit internal tool allow-list for this role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolName>>,
+    /// Tool groups enabled in addition to the allow-list/default set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enable_tool_groups: Vec<ToolGroupName>,
+    /// Tool groups disabled for this role.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disable_tool_groups: Vec<ToolGroupName>,
     /// Internal tools enabled in addition to the allow-list/default set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enable_tools: Vec<ToolName>,
@@ -961,9 +967,22 @@ impl ToolChoice {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolGroup {
+    /// Stable group name shared by related tools from the same provider.
+    pub name: ToolGroupName,
+    /// Optional system-prompt fragment template rendered once when any tool in
+    /// this group is enabled for the current role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_fragment: Option<PromptFragment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolRegister {
     /// Tool metadata made available to the agent and used for routing calls.
     pub tool: ToolSpec,
+    /// Optional group containing this tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_group: Option<ToolGroup>,
     /// Optional system-prompt fragment template to render whenever this tool is
     /// enabled for the current role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1901,6 +1920,20 @@ pub enum UiRoleUpdateAction {
         /// enablement.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tools: Option<Vec<ToolName>>,
+    },
+    /// Set the role's additive tool-group allow-list.
+    SetEnableToolGroups {
+        /// Tool group names to enable before individual tool overrides are
+        /// applied.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enable_tool_groups: Vec<ToolGroupName>,
+    },
+    /// Set the role's explicit tool-group block-list.
+    SetDisableToolGroups {
+        /// Tool group names to disable before individual tool overrides are
+        /// applied.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        disable_tool_groups: Vec<ToolGroupName>,
     },
     /// Set the role's additive tool allow-list.
     SetEnableTools {

@@ -6,7 +6,7 @@ use crate::extension::{ExtensionConnectCommand, ExtensionEntry, ExtensionState, 
 use crate::harness::{
     PendingTool, extension_disconnected_tool_call_error_message,
     tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
-    unavailable_tool_error_message,
+    unavailable_tool_error_message, validate_protocol_version,
 };
 
 fn context_text(item: &ContextItem) -> Option<&str> {
@@ -104,6 +104,7 @@ fn reregister_shell(h: &mut Harness, spec: ToolSpec) {
         &conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: spec,
+            tool_group: None,
             prompt_fragment: None,
         })),
     )
@@ -345,6 +346,7 @@ fn handshaking_tool_register_is_not_active_before_ready() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("staged_tool"),
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "staged_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -402,6 +404,7 @@ fn staged_tool_register_activates_on_ready_and_prompts_include_it() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("staged_tool"),
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "staged_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -465,6 +468,7 @@ fn tool_prompt_fragment_heading_uses_model_visible_tool_name() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: spec,
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "visible_staged_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -477,6 +481,7 @@ fn tool_prompt_fragment_heading_uses_model_visible_tool_name() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("empty_fragment_tool"),
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "empty_fragment_tool.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -536,6 +541,7 @@ fn queued_tool_call_waits_for_staged_provider_until_ready() {
         "conn-staged-tool",
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("staged_tool"),
+            tool_group: None,
             prompt_fragment: None,
         })),
     )
@@ -642,6 +648,7 @@ fn extension_that_never_sends_ready_never_exposes_staged_tool() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("never_ready_tool"),
+            tool_group: None,
             prompt_fragment: None,
         })),
     )
@@ -1222,6 +1229,7 @@ fn disconnect_before_ready_drops_all_staged_state() {
         conn_id,
         Frame::Event(Event::ToolRegister(tau_proto::ToolRegister {
             tool: staged_tool_spec("dropped_tool"),
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "dropped.tool.fragment",
                 tau_proto::PromptPriority::new(10),
@@ -2627,4 +2635,54 @@ fn duplicate_tool_result_is_discarded() {
     );
     // Should not error — just emits a warning and discards.
     assert!(result.is_ok());
+}
+
+#[test]
+fn hello_protocol_version_mismatch_is_rejected() {
+    let hello = tau_proto::Hello {
+        protocol_version: tau_proto::PROTOCOL_VERSION + 1,
+        client_name: "future-client".into(),
+        client_kind: tau_proto::ClientKind::Tool,
+    };
+
+    let error = validate_protocol_version(&hello).expect_err("reject mismatched protocol");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported protocol version from future-client"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn client_hello_protocol_mismatch_disconnects_only_client() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let events = connect_test_client(&mut h, "stale-ui", tau_proto::ClientKind::Ui);
+
+    let keep = h
+        .handle_client_event(
+            "stale-ui",
+            Frame::Message(Message::Hello(tau_proto::Hello {
+                protocol_version: tau_proto::PROTOCOL_VERSION + 1,
+                client_name: "stale-ui".into(),
+                client_kind: tau_proto::ClientKind::Ui,
+            })),
+        )
+        .expect("mismatched ui hello should not fail harness");
+
+    assert!(!keep);
+    let events = events.lock().expect("events");
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.frame,
+            Frame::Message(Message::Disconnect(disconnect))
+                if disconnect
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("unsupported protocol version from stale-ui"))
+        )),
+        "expected disconnect for stale UI, got: {events:?}"
+    );
 }

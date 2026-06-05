@@ -38,6 +38,21 @@ fn parse_disable_tool_list_update(value: &str) -> Result<Vec<tau_proto::ToolName
     Ok(parse_tool_list_update(value)?.unwrap_or_default())
 }
 
+fn parse_tool_group_list_update(value: &str) -> Result<Vec<tau_proto::ToolGroupName>, String> {
+    if is_reset_value(value) {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            tau_proto::ToolGroupName::try_new(name)
+                .ok_or_else(|| format!("invalid tool group name: {name}"))
+        })
+        .collect()
+}
+
 fn parse_compaction_threshold_update(value: &str) -> Result<Option<u64>, String> {
     if is_reset_value(value) {
         return Ok(None);
@@ -108,6 +123,12 @@ pub(crate) fn parse_role_setting_update(
         }),
         "tools" => Ok(tau_proto::UiRoleUpdateAction::SetTools {
             tools: parse_tool_list_update(value)?,
+        }),
+        "enable-tool-groups" => Ok(tau_proto::UiRoleUpdateAction::SetEnableToolGroups {
+            enable_tool_groups: parse_tool_group_list_update(value)?,
+        }),
+        "disable-tool-groups" => Ok(tau_proto::UiRoleUpdateAction::SetDisableToolGroups {
+            disable_tool_groups: parse_tool_group_list_update(value)?,
         }),
         "enable-tools" => Ok(tau_proto::UiRoleUpdateAction::SetEnableTools {
             enable_tools: parse_disable_tool_list_update(value)?,

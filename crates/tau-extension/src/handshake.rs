@@ -33,7 +33,7 @@ use std::io::Write;
 use tau_proto::{
     ActionSchema, ActionSchemaPublished, ClientKind, EncodeError, Event, EventName, EventSelector,
     ExtensionName, Frame, FrameWriter, Hello, Intercept, InterceptionPriority, Message,
-    PROTOCOL_VERSION, PromptFragment, Ready, Subscribe, ToolRegister, ToolSpec,
+    PROTOCOL_VERSION, PromptFragment, Ready, Subscribe, ToolGroup, ToolRegister, ToolSpec,
 };
 
 /// Builder for the opening frame sequence an extension sends to the
@@ -107,12 +107,24 @@ impl Handshake {
     /// Register a single tool and optionally attach a prompt fragment that
     /// the harness includes whenever the tool is enabled for the current role.
     pub fn register_tool_with_prompt_fragment(
+        self,
+        tool: ToolSpec,
+        prompt_fragment: Option<PromptFragment>,
+    ) -> Self {
+        self.register_tool_with_group_and_prompt_fragment(tool, None, prompt_fragment)
+    }
+
+    /// Register a single grouped tool and optionally attach a tool-specific
+    /// prompt fragment.
+    pub fn register_tool_with_group_and_prompt_fragment(
         mut self,
         tool: ToolSpec,
+        tool_group: Option<ToolGroup>,
         prompt_fragment: Option<PromptFragment>,
     ) -> Self {
         self.tools.push(ToolRegister {
             tool,
+            tool_group,
             prompt_fragment,
         });
         self
@@ -123,6 +135,7 @@ impl Handshake {
         self.tools
             .extend(tools.into_iter().map(|tool| ToolRegister {
                 tool,
+                tool_group: None,
                 prompt_fragment: None,
             }));
         self

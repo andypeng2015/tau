@@ -37,7 +37,7 @@ pub use tau_actions::*;
 pub use token_usage::*;
 
 /// First protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// UI marker text for responses, thinking blocks, and tool calls that
 /// are still in progress.
@@ -652,6 +652,115 @@ impl<'de> serde::Deserialize<'de> for ToolName {
         } else {
             Err(serde::de::Error::custom(format!(
                 "invalid tool name: {s:?}"
+            )))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ToolGroupName (validated newtype)
+// ---------------------------------------------------------------------------
+
+/// Tool group name: must be non-empty, at most [`ToolGroupName::MAX_LEN`]
+/// bytes, and contain only ASCII alphanumerics or underscores
+/// (`[a-zA-Z0-9_]+`).
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, Default)]
+#[serde(transparent)]
+pub struct ToolGroupName(String);
+
+impl ToolGroupName {
+    /// Maximum allowed length for a tool group name, in bytes.
+    pub const MAX_LEN: usize = 256;
+
+    /// Create a new `ToolGroupName`, panicking if the name is invalid.
+    pub fn new(s: impl Into<String>) -> Self {
+        let s = s.into();
+        assert!(Self::is_valid(&s), "invalid tool group name: {s:?}");
+        Self(s)
+    }
+
+    /// Try to create a `ToolGroupName`, returning `None` if invalid.
+    pub fn try_new(s: impl Into<String>) -> Option<Self> {
+        let s = s.into();
+        Self::is_valid(&s).then_some(Self(s))
+    }
+
+    /// Borrow the group name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Convert the group name into its owned string.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Return true when this group name is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn is_valid(s: &str) -> bool {
+        !s.is_empty()
+            && s.len() <= Self::MAX_LEN
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    }
+}
+
+impl std::ops::Deref for ToolGroupName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ToolGroupName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl PartialEq<str> for ToolGroupName {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for ToolGroupName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<String> for ToolGroupName {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::borrow::Borrow<str> for ToolGroupName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for ToolGroupName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ToolGroupName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        if Self::is_valid(&s) {
+            Ok(Self(s))
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "invalid tool group name: {s:?}"
             )))
         }
     }

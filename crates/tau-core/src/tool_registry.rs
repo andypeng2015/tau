@@ -6,8 +6,8 @@ use std::error::Error;
 use std::fmt;
 
 use tau_proto::{
-    CborValue, ConnectionId, PromptFragment, ToolName, ToolRegister, ToolRequest, ToolSpec,
-    ToolStarted, ToolType,
+    CborValue, ConnectionId, PromptFragment, ToolGroup, ToolName, ToolRegister, ToolRequest,
+    ToolSpec, ToolStarted, ToolType,
 };
 
 use crate::connection::RouteError;
@@ -31,6 +31,8 @@ pub struct ToolProvider {
     pub kind: ToolProviderKind,
     /// Tool metadata advertised to the model and used for routing.
     pub tool: ToolSpec,
+    /// Optional group this tool belongs to.
+    pub tool_group: Option<ToolGroup>,
     /// Optional prompt fragment template contributed while this tool is
     /// enabled.
     pub prompt_fragment: Option<PromptFragment>,
@@ -437,6 +439,7 @@ impl ToolRegistry {
             connection_id,
             ToolRegister {
                 tool,
+                tool_group: None,
                 prompt_fragment: None,
             },
             ToolProviderKind::Extension,
@@ -449,6 +452,7 @@ impl ToolRegistry {
             connection_id,
             ToolRegister {
                 tool,
+                tool_group: None,
                 prompt_fragment: None,
             },
             ToolProviderKind::Internal,
@@ -473,6 +477,7 @@ impl ToolRegistry {
     ) -> RegisterToolReport {
         let ToolRegister {
             tool,
+            tool_group,
             prompt_fragment,
         } = registration;
         let tool_name = tool.name.clone();
@@ -497,6 +502,7 @@ impl ToolRegistry {
             .find(|provider| provider.connection_id == connection_id)
         {
             existing_provider.tool = tool;
+            existing_provider.tool_group = tool_group;
             existing_provider.kind = kind;
             existing_provider.prompt_fragment = prompt_fragment;
         } else {
@@ -504,6 +510,7 @@ impl ToolRegistry {
                 connection_id: connection_id.into(),
                 kind,
                 tool,
+                tool_group,
                 prompt_fragment,
             });
         }

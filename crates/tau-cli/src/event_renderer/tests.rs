@@ -164,6 +164,8 @@ fn role_details_prefer_structured_fields_over_description_text() {
                 service_tier: Some(tau_proto::ServiceTier::Fast),
             },
             tools: Some(vec![tau_proto::ToolName::new("read")]),
+            enable_tool_groups: vec![tau_proto::ToolGroupName::new("pim")],
+            disable_tool_groups: vec![tau_proto::ToolGroupName::new("shell")],
             enable_tools: vec![tau_proto::ToolName::new("web_search")],
             disable_tools: vec![tau_proto::ToolName::new("shell")],
         }),
@@ -171,7 +173,7 @@ fn role_details_prefer_structured_fields_over_description_text() {
 
     assert_eq!(
         details.short_description(),
-        "provider/model e=high v=low ts=concise st=fast tools=read et=web_search dt=shell"
+        "provider/model e=high v=low ts=concise st=fast tools=read etg=pim dtg=shell et=web_search dt=shell"
     );
 }
 

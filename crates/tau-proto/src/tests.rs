@@ -52,6 +52,7 @@ fn representative_events() -> Vec<Event> {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: None,
         }),
         Event::ToolRequest(ToolRequest {
@@ -689,6 +690,8 @@ fn harness_role_info_role_description_is_optional_and_round_trips() {
                 service_tier: Some(ServiceTier::Fast),
             },
             tools: Some(vec![ToolName::new("read")]),
+            enable_tool_groups: vec![ToolGroupName::new("pim")],
+            disable_tool_groups: vec![ToolGroupName::new("shell")],
             enable_tools: vec![ToolName::new("web_search")],
             disable_tools: vec![ToolName::new("shell")],
         }),
@@ -1068,6 +1071,7 @@ fn tool_register_prompt_is_optional_and_round_trips_when_present() {
 
     let with_prompt = ToolRegister {
         tool: echo_tool_spec(),
+        tool_group: None,
         prompt_fragment: Some(PromptFragment::new(
             "echo.instructions",
             PromptPriority::new(7),

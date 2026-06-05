@@ -79,7 +79,16 @@ fn restart_tool_can_return_error() {
         .read_frame()
         .expect("read")
         .expect("register should exist");
-    assert!(matches!(register, Frame::Event(Event::ToolRegister(_))));
+    let Frame::Event(Event::ToolRegister(register)) = register else {
+        panic!("expected tool register");
+    };
+    assert_eq!(
+        register
+            .tool_group
+            .as_ref()
+            .map(|group| group.name.as_str()),
+        Some("test")
+    );
     let ready = reader
         .read_frame()
         .expect("read")
@@ -116,8 +125,16 @@ fn restart_tool_can_exit_without_reply() {
     assert!(matches!(frames[0], Frame::Message(Message::Hello(_))));
     assert!(matches!(frames[1], Frame::Message(Message::Subscribe(_))));
     assert!(matches!(frames[2], Frame::Message(Message::Intercept(_))));
-    assert!(matches!(frames[3], Frame::Event(Event::ToolRegister(_))));
-    assert!(matches!(frames[4], Frame::Message(Message::Ready(_))));
+    let Frame::Event(Event::ToolRegister(register)) = &frames[3] else {
+        panic!("expected tool register");
+    };
+    assert_eq!(
+        register
+            .tool_group
+            .as_ref()
+            .map(|group| group.name.as_str()),
+        Some("test")
+    );
     // The restart-success branch must exit without emitting any
     // reply frame for the invoke — guard against a future bug that
     // re-introduces a stray ToolResult/ToolError before exit.

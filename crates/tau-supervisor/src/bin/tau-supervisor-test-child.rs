@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         enabled_by_default: true,
                         background_support: None,
                     },
+                    tool_group: None,
                     prompt_fragment: None,
                 })))?;
                 if let Some(id) = log_id {

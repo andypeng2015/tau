@@ -14,8 +14,10 @@ A role can set:
 - `prompt_fragments`: role-specific prompt fragments
 - `prompt_override`: system prompt template name
 - `tools`: explicit internal tools enabled for this role
-- `enable_tools`: internal tools added to the selected/default set
-- `disable_tools`: internal tools removed from the selected/default set
+- `enable_tool_groups`: tool groups added to the selected/default set
+- `disable_tool_groups`: tool groups removed from the selected/default set
+- `enable_tools`: internal tools added after tool-group changes
+- `disable_tools`: internal tools removed after tool-group changes
 
 Top-level `prompt_fragments` in `harness.yaml` apply to every role. Use them for global style or policy instructions:
 
@@ -47,7 +49,8 @@ Roles live in `harness.yaml` under globally unique `role_groups`. Each group has
           effort: "medium",
           compaction: { threshold: 200000 },
           tools: ["read", "grep"],
-          enable_tools: ["web_search"],
+          enable_tool_groups: ["calendar", "email"],
+          disable_tools: ["email_delete"],
         },
         "staff-engineer": {
           description: "Maximum-reasoning engineer",
@@ -71,7 +74,7 @@ Roles live in `harness.yaml` under globally unique `role_groups`. Each group has
 }
 ```
 
-Missing fields use group defaults first, then provider-published fallback knobs for the role's resolved model. Tool filtering starts with `tools` when set, otherwise with each tool's default enablement; then `enable_tools` adds tools, and `disable_tools` removes tools. When `compaction` is omitted, Tau asks supported providers to use their model-specific compaction default. Set `enable: false` on a role in a higher-precedence config layer to remove it from the effective role list and role-group cycling after all layers merge.
+Missing fields use group defaults first, then provider-published fallback knobs for the role's resolved model. Tool filtering starts with `tools` when set, otherwise with each tool's default enablement; then `enable_tool_groups` and `disable_tool_groups` adjust whole groups; then `enable_tools` and `disable_tools` apply individual overrides. This order lets a role enable a group while disabling one tool in it, or disable a group while keeping one tool. When `compaction` is omitted, Tau asks supported providers to use their model-specific compaction default. Set `enable: false` on a role in a higher-precedence config layer to remove it from the effective role list and role-group cycling after all layers merge.
 
 Tau ships built-in `junior-engineer`, `senior-engineer`, `staff-engineer`, and `manager` roles, with `default_role: senior-engineer`. `junior-engineer` uses lower reasoning for straightforward engineering work, `senior-engineer` uses balanced individual-contributor defaults, and `staff-engineer` is the maximum-reasoning engineering variant. `manager` is an orchestration role with a built-in delegation prompt. For non-trivial work, the built-in `manager` prompt tells the model to use `delegate` by default for research/scoping, implementation, and review/validation sub-agent steps, then synthesize the results; tiny or purely clerical work may still be handled directly.
 
@@ -88,7 +91,7 @@ Use `/model <role>` or `/role <role>`.
 Use:
 
 ```text
-/role <role> <delete|model|effort|verbosity|thinking-summary|service-tier|compaction-threshold|tools|enable-tools|disable-tools> [value]
+/role <role> <delete|model|effort|verbosity|thinking-summary|service-tier|compaction-threshold|tools|enable-tool-groups|disable-tool-groups|enable-tools|disable-tools> [value]
 ```
 
 Examples:
@@ -96,8 +99,8 @@ Examples:
 ```text
 /role engineer model chatgpt/gpt-5.3-codex
 /role manager effort xhigh
-/role engineer enable-tools web_search
-/role engineer disable-tools shell
+/role engineer enable-tool-groups calendar,email
+/role engineer disable-tools email_delete
 /role temporary model anthropic/claude-sonnet-4-20250514
 /role temporary delete
 ```

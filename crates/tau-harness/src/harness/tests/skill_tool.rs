@@ -1109,6 +1109,7 @@ fn prompt_fragments_include_only_tools_enabled_for_current_role() {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "prompt_enabled.instructions",
                 tau_proto::PromptPriority::new(10),
@@ -1129,6 +1130,7 @@ fn prompt_fragments_include_only_tools_enabled_for_current_role() {
                 enabled_by_default: false,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "prompt_disabled.instructions",
                 tau_proto::PromptPriority::new(5),
@@ -1196,6 +1198,7 @@ fn extension_and_tool_prompt_fragments_sort_together_by_priority_source_name() {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: Some(tau_proto::PromptFragment::new(
                 "z",
                 tau_proto::PromptPriority::new(10),

@@ -143,7 +143,8 @@ role_groups:
         model: chatgpt/gpt-5.5
         effort: medium
         tools: [read, grep]
-        enable_tools: [web_search]
+        enable_tool_groups: [calendar, email]
+        disable_tools: [email_delete]
       staff-engineer:
         description: Maximum-reasoning engineer
         effort: xhigh
@@ -163,8 +164,10 @@ Roles can include a `description` shown after the model/knob summary in
 group-level fields apply as defaults to that group's roles; per-role
 `prompt_fragments` apply only to that role. Roles can set
 `compaction` to use provider-default automatic compaction, disable it, or set
-an explicit token threshold, and can also
-use `tools`, `enable_tools`, and `disable_tools` to customize internal tool availability. `tools` overrides the default set when present, `enable_tools` adds to the selected set, and `disable_tools` removes from it.
+an explicit token threshold, and can also use `tools`, `enable_tool_groups`,
+`disable_tool_groups`, `enable_tools`, and `disable_tools` to customize internal
+tool availability. `tools` overrides the default set when present, tool-group
+overrides apply next, and individual tool overrides apply last.
 
 `default_role` selects the startup role; if it is omitted Tau starts on the
 first role in `role_groups` order. `tau --role <role>` overrides the startup role

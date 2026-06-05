@@ -101,6 +101,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
                 enabled_by_default: true,
                 background_support: None,
             },
+            tool_group: None,
             prompt_fragment: None,
         }))
     );
