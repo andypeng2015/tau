@@ -32,11 +32,17 @@ use crate::style::{
     visit_styled_graphemes,
 };
 
+fn normalize_cell_lines(lines: &[Vec<Cell>]) -> Vec<Vec<Cell>> {
+    lines
+        .iter()
+        .map(|line| line.iter().copied().map(Cell::normalized).collect())
+        .collect()
+}
+
 /// Column width of a cell slice (sum of individual display widths).
 fn cols(cells: &[Cell]) -> usize {
     cells.iter().map(|c| c.col_width()).sum()
 }
-
 fn repaint_prefix_for_cluster_boundary(
     mut common_prefix: usize,
     actual: &[Cell],
@@ -117,6 +123,9 @@ impl Screen {
         desired_lines: &[Vec<Cell>],
         desired_cursor: (usize, usize),
     ) -> io::Result<()> {
+        let normalized_desired_lines = normalize_cell_lines(desired_lines);
+        let desired_lines = normalized_desired_lines.as_slice();
+
         // Handle empty desired.
         if desired_lines.is_empty() {
             if !self.lines.is_empty() {
@@ -177,6 +186,7 @@ impl Screen {
 
             // Clear trailing characters / lines below as needed.
             if has_extra_actual_below {
+                self.leave_pending_wrap_for_clear(w)?;
                 w.queue(terminal::Clear(ClearType::FromCursorDown))?;
             } else if actual_wider {
                 w.queue(terminal::Clear(ClearType::UntilNewLine))?;
@@ -241,6 +251,8 @@ impl Screen {
         height: usize,
         desired_cursor: (usize, usize),
     ) -> io::Result<()> {
+        let normalized_all_lines = normalize_cell_lines(all_lines);
+        let all_lines = normalized_all_lines.as_slice();
         let total = all_lines.len();
         let new_viewport_top = total.saturating_sub(height);
 
@@ -358,7 +370,7 @@ impl Screen {
     /// terminal. Call after a full render to prepare for future
     /// differential updates.
     pub fn reset_to(&mut self, lines: Vec<Vec<Cell>>, cursor_row: usize, cursor_col: usize) {
-        self.lines = lines;
+        self.lines = normalize_cell_lines(&lines);
         self.cursor_row = cursor_row;
         self.cursor_col = cursor_col;
     }
@@ -394,6 +406,14 @@ impl Screen {
         Ok(())
     }
 
+    fn leave_pending_wrap_for_clear(&mut self, w: &mut impl Write) -> io::Result<()> {
+        if self.width <= self.cursor_col {
+            self.move_down_one(w)?;
+            self.cursor_row += 1;
+        }
+        Ok(())
+    }
+
     /// Moves down one terminal row after first forcing the terminal
     /// cursor to column zero.
     ///
@@ -410,6 +430,10 @@ impl Screen {
 }
 
 /// Emits a sequence of styled cells to the writer.
+///
+/// Cell constructors sanitize terminal controls, but this function also applies
+/// the same final output policy so hand-built public `Cell` values cannot emit
+/// raw control bytes.
 ///
 /// Tracks style changes and only emits escape codes when the style
 /// differs from the previous cell. Resets to default style at the end
@@ -431,7 +455,7 @@ pub fn emit_styled_cells(w: &mut impl Write, cells: &[Cell]) -> io::Result<()> {
             }
             current = cell.style;
         }
-        w.queue(Print(cell.ch))?;
+        w.queue(Print(cell.normalized().ch))?;
     }
 
     // Restore default state.

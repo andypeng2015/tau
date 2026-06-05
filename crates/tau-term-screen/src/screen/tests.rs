@@ -258,6 +258,52 @@ fn layout_sanitizes_non_newline_control_characters() {
         "sanitized content must not emit raw ESC: {buf:?}"
     );
 }
+/// Public cell construction and emission both apply the screen sanitization
+/// policy so callers cannot accidentally bypass styled-text control filtering.
+#[test]
+fn cell_api_sanitizes_controls() {
+    assert_eq!(Cell::plain('\t').ch, ' ');
+    assert_eq!(Cell::plain('\x1b').ch, '�');
+
+    let cells = [Cell {
+        ch: '\x1b',
+        style: Style::default(),
+        width: 0,
+    }];
+    let mut buf = Vec::new();
+    emit_styled_cells(&mut buf, &cells).expect("cell emission should succeed");
+    assert!(!buf.contains(&0x1b), "raw public cells must be sanitized");
+}
+/// Invalid hand-built public cells are normalized before diffing and caching,
+/// keeping the model's column widths aligned with emitted terminal output.
+#[test]
+fn screen_update_normalizes_public_cells_before_caching() {
+    let mut term = TestTerm::new(4, 5);
+    let invalid = vec![vec![Cell {
+        ch: '\x1b',
+        style: Style::default(),
+        width: 0,
+    }]];
+    let mut buf = Vec::new();
+    term.screen
+        .update(&mut buf, &invalid, (0, 1))
+        .expect("update should succeed");
+    term.term.process(&buf);
+
+    assert_eq!(term.screen.lines[0][0].ch, '�');
+    assert_eq!(term.screen.lines[0][0].col_width(), 1);
+    let rendered = String::from_utf8_lossy(&buf);
+    assert!(rendered.contains('�'));
+
+    let replacement = vec![vec![Cell::plain('A')]];
+    buf.clear();
+    term.screen
+        .update(&mut buf, &replacement, (0, 1))
+        .expect("update should succeed");
+    term.term.process(&buf);
+
+    assert_eq!(term.screen.lines[0][0].ch, 'A');
+}
 
 // --- layout_block tests ---
 
@@ -1269,6 +1315,17 @@ fn scrolling_from_pending_wrap_scrolls_once() {
 
     assert_eq!(term.scrollback, vec!["bbbbb"]);
     assert_eq!(term.rows, vec!["ccccc", "ddddd", "eeeee"]);
+}
+/// Clearing lines below an exact-width final row must start from the following
+/// row, not from terminal pending-wrap state at the end of the full row.
+#[test]
+fn update_clears_below_after_exact_width_line() {
+    let mut term = TestTerm::new(4, 5);
+    term.render("abcde\nold", 5);
+    term.render("abcde", 5);
+
+    assert_eq!(term.row_text(0), "abcde");
+    assert_eq!(term.row_text(1), "");
 }
 
 /// Regression guard from `fix(term-screen): avoid rewriting rows before

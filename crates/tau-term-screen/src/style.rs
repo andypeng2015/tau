@@ -174,7 +174,18 @@ pub struct Cell {
 }
 
 impl Cell {
+    pub(crate) fn sanitized_char(ch: char) -> char {
+        if ch == '\t' {
+            ' '
+        } else if ch.is_control() {
+            '�'
+        } else {
+            ch
+        }
+    }
+
     pub fn new(ch: char, style: Style) -> Self {
+        let ch = Self::sanitized_char(ch);
         Self {
             ch,
             style,
@@ -183,10 +194,24 @@ impl Cell {
     }
 
     pub fn plain(ch: char) -> Self {
+        let ch = Self::sanitized_char(ch);
         Self {
             ch,
             style: Style::default(),
             width: ch.width().unwrap_or(0),
+        }
+    }
+
+    pub(crate) fn normalized(self) -> Self {
+        let ch = Self::sanitized_char(self.ch);
+        if ch == self.ch {
+            self
+        } else {
+            Self {
+                ch,
+                style: self.style,
+                width: ch.width().unwrap_or(0),
+            }
         }
     }
 
