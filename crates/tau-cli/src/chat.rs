@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 use tau_config::settings::CliBindingAction;
 use tau_harness::SessionLaunchStatus;
 use tau_proto::{
-    CborValue, ClientKind, Disconnect, Event, EventSelector, Frame, FrameReader, FrameWriter,
-    Hello, Message, PROTOCOL_VERSION, Subscribe, UiFocusChanged, UiPromptDraft, UiPromptSubmitted,
-    UiSetAgentDisplayName, UnixMicros,
+    CborValue, Disconnect, Event, Frame, FrameReader, FrameWriter, Message, UiFocusChanged,
+    UiPromptDraft, UiPromptSubmitted, UiSetAgentDisplayName, UnixMicros,
 };
 
 use crate::action_commands::ActionCommandState;
@@ -494,32 +493,11 @@ pub(crate) fn run_chat(
     let writer: WriterHandle = Arc::new(Mutex::new(FrameWriter::new(BufWriter::new(stream))));
 
     // Handshake.
-    send_frame(
-        &writer,
-        &Frame::Message(Message::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: "tau-chat".into(),
-            client_kind: ClientKind::Ui,
-        })),
-    )
-    .map_err(CliError::Io)?;
+    send_frame(&writer, &crate::ui_client::hello_frame("tau-chat")).map_err(CliError::Io)?;
     tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "sent hello");
     send_frame(
         &writer,
-        &Frame::Message(Message::Subscribe(Subscribe {
-            selectors: vec![
-                EventSelector::Prefix("ui.".to_owned()),
-                EventSelector::Prefix("action.".to_owned()),
-                EventSelector::Prefix("agent.".to_owned()),
-                EventSelector::Prefix("session.".to_owned()),
-                EventSelector::Prefix("provider.".to_owned()),
-                EventSelector::Prefix("tool.".to_owned()),
-                EventSelector::Prefix("extension.".to_owned()),
-                EventSelector::Prefix("harness.".to_owned()),
-                EventSelector::Prefix("shell.".to_owned()),
-                EventSelector::Prefix("term.".to_owned()),
-            ],
-        })),
+        &crate::ui_client::subscribe_frame(crate::ui_client::chat_subscription_selectors()),
     )
     .map_err(CliError::Io)?;
     tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "sent subscribe");

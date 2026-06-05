@@ -34,28 +34,45 @@ pub(crate) fn connect_ui_writer(
     Ok(writer)
 }
 
+pub(crate) fn hello_frame(client_name: impl Into<tau_proto::ExtensionName>) -> Frame {
+    Frame::Message(Message::Hello(Hello {
+        protocol_version: PROTOCOL_VERSION,
+        client_name: client_name.into(),
+        client_kind: ClientKind::Ui,
+    }))
+}
+
+pub(crate) fn chat_subscription_selectors() -> Vec<EventSelector> {
+    vec![
+        EventSelector::Prefix("ui.".to_owned()),
+        EventSelector::Prefix("action.".to_owned()),
+        EventSelector::Prefix("agent.".to_owned()),
+        EventSelector::Prefix("session.".to_owned()),
+        EventSelector::Prefix("provider.".to_owned()),
+        EventSelector::Prefix("tool.".to_owned()),
+        EventSelector::Prefix("extension.".to_owned()),
+        EventSelector::Prefix("harness.".to_owned()),
+        EventSelector::Prefix("shell.".to_owned()),
+        EventSelector::Prefix("term.".to_owned()),
+    ]
+}
+
+pub(crate) fn subscribe_frame(selectors: Vec<EventSelector>) -> Frame {
+    Frame::Message(Message::Subscribe(Subscribe { selectors }))
+}
+
 pub(crate) fn send_hello(
     writer: &mut UiFrameWriter,
     client_name: impl Into<tau_proto::ExtensionName>,
 ) -> io::Result<()> {
-    send_frame(
-        writer,
-        &Frame::Message(Message::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: client_name.into(),
-            client_kind: ClientKind::Ui,
-        })),
-    )
+    send_frame(writer, &hello_frame(client_name))
 }
 
 pub(crate) fn subscribe(
     writer: &mut UiFrameWriter,
     selectors: Vec<EventSelector>,
 ) -> io::Result<()> {
-    send_frame(
-        writer,
-        &Frame::Message(Message::Subscribe(Subscribe { selectors })),
-    )
+    send_frame(writer, &subscribe_frame(selectors))
 }
 
 pub(crate) fn send_frame(writer: &mut UiFrameWriter, frame: &Frame) -> io::Result<()> {
