@@ -1,0 +1,27 @@
+# tau-cli
+
+`tau-cli` is Tau's terminal application layer. It connects to the harness daemon, owns the interactive chat loop, interprets application commands, and renders protocol events through `tau-cli-term`.
+
+## Event flow
+
+The interactive UI has three main flows:
+
+1. the socket reader receives `tau-proto` events from the harness,
+2. `EventRenderer` folds those events into terminal-visible state and writes blocks through `tau-cli-term`,
+3. the input loop reads high-level prompt events and sends application commands or prompts back to the harness.
+
+The long-term direction is a single UI model/reducer that owns protocol state, with the input loop sending typed commands instead of sharing mutable mirrors of renderer state. Current code still has some shared `Arc<Mutex<_>>` snapshots for completions and prompt editor context; prefer reducing those when touching nearby code.
+
+## Tool UI policy
+
+UI code must render tool calls through generic `ToolUseState`, `ToolUsePayload`, progress counters, and fallback tool displays. Do not add tool-name-specific rendering for ordinary extension tools.
+
+The current documented exception is harness delegation. The harness emits `delegate` tool calls together with side-conversation lifecycle events and `DelegateProgress`; the UI suppresses nested sub-agent tool spam and rolls it up into the parent delegation line. Delegate-specific code exists only to connect those harness-owned side-conversation events to the generic tool display shape and status chips. New delegate UI behavior should still prefer expressing data in `ToolUseState` / `DelegateProgress` rather than parsing tool names or payloads.
+
+## Threading and shutdown direction
+
+The current implementation has a socket reader thread, renderer path, redraw/timer helpers, and a blocking prompt input loop. Remote disconnect handling is not yet fully unified with prompt input wakeup. Future changes should move toward explicit UI event ownership: daemon disconnect, terminal input, timers, and shutdown should be represented as events that drive one loop or a clearly joined set of owned workers.
+
+## Command paths
+
+Interactive chat, `tau dev send`, and `--prompt-stdin` should share socket/session setup and prompt construction wherever possible. Mode-specific command capabilities are fine, but avoid duplicating protocol handshakes or slash-command parsing in separate paths.
