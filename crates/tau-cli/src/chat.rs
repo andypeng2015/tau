@@ -540,6 +540,12 @@ pub(crate) fn run_chat(
     let agent_display_names = renderer.agent_display_names();
     let live_agents = renderer.live_agents();
     let suspended_agents = renderer.suspended_agents();
+    let input_routing = InputRoutingState::new(
+        current_agent_state.clone(),
+        known_agents.clone(),
+        live_agents.clone(),
+        suspended_agents.clone(),
+    );
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/agent"),
         build_agent_arg_completer(
@@ -606,10 +612,7 @@ pub(crate) fn run_chat(
         TerminalInputLoopCtx {
             fast_service_tier_state,
             current_role_state,
-            current_agent_state,
-            known_agents,
-            live_agents,
-            suspended_agents,
+            routing: input_routing,
             roles_available,
             role_groups_available,
             role_group_memory,
@@ -782,10 +785,7 @@ enum RendererCmd {
 struct TerminalInputLoopCtx {
     fast_service_tier_state: Arc<std::sync::atomic::AtomicBool>,
     current_role_state: Arc<Mutex<Option<String>>>,
-    current_agent_state: Arc<Mutex<Option<String>>>,
-    known_agents: Arc<Mutex<Vec<String>>>,
-    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
-    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+    routing: InputRoutingState,
     roles_available: Arc<Mutex<Vec<String>>>,
     role_groups_available: Arc<Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     role_group_memory: Arc<Mutex<HashMap<String, String>>>,
@@ -797,6 +797,107 @@ struct TerminalInputLoopCtx {
     action_state: ActionCommandState,
     draft_handle: DraftHandle,
     prompt_history: PromptHistoryStore,
+}
+
+#[derive(Clone)]
+struct InputRoutingState {
+    current_agent_state: Arc<Mutex<Option<String>>>,
+    known_agents: Arc<Mutex<Vec<String>>>,
+    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+impl InputRoutingState {
+    fn new(
+        current_agent_state: Arc<Mutex<Option<String>>>,
+        known_agents: Arc<Mutex<Vec<String>>>,
+        live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+        suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
+    ) -> Self {
+        Self {
+            current_agent_state,
+            known_agents,
+            live_agents,
+            suspended_agents,
+        }
+    }
+
+    fn selected_agent_id(&self) -> Option<String> {
+        self.current_agent_state
+            .lock()
+            .ok()
+            .and_then(|agent| agent.clone())
+    }
+
+    fn selected_side_agent_id(&self) -> Option<tau_proto::AgentId> {
+        self.selected_agent_id().map(Into::into)
+    }
+
+    fn set_selected_agent(&self, agent_id: Option<String>) {
+        if let Ok(mut current) = self.current_agent_state.lock() {
+            *current = agent_id;
+        }
+    }
+
+    fn known_agents(&self) -> Vec<String> {
+        self.known_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default()
+    }
+
+    fn active_count(&self) -> usize {
+        active_side_agent_count_from_handles(&self.live_agents, &self.suspended_agents)
+    }
+
+    fn agent_is_known(&self, agent_id: &str) -> bool {
+        self.known_agents
+            .lock()
+            .map(|agents| agents.iter().any(|known| known == agent_id))
+            .unwrap_or(false)
+    }
+
+    fn agent_is_active(&self, agent_id: &str) -> bool {
+        let live = self
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended = self
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        agent_is_active_in_sets(&live, &suspended, agent_id)
+    }
+
+    fn mark_suspended(&self, agent_id: &str) {
+        mark_agent_suspended(&self.suspended_agents, agent_id);
+    }
+
+    fn mark_resumed(&self, agent_id: &str) {
+        mark_agent_resumed(&self.live_agents, &self.suspended_agents, agent_id);
+    }
+
+    fn next_active_agent(&self, delta: isize) -> Option<String> {
+        let current = self.selected_agent_id();
+        let known = self.known_agents();
+        let live = self
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended = self
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        next_active_agent(current.as_deref(), &known, &live, &suspended, delta)
+    }
+
+    fn role_cycling_enabled(&self) -> bool {
+        role_cycling_enabled(&self.current_agent_state)
+    }
 }
 
 /// Local UI output used by the input thread while it holds `&mut HighTerm`.
@@ -1076,13 +1177,7 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn selected_side_agent_id(&self) -> Option<tau_proto::AgentId> {
-        let selected_agent = self
-            .ctx
-            .current_agent_state
-            .lock()
-            .ok()
-            .and_then(|agent| agent.clone());
-        selected_agent.map(Into::into)
+        self.ctx.routing.selected_side_agent_id()
     }
 
     fn handle_tree_or_compact_command(&self, text: &str) -> bool {
@@ -1201,21 +1296,11 @@ impl<'a> TerminalInputSession<'a> {
         if rest.is_empty() {
             let current = self
                 .ctx
-                .current_agent_state
-                .lock()
-                .ok()
-                .and_then(|agent| agent.clone())
+                .routing
+                .selected_agent_id()
                 .unwrap_or_else(|| "none".to_owned());
-            let known_agents = self
-                .ctx
-                .known_agents
-                .lock()
-                .map(|a| a.clone())
-                .unwrap_or_default();
-            let active_count = active_side_agent_count_from_handles(
-                &self.ctx.live_agents,
-                &self.ctx.suspended_agents,
-            );
+            let known_agents = self.ctx.routing.known_agents();
+            let active_count = self.ctx.routing.active_count();
             self.output.system_info(&format!(
                 "/agent <new|switch|suspend|resume|name> [agent_id]; current: {current}; active: {active_count}; known: {}",
                 known_agents.join(", ")
@@ -1294,11 +1379,7 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn selected_agent_id(&self) -> Option<String> {
-        self.ctx
-            .current_agent_state
-            .lock()
-            .ok()
-            .and_then(|agent| agent.clone())
+        self.ctx.routing.selected_agent_id()
     }
 
     fn handle_agent_new(&self, target: Option<&str>) {
@@ -1310,9 +1391,7 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn clear_selected_agent(&self) {
-        if let Ok(mut current) = self.ctx.current_agent_state.lock() {
-            *current = None;
-        }
+        self.ctx.routing.set_selected_agent(None);
         let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
     }
 
@@ -1335,9 +1414,7 @@ impl<'a> TerminalInputSession<'a> {
             ));
             return;
         }
-        if let Ok(mut current) = self.ctx.current_agent_state.lock() {
-            *current = Some(arg.to_owned());
-        }
+        self.ctx.routing.set_selected_agent(Some(arg.to_owned()));
         let _ = self.ctx.renderer_tx.send(RendererCmd::SwitchAgent {
             agent_id: arg.to_owned(),
         });
@@ -1358,7 +1435,7 @@ impl<'a> TerminalInputSession<'a> {
                 .system_info(&format!("unknown agent: {agent_id}"));
             return;
         }
-        mark_agent_suspended(&self.ctx.suspended_agents, &agent_id);
+        self.ctx.routing.mark_suspended(&agent_id);
         let _ = self
             .ctx
             .renderer_tx
@@ -1383,7 +1460,7 @@ impl<'a> TerminalInputSession<'a> {
                 .system_info(&format!("unknown agent: {agent_id}"));
             return;
         }
-        mark_agent_resumed(&self.ctx.live_agents, &self.ctx.suspended_agents, &agent_id);
+        self.ctx.routing.mark_resumed(&agent_id);
         let _ = self
             .ctx
             .renderer_tx
@@ -1391,27 +1468,11 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn agent_is_known(&self, agent_id: &str) -> bool {
-        self.ctx
-            .known_agents
-            .lock()
-            .map(|agents| agents.iter().any(|known| known == agent_id))
-            .unwrap_or(false)
+        self.ctx.routing.agent_is_known(agent_id)
     }
 
     fn agent_is_active(&self, agent_id: &str) -> bool {
-        let live = self
-            .ctx
-            .live_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let suspended = self
-            .ctx
-            .suspended_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        agent_is_active_in_sets(&live, &suspended, agent_id)
+        self.ctx.routing.agent_is_active(agent_id)
     }
 
     fn handle_role_selection_command(&self, text: &str) -> bool {
@@ -1490,13 +1551,7 @@ impl<'a> TerminalInputSession<'a> {
         if command.is_empty() {
             return Ok(());
         }
-        let target_agent_id = self
-            .ctx
-            .current_agent_state
-            .lock()
-            .ok()
-            .and_then(|agent| agent.clone())
-            .map(Into::into);
+        let target_agent_id = self.ctx.routing.selected_side_agent_id();
         send_shell_command(
             self.writer,
             self.session_id,
@@ -1509,12 +1564,7 @@ impl<'a> TerminalInputSession<'a> {
     fn submit_prompt(&self, text: &str) -> Option<InputLoopExit> {
         self.invalidate_pending_draft();
 
-        let selected_agent = self
-            .ctx
-            .current_agent_state
-            .lock()
-            .ok()
-            .and_then(|agent| agent.clone());
+        let selected_agent = self.ctx.routing.selected_agent_id();
         if let Some(selected_agent) = selected_agent.as_deref()
             && !self.agent_is_active(selected_agent)
         {
@@ -1622,31 +1672,7 @@ impl<'a> TerminalInputSession<'a> {
 
     fn switch_agent_by_delta(&self, delta: isize) {
         let current = self.selected_agent_id();
-        let known_agents = self
-            .ctx
-            .known_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let live_agents = self
-            .ctx
-            .live_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let suspended_agents = self
-            .ctx
-            .suspended_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let Some(next) = next_active_agent(
-            current.as_deref(),
-            &known_agents,
-            &live_agents,
-            &suspended_agents,
-            delta,
-        ) else {
+        let Some(next) = self.ctx.routing.next_active_agent(delta) else {
             self.output
                 .system_info("agent-switch: no active agents available yet");
             return;
@@ -1654,9 +1680,7 @@ impl<'a> TerminalInputSession<'a> {
         if current.as_deref() == Some(next.as_str()) {
             return;
         }
-        if let Ok(mut current) = self.ctx.current_agent_state.lock() {
-            *current = Some(next.clone());
-        }
+        self.ctx.routing.set_selected_agent(Some(next.clone()));
         let _ = self
             .ctx
             .renderer_tx
@@ -1694,7 +1718,7 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn agent_is_selected(&self) -> bool {
-        !role_cycling_enabled(&self.ctx.current_agent_state)
+        !self.ctx.routing.role_cycling_enabled()
     }
 
     fn cycle_role_inner(&self) {
