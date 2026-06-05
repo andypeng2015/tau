@@ -640,12 +640,7 @@ enum AgentIdMintWarning {
     CollisionsExceeded { attempts: usize },
 }
 
-fn render_agent_id_template(
-    template: &str,
-    role: &str,
-    role_group: &str,
-    collision_extra_len: usize,
-) -> Result<String, handlebars::RenderError> {
+fn handlebars_for_agent_template(collision_extra_len: usize) -> handlebars::Handlebars<'static> {
     let mut handlebars = handlebars::Handlebars::new();
     handlebars.set_strict_mode(true);
     handlebars.register_escape_fn(handlebars::no_escape);
@@ -655,9 +650,76 @@ fn render_agent_id_template(
             collision_extra_len,
         }),
     );
+    handlebars
+}
+
+fn base_agent_template_context(
+    role: &str,
+    role_group: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut context = serde_json::Map::new();
+    context.insert(
+        "role".to_owned(),
+        serde_json::Value::String(role.to_owned()),
+    );
+    context.insert(
+        "role_group".to_owned(),
+        serde_json::Value::String(role_group.to_owned()),
+    );
+    context.insert(
+        "roleGroup".to_owned(),
+        serde_json::Value::String(role_group.to_owned()),
+    );
+    context
+}
+
+fn render_agent_template(
+    template: &str,
+    role: &str,
+    role_group: &str,
+    agent_id: &str,
+    task_name: Option<&str>,
+    collision_extra_len: usize,
+) -> Result<String, handlebars::RenderError> {
+    let handlebars = handlebars_for_agent_template(collision_extra_len);
+    let mut context = base_agent_template_context(role, role_group);
+    context.insert(
+        "agent_id".to_owned(),
+        serde_json::Value::String(agent_id.to_owned()),
+    );
+    context.insert(
+        "agentId".to_owned(),
+        serde_json::Value::String(agent_id.to_owned()),
+    );
+    context.insert(
+        "task_name".to_owned(),
+        serde_json::Value::String(task_name.unwrap_or("").to_owned()),
+    );
+    context.insert(
+        "taskName".to_owned(),
+        serde_json::Value::String(task_name.unwrap_or("").to_owned()),
+    );
+    context.insert(
+        "task_name_present".to_owned(),
+        serde_json::Value::Bool(task_name.is_some()),
+    );
+    context.insert(
+        "taskNamePresent".to_owned(),
+        serde_json::Value::Bool(task_name.is_some()),
+    );
+    handlebars.render_template(template, &serde_json::Value::Object(context))
+}
+
+fn render_agent_id_template(
+    template: &str,
+    role: &str,
+    role_group: &str,
+    collision_extra_len: usize,
+) -> Result<String, handlebars::RenderError> {
+    let handlebars = handlebars_for_agent_template(collision_extra_len);
     handlebars.render_template(
         template,
-        &serde_json::json!({ "role": role, "role_group": role_group, "roleGroup": role_group }),
+        &serde_json::Value::Object(base_agent_template_context(role, role_group)),
     )
 }
 
@@ -1141,6 +1203,8 @@ pub struct Harness {
     pub(crate) available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
     /// Handlebars template used to mint new durable agent identifiers.
     pub(crate) agent_id_template: String,
+    /// Optional Handlebars template used to name newly created agents.
+    pub(crate) agent_display_name_template: Option<String>,
     /// Role overrides changed at runtime for this process.
     pub(crate) role_overrides: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Currently selected role. The resolved model is derived from this role
@@ -1587,6 +1651,7 @@ impl Harness {
             available_role_groups,
             role_overrides,
             agent_id_template: harness_settings.agent_id_template.clone(),
+            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             selected_role,
             selected_model,
             current_session_state: CurrentSessionState::default(),
@@ -1827,6 +1892,7 @@ impl Harness {
             available_role_groups,
             role_overrides,
             agent_id_template: harness_settings.agent_id_template.clone(),
+            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             selected_role,
             selected_model,
             current_session_state: CurrentSessionState::default(),
@@ -5849,7 +5915,7 @@ impl Harness {
         let parent_call_id = query.tool_call_id.clone();
         let is_tool_backed = parent_call_id.is_some();
         let task_name = query.task_name.clone();
-        let display_name = normalize_display_name(task_name.as_deref());
+        let display_name = self.display_name_for_new_agent(&agent_id, &role, task_name.as_deref());
         let conversation_role = if query.tool_call_id.is_some() || query.role.is_some() {
             Some(role)
         } else {
@@ -7482,6 +7548,28 @@ impl Harness {
             .unwrap_or_else(|| role.to_owned())
     }
 
+    fn display_name_for_new_agent(
+        &mut self,
+        agent_id: &str,
+        role: &str,
+        task_name: Option<&str>,
+    ) -> Option<String> {
+        let fallback = normalize_display_name(task_name);
+        let Some(template) = self.agent_display_name_template.clone() else {
+            return fallback;
+        };
+        let role_group = self.role_group_name_for_role(role);
+        match render_agent_template(&template, role, &role_group, agent_id, task_name, 0) {
+            Ok(rendered) => normalize_display_name(Some(&rendered)).or(fallback),
+            Err(error) => {
+                self.emit_info(&format!(
+                    "agent display name template failed to render: {error}; falling back to request display name"
+                ));
+                fallback
+            }
+        }
+    }
+
     pub(crate) fn mint_available_agent_id_for_role(&mut self, role: &str) -> String {
         let template = self.agent_id_template.clone();
         let mut warnings = Vec::new();
@@ -7531,6 +7619,7 @@ impl Harness {
         cwd: PathBuf,
     ) -> AgentId {
         let agent_id = self.mint_available_agent_id_for_role(role);
+        let display_name = self.display_name_for_new_agent(&agent_id, role, None);
         let cid: AgentId = crate::parse_agent_id(&agent_id);
         let mut conv = Agent::new(
             cid.clone(),
@@ -7541,6 +7630,7 @@ impl Harness {
         );
         conv.role = Some(role.to_owned());
         conv.agent_id = Some(agent_id.clone());
+        conv.display_name = display_name;
         self.agents.insert(cid.clone(), conv);
         self.agent_working_directories
             .insert(crate::parse_agent_id(&agent_id), cwd.clone());
@@ -7564,8 +7654,12 @@ impl Harness {
             .get(cid)
             .map(|conv| self.role_name_for_agent(conv))?;
         let agent_id = self.mint_available_agent_id_for_role(&role);
+        let display_name = self.display_name_for_new_agent(&agent_id, &role, None);
         if let Some(conv) = self.agents.get_mut(cid) {
             conv.agent_id = Some(agent_id.clone());
+            if normalize_display_name(conv.display_name.as_deref()).is_none() {
+                conv.display_name = display_name;
+            }
         }
         self.ensure_loaded_agent_for_agent(cid, &agent_id);
         self.set_agent_state(&agent_id, AgentState::Active);

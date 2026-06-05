@@ -234,7 +234,10 @@ fn harness_settings_accept_agent_id_template_in_user_config() {
     std::fs::write(
         dir.join("harness.yaml"),
         r#"{
-            agents: { idTemplate: "{{role}}-{{random_alphanumeric 4}}" },
+            agents: {
+                idTemplate: "{{role}}-{{random_alphanumeric 4}}",
+                displayNameTemplate: "{{role_group}} {{task_name}}",
+            },
         }"#,
     )
     .expect("write");
@@ -243,6 +246,10 @@ fn harness_settings_accept_agent_id_template_in_user_config() {
     assert_eq!(
         settings.agent_id_template,
         "{{role}}-{{random_alphanumeric 4}}"
+    );
+    assert_eq!(
+        settings.agent_display_name_template.as_deref(),
+        Some("{{role_group}} {{task_name}}")
     );
 }
 

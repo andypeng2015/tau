@@ -424,6 +424,9 @@ pub struct HarnessSettings {
 
     /// Handlebars template used to mint new durable agent identifiers.
     pub agent_id_template: String,
+
+    /// Optional Handlebars template used to name newly created agents.
+    pub agent_display_name_template: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -443,6 +446,8 @@ struct HarnessSettingsWire {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct AgentsSettings {
     id_template: String,
+    #[serde(default)]
+    display_name_template: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for HarnessSettings {
@@ -459,6 +464,7 @@ impl<'de> Deserialize<'de> for HarnessSettings {
             role_groups: Vec::new(),
             prompt_fragments: wire.prompt_fragments,
             agent_id_template: wire.agents.id_template,
+            agent_display_name_template: wire.agents.display_name_template,
         };
         settings
             .apply_role_group_overrides(wire.role_groups)

@@ -5,6 +5,7 @@ defaultRole: senior-engineer
 extensions: {}
 agents:
   idTemplate: "{{random_alphanumeric 6}}"
+  displayNameTemplate: "{{#if task_name_present}}{{role}}: {{task_name}}{{else}}{{role}}{{/if}}"
 roleGroups:
   engineer:
     promptFragments:

@@ -944,6 +944,44 @@ fn hidden_agent_events_do_not_force_visible_full_redraw() {
 }
 
 #[test]
+fn delegate_progress_does_not_overwrite_display_name_with_task_name() {
+    // `/agent switch` completions are backed by durable display names. Delegate
+    // progress carries the raw task title for the parent tool block, but it must
+    // not replace the display name chosen by the harness template.
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::AgentStarted(tau_proto::AgentStarted {
+        agent_id: agent_id("engineer-Ab12"),
+        role: "senior-engineer".to_owned(),
+        display_name: Some("senior-engineer: look it up".to_owned()),
+    }));
+    renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
+        call_id: "delegate-call".into(),
+        task_name: "look it up".into(),
+        agent_id: Some("engineer-Ab12".to_owned()),
+        role: Some("senior-engineer".to_owned()),
+        ctx_percent: None,
+        ctx_input_tokens: None,
+        ctx_window: None,
+        tools_in_flight: 0,
+        tools_total: 0,
+        display: None,
+    }));
+
+    let display_names = renderer.agent_display_names();
+    let display_names = display_names.lock().expect("display names");
+    assert_eq!(
+        display_names.get("engineer-Ab12").map(String::as_str),
+        Some("senior-engineer: look it up")
+    );
+}
+
+#[test]
 fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
     // Regression: manual suspension is a separate UI state. Later lifecycle
     // updates may prove the harness still knows the agent, but they must not

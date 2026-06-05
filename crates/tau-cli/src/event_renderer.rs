@@ -2458,7 +2458,6 @@ impl EventRenderer {
             Event::ToolDelegateProgress(progress) => {
                 if let Some(agent_id) = progress.agent_id.as_deref() {
                     self.remember_agent(agent_id.to_owned());
-                    self.remember_agent_display_name(agent_id, &progress.task_name);
                     self.mark_agent_live(agent_id.to_owned());
                 }
             }

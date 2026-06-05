@@ -7536,11 +7536,11 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("side agent events");
     assert!(side_events.iter().any(|record| matches!(
         &record.event,
-        Event::AgentDisplayNameSet(name) if name.display_name == "look it up"
+        Event::AgentDisplayNameSet(name) if name.display_name == "senior-engineer: look it up"
     )));
     assert!(sink.lock().expect("sink").iter().any(|routed| matches!(
         peel_inner_event(&routed.frame),
-        Some(Event::AgentDisplayNameSet(name)) if name.display_name == "look it up"
+        Some(Event::AgentDisplayNameSet(name)) if name.display_name == "senior-engineer: look it up"
     )));
     assert_eq!(initial.role.as_deref(), Some("senior-engineer"));
     assert_eq!(initial.tools_in_flight, 0);

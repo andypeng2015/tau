@@ -109,6 +109,64 @@ fn minting_agent_ids_renders_role_group_in_configured_template() {
 }
 
 #[test]
+fn minting_agent_ids_reject_display_name_only_template_fields() {
+    // Agent ID templates must stay strict and only expose ID-safe context.
+    // Display-name-only fields would otherwise silently render as empty strings.
+    let mut warnings = Vec::new();
+    let agent_id = super::mint_available_agent_id_for_role_with(
+        "engineer",
+        "engineer",
+        "{{role}}-{{task_name}}",
+        |_| false,
+        |kind, warning| warnings.push((kind, warning)),
+    );
+
+    assert_eq!(agent_id.len(), 6);
+    assert_agent_id_chars(&agent_id);
+    assert!(matches!(
+        warnings.as_slice(),
+        [(
+            super::AgentIdTemplateKind::Configured,
+            super::AgentIdMintWarning::RenderFailed { .. }
+        )]
+    ));
+}
+
+#[test]
+fn agent_template_uses_role_when_task_name_is_absent() {
+    let rendered = super::render_agent_template(
+        "{{#if task_name_present}}{{role}}: {{task_name}}{{else}}{{role}}{{/if}}",
+        "staff-engineer",
+        "engineer",
+        "engineer-Ab12",
+        None,
+        0,
+    )
+    .expect("render");
+
+    assert_eq!(rendered, "staff-engineer");
+}
+
+#[test]
+fn agent_template_renders_display_name_context() {
+    let rendered = super::render_agent_template(
+        "{{role_group}}/{{role}}/{{agent_id}}/{{task_name}}/{{task_name_present}}/{{random_alphanumeric 4}}",
+        "staff-engineer",
+        "engineer",
+        "engineer-Ab12",
+        Some("review fix"),
+        0,
+    )
+    .expect("render");
+
+    assert!(rendered.starts_with("engineer/staff-engineer/engineer-Ab12/review fix/true/"));
+    assert_eq!(
+        rendered.len(),
+        "engineer/staff-engineer/engineer-Ab12/review fix/true/".len() + 4
+    );
+}
+
+#[test]
 fn minting_agent_ids_falls_back_immediately_on_invalid_rendered_id() {
     // Invalid configured output must not be retried; it falls back to the safe
     // default template and reports a warning the harness can surface to users.
@@ -197,6 +255,12 @@ fn render_self_knowledge_config_content_inserts_config_defaults() {
     assert!(rendered.contains("${XDG_RUNTIME_DIR}/tau/<pid>/"));
     assert!(rendered.contains("session_retention_days: 60"));
     assert!(rendered.contains("show_thinking: true"));
+    assert!(rendered.contains("{{role_group}}-{{random_alphanumeric 4}}"));
+    assert!(rendered.contains("{{role_group}}: {{task_name}}"));
+    assert!(
+        rendered
+            .contains("{{#if task_name_present}}{{role}}: {{task_name}}{{else}}{{role}}{{/if}}")
+    );
 }
 
 #[test]

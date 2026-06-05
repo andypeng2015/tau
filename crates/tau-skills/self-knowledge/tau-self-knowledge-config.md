@@ -41,22 +41,30 @@ Tau layers these defaults underneath user config and `*.d/*.yaml` drop-ins.
 {ui_config}
 ```
 
-## Agent IDs
+## Agent IDs and display names
 
-Tau mints durable agent IDs from the harness setting `agents.idTemplate`:
+Tau mints durable agent IDs from the harness setting `agents.idTemplate`. Tau can also name newly created agents with optional `agents.displayNameTemplate`:
 
 ```yaml
 agents:
-  idTemplate: "{{role}}-{{random_alphanumeric 4}}"
+  idTemplate: "{{{{role_group}}}}-{{{{random_alphanumeric 4}}}}"
+  displayNameTemplate: "{{{{role_group}}}}: {{{{task_name}}}}"
 ```
 
-The built-in default is `{{random_alphanumeric 6}}`. Templates are rendered with Handlebars in strict mode and currently receive:
+The built-in ID template is `{{{{random_alphanumeric 6}}}}`; the built-in display-name template is `{{{{#if task_name_present}}}}{{{{role}}}}: {{{{task_name}}}}{{{{else}}}}{{{{role}}}}{{{{/if}}}}`. Both template types are rendered with Handlebars in strict mode.
+
+ID templates receive:
 
 - `role` — the role name for the new agent.
 - `role_group` — the name of the first configured role group containing the role, or the role name for ungrouped roles. `roleGroup` is also available as a camelCase alias.
 - `random_alphanumeric <len>` — helper that emits an ASCII alphanumeric random suffix of at least `<len>` characters.
 
-Rendered IDs must use only ASCII letters, digits, `_`, or `-`, and must fit Tau's agent ID length limit. If a configured template fails to render, renders an invalid ID, or keeps colliding, Tau warns and falls back to the built-in random template.
+Display-name templates additionally receive:
+
+- `agent_id` — the durable agent ID. `agentId` is also available as a camelCase alias.
+- `task_name` — the requested task/display name for delegated or extension-started agents, or `""` when absent. `taskName` is also available as a camelCase alias.
+- `task_name_present` — true when `task_name` is available. `taskNamePresent` is also available as a camelCase alias.
+Rendered IDs must use only ASCII letters, digits, `_`, or `-`, and must fit Tau's agent ID length limit. If a configured ID template fails to render, renders an invalid ID, or keeps colliding, Tau warns and falls back to the built-in random template. If a configured display-name template fails to render or renders empty, Tau warns when appropriate and falls back to the request display name when one exists.
 
 ## Providers
 
