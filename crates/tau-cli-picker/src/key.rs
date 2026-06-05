@@ -1,5 +1,12 @@
 use std::io;
 
+/// High-level picker event produced by an input reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PickerEvent {
+    Key(PickerKey),
+    Resize { width: u16, height: u16 },
+}
+
 /// High-level picker action produced by a key reader.
 ///
 /// Both the terminal-event reader and the byte-stream reader funnel
@@ -13,7 +20,6 @@ pub(crate) enum PickerKey {
     Cancelled,
     Ignored,
 }
-
 /// Logical key recognized by the picker, independent of how it was
 /// physically encoded (a `crossterm` event or a raw byte stream).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,21 +52,26 @@ pub(crate) fn logical_to_action(key: LogicalKey) -> PickerKey {
     }
 }
 
-/// Reads the next key from the terminal via `crossterm`.
+/// Reads the next picker event from the terminal via `crossterm`.
 ///
-/// Filters out non-`Press` events so that workspaces enabling keyboard
-/// enhancement flags do not double-fire actions.
-pub(crate) fn read_terminal_key() -> io::Result<PickerKey> {
+/// Filters out non-`Press` key events so that workspaces enabling keyboard
+/// enhancement flags do not double-fire actions. Resize events are surfaced so
+/// the picker can redraw immediately instead of waiting for the next keypress.
+pub(crate) fn read_terminal_event() -> io::Result<PickerEvent> {
     loop {
-        let event = crossterm::event::read()?;
-        let crossterm::event::Event::Key(key) = event else {
-            continue;
-        };
-        if key.kind != crossterm::event::KeyEventKind::Press {
-            continue;
+        match crossterm::event::read()? {
+            crossterm::event::Event::Key(key) => {
+                if key.kind != crossterm::event::KeyEventKind::Press {
+                    continue;
+                }
+                let logical = terminal_key_to_logical(key);
+                return Ok(PickerEvent::Key(logical_to_action(logical)));
+            }
+            crossterm::event::Event::Resize(width, height) => {
+                return Ok(PickerEvent::Resize { width, height });
+            }
+            _ => {}
         }
-        let logical = terminal_key_to_logical(key);
-        return Ok(logical_to_action(logical));
     }
 }
 
@@ -85,7 +96,7 @@ fn terminal_key_to_logical(key: crossterm::event::KeyEvent) -> LogicalKey {
 /// is treated as cancellation. The reader is expected to be fully
 /// buffered: a real-terminal reader would block on bare-ESC because
 /// `io::Read` has no timeout. Production code uses
-/// [`read_terminal_key`] via `crossterm`, which handles the ambiguity.
+/// [`read_terminal_event`] via `crossterm`, which handles the ambiguity.
 pub(crate) fn read_byte_key(reader: &mut impl io::Read) -> io::Result<PickerKey> {
     let mut b = [0_u8; 1];
     let n = reader.read(&mut b)?;

@@ -1,7 +1,9 @@
-use std::io::Cursor;
+use std::collections::VecDeque;
+use std::io::{self, Cursor};
+use std::sync::{Arc, Mutex};
 
-use crate::key::{LogicalKey, PickerKey, logical_to_action, read_byte_key};
-use crate::{PickerError, PickerItem, pick_with_io};
+use crate::key::{LogicalKey, PickerEvent, PickerKey, logical_to_action, read_byte_key};
+use crate::{PickerError, PickerItem, pick_with_event_reader, pick_with_io, resize_dimension};
 
 fn items(labels: &[&str]) -> Vec<PickerItem> {
     labels.iter().map(|l| PickerItem::enabled(*l)).collect()
@@ -168,4 +170,83 @@ fn visible_window_centers_selection() {
     assert_eq!(visible_window(20, 0, 5), (0, 5));
     assert_eq!(visible_window(20, 10, 5), (8, 13));
     assert_eq!(visible_window(20, 19, 5), (15, 20));
+}
+
+#[derive(Clone, Default)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl SharedWriter {
+    fn bytes(&self) -> Vec<u8> {
+        self.0.lock().expect("writer buffer poisoned").clone()
+    }
+}
+
+impl io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .expect("writer buffer poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn resize_event_redraws_without_waiting_for_key_resample() {
+    let it = items(&["very long item label"]);
+    let writer = SharedWriter::default();
+    let output = writer.clone();
+    let mut events = VecDeque::from([
+        PickerEvent::Resize {
+            width: 8,
+            height: 3,
+        },
+        PickerEvent::Key(PickerKey::Enter),
+    ]);
+    let picked = pick_with_event_reader(
+        "choose a thing",
+        &it,
+        writer,
+        || Ok(events.pop_front().expect("test event available")),
+        || (40, 5),
+    )
+    .expect("picker should accept after resize");
+
+    assert_eq!(picked, 0);
+    let bytes = output.bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("…"),
+        "resized redraw should use narrow-width truncation: {text:?}"
+    );
+}
+
+#[test]
+fn zero_resize_dimensions_keep_current_size() {
+    assert_eq!(resize_dimension(0, 40), 40);
+    assert_eq!(resize_dimension(10, 40), 10);
+}
+
+#[test]
+fn picker_clears_frame_on_input_error() {
+    let it = items(&["one", "two"]);
+    let writer = SharedWriter::default();
+    let output = writer.clone();
+    let err = pick_with_event_reader(
+        "pick",
+        &it,
+        writer,
+        || Err(io::Error::other("synthetic input error")),
+        || (40, 5),
+    )
+    .expect_err("input error should propagate");
+
+    assert!(matches!(err, PickerError::Io(_)));
+    let bytes = output.bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("[J"), "cleanup should clear frame: {text:?}");
 }

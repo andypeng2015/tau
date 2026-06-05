@@ -25,7 +25,7 @@ use tau_term_screen::truncate_to_width;
 
 pub use crate::error::PickerError;
 pub use crate::item::PickerItem;
-use crate::key::{PickerKey, read_byte_key, read_terminal_key};
+use crate::key::{PickerEvent, PickerKey, read_byte_key, read_terminal_event};
 use crate::raw_mode::RawModeGuard;
 
 /// Prompts the user to pick one of `items`, rendering to `stderr`.
@@ -40,7 +40,13 @@ use crate::raw_mode::RawModeGuard;
 /// `cli | tool` pipe shape leaves `stdout` untouched.
 pub fn pick(prompt: &str, items: &[PickerItem]) -> Result<usize, PickerError> {
     let _raw = RawModeGuard::enable()?;
-    pick_with_key_reader(prompt, items, io::stderr(), read_terminal_key)
+    pick_with_event_reader(
+        prompt,
+        items,
+        io::stderr(),
+        read_terminal_event,
+        terminal_size,
+    )
 }
 
 /// Like [`pick`], but writes the picker frame to `writer`.
@@ -53,7 +59,7 @@ pub fn pick_with_writer(
     writer: impl io::Write,
 ) -> Result<usize, PickerError> {
     let _raw = RawModeGuard::enable()?;
-    pick_with_key_reader(prompt, items, writer, read_terminal_key)
+    pick_with_event_reader(prompt, items, writer, read_terminal_event, terminal_size)
 }
 
 /// Drives the picker against caller-provided IO.
@@ -67,14 +73,21 @@ pub fn pick_with_io(
     writer: impl io::Write,
     mut reader: impl io::Read,
 ) -> Result<usize, PickerError> {
-    pick_with_key_reader(prompt, items, writer, || read_byte_key(&mut reader))
+    pick_with_event_reader(
+        prompt,
+        items,
+        writer,
+        || read_byte_key(&mut reader).map(PickerEvent::Key),
+        terminal_size,
+    )
 }
 
-fn pick_with_key_reader(
+fn pick_with_event_reader(
     prompt: &str,
     items: &[PickerItem],
     mut writer: impl io::Write,
-    mut read_key: impl FnMut() -> io::Result<PickerKey>,
+    mut read_event: impl FnMut() -> io::Result<PickerEvent>,
+    mut current_size: impl FnMut() -> (usize, usize),
 ) -> Result<usize, PickerError> {
     if items.is_empty() {
         return Err(PickerError::Empty);
@@ -83,35 +96,61 @@ fn pick_with_key_reader(
         .iter()
         .position(|item| item.enabled)
         .ok_or(PickerError::NoEnabledItems)?;
-    let (mut width, mut height) = terminal_size();
+    let (mut width, mut height) = current_size();
     let mut screen = Screen::new(width);
 
-    render(&mut screen, &mut writer, prompt, items, selected, height)?;
-    loop {
-        match read_key()? {
-            PickerKey::Down => selected = adjacent_enabled_item(items, selected, true),
-            PickerKey::Up => selected = adjacent_enabled_item(items, selected, false),
-            PickerKey::Enter => {
-                screen.update(&mut writer, &[], (0, 0))?;
-                writer.flush()?;
-                return Ok(selected);
-            }
-            PickerKey::Cancelled => {
-                screen.update(&mut writer, &[], (0, 0))?;
-                writer.flush()?;
-                return Err(PickerError::Cancelled);
-            }
-            PickerKey::Ignored => {}
-        }
-        // Resample on each render so terminal resizes are honored.
-        let (new_width, new_height) = terminal_size();
-        if new_width != width {
-            screen.set_width(new_width);
-            width = new_width;
-        }
-        height = new_height;
+    let result = (|| -> Result<usize, PickerError> {
         render(&mut screen, &mut writer, prompt, items, selected, height)?;
+        loop {
+            match read_event()? {
+                PickerEvent::Key(PickerKey::Down) => {
+                    selected = adjacent_enabled_item(items, selected, true);
+                }
+                PickerEvent::Key(PickerKey::Up) => {
+                    selected = adjacent_enabled_item(items, selected, false);
+                }
+                PickerEvent::Key(PickerKey::Enter) => {
+                    clear_picker_frame(&mut screen, &mut writer)?;
+                    return Ok(selected);
+                }
+                PickerEvent::Key(PickerKey::Cancelled) => {
+                    return Err(PickerError::Cancelled);
+                }
+                PickerEvent::Key(PickerKey::Ignored) => {}
+                PickerEvent::Resize {
+                    width: new_width,
+                    height: new_height,
+                } => {
+                    let new_width = resize_dimension(new_width, width);
+                    let new_height = resize_dimension(new_height, height);
+                    screen.erase_all(&mut writer)?;
+                    screen.invalidate();
+                    if new_width != width {
+                        screen.set_width(new_width);
+                        width = new_width;
+                    }
+                    height = new_height;
+                }
+            }
+            render(&mut screen, &mut writer, prompt, items, selected, height)?;
+        }
+    })();
+
+    if result.is_err() {
+        let _ = force_clear_picker_frame(&mut screen, &mut writer);
     }
+    result
+}
+
+fn clear_picker_frame(screen: &mut Screen, writer: &mut impl io::Write) -> io::Result<()> {
+    screen.update(writer, &[], (0, 0))?;
+    writer.flush()
+}
+
+fn force_clear_picker_frame(screen: &mut Screen, writer: &mut impl io::Write) -> io::Result<()> {
+    screen.erase_all(writer)?;
+    screen.invalidate();
+    writer.flush()
 }
 
 fn render(
@@ -174,6 +213,16 @@ fn adjacent_enabled_item(items: &[PickerItem], selected: usize, forward: bool) -
     selected
 }
 
+fn resize_dimension(reported: u16, current: usize) -> usize {
+    if 0 < reported {
+        usize::from(reported)
+    } else {
+        current.max(1)
+    }
+}
+
 fn terminal_size() -> (usize, usize) {
-    crossterm::terminal::size().map_or((80, 24), |(w, h)| (w.into(), h.into()))
+    crossterm::terminal::size().map_or((80, 24), |(w, h)| {
+        (usize::from(w).max(1), usize::from(h).max(1))
+    })
 }
