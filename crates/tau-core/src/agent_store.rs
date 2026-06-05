@@ -244,7 +244,7 @@ impl AgentStore {
     }
 
     fn load_agent_if_needed(&mut self, agent_id: &str) -> Result<(), AgentStoreError> {
-        let aid: AgentId = agent_id.into();
+        let aid = AgentId::parse(agent_id).expect("agent store load requires parsed agent id");
         if self.agents.contains_key(&aid) {
             return Ok(());
         }
@@ -270,7 +270,9 @@ impl AgentStore {
     /// id even when this lazy store has not loaded that agent yet.
     #[must_use]
     pub fn agent_exists(&self, agent_id: &str) -> bool {
-        let aid = AgentId::from(agent_id);
+        let Ok(aid) = AgentId::parse(agent_id) else {
+            return false;
+        };
         if self.agents.contains_key(&aid) {
             return true;
         }
@@ -281,7 +283,7 @@ impl AgentStore {
     /// Acquires an exclusive flock on the agent's `lock` file if not
     /// already held.
     fn ensure_locked(&mut self, agent_id: &str) -> Result<(), AgentStoreError> {
-        let sid: AgentId = agent_id.into();
+        let sid = AgentId::parse(agent_id).expect("agent store lock requires parsed agent id");
         if self.locks.contains_key(&sid) {
             return Ok(());
         }
@@ -387,7 +389,7 @@ impl AgentStore {
         })?;
         let events_path = agent_dir.join("events.cbor");
 
-        let sid: AgentId = agent_id.into();
+        let sid = AgentId::parse(agent_id).expect("agent event append requires parsed agent id");
         let tree = self
             .agents
             .entry(sid.clone())
@@ -443,13 +445,19 @@ impl AgentStore {
     /// on demand.
     pub fn load_agent(&mut self, agent_id: &str) -> Result<Option<&AgentTree>, AgentStoreError> {
         self.load_agent_if_needed(agent_id)?;
-        Ok(self.agents.get(&AgentId::from(agent_id)))
+        let Ok(agent_id) = AgentId::parse(agent_id) else {
+            return Ok(None);
+        };
+        Ok(self.agents.get(&agent_id))
     }
 
     /// Returns one already-loaded agent tree if it exists.
     #[must_use]
     pub fn agent(&self, agent_id: &str) -> Option<&AgentTree> {
-        self.agents.get(&AgentId::from(agent_id))
+        let Ok(agent_id) = AgentId::parse(agent_id) else {
+            return None;
+        };
+        self.agents.get(&agent_id)
     }
 
     /// Returns all known agents.
@@ -544,7 +552,14 @@ pub fn list_agent_metas(agents_dir: &Path) -> io::Result<Vec<(AgentId, AgentMeta
                 continue;
             }
         };
-        out.push((AgentId::from(name), meta));
+        let agent_id = match AgentId::parse(name) {
+            Ok(agent_id) => agent_id,
+            Err(error) => {
+                eprintln!("tau: skipping agent {name}: invalid agent id: {error}");
+                continue;
+            }
+        };
+        out.push((agent_id, meta));
     }
     Ok(out)
 }

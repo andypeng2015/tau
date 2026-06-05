@@ -1000,9 +1000,7 @@ pub struct ToolRequest {
     /// Raw CBOR arguments supplied by the requester. These are not trusted
     /// until the harness validates and routes the request.
     pub arguments: CborValue,
-    /// Durable agent that owns this tool call. Older events may omit this;
-    /// consumers that require an owner should reject empty/default ids.
-    #[serde(default, skip_serializing_if = "AgentId::is_empty")]
+    /// Durable agent that owns this tool call.
     pub agent_id: AgentId,
     /// Who started the prompt that produced this tool call. The
     /// harness stamps this from the call's owning conversation so
@@ -1031,7 +1029,6 @@ pub struct ToolStarted {
     /// the accepted request after harness validation/routing.
     pub arguments: CborValue,
     /// Durable agent that owns this tool call.
-    #[serde(default, skip_serializing_if = "AgentId::is_empty")]
     pub agent_id: AgentId,
     /// Echo of [`ToolRequest::originator`]. Tools usually don't
     /// branch on it, but it's available for logging / progress
@@ -2524,7 +2521,7 @@ impl ProviderStopReason {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderResponseFinished {
     /// Prompt id the provider finished.
     pub agent_prompt_id: AgentPromptId,

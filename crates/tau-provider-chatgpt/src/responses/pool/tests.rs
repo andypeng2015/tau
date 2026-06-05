@@ -98,7 +98,7 @@ fn pool_routes_each_thread_to_its_own_socket_and_reuses_them() {
     // Expected: 2 upgrades total (one per prompt-cache bucket), 3 turns.
     for agent in ["agent-a", "agent-b", "agent-a"] {
         let session_id = tau_proto::SessionId::new("session-pool-routing");
-        let agent_id = tau_proto::AgentId::new(agent);
+        let agent_id = tau_proto::AgentId::parse(agent).expect("agent id");
         let request = PromptPayload {
             system_prompt: "sys",
             context: context(&[]),
@@ -261,7 +261,7 @@ fn shared_prewarm_skips_busy_same_key_without_waiting() {
                 compaction: None,
                 originator: &originator,
                 session_id: &session_id,
-                agent_id: &tau_proto::AgentId::new("test-agent"),
+                agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
                 share_user_cache_key: false,
             };
             let started = std::time::Instant::now();
@@ -428,7 +428,7 @@ fn ws_turn_captures_response_id_for_chain_continuation() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -462,7 +462,7 @@ fn ws_upgrade_thread_headers_match_prompt_cache_key() {
     let mut on_update = |_: &crate::common::StreamState| {};
 
     let session_id = tau_proto::SessionId::new("session-headers");
-    let agent_id = tau_proto::AgentId::new("header-agent");
+    let agent_id = tau_proto::AgentId::parse("header-agent").expect("agent id");
     let request = PromptPayload {
         system_prompt: "sys",
         context: context(&[]),
@@ -521,7 +521,7 @@ fn prewarm_warms_cache_without_chaining_next_turn() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     run_prewarm_through_pool(&mut pool, &config, "session-prewarm", &prewarm).expect("prewarm ok");
@@ -584,7 +584,7 @@ fn fresh_open_with_previous_response_rebuilds_ws_warmth() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     run_turn_through_pool(
@@ -632,7 +632,7 @@ fn fresh_open_with_previous_response_preserves_compacted_items() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -689,7 +689,7 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let state1 = run_turn_through_pool(
@@ -715,7 +715,7 @@ fn mid_stream_close_with_chain_rebuilds_ws_warmth() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &session_id,
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     run_turn_through_pool(
@@ -1008,7 +1008,7 @@ fn pool_key_for(
     share_user_cache_key: bool,
 ) -> PoolKey {
     let session_id = tau_proto::SessionId::new("test-session");
-    let agent_id = tau_proto::AgentId::new(agent);
+    let agent_id = tau_proto::AgentId::parse(agent).expect("agent id");
     let request = PromptPayload {
         system_prompt: "sys",
         context: context(&[]),
@@ -1051,7 +1051,7 @@ fn run_turn_for_agent(
     on_update: &mut impl FnMut(&crate::common::StreamState),
 ) {
     let session_id = tau_proto::SessionId::new(session);
-    let agent_id = tau_proto::AgentId::new(agent);
+    let agent_id = tau_proto::AgentId::parse(agent).expect("agent id");
     let request = PromptPayload {
         system_prompt: "sys",
         context: context(&[]),
@@ -1084,7 +1084,7 @@ fn run_shared_turn_for_agent(
     agent_prompt_id: &str,
 ) {
     let session_id = tau_proto::SessionId::new(session);
-    let agent_id = tau_proto::AgentId::new(agent);
+    let agent_id = tau_proto::AgentId::parse(agent).expect("agent id");
     let originator = tau_proto::PromptOriginator::User;
     let request = PromptPayload {
         system_prompt: "sys",

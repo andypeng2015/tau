@@ -103,8 +103,125 @@ macro_rules! string_newtype {
 
 string_newtype!(/// Session identifier.
     SessionId);
-string_newtype!(/// Global durable agent identifier.
-    AgentId);
+/// Maximum length for a durable agent identifier.
+pub const AGENT_ID_MAX_LEN: usize = 64;
+
+/// Error returned when parsing a durable agent identifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgentIdParseError {
+    /// Agent identifiers must not be empty.
+    Empty,
+    /// Agent identifiers must not exceed [`AGENT_ID_MAX_LEN`] bytes.
+    TooLong { max: usize, actual: usize },
+    /// Agent identifiers may contain only ASCII letters, digits, `_`, and `-`.
+    InvalidByte { index: usize, byte: u8 },
+}
+
+impl std::fmt::Display for AgentIdParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("agent id must not be empty"),
+            Self::TooLong { max, actual } => {
+                write!(f, "agent id is too long: {actual} bytes > {max}")
+            }
+            Self::InvalidByte { index, byte } => write!(
+                f,
+                "agent id contains invalid byte 0x{byte:02x} at byte offset {index}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AgentIdParseError {}
+
+/// Global durable agent identifier.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub struct AgentId(String);
+
+impl AgentId {
+    /// Parse a durable agent identifier.
+    pub fn parse(s: impl AsRef<str>) -> Result<Self, AgentIdParseError> {
+        s.as_ref().parse()
+    }
+
+    /// Borrow this identifier as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume this identifier into its string representation.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::str::FromStr for AgentId {
+    type Err = AgentIdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() {
+            return Err(AgentIdParseError::Empty);
+        }
+        if value.len() > AGENT_ID_MAX_LEN {
+            return Err(AgentIdParseError::TooLong {
+                max: AGENT_ID_MAX_LEN,
+                actual: value.len(),
+            });
+        }
+        for (index, byte) in value.bytes().enumerate() {
+            if !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-') {
+                return Err(AgentIdParseError::InvalidByte { index, byte });
+            }
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl serde::Serialize for AgentId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AgentId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        AgentId::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl std::ops::Deref for AgentId {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AgentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::borrow::Borrow<str> for AgentId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for AgentId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
 string_newtype!(/// Stable identifier for one agent transcript prompt.
     AgentPromptId);
 string_newtype!(/// Stable identifier for one global agent message.

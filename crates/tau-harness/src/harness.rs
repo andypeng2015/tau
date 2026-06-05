@@ -584,8 +584,8 @@ pub(crate) struct PendingTool {
     pub(crate) tool_type: ToolType,
 }
 
-const AGENT_ID_MIN_SUFFIX_NIBBLES: usize = 1;
-const AGENT_ID_MAX_SUFFIX_NIBBLES: usize = 8;
+const DEFAULT_AGENT_ID_TEMPLATE: &str = "{{random_alphanumeric 6}}";
+const AGENT_ID_TEMPLATE_COLLISION_ATTEMPTS: usize = 10;
 
 fn normalize_display_name(value: Option<&str>) -> Option<String> {
     value
@@ -594,41 +594,143 @@ fn normalize_display_name(value: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn random_agent_id_suffix_search_start(candidate_count: u64) -> u64 {
-    use rand::RngCore as _;
+fn random_alphanumeric(len: usize) -> String {
+    use rand::Rng as _;
 
-    rand::thread_rng().next_u64() % candidate_count
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..len)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
+}
+
+struct RandomAlphanumericHelper {
+    effective_len: usize,
+}
+
+impl handlebars::HelperDef for RandomAlphanumericHelper {
+    fn call_inner<'reg: 'rc, 'rc>(
+        &self,
+        h: &handlebars::Helper<'rc>,
+        _: &'reg handlebars::Handlebars<'reg>,
+        _: &'rc handlebars::Context,
+        _: &mut handlebars::RenderContext<'reg, 'rc>,
+    ) -> Result<handlebars::ScopedJson<'rc>, handlebars::RenderError> {
+        let requested = h
+            .param(0)
+            .and_then(|param| param.value().as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        Ok(handlebars::ScopedJson::Derived(serde_json::Value::String(
+            random_alphanumeric(self.effective_len.max(requested)),
+        )))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentIdTemplateKind {
+    Configured,
+    Default,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AgentIdMintWarning {
+    RenderFailed { error: String },
+    InvalidRendered { candidate: String, error: String },
+    CollisionsExceeded { attempts: usize },
+}
+
+fn render_agent_id_template(
+    template: &str,
+    role: &str,
+    effective_random_len: usize,
+) -> Result<String, handlebars::RenderError> {
+    let mut handlebars = handlebars::Handlebars::new();
+    handlebars.set_strict_mode(true);
+    handlebars.register_escape_fn(handlebars::no_escape);
+    handlebars.register_helper(
+        "random_alphanumeric",
+        Box::new(RandomAlphanumericHelper {
+            effective_len: effective_random_len,
+        }),
+    );
+    handlebars.render_template(template, &serde_json::json!({ "role": role }))
 }
 
 fn mint_available_agent_id_for_role_with(
     role: &str,
+    template: &str,
     mut is_taken: impl FnMut(&str) -> bool,
-    mut next_search_start: impl FnMut(usize, u64) -> u64,
+    mut warn: impl FnMut(AgentIdTemplateKind, AgentIdMintWarning),
 ) -> String {
-    for suffix_nibbles in AGENT_ID_MIN_SUFFIX_NIBBLES..=AGENT_ID_MAX_SUFFIX_NIBBLES {
-        let candidate_count = 16_u64.pow(suffix_nibbles as u32);
-        let start = next_search_start(suffix_nibbles, candidate_count) % candidate_count;
-        for offset in 0..candidate_count {
-            let suffix_value = (start + offset) % candidate_count;
-            let suffix = format!("{suffix_value:0width$x}", width = suffix_nibbles);
-            let agent_id = format!("{role}_{suffix}");
-            if !is_taken(&agent_id) {
-                return agent_id;
+    let mut use_default = false;
+    loop {
+        let active_template = if use_default {
+            DEFAULT_AGENT_ID_TEMPLATE
+        } else {
+            template
+        };
+        let kind = if use_default {
+            AgentIdTemplateKind::Default
+        } else {
+            AgentIdTemplateKind::Configured
+        };
+        let max_attempts = if use_default {
+            tau_proto::AGENT_ID_MAX_LEN
+        } else {
+            AGENT_ID_TEMPLATE_COLLISION_ATTEMPTS
+        };
+        let mut exhausted_attempts = true;
+        for attempt in 0..max_attempts {
+            let rendered = match render_agent_id_template(active_template, role, 6 + attempt) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    warn(
+                        kind,
+                        AgentIdMintWarning::RenderFailed {
+                            error: error.to_string(),
+                        },
+                    );
+                    exhausted_attempts = false;
+                    break;
+                }
+            };
+            let agent_id = match rendered.parse::<AgentId>() {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    warn(
+                        kind,
+                        AgentIdMintWarning::InvalidRendered {
+                            candidate: rendered,
+                            error: error.to_string(),
+                        },
+                    );
+                    exhausted_attempts = false;
+                    break;
+                }
+            };
+            if !is_taken(agent_id.as_str()) {
+                return agent_id.into_string();
             }
         }
+        if use_default {
+            panic!("unable to mint unique agent id with default template");
+        }
+        if exhausted_attempts {
+            warn(
+                AgentIdTemplateKind::Configured,
+                AgentIdMintWarning::CollisionsExceeded {
+                    attempts: AGENT_ID_TEMPLATE_COLLISION_ATTEMPTS,
+                },
+            );
+        }
+        use_default = true;
     }
-    panic!(
-        "unable to mint unique agent id for role `{role}` with up to {AGENT_ID_MAX_SUFFIX_NIBBLES} hex digits"
-    );
 }
 
 #[cfg(test)]
 fn mint_agent_id_for_role(role: &str) -> String {
-    mint_available_agent_id_for_role_with(
-        role,
-        |_| false,
-        |_, candidate_count| random_agent_id_suffix_search_start(candidate_count),
-    )
+    mint_available_agent_id_for_role_with(role, DEFAULT_AGENT_ID_TEMPLATE, |_| false, |_, _| {})
 }
 
 fn built_in_discovered_skills() -> HashMap<tau_proto::SkillName, DiscoveredSkill> {
@@ -1025,6 +1127,8 @@ pub struct Harness {
     pub(crate) available_roles: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Ordered role navigation groups for the currently available roles.
     pub(crate) available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
+    /// Handlebars template used to mint new durable agent identifiers.
+    pub(crate) agent_id_template: String,
     /// Role overrides changed at runtime for this process.
     pub(crate) role_overrides: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Currently selected role. The resolved model is derived from this role
@@ -1470,6 +1574,7 @@ impl Harness {
             available_roles,
             available_role_groups,
             role_overrides,
+            agent_id_template: harness_settings.agent_id_template.clone(),
             selected_role,
             selected_model,
             current_session_state: CurrentSessionState::default(),
@@ -1709,6 +1814,7 @@ impl Harness {
             available_roles,
             available_role_groups,
             role_overrides,
+            agent_id_template: harness_settings.agent_id_template.clone(),
             selected_role,
             selected_model,
             current_session_state: CurrentSessionState::default(),
@@ -2123,7 +2229,7 @@ impl Harness {
                 .get(cid)
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
-                .map(Into::into)
+                .map(crate::parse_agent_id)
         });
         let sync = Some(ConversationHeadSync {
             cid: cid.clone(),
@@ -2544,7 +2650,7 @@ impl Harness {
                 .agent_id
                 .as_ref()
                 .cloned()
-                .map(Into::into)
+                .map(crate::parse_agent_id)
         })
     }
 
@@ -2573,28 +2679,28 @@ impl Harness {
                 .and_then(|cid| self.agents.get(cid))
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
-                .map(Into::into),
+                .map(crate::parse_agent_id),
             Event::ProviderToolError(error) | Event::ToolError(error) => self
                 .tool_agents
                 .get(&error.call_id)
                 .and_then(|cid| self.agents.get(cid))
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
-                .map(Into::into),
+                .map(crate::parse_agent_id),
             Event::ToolBackgroundResult(result) => self
                 .tool_agents
                 .get(&result.call_id)
                 .and_then(|cid| self.agents.get(cid))
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
-                .map(Into::into),
+                .map(crate::parse_agent_id),
             Event::ToolBackgroundError(error) => self
                 .tool_agents
                 .get(&error.call_id)
                 .and_then(|cid| self.agents.get(cid))
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
-                .map(Into::into),
+                .map(crate::parse_agent_id),
             _ => None,
         }
     }
@@ -4143,10 +4249,10 @@ impl Harness {
                 self.publish_event(
                     None,
                     Event::AgentPromptQueued(AgentPromptQueued {
-                        agent_id: self
-                            .target_agent_id_for_agent(&cid)
-                            .unwrap_or_else(|| cid.to_string())
-                            .into(),
+                        agent_id: crate::parse_agent_id(
+                            self.target_agent_id_for_agent(&cid)
+                                .unwrap_or_else(|| cid.to_string()),
+                        ),
                         text: prompt.text,
                         message_class: prompt.message_class,
                     }),
@@ -4230,10 +4336,10 @@ impl Harness {
         self.publish_event(
             None,
             Event::AgentPromptRecalled(AgentPromptRecalled {
-                agent_id: self
-                    .target_agent_id_for_agent(&cid)
-                    .expect("agent has durable id")
-                    .into(),
+                agent_id: crate::parse_agent_id(
+                    self.target_agent_id_for_agent(&cid)
+                        .expect("agent has durable id"),
+                ),
                 text: prompt.text,
             }),
         );
@@ -4265,7 +4371,9 @@ impl Harness {
                 None,
                 Event::UiCancelPrompt(UiCancelPrompt {
                     session_id: req.session_id.clone(),
-                    target_agent_id: self.target_agent_id_for_agent(&cid).map(Into::into),
+                    target_agent_id: self
+                        .target_agent_id_for_agent(&cid)
+                        .map(crate::parse_agent_id),
                     agent_prompt_id: Some(prompt_id),
                 }),
             );
@@ -4502,7 +4610,9 @@ impl Harness {
                 None,
                 Event::UiCancelPrompt(UiCancelPrompt {
                     session_id,
-                    target_agent_id: self.target_agent_id_for_agent(&cid).map(Into::into),
+                    target_agent_id: self
+                        .target_agent_id_for_agent(&cid)
+                        .map(crate::parse_agent_id),
                     agent_prompt_id: Some(spid),
                 }),
             );
@@ -5299,13 +5409,13 @@ impl Harness {
         reason: AgentPromptTerminationReason,
         originator: PromptOriginator,
     ) {
-        let agent_id = self
-            .prompt_agents
-            .get(&agent_prompt_id)
-            .and_then(|cid| self.agents.get(cid))
-            .and_then(|conv| conv.agent_id.clone())
-            .expect("agent has durable id")
-            .into();
+        let agent_id = crate::parse_agent_id(
+            self.prompt_agents
+                .get(&agent_prompt_id)
+                .and_then(|cid| self.agents.get(cid))
+                .and_then(|conv| conv.agent_id.clone())
+                .expect("agent has durable id"),
+        );
         self.publish_event(
             None,
             Event::AgentPromptTerminated(AgentPromptTerminated {
@@ -5421,7 +5531,7 @@ impl Harness {
             .agents
             .get(cid)
             .and_then(|agent| agent.agent_id.as_ref())
-            .map(|agent_id| tau_proto::AgentId::from(agent_id.as_str()))
+            .map(|agent_id| tau_proto::AgentId::parse(agent_id.as_str()).expect("agent id"))
         else {
             return true;
         };
@@ -5521,7 +5631,7 @@ impl Harness {
         };
         let accepted = tau_proto::StartAgentAccepted {
             query_id: pending.query.query_id.clone(),
-            agent_id: pending.agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&pending.agent_id),
         };
         self.publish_event(
             Some(HARNESS_CONNECTION_ID),
@@ -5544,7 +5654,7 @@ impl Harness {
     ) {
         let accepted = tau_proto::StartAgentAccepted {
             query_id: query_id.to_owned(),
-            agent_id: agent_id.to_owned().into(),
+            agent_id: crate::parse_agent_id(agent_id),
         };
         self.publish_event(
             Some(HARNESS_CONNECTION_ID),
@@ -5568,7 +5678,7 @@ impl Harness {
         let agent_id = pending.agent_id.clone();
         let accepted = tau_proto::StartAgentAccepted {
             query_id: pending.query.query_id.clone(),
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
         };
         self.publish_event(
             Some(HARNESS_CONNECTION_ID),
@@ -5635,7 +5745,7 @@ impl Harness {
             return Ok(None);
         }
         let agent_id = self.mint_available_agent_id_for_role(&role);
-        let cid: AgentId = agent_id.clone().into();
+        let cid: AgentId = crate::parse_agent_id(&agent_id);
 
         // Resolve the parent agent at enqueue time: tool-backed requests
         // inherit from the conversation that owns the triggering tool call;
@@ -5781,7 +5891,7 @@ impl Harness {
             self.publish_for_agent(
                 &cid,
                 Event::AgentDisplayNameSet(tau_proto::AgentDisplayNameSet {
-                    agent_id: agent_id.clone().into(),
+                    agent_id: crate::parse_agent_id(&agent_id),
                     display_name,
                 }),
             );
@@ -5893,7 +6003,7 @@ impl Harness {
         self.publish_for_agent(
             &cid,
             Event::AgentCompactionTriggered(tau_proto::AgentCompactionTriggered {
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 originator: conv.originator.clone(),
             }),
         );
@@ -6289,7 +6399,7 @@ impl Harness {
             self.publish_event(
                 None,
                 Event::AgentPromptQueued(AgentPromptQueued {
-                    agent_id: agent_id.to_owned().into(),
+                    agent_id: crate::parse_agent_id(agent_id),
                     text: prompt.text,
                     message_class: prompt.message_class,
                 }),
@@ -6304,7 +6414,7 @@ impl Harness {
             self.publish_event(
                 None,
                 Event::AgentPromptQueued(AgentPromptQueued {
-                    agent_id: agent_id.to_owned().into(),
+                    agent_id: crate::parse_agent_id(agent_id),
                     text: prompt.text,
                     message_class: prompt.message_class,
                 }),
@@ -6386,7 +6496,9 @@ impl Harness {
                 None,
                 Event::UiCancelPrompt(UiCancelPrompt {
                     session_id: session_id.clone(),
-                    target_agent_id: self.target_agent_id_for_agent(cid).map(Into::into),
+                    target_agent_id: self
+                        .target_agent_id_for_agent(cid)
+                        .map(crate::parse_agent_id),
                     agent_prompt_id: Some(spid.clone()),
                 }),
             );
@@ -6466,10 +6578,10 @@ impl Harness {
             self.emit_info("navigate ignored: unknown agent");
             return None;
         };
-        let agent_id: tau_proto::AgentId = self
-            .target_agent_id_for_agent(&cid)
-            .expect("agent has durable id")
-            .into();
+        let agent_id: tau_proto::AgentId = crate::parse_agent_id(
+            self.target_agent_id_for_agent(&cid)
+                .expect("agent has durable id"),
+        );
         let node_id = tau_core::NodeId::new(node_id);
         let valid = self
             .agent_store
@@ -7082,7 +7194,7 @@ impl Harness {
             cid,
             None,
             Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-                agent_id: agent_id.to_owned().into(),
+                agent_id: crate::parse_agent_id(agent_id),
                 text,
                 message_class: tau_proto::PromptMessageClass::User,
             }),
@@ -7115,7 +7227,7 @@ impl Harness {
             })
             .expect("agent has durable id");
         let event = Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text,
             message_class: tau_proto::PromptMessageClass::User,
         });
@@ -7177,7 +7289,7 @@ impl Harness {
         self.publish_event(
             Some(HARNESS_CONNECTION_ID),
             Event::AgentState(tau_proto::AgentStateChanged {
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 state: new_state,
             }),
         );
@@ -7200,7 +7312,7 @@ impl Harness {
         if session_id != &self.current_session_id {
             return;
         }
-        let agent_id_proto: tau_proto::AgentId = agent_id.to_owned().into();
+        let agent_id_proto: tau_proto::AgentId = crate::parse_agent_id(agent_id);
         let already_loaded = match self.store.load_session(session_id.as_str()) {
             Ok(Some(membership)) => membership.contains_agent(&agent_id_proto),
             Ok(None) => false,
@@ -7247,7 +7359,7 @@ impl Harness {
                         .agent(agent_id.as_str())
                         .and_then(|tree| tree.head())
                 });
-            let cid: AgentId = agent_id_string.clone().into();
+            let cid: AgentId = crate::parse_agent_id(&agent_id_string);
             let meta = self
                 .agent_store
                 .agent_meta(agent_id.as_str())
@@ -7350,12 +7462,44 @@ impl Harness {
                 .any(|pending| pending.agent_id == agent_id)
     }
 
-    pub(crate) fn mint_available_agent_id_for_role(&self, role: &str) -> String {
-        mint_available_agent_id_for_role_with(
+    pub(crate) fn mint_available_agent_id_for_role(&mut self, role: &str) -> String {
+        let template = self.agent_id_template.clone();
+        let mut warnings = Vec::new();
+        let agent_id = mint_available_agent_id_for_role_with(
             role,
+            &template,
             |agent_id| self.agent_id_is_taken(agent_id),
-            |_, candidate_count| random_agent_id_suffix_search_start(candidate_count),
-        )
+            |kind, warning| warnings.push((kind, warning)),
+        );
+        for (kind, warning) in warnings {
+            self.emit_agent_id_template_warning(kind, warning);
+        }
+        agent_id
+    }
+
+    fn emit_agent_id_template_warning(
+        &mut self,
+        kind: AgentIdTemplateKind,
+        warning: AgentIdMintWarning,
+    ) {
+        let source = match kind {
+            AgentIdTemplateKind::Configured => "configured",
+            AgentIdTemplateKind::Default => "default",
+        };
+        let message = match warning {
+            AgentIdMintWarning::RenderFailed { error } => {
+                format!(
+                    "{source} agent id template failed to render: {error}; falling back to default template"
+                )
+            }
+            AgentIdMintWarning::InvalidRendered { candidate, error } => format!(
+                "{source} agent id template rendered invalid id `{candidate}`: {error}; falling back to default template"
+            ),
+            AgentIdMintWarning::CollisionsExceeded { attempts } => format!(
+                "{source} agent id template failed to generate a unique id after {attempts} attempts; falling back to default template"
+            ),
+        };
+        self.emit_info(&message);
     }
 
     pub(crate) fn create_durable_user_agent(
@@ -7365,7 +7509,7 @@ impl Harness {
         cwd: PathBuf,
     ) -> AgentId {
         let agent_id = self.mint_available_agent_id_for_role(role);
-        let cid: AgentId = agent_id.clone().into();
+        let cid: AgentId = crate::parse_agent_id(&agent_id);
         let mut conv = Agent::new(
             cid.clone(),
             session_id,
@@ -7377,7 +7521,7 @@ impl Harness {
         conv.agent_id = Some(agent_id.clone());
         self.agents.insert(cid.clone(), conv);
         self.agent_working_directories
-            .insert(agent_id.clone().into(), cwd.clone());
+            .insert(crate::parse_agent_id(&agent_id), cwd.clone());
         self.publish_delegate_roles_context();
         let _ = self.agent_store.record_agent_meta(&agent_id, Some(cwd));
         self.ensure_loaded_agent_for_agent(&cid, &agent_id);
@@ -7416,11 +7560,11 @@ impl Harness {
         let cwd = std::env::current_dir().ok();
         if let Some(cwd) = cwd.as_ref() {
             self.agent_working_directories
-                .entry(agent_id.to_owned().into())
+                .entry(crate::parse_agent_id(agent_id))
                 .or_insert_with(|| cwd.clone());
         }
         let _ = self.agent_store.record_agent_meta(agent_id, cwd);
-        let agent_id_proto: tau_proto::AgentId = agent_id.to_owned().into();
+        let agent_id_proto: tau_proto::AgentId = crate::parse_agent_id(agent_id);
         let already_loaded = match self.store.load_session(self.current_session_id.as_str()) {
             Ok(Some(membership)) => membership.contains_agent(&agent_id_proto),
             Ok(None) => false,
@@ -7560,7 +7704,7 @@ impl Harness {
             });
         let context = prompt_context.context;
         let tools = self.gather_tool_definitions_for_role(&role_name);
-        let durable_agent_id = agent_id_for_tree.as_deref().map(tau_proto::AgentId::from);
+        let durable_agent_id = agent_id_for_tree.as_deref().map(crate::parse_agent_id);
         let system_prompt =
             self.build_system_prompt_for_role_and_agent(&role_name, durable_agent_id.as_ref());
         let agent_prompt_id: AgentPromptId = format!("sp-{}", self.next_agent_prompt_id).into();
@@ -7587,10 +7731,10 @@ impl Harness {
             .expect("agent still exists")
             .session_id
             .clone();
-        let agent_id: tau_proto::AgentId = self
-            .ensure_agent_id_for_agent(cid)
-            .expect("agent has durable id")
-            .into();
+        let agent_id: tau_proto::AgentId = crate::parse_agent_id(
+            self.ensure_agent_id_for_agent(cid)
+                .expect("agent has durable id"),
+        );
         let compaction = self.compaction_context_for_agent(cid, &model);
         Some(AgentPromptCreated {
             agent_prompt_id,
@@ -7981,10 +8125,10 @@ impl Harness {
             ));
             return Ok(());
         };
-        response.agent_id = self
-            .target_agent_id_for_agent(&cid)
-            .expect("agent has durable id")
-            .into();
+        response.agent_id = crate::parse_agent_id(
+            self.target_agent_id_for_agent(&cid)
+                .expect("agent has durable id"),
+        );
 
         let stale_behind_newer_prompt = self.agents.get(&cid).is_some_and(|conv| {
             conv.last_prompt_id
@@ -8850,7 +8994,7 @@ impl Harness {
             self.publish_for_agent(
                 cid,
                 Event::AgentPromptSteered(tau_proto::AgentPromptSteered {
-                    agent_id: agent_id.into(),
+                    agent_id: crate::parse_agent_id(&agent_id),
                     text: prompt.text,
                     message_class: prompt.message_class,
                 }),
@@ -8918,7 +9062,7 @@ impl Harness {
         self.agents
             .get(cid)
             .and_then(|conv| conv.agent_id.clone())
-            .map(AgentId::from)
+            .map(crate::parse_agent_id)
             .unwrap_or_else(|| cid.clone())
     }
 
@@ -9209,7 +9353,7 @@ impl Harness {
             &cid,
             None,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 text: user_message.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,

@@ -60,7 +60,7 @@ fn ignores_tool_started_for_tools_owned_by_other_extensions() {
             call_id: tau_proto::ToolCallId::new(format!("call-{tool_name}")),
             tool_name: tau_proto::ToolName::new(tool_name),
             arguments: CborValue::Map(vec![]),
-            agent_id: tau_proto::AgentId::new("agent-1"),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         };
 

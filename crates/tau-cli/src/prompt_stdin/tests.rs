@@ -41,7 +41,7 @@ fn assistant_finished(
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: spid.into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -51,7 +51,13 @@ fn assistant_finished(
         })],
         stop_reason,
         originator: PromptOriginator::User,
-        ..ProviderResponseFinished::default()
+        error: None,
+        usage: None,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
     }
 }
 
@@ -66,11 +72,17 @@ fn one_shot_output_waits_through_tool_calls_and_keeps_final_snapshots() {
 
     assert!(!output.capture_finished(&ProviderResponseFinished {
         agent_prompt_id: "sp-tool".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         stop_reason: ProviderStopReason::ToolCalls,
         error: None,
         originator: PromptOriginator::User,
-        ..ProviderResponseFinished::default()
+        output_items: Vec::new(),
+        usage: None,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
     }));
 
     output.capture_update(&user_update(
@@ -99,11 +111,17 @@ fn one_shot_output_falls_back_to_latest_streaming_text() {
 
     assert!(output.capture_finished(&ProviderResponseFinished {
         agent_prompt_id: "sp-final".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         stop_reason: ProviderStopReason::EndTurn,
         error: None,
         originator: PromptOriginator::User,
-        ..ProviderResponseFinished::default()
+        output_items: Vec::new(),
+        usage: None,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
     }));
 
     assert_eq!(output.final_response.as_deref(), Some("complete"));

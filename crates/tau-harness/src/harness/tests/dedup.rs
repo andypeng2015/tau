@@ -426,7 +426,7 @@ fn dedup_is_scoped_to_a_single_branch() {
     // dedup against the default conv's call_default entry, because
     // the side conv's model has no visibility into the default
     // conv's history.
-    let side_cid: crate::AgentId = "side-test".into();
+    let side_cid: crate::AgentId = crate::parse_agent_id("side-test");
     h.agents.insert(
         side_cid.clone(),
         crate::agent::Agent::new(

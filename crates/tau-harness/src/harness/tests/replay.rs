@@ -25,7 +25,7 @@ fn provider_response_contains_text(finished: &ProviderResponseFinished, needle: 
 fn response_with_tool_calls(call_ids: &[&str]) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: "sp-restored-tools".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: call_ids
             .iter()
             .map(|call_id| {
@@ -70,7 +70,7 @@ fn seed_restored_tool_round(state_dir: &Path, call_ids: &[&str], completed_call_
             None,
             Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
                 session_id: "s1".into(),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
             }),
         )
         .expect("seed session membership");
@@ -81,7 +81,7 @@ fn seed_restored_tool_round(state_dir: &Path, call_ids: &[&str], completed_call_
             "main",
             None,
             Event::AgentStarted(tau_proto::AgentStarted {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 role: "engineer".to_owned(),
                 display_name: None,
             }),
@@ -92,7 +92,7 @@ fn seed_restored_tool_round(state_dir: &Path, call_ids: &[&str], completed_call_
             "main",
             None,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 text: "before restart".to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
@@ -134,7 +134,7 @@ fn seed_restored_tool_round_for_agent(
             None,
             Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
                 session_id: session_id.into(),
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(agent_id),
             }),
         )
         .expect("seed session membership");
@@ -145,7 +145,7 @@ fn seed_restored_tool_round_for_agent(
             agent_id,
             None,
             Event::AgentStarted(tau_proto::AgentStarted {
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(agent_id),
                 role: "engineer".to_owned(),
                 display_name: None,
             }),
@@ -156,7 +156,7 @@ fn seed_restored_tool_round_for_agent(
             agent_id,
             None,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(agent_id),
                 text: format!("before restart for {agent_id}"),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
@@ -171,7 +171,7 @@ fn seed_restored_tool_round_for_agent(
             None,
             Event::ProviderResponseFinished(ProviderResponseFinished {
                 agent_prompt_id: format!("sp-{agent_id}").into(),
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(agent_id),
                 ..response_with_tool_calls(call_ids)
             }),
         )
@@ -320,7 +320,7 @@ fn late_joining_ui_client_receives_replayed_agent_message_exact_selector() {
             Some(HARNESS_CONNECTION_ID.into()),
             Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
                 session_id: "s1".into(),
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             }),
         )
         .expect("seed session membership");
@@ -330,7 +330,7 @@ fn late_joining_ui_client_receives_replayed_agent_message_exact_selector() {
             Some(HARNESS_CONNECTION_ID.into()),
             Event::AgentMessageSent(tau_proto::AgentMessageSent {
                 message_id: "test-message".into(),
-                sender_id: "agent-1".to_owned().into(),
+                sender_id: crate::parse_agent_id("agent-1"),
                 recipient: tau_proto::AgentMessageRecipient::User,
                 message: "persisted hello".to_owned(),
             }),
@@ -372,7 +372,7 @@ fn late_joining_ui_client_receives_replayed_agent_message_exact_selector() {
         got_message = matches!(
             inner,
             Frame::Event(Event::AgentMessageSent(message))
-                if message.sender_id == "agent-1"
+                if message.sender_id.as_str() == "agent-1"
                     && message.recipient == tau_proto::AgentMessageRecipient::User
                     && message.message == "persisted hello"
         );
@@ -577,7 +577,7 @@ fn queued_and_recalled_prompt_lifecycle_is_not_durable() {
     h.publish_event(
         None,
         Event::AgentPromptQueued(AgentPromptQueued {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text: "edit me".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
         }),
@@ -585,7 +585,7 @@ fn queued_and_recalled_prompt_lifecycle_is_not_durable() {
     h.publish_event(
         None,
         Event::AgentPromptRecalled(AgentPromptRecalled {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text: "edit me".to_owned(),
         }),
     );
@@ -618,7 +618,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     h.publish_event(
         None,
         Event::AgentPromptQueued(AgentPromptQueued {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text: "queued for reconnect".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
         }),
@@ -626,7 +626,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     h.publish_event(
         None,
         Event::AgentPromptCreated(AgentPromptCreated {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             agent_prompt_id: spid.clone(),
             session_id: session_id.clone(),
             system_prompt: String::new(),
@@ -656,7 +656,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
     h.publish_event(
         None,
         Event::AgentCompactionTriggered(tau_proto::AgentCompactionTriggered {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             originator: tau_proto::PromptOriginator::User,
         }),
     );
@@ -664,7 +664,7 @@ fn late_joining_ui_client_replays_final_but_not_stale_queued_session_events() {
         None,
         Event::ProviderResponseFinished(ProviderResponseFinished {
             agent_prompt_id: spid,
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             output_items: assistant_output("final"),
             stop_reason: tau_proto::ProviderStopReason::EndTurn,
             error: None,
@@ -798,7 +798,7 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
             &cid,
             Event::ProviderResponseFinished(ProviderResponseFinished {
                 agent_prompt_id: spid.into(),
-                agent_id: agent_id.clone().into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 output_items: vec![ContextItem::ToolCall(ToolCallItem {
                     call_id: call_id.into(),
                     name: ToolName::new(tool_name),
@@ -1009,7 +1009,7 @@ fn late_joining_ui_client_does_not_replay_runtime_extension_setup() {
         Some(&tools_conn),
         Event::ExtensionContextReady(tau_proto::ExtensionContextReady {
             session_id: default_session_id().into(),
-            agent_id: "agent-1".into(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
         }),
     );
 
@@ -1116,7 +1116,7 @@ fn resumed_harness_replays_persisted_session_history() {
             .clone();
         h.handle_provider_response_finished(ProviderResponseFinished {
             agent_prompt_id: spid,
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             output_items: assistant_output("remembered potato"),
             stop_reason: tau_proto::ProviderStopReason::EndTurn,
             error: None,
@@ -1184,7 +1184,7 @@ fn thinking_is_persisted_but_excluded_from_prompt_replay() {
     let spid1 = h.send_prompt_to_agent("s1");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: assistant_output("answer"),
         stop_reason: tau_proto::ProviderStopReason::EndTurn,
         error: None,

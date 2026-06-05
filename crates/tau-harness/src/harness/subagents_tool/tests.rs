@@ -1,7 +1,7 @@
 use super::*;
 
 fn conv(id: &str) -> AgentId {
-    (id).into()
+    crate::parse_agent_id(id)
 }
 
 fn wait_args_empty() -> CborValue {

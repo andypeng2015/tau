@@ -220,7 +220,7 @@ pub struct AgentNode {
 /// [`AgentTree::apply_event`]. That keeps a single source of truth
 /// (the event log on disk) and removes the possibility for the tree
 /// and the events log to disagree.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AgentTree {
     pub(crate) agent_id: AgentId,
     pub(crate) nodes: Vec<AgentNode>,

@@ -1,5 +1,9 @@
 use super::*;
 
+fn agent_id(value: &str) -> AgentId {
+    AgentId::parse(value).expect("test agent id")
+}
+
 fn user_text_item(text: &str) -> ContextItem {
     ContextItem::Message(MessageItem {
         role: ContextRole::User,
@@ -55,14 +59,14 @@ fn representative_events() -> Vec<Event> {
             tool_name: ToolName::new("echo"),
             tool_type: ToolType::Function,
             arguments: CborValue::Text("hello".to_owned()),
-            agent_id: Default::default(),
+            agent_id: agent_id("agent-1"),
             originator: PromptOriginator::User,
         }),
         Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: ToolName::new("echo"),
             arguments: CborValue::Text("hello".to_owned()),
-            agent_id: Default::default(),
+            agent_id: agent_id("agent-1"),
             originator: PromptOriginator::User,
         }),
         Event::ToolResult(ToolResult {
@@ -124,21 +128,21 @@ fn representative_events() -> Vec<Event> {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "hello".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: agent_id("agent"),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
             ctx_id: None,
         }),
         Event::AgentMessageSent(AgentMessageSent {
             message_id: "msg-1".into(),
-            sender_id: "engineer_abcd1234".into(),
+            sender_id: agent_id("engineer_abcd1234"),
             recipient: AgentMessageRecipient::User,
             message: "hello".to_owned(),
         }),
         Event::AgentMessageReceived(AgentMessageReceived {
             message_id: "msg-2".into(),
-            sender_id: "engineer_abcd1234".into(),
-            recipient_id: "reviewer_efgh5678".into(),
+            sender_id: agent_id("engineer_abcd1234"),
+            recipient_id: agent_id("reviewer_efgh5678"),
             message: "hello back".to_owned(),
         }),
         Event::SessionStarted(SessionStarted {
@@ -147,10 +151,10 @@ fn representative_events() -> Vec<Event> {
         }),
         Event::SessionAgentLoaded(SessionAgentLoaded {
             session_id: "s1".into(),
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
         }),
         Event::AgentPromptSubmitted(AgentPromptSubmitted {
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
             text: "hello".to_owned(),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
@@ -158,12 +162,12 @@ fn representative_events() -> Vec<Event> {
             ctx_id: None,
         }),
         Event::AgentCompactionTriggered(AgentCompactionTriggered {
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
             originator: PromptOriginator::User,
         }),
         Event::AgentPromptCreated(AgentPromptCreated {
             agent_prompt_id: "sp-1".into(),
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
             session_id: "session_123".into(),
             system_prompt: "You are helpful.".to_owned(),
             context: PromptContext {
@@ -189,14 +193,14 @@ fn representative_events() -> Vec<Event> {
             share_user_cache_key: false,
         }),
         Event::AgentPromptTerminated(AgentPromptTerminated {
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
             agent_prompt_id: "sp-stale".into(),
             reason: AgentPromptTerminationReason::Stale,
             originator: PromptOriginator::User,
         }),
         Event::ProviderResponseFinished(ProviderResponseFinished {
             agent_prompt_id: "sp-1".into(),
-            agent_id: "engineer_abcd1234".into(),
+            agent_id: agent_id("engineer_abcd1234"),
             output_items: vec![ContextItem::Message(MessageItem {
                 role: ContextRole::Assistant,
                 content: vec![ContentPart::Text {
@@ -251,7 +255,7 @@ fn representative_events() -> Vec<Event> {
         }),
         Event::ExtensionContextReady(ExtensionContextReady {
             session_id: "s1".into(),
-            agent_id: "agent-1".into(),
+            agent_id: agent_id("agent-1"),
         }),
         Event::ExtensionEvent(CustomEvent {
             name: "demo.progress".parse().expect("event name"),
@@ -424,7 +428,7 @@ fn event_name_round_trips_from_string() {
 fn agent_message_events_have_names_and_persistence_defaults() {
     let sent = Event::AgentMessageSent(AgentMessageSent {
         message_id: "msg-1".into(),
-        sender_id: "engineer_abcd1234".into(),
+        sender_id: agent_id("engineer_abcd1234"),
         recipient: AgentMessageRecipient::User,
         message: "hello".to_owned(),
     });
@@ -434,8 +438,8 @@ fn agent_message_events_have_names_and_persistence_defaults() {
 
     let received = Event::AgentMessageReceived(AgentMessageReceived {
         message_id: "msg-2".into(),
-        sender_id: "engineer_abcd1234".into(),
-        recipient_id: "reviewer_efgh5678".into(),
+        sender_id: agent_id("engineer_abcd1234"),
+        recipient_id: agent_id("reviewer_efgh5678"),
         message: "hello back".to_owned(),
     });
     assert_eq!(received.name(), EventName::AGENT_MESSAGE_RECEIVED);
@@ -558,7 +562,7 @@ fn event_wire_form_uses_dotted_event_tag() {
         call_id: "call-1".into(),
         tool_name: ToolName::new("echo"),
         arguments: CborValue::Text("hi".to_owned()),
-        agent_id: Default::default(),
+        agent_id: agent_id("agent-1"),
         originator: PromptOriginator::User,
     });
     let json = serde_json::to_value(&event).expect("serialize");
@@ -619,11 +623,17 @@ fn execution_events_use_provider_wire_family() {
         (
             Event::ProviderResponseFinished(ProviderResponseFinished {
                 agent_prompt_id: "sp-1".into(),
-                agent_id: "engineer_abcd1234".into(),
+                agent_id: agent_id("engineer_abcd1234"),
                 stop_reason: ProviderStopReason::EndTurn,
                 error: None,
                 originator: PromptOriginator::User,
-                ..ProviderResponseFinished::default()
+                output_items: Vec::new(),
+                usage: None,
+                compaction_original_input_tokens: None,
+                compaction_compacted_input_tokens: None,
+                backend: None,
+                provider_response_id: None,
+                ws_pool_delta: None,
             }),
             "provider.response_finished",
         ),
@@ -848,22 +858,22 @@ fn event_defaults_to_transient_marks_progress_kinds() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "hi".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: agent_id("agent"),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
             ctx_id: None,
         }),
         Event::AgentPromptQueued(AgentPromptQueued {
-            agent_id: "worker".into(),
+            agent_id: agent_id("worker"),
             text: "queued".to_owned(),
             message_class: PromptMessageClass::User,
         }),
         Event::AgentPromptRecalled(AgentPromptRecalled {
-            agent_id: "worker".into(),
+            agent_id: agent_id("worker"),
             text: "queued".to_owned(),
         }),
         Event::AgentPromptTerminated(AgentPromptTerminated {
-            agent_id: "worker".into(),
+            agent_id: agent_id("worker"),
             agent_prompt_id: "sp-stale".into(),
             reason: AgentPromptTerminationReason::Stale,
             originator: PromptOriginator::User,
@@ -883,7 +893,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
             reason: SessionStartReason::Initial,
         }),
         Event::AgentPromptSubmitted(AgentPromptSubmitted {
-            agent_id: "worker".into(),
+            agent_id: agent_id("worker"),
             text: "hi".to_owned(),
             message_class: PromptMessageClass::User,
             originator: PromptOriginator::User,
@@ -892,7 +902,7 @@ fn event_defaults_to_transient_marks_progress_kinds() {
         }),
         Event::SessionAgentLoaded(SessionAgentLoaded {
             session_id: "s1".into(),
-            agent_id: "worker".into(),
+            agent_id: agent_id("worker"),
         }),
         Event::ToolError(ToolError {
             call_id: "call-1".into(),
@@ -954,7 +964,7 @@ fn prompt_message_class_defaults_to_user_when_omitted() {
     assert_eq!(queued.message_class, PromptMessageClass::User);
 
     let internal = serde_json::to_value(AgentPromptSteered {
-        agent_id: "worker".into(),
+        agent_id: agent_id("worker"),
         text: "[tau-internal] Tool call `bg` is complete.".into(),
         message_class: PromptMessageClass::Internal,
     })

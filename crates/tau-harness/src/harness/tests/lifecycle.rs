@@ -550,7 +550,7 @@ fn queued_tool_call_waits_for_staged_provider_until_ready() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "run two tools".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -559,7 +559,7 @@ fn queued_tool_call_waits_for_staged_provider_until_ready() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-staged-tools".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "call-blocking".into(),
@@ -756,7 +756,7 @@ fn skill_agent_context_and_fragment_are_staged_until_ready() {
         conn_id,
         Frame::Event(Event::ExtAgentContextPublish(
             tau_proto::ExtAgentContextPublish {
-                agent_id: agent_id.clone().into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 key: "demo".into(),
                 value: tau_proto::AgentContextValue(serde_json::json!({
                     "answer": "STAGED CONTEXT VALUE"
@@ -780,7 +780,7 @@ fn skill_agent_context_and_fragment_are_staged_until_ready() {
     .expect("stage prompt fragment");
 
     assert!(!h.discovered_skills.contains_key("staged-skill"));
-    let prompt_agent_id = tau_proto::AgentId::from(agent_id.clone());
+    let prompt_agent_id = tau_proto::AgentId::parse(&agent_id).expect("agent id");
     let before_prompt =
         h.build_system_prompt_for_role_and_agent(&h.selected_role, Some(&prompt_agent_id));
     assert!(!before_prompt.contains("STAGED SKILL DESCRIPTION"));
@@ -933,7 +933,7 @@ fn agents_context_ready_staged_until_ready_and_queue_waits() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s1".into(),
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             },
         )),
     )
@@ -1175,7 +1175,7 @@ fn prompt_created_waits_for_registered_agent_context_provider() {
         conn_id,
         Frame::Event(Event::ExtAgentContextPublish(
             tau_proto::ExtAgentContextPublish {
-                agent_id: agent_id.clone().into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 key: "cwd".into(),
                 value: tau_proto::AgentContextValue(serde_json::json!("/tmp/work")),
             },
@@ -1187,7 +1187,7 @@ fn prompt_created_waits_for_registered_agent_context_provider() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s1".into(),
-                agent_id: agent_id.into(),
+                agent_id: crate::parse_agent_id(&agent_id),
             },
         )),
     )
@@ -1269,7 +1269,7 @@ fn disconnect_before_ready_drops_all_staged_state() {
         conn_id,
         Frame::Event(Event::ExtAgentContextPublish(
             tau_proto::ExtAgentContextPublish {
-                agent_id: agent_id.clone().into(),
+                agent_id: crate::parse_agent_id(&agent_id),
                 key: "dropped".into(),
                 value: tau_proto::AgentContextValue(serde_json::json!("DROPPED CONTEXT")),
             },
@@ -1321,7 +1321,7 @@ fn disconnect_before_ready_drops_all_staged_state() {
     assert!(h.discovered_agents_files.is_empty());
     assert!(
         !h.agent_context
-            .template_value(Some(&agent_id.into()))
+            .template_value(Some(&crate::parse_agent_id(&agent_id)))
             .to_string()
             .contains("DROPPED CONTEXT")
     );
@@ -1386,7 +1386,7 @@ fn old_prompt_call_gets_tau_internal_unavailable_error() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: ToolName::new("shell"),
@@ -1588,7 +1588,7 @@ fn unavailable_tool_is_reported_without_crashing() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "shell printf hi".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -1662,7 +1662,7 @@ fn disconnected_tool_completes_pending_call() {
         &cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
             agent_prompt_id: "sp-main".into(),
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             output_items: vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: call_id.clone(),
                 name: tool_name.clone(),
@@ -1798,7 +1798,7 @@ fn disconnected_tool_is_removed_cleanly() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "shell printf hi".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -1806,7 +1806,7 @@ fn disconnected_tool_is_removed_cleanly() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: ToolName::new("shell"),
@@ -1984,7 +1984,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "do it".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -1993,7 +1993,7 @@ fn role_disabled_tool_is_reported_without_dispatch() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: tau_proto::ToolName::new("shell"),
@@ -2129,7 +2129,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         &cid,
         None,
         Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text: format!("# AGENTS.md instructions\n{marker}"),
             message_class: tau_proto::PromptMessageClass::User,
         }),
@@ -2152,7 +2152,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s1".into(),
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             },
         )),
     )
@@ -2189,7 +2189,7 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "do it".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -2198,7 +2198,7 @@ fn unavailable_tool_name_does_not_panic_and_surfaces_error() {
 
     let response = ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: ToolName::new("not_a_tool"),
@@ -2302,7 +2302,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "do it".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -2311,7 +2311,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
 
     let response = ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "".into(),

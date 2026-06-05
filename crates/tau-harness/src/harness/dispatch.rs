@@ -59,14 +59,12 @@ impl Harness {
         prompt: impl Into<PendingPrompt>,
     ) -> Result<(), HarnessError> {
         let prompt = prompt.into();
-        let target_agent_id: tau_proto::AgentId = self
-            .ensure_agent_id_for_agent(agent_id)
-            .ok_or_else(|| {
+        let target_agent_id: tau_proto::AgentId =
+            crate::parse_agent_id(self.ensure_agent_id_for_agent(agent_id).ok_or_else(|| {
                 HarnessError::Participant(format!(
                     "publish_pending_prompt_for_agent: unknown agent `{agent_id}`"
                 ))
-            })?
-            .into();
+            })?);
         let originator = self
             .agents
             .get(agent_id)

@@ -418,7 +418,7 @@ fn deferred_tool_result_persists_after_call_tracking_is_cleared() {
         &cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
             agent_prompt_id: "sp-main".into(),
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             output_items: vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: call_id.clone(),
                 name: tool_name.clone(),
@@ -515,7 +515,7 @@ fn interception_drop_of_must_pass_event_is_overridden() {
     let baseline_seq = h.event_log.next_seq();
 
     let prompt = Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         text: "hello".to_owned(),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
@@ -690,7 +690,7 @@ fn interception_mutating_prompt_reaches_agent() {
         .expect("prompt publish assigned an agent id")
         .clone();
     let mutated = Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-        agent_id: agent_id.into(),
+        agent_id: crate::parse_agent_id(&agent_id),
         text: "I love Tau".to_owned(),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,

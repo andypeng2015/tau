@@ -3,7 +3,7 @@ use tau_proto::{BackgroundSupport, CborValue};
 use super::*;
 
 fn cid(value: &str) -> AgentId {
-    value.into()
+    crate::parse_agent_id(value)
 }
 
 fn call(id: &str) -> AgentToolCall {

@@ -887,7 +887,9 @@ fn maybe_emit_deferred_agent_end<W: Write>(
 ) -> Result<bool, Box<dyn Error>> {
     if *final_response_pending_background_tools && active_background_tools.is_empty() {
         *final_response_pending_background_tools = false;
-        let agent_id = pending_agent_id.take().unwrap_or_default();
+        let Some(agent_id) = pending_agent_id.take() else {
+            return Ok(false);
+        };
         let agent_name = display_name_for_agent(agent_display_names, &agent_id);
         let agent_response = std::mem::take(pending_response);
         emit_agent_end(
@@ -984,7 +986,7 @@ fn validate_hook(name: &str, hook: &HookConfig) -> Result<(), String> {
             "{name} hook item must set bell, command, or osc1337"
         ));
     }
-    let agent_id: tau_proto::AgentId = "agent".into();
+    let agent_id = tau_proto::AgentId::parse("agent").expect("valid test agent id");
     let ctx = template_context(
         name,
         &agent_id,

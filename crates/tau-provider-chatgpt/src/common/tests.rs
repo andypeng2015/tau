@@ -111,7 +111,7 @@ fn ws_stream_error_without_type_suffix_is_retryable() {
 fn cache_key(originator: &PromptOriginator, share_user_bucket: bool) -> String {
     prompt_cache_key_for(
         "https://api.openai.com/v1",
-        &tau_proto::AgentId::new("agent-1"),
+        &tau_proto::AgentId::parse("agent-1").expect("agent id"),
         originator,
         share_user_bucket,
     )
@@ -124,13 +124,13 @@ fn prompt_cache_key_distinct_agents_diverge() {
     assert_ne!(
         prompt_cache_key_for(
             "https://api.openai.com/v1",
-            &tau_proto::AgentId::new("agent-1"),
+            &tau_proto::AgentId::parse("agent-1").expect("agent id"),
             &PromptOriginator::User,
             false,
         ),
         prompt_cache_key_for(
             "https://api.openai.com/v1",
-            &tau_proto::AgentId::new("agent-2"),
+            &tau_proto::AgentId::parse("agent-2").expect("agent id"),
             &PromptOriginator::User,
             false,
         ),
@@ -144,13 +144,13 @@ fn prompt_cache_key_distinct_base_urls_diverge() {
     assert_ne!(
         prompt_cache_key_for(
             "https://api.openai.com/v1",
-            &tau_proto::AgentId::new("agent-1"),
+            &tau_proto::AgentId::parse("agent-1").expect("agent id"),
             &PromptOriginator::User,
             false,
         ),
         prompt_cache_key_for(
             "https://chatgpt.com/backend-api",
-            &tau_proto::AgentId::new("agent-1"),
+            &tau_proto::AgentId::parse("agent-1").expect("agent id"),
             &PromptOriginator::User,
             false,
         ),

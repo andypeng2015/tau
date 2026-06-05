@@ -421,6 +421,9 @@ pub struct HarnessSettings {
     /// fold these into every role's prompt fragments; this field preserves the
     /// global source list for inspection and future config tooling.
     pub prompt_fragments: Vec<RolePromptFragment>,
+
+    /// Handlebars template used to mint new durable agent identifiers.
+    pub agent_id_template: String,
 }
 
 #[derive(Deserialize)]
@@ -434,6 +437,12 @@ struct HarnessSettingsWire {
     role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
+    agents: AgentsSettings,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AgentsSettings {
+    id_template: String,
 }
 
 impl<'de> Deserialize<'de> for HarnessSettings {
@@ -449,6 +458,7 @@ impl<'de> Deserialize<'de> for HarnessSettings {
             roles: HashMap::new(),
             role_groups: Vec::new(),
             prompt_fragments: wire.prompt_fragments,
+            agent_id_template: wire.agents.id_template,
         };
         settings
             .apply_role_group_overrides(wire.role_groups)
@@ -471,6 +481,8 @@ struct HarnessRoleOverrides {
     role_groups: RawRoleGroups,
     #[serde(default, rename = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
+    #[serde(default)]
+    _agents: Option<serde::de::IgnoredAny>,
 }
 
 /// One ordered group in the role navigation palette.

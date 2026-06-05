@@ -3,6 +3,8 @@
 session_retention_days: 60
 defaultRole: senior-engineer
 extensions: {}
+agents:
+  idTemplate: "{{random_alphanumeric 6}}"
 roleGroups:
   engineer:
     promptFragments:

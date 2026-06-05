@@ -62,7 +62,7 @@ impl Harness {
             .collect();
         for agent_id in agent_ids {
             self.agent_context.publish(
-                tau_proto::AgentId::from(agent_id),
+                tau_proto::AgentId::parse(agent_id).expect("agent id"),
                 AgentContextKey::new("delegate_roles"),
                 tau_proto::ConnectionId::from(HARNESS_CONNECTION_ID),
                 "harness".to_owned(),
@@ -207,7 +207,7 @@ impl Harness {
             tau_proto::AgentMessageRecipient::User
         } else {
             tau_proto::AgentMessageRecipient::Agent {
-                agent_id: recipient_id.into(),
+                agent_id: crate::parse_agent_id(&recipient_id),
             }
         };
         let message_id = tau_proto::AgentMessageId::from(format!(
@@ -215,7 +215,7 @@ impl Harness {
             sender_id,
             tau_proto::UnixMicros::now().get()
         ));
-        let sender_id: tau_proto::AgentId = sender_id.into();
+        let sender_id: tau_proto::AgentId = crate::parse_agent_id(&sender_id);
         self.publish_for_agent_from(
             agent_id,
             Some(HARNESS_CONNECTION_ID),

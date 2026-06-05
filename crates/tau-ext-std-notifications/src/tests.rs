@@ -188,7 +188,7 @@ fn assistant_finished_response(
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: agent_prompt_id.into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -242,7 +242,7 @@ fn user_prompt_submitted(
     originator: tau_proto::PromptOriginator,
 ) -> Event {
     Event::AgentPromptSubmitted(AgentPromptSubmitted {
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         text: text.into(),
         message_class: tau_proto::PromptMessageClass::User,
         originator,
@@ -258,7 +258,7 @@ fn tool_call_finished_response(
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: agent_prompt_id.into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(tool_call)],
         stop_reason: ProviderStopReason::ToolCalls,
         error: None,
@@ -425,7 +425,7 @@ fn agent_start_hook_renders_multiple_configured_actions() {
         .expect("write config");
     writer
         .write_event(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
-            agent_id: "main".into(),
+            agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
             text: "hello".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
@@ -471,14 +471,14 @@ fn agent_start_hook_uses_display_name_set_with_id_fallback_for_blank_prompt_name
     writer
         .write_event(&Event::AgentDisplayNameSet(
             tau_proto::AgentDisplayNameSet {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 display_name: "Renamed main".to_owned(),
             },
         ))
         .expect("write name");
     writer
         .write_event(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
-            agent_id: "main".into(),
+            agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
             text: "hello".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,

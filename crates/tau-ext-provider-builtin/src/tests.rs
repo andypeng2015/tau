@@ -45,7 +45,7 @@ fn synthetic_provider_error_is_not_output_item() {
     // assistant messages that should be replayed as future context.
     let finished = simple_finished(
         "sp-error".into(),
-        "agent".into(),
+        tau_proto::AgentId::parse("agent").expect("valid test agent id"),
         tau_proto::PromptOriginator::User,
         "no model specified",
     );

@@ -45,6 +45,10 @@ pub fn dump_initial_prompt(
 pub use tau_core::{AgentEntry, AgentTree, SessionMeta, list_session_metas, session_is_locked};
 pub use tau_proto::AgentId;
 
+pub(crate) fn parse_agent_id(value: impl AsRef<str>) -> AgentId {
+    AgentId::parse(value.as_ref()).expect("harness stores only valid agent ids")
+}
+
 pub use crate::daemon::{
     EmbeddedOptions, InteractionOutcome, ServeOptions, SessionLaunchStatus,
     get_daemon_rendered_system_prompt, get_daemon_rendered_tool_definitions, run_component,

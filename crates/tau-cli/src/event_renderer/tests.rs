@@ -1,14 +1,16 @@
 use super::{AgentActivity, MessageRenderMode, RoleCompletionDetails, role_value_completion};
-
+fn agent_id(value: &str) -> tau_proto::AgentId {
+    tau_proto::AgentId::parse(value).expect("valid test agent id")
+}
 fn agent_message(sender_id: &str, recipient: &str, message: &str) -> tau_proto::Event {
     tau_proto::Event::AgentMessageSent(tau_proto::AgentMessageSent {
         message_id: format!("msg-{sender_id}-{recipient}").into(),
-        sender_id: sender_id.to_owned().into(),
+        sender_id: agent_id(sender_id),
         recipient: if recipient == "user" {
             tau_proto::AgentMessageRecipient::User
         } else {
             tau_proto::AgentMessageRecipient::Agent {
-                agent_id: recipient.to_owned().into(),
+                agent_id: agent_id(recipient),
             }
         },
         message: message.to_owned(),

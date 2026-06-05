@@ -12,7 +12,7 @@ fn invoke_restart() -> Frame {
         call_id: "call-1".into(),
         tool_name: tau_proto::ToolName::new(RESTART_TEST_DUMMY_TOOL_NAME),
         arguments: tau_proto::CborValue::Map(Vec::new()),
-        agent_id: Default::default(),
+        agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
         originator: tau_proto::PromptOriginator::User,
     }))
 }
@@ -195,7 +195,7 @@ fn intercepted_prompt(text: &str) -> Frame {
     Frame::Message(Message::InterceptRequest(InterceptRequest {
         event: Box::new(Event::AgentPromptSubmitted(
             tau_proto::AgentPromptSubmitted {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 text: text.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,

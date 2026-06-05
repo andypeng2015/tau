@@ -41,7 +41,7 @@ fn append_raw_cbor<T: serde::Serialize>(path: &std::path::Path, record: &T) {
 
 fn agent_prompt(agent_id: &str, text: &str) -> Event {
     Event::AgentPromptSubmitted(AgentPromptSubmitted {
-        agent_id: AgentId::from(agent_id),
+        agent_id: AgentId::parse(agent_id).expect("agent id"),
         text: text.to_owned(),
         message_class: PromptMessageClass::User,
         originator: PromptOriginator::User,
@@ -62,7 +62,7 @@ fn agent_store_rejects_empty_display_name() {
             "agent-1",
             None,
             Event::AgentDisplayNameSet(AgentDisplayNameSet {
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
                 display_name: "   ".to_owned(),
             }),
         )
@@ -106,7 +106,7 @@ fn agent_meta_initializes_and_explicitly_bumps_last_user_interaction() {
             "agent-1",
             None,
             Event::AgentDisplayNameSet(AgentDisplayNameSet {
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
                 display_name: "Research".to_owned(),
             }),
         )
@@ -263,7 +263,7 @@ fn agent_store_restores_head_move_before_next_append() {
             "agent-1",
             None,
             Event::AgentHeadMoved(AgentHeadMoved {
-                agent_id: AgentId::from("agent-1"),
+                agent_id: AgentId::parse("agent-1").expect("agent id"),
                 node_id: NodeId::new(0),
             }),
         )
@@ -296,7 +296,7 @@ fn session_store_persists_only_membership_facts() {
 
     let loaded = Event::SessionAgentLoaded(SessionAgentLoaded {
         session_id: SessionId::from("session-1"),
-        agent_id: AgentId::from("agent-1"),
+        agent_id: AgentId::parse("agent-1").expect("agent id"),
     });
     let outcome = store
         .append_session_event("session-1", None, loaded.clone())
@@ -309,7 +309,7 @@ fn session_store_persists_only_membership_facts() {
         store
             .session("session-1")
             .expect("session membership")
-            .contains_agent(&AgentId::from("agent-1"))
+            .contains_agent(&AgentId::parse("agent-1").expect("agent id"))
     );
 
     store
@@ -318,7 +318,7 @@ fn session_store_persists_only_membership_facts() {
             None,
             Event::SessionAgentUnloaded(SessionAgentUnloaded {
                 session_id: SessionId::from("session-1"),
-                agent_id: AgentId::from("agent-1"),
+                agent_id: AgentId::parse("agent-1").expect("agent id"),
             }),
         )
         .expect("append unloaded");
@@ -326,7 +326,7 @@ fn session_store_persists_only_membership_facts() {
     let reopened = SessionStore::open(&sessions_dir).expect("reopen session store");
     let membership = reopened.session("session-1").expect("session membership");
     assert_eq!(membership.session_id(), "session-1");
-    assert!(!membership.contains_agent(&AgentId::from("agent-1")));
+    assert!(!membership.contains_agent(&AgentId::parse("agent-1").expect("agent id")));
     let events = reopened.session_events("session-1").expect("events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].event, loaded);
@@ -349,7 +349,7 @@ fn session_store_rejects_non_sequential_persisted_sequence_on_load() {
             source: None,
             event: Event::SessionAgentLoaded(SessionAgentLoaded {
                 session_id: SessionId::from("session-1"),
-                agent_id: AgentId::from("agent-1"),
+                agent_id: AgentId::parse("agent-1").expect("agent id"),
             }),
             recorded_at: tau_proto::UnixMicros::now(),
         },
@@ -368,7 +368,7 @@ fn agent_store_rejects_non_agent_transcript_events() {
 
     let session_event = Event::SessionAgentLoaded(SessionAgentLoaded {
         session_id: SessionId::from("session-1"),
-        agent_id: AgentId::from("agent-1"),
+        agent_id: AgentId::parse("agent-1").expect("agent id"),
     });
     let error = store
         .append_agent_event("agent-1", None, session_event)

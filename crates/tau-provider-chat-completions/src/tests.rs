@@ -29,7 +29,7 @@ fn resolved_provider(provider: &ChatCompletionsProvider) -> ResolvedProvider {
 fn prompt() -> tau_proto::AgentPromptCreated {
     tau_proto::AgentPromptCreated {
         agent_prompt_id: "ap-test".into(),
-        agent_id: "agent-test".into(),
+        agent_id: tau_proto::AgentId::parse("agent-test").expect("agent id"),
         session_id: "session-test".into(),
         system_prompt: String::new(),
         context: tau_proto::PromptContext {

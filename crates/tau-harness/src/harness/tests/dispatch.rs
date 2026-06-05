@@ -18,7 +18,7 @@ fn responses_backend() -> tau_proto::ProviderBackend {
 }
 
 fn publish_pending_agent_context_ready(h: &mut Harness, agent_id: &str) {
-    let agent_id = tau_proto::AgentId::from(agent_id);
+    let agent_id = tau_proto::AgentId::parse(agent_id).expect("agent id");
     let Some(source_id) = h
         .pending_agent_context_ready
         .get(&agent_id)
@@ -189,7 +189,7 @@ fn resume_ignores_later_side_queued_or_steered_default_agent_candidates() {
                     None,
                     Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
                         session_id: "s1".into(),
-                        agent_id: agent_id.into(),
+                        agent_id: crate::parse_agent_id(agent_id),
                     }),
                 )
                 .expect("seed session membership");
@@ -202,7 +202,7 @@ fn resume_ignores_later_side_queued_or_steered_default_agent_candidates() {
                 "engineer_default",
                 None,
                 Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                    agent_id: "engineer_default".into(),
+                    agent_id: tau_proto::AgentId::parse("engineer_default").expect("agent id"),
                     text: "default prompt".to_owned(),
                     message_class: tau_proto::PromptMessageClass::User,
                     originator: tau_proto::PromptOriginator::User,
@@ -216,7 +216,7 @@ fn resume_ignores_later_side_queued_or_steered_default_agent_candidates() {
                 "worker_steered",
                 None,
                 Event::AgentPromptSteered(AgentPromptSteered {
-                    agent_id: "worker_steered".into(),
+                    agent_id: tau_proto::AgentId::parse("worker_steered").expect("agent id"),
                     text: "side steered".to_owned(),
                     message_class: tau_proto::PromptMessageClass::User,
                 }),
@@ -424,7 +424,7 @@ fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
 fn provider_text_response(spid: &AgentPromptId, text: &str) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: spid.clone(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -458,7 +458,7 @@ fn seed_prior_user_message_at(state_dir: &Path, text: &str, recorded_at: tau_pro
             None,
             tau_core::AgentEventParent::InheritHead,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 text: text.to_owned(),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
@@ -479,7 +479,7 @@ fn seed_main_agent_loaded(state_dir: &Path) {
             None,
             Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
                 session_id: "s1".into(),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
             }),
         )
         .expect("seed session membership");
@@ -544,7 +544,7 @@ fn seed_background_placeholder(state_dir: &Path, call_id: &str, tool_name: &str)
             "main",
             None,
             Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 text: format!("run {tool_name}"),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
@@ -559,7 +559,7 @@ fn seed_background_placeholder(state_dir: &Path, call_id: &str, tool_name: &str)
             None,
             Event::ProviderResponseFinished(ProviderResponseFinished {
                 agent_prompt_id: format!("sp-{call_id}").into(),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 output_items: vec![ContextItem::ToolCall(ToolCallItem {
                     call_id: call_id.into(),
                     name: ToolName::new(tool_name),
@@ -769,7 +769,7 @@ fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (TempDir, Harn
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: call_id.into(),
             name: ToolName::new(tool_name),
@@ -839,7 +839,7 @@ fn invalid_tool_arguments_are_rejected_before_logical_dispatch() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "bad-args".into(),
             name: ToolName::new("strict_tool"),
@@ -921,7 +921,7 @@ fn disconnect_with_multiple_inflight_tools_cleans_up_all_calls() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "run two slow tools".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -930,7 +930,7 @@ fn disconnect_with_multiple_inflight_tools_cleans_up_all_calls() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "running-call".into(),
@@ -1115,7 +1115,7 @@ fn background_result_clears_actual_running_call_without_blocking_later_tool() {
     h.prompt_agents.insert(spid.clone(), cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "bg-update-running".into(),
@@ -1202,7 +1202,7 @@ fn background_error_clears_actual_running_call() {
     h.prompt_agents.insert(spid.clone(), cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "bg-exclusive-running".into(),
@@ -1300,7 +1300,7 @@ fn background_cancel_clears_actual_running_call() {
     h.prompt_agents.insert(spid.clone(), cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "bg-exclusive-cancel-running".into(),
@@ -1419,7 +1419,7 @@ fn disconnect_background_errors_do_not_affect_other_inflight_tools() {
     h.prompt_agents.insert(spid.clone(), cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "b-bg-shared".into(),
@@ -1520,7 +1520,7 @@ fn disconnect_idle_multi_background_errors_dispatch_prompt_after_batch() {
     h.prompt_agents.insert(spid.clone(), cid.clone());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "a-bg-idle".into(),
@@ -1621,7 +1621,7 @@ fn disconnect_mixed_foreground_and_background_errors_dispatch_prompt_after_batch
     h.prompt_agents.insert(spid.clone(), cid.clone());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "a-foreground-disconnect".into(),
@@ -1995,7 +1995,7 @@ fn provider_owner_validation_rejects_provider_event_message_emit() {
         Frame::Message(Message::Emit(tau_proto::Emit {
             event: Box::new(Event::ProviderResponseFinished(ProviderResponseFinished {
                 agent_prompt_id: "spoofed-prompt".into(),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 output_items: Vec::new(),
                 stop_reason: tau_proto::ProviderStopReason::EndTurn,
                 error: None,
@@ -2077,7 +2077,7 @@ fn cancel_publishes_tool_cancel_request() {
     h.prompt_agents.insert(spid.clone(), cid);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: target_agent_id.clone().into(),
+        agent_id: crate::parse_agent_id(&target_agent_id),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "cancel-call".into(),
             name: ToolName::new("cancel_tool"),
@@ -2098,7 +2098,7 @@ fn cancel_publishes_tool_cancel_request() {
 
     h.handle_cancel_prompt(&tau_proto::UiCancelPrompt {
         session_id: "s1".into(),
-        target_agent_id: Some(target_agent_id.into()),
+        target_agent_id: Some(crate::parse_agent_id(&target_agent_id)),
         agent_prompt_id: None,
     });
 
@@ -2157,7 +2157,7 @@ fn cancel_clears_active_wait_state() {
 
     h.handle_cancel_prompt(&tau_proto::UiCancelPrompt {
         session_id: "s1".into(),
-        target_agent_id: Some(target_agent_id.into()),
+        target_agent_id: Some(crate::parse_agent_id(&target_agent_id)),
         agent_prompt_id: None,
     });
 
@@ -2201,7 +2201,7 @@ fn cancel_while_thinking_terminates_prompt_and_drops_late_response() {
 
     h.handle_cancel_prompt(&tau_proto::UiCancelPrompt {
         session_id: "s1".into(),
-        target_agent_id: Some(target_agent_id.clone().into()),
+        target_agent_id: Some(crate::parse_agent_id(&target_agent_id)),
         agent_prompt_id: None,
     });
 
@@ -2222,7 +2222,7 @@ fn cancel_while_thinking_terminates_prompt_and_drops_late_response() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid.clone(),
-        agent_id: target_agent_id.into(),
+        agent_id: crate::parse_agent_id(&target_agent_id),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -2603,7 +2603,7 @@ fn tool_turn_dispatches_provider_calls_without_global_locking() {
     ]);
     let response = ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
@@ -2715,7 +2715,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
     };
     let response = ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
@@ -2824,11 +2824,12 @@ fn ui_navigate_tree_can_reselect_agent_head_after_resume() {
         let cid = ensure_test_user_agent(&mut h);
         first_user_head = h.agents[&cid].head.expect("first user head");
         append_user_message_via_event(&mut h, "s1", "second branch point");
-        agent_id = h.agents[&cid]
-            .agent_id
-            .clone()
-            .expect("default conversation agent id")
-            .into();
+        agent_id = crate::parse_agent_id(
+            h.agents[&cid]
+                .agent_id
+                .clone()
+                .expect("default conversation agent id"),
+        );
 
         h.handle_ui_navigate_tree(
             "ui",
@@ -2931,7 +2932,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
     ]);
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-x".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "c1".into(),
             name: tau_proto::ToolName::new("edit"),
@@ -3087,7 +3088,7 @@ fn tool_calls_stop_reason_without_tool_items_does_not_wedge_turn() {
         .expect("submit");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: "sp-0".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -3137,7 +3138,7 @@ fn agent_prompt_created_uses_refs_for_linear_extension() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1.clone(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3196,7 +3197,7 @@ fn linear_agent_prompts_strictly_extend_previous_messages() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3274,7 +3275,7 @@ fn response_id_anchors_next_prompt_with_previous_response() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3331,7 +3332,7 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3368,7 +3369,7 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
     let spid2: AgentPromptId = "sp-1".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid2,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3429,7 +3430,7 @@ fn model_switch_invalidates_chain_anchor() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3500,7 +3501,7 @@ fn params_drift_invalidates_chain_anchor() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3569,7 +3570,7 @@ fn system_prompt_drift_invalidates_chain_anchor() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3647,7 +3648,7 @@ fn tools_drift_invalidates_chain_anchor() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3726,7 +3727,7 @@ fn stable_params_preserve_chain_anchor() {
     let spid1: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3786,7 +3787,7 @@ fn missing_response_id_leaves_chain_unset() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3858,7 +3859,7 @@ fn queued_prompt_extends_completed_first_prompt() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -4108,7 +4109,7 @@ fn resumed_lost_background_tool_gets_error_and_wait_returns() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: first_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "wait-lost-bg".into(),
             name: ToolName::new("wait"),
@@ -4184,7 +4185,7 @@ fn resumed_completed_background_result_can_be_consumed_by_no_arg_wait() {
     let spid: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "wait-restored-any".into(),
             name: ToolName::new("wait"),
@@ -4362,7 +4363,7 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
         Frame::Event(Event::ExtensionContextReady(
             tau_proto::ExtensionContextReady {
                 session_id: "s2".into(),
-                agent_id: "agent-1".into(),
+                agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             },
         )),
     )
@@ -4378,7 +4379,12 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
         .clone()
         .expect("new session agent id");
     publish_pending_agent_context_ready(&mut h, new_agent_id.as_str());
-    assert!(read_prompt_created(&h, &AgentPromptId::from("sp-0")).agent_id == new_agent_id);
+    assert!(
+        read_prompt_created(&h, &AgentPromptId::from("sp-0"))
+            .agent_id
+            .as_str()
+            == new_agent_id
+    );
 
     h.shutdown().expect("shutdown");
 }
@@ -4481,7 +4487,7 @@ fn start_background_tool_and_finish_placeholder_turn(
     h.publish_for_agent(
         cid,
         Event::AgentPromptSubmitted(tau_proto::AgentPromptSubmitted {
-            agent_id: agent_id.clone().into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             text: format!("run {tool_name}"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
@@ -4494,7 +4500,7 @@ fn start_background_tool_and_finish_placeholder_turn(
     h.prompt_agents.insert(spid.clone(), cid.clone());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: agent_id.into(),
+        agent_id: crate::parse_agent_id(&agent_id),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: call_id.into(),
             name: ToolName::new(tool_name),
@@ -4755,8 +4761,8 @@ fn agent_message_interrupts_recipient_active_wait() {
         Some(HARNESS_CONNECTION_ID),
         Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
             message_id: "test-message-interrupts-wait".into(),
-            sender_id: "manager".to_owned().into(),
-            recipient_id: recipient_id.clone().into(),
+            sender_id: crate::parse_agent_id("manager"),
+            recipient_id: crate::parse_agent_id(&recipient_id),
             message: "please stop waiting".to_owned(),
         }),
     );
@@ -4809,7 +4815,7 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
         .clone()
         .expect("waiter agent id");
     h.pending_agent_context_ready
-        .remove(&tau_proto::AgentId::from(waiter_agent_id.clone()));
+        .remove(&tau_proto::AgentId::parse(&waiter_agent_id).expect("agent id"));
 
     let background_call_id: ToolCallId = "bg-cross-msg-wait".into();
     start_background_tool_and_finish_placeholder_turn(
@@ -4837,8 +4843,8 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
         Some(HARNESS_CONNECTION_ID),
         Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
             message_id: "test-message-to-target-owner".into(),
-            sender_id: "manager".to_owned().into(),
-            recipient_id: target_agent_id.into(),
+            sender_id: crate::parse_agent_id("manager"),
+            recipient_id: crate::parse_agent_id(&target_agent_id),
             message: "target owner only".to_owned(),
         }),
     );
@@ -4852,8 +4858,8 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
         Some(HARNESS_CONNECTION_ID),
         Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
             message_id: "test-message-to-wait-owner".into(),
-            sender_id: "manager".to_owned().into(),
-            recipient_id: waiter_agent_id.clone().into(),
+            sender_id: crate::parse_agent_id("manager"),
+            recipient_id: crate::parse_agent_id(&waiter_agent_id),
             message: "waiter should resume".to_owned(),
         }),
     );
@@ -4913,7 +4919,7 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -5003,7 +5009,7 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: side_agent_id.clone().into(),
+        agent_id: crate::parse_agent_id(&side_agent_id),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -5133,7 +5139,7 @@ fn delegated_agent_user_interaction_prevents_auto_suspend() {
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -5211,15 +5217,15 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
         Some(HARNESS_CONNECTION_ID),
         Event::AgentMessageReceived(tau_proto::AgentMessageReceived {
             message_id: "test-message".into(),
-            sender_id: "manager".to_owned().into(),
-            recipient_id: recipient_id.into(),
+            sender_id: crate::parse_agent_id("manager"),
+            recipient_id: crate::parse_agent_id(&recipient_id),
             message: "please include this".to_owned(),
         }),
     );
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid.clone(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -5267,7 +5273,7 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: message_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -5406,7 +5412,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -5415,7 +5421,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: tau_proto::ToolName::new("delegate"),
@@ -5544,7 +5550,7 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "find the bug in foo.rs".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -5552,7 +5558,7 @@ fn non_tool_start_agent_request_starts_fresh_agent_branch() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -5705,7 +5711,7 @@ fn non_tool_start_agent_request_preserves_tool_choice_without_parent_chain_ancho
     let main_spid: AgentPromptId = "sp-0".into();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -5811,7 +5817,7 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "go".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -5819,7 +5825,7 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: tau_proto::ToolName::new("delegate"),
@@ -6014,7 +6020,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -6022,7 +6028,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: tau_proto::ToolName::new("delegate"),
@@ -6076,7 +6082,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "websearch-call".into(),
             name: tau_proto::ToolName::new("websearch"),
@@ -6184,7 +6190,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate slow work".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -6192,7 +6198,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: ToolName::new("delegate"),
@@ -6223,7 +6229,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "slow-call".into(),
             name: ToolName::new("slow"),
@@ -6265,7 +6271,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
         .expect("side follow-up prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: followup_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -6442,7 +6448,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate slow work".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -6450,7 +6456,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: parent_agent_id.into(),
+        agent_id: crate::parse_agent_id(&parent_agent_id),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call-cancel".into(),
             name: ToolName::new("delegate"),
@@ -6482,7 +6488,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
     let side_agent_id = h.agents[&side_cid].agent_id.clone().expect("agent id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: side_agent_id.into(),
+        agent_id: crate::parse_agent_id(&side_agent_id),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "slow-call-cancel".into(),
             name: ToolName::new("slow"),
@@ -6570,7 +6576,7 @@ fn background_notification_suppression_keeps_error_event_but_skips_prompt() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "run fail".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -6578,7 +6584,7 @@ fn background_notification_suppression_keeps_error_event_but_skips_prompt() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "fail-call".into(),
             name: ToolName::new("fail"),
@@ -6792,7 +6798,7 @@ fn backgrounded_tool_progress_is_not_published() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "run slow".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -6800,7 +6806,7 @@ fn backgrounded_tool_progress_is_not_published() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "slow-call".into(),
             name: ToolName::new("slow"),
@@ -7042,7 +7048,7 @@ fn wait_tool_reply_is_folded_into_followup_prompt() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid.clone(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "wait-call".into(),
             name: ToolName::new("wait"),
@@ -7138,7 +7144,7 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     h.prompt_agents.insert(spid.clone(), cid.clone());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-call".into(),
@@ -7227,7 +7233,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "fan out".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -7236,7 +7242,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
     let delegate_args = CborValue::Map(Vec::new());
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-A".into(),
@@ -7325,7 +7331,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid_a,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "mut-A".into(),
             name: ToolName::new("mutate"),
@@ -7348,7 +7354,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
     .expect("side response A");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid_b,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "mut-B".into(),
             name: ToolName::new("mutate"),
@@ -7445,7 +7451,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -7453,7 +7459,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: tau_proto::ToolName::new("delegate"),
@@ -7539,7 +7545,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "websearch-call".into(),
             name: tau_proto::ToolName::new("websearch"),
@@ -7668,7 +7674,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -7676,7 +7682,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
             name: tau_proto::ToolName::new("delegate"),
@@ -7718,7 +7724,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
         .expect("side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "websearch-call".into(),
             name: tau_proto::ToolName::new("websearch"),
@@ -8191,7 +8197,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -8199,7 +8205,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
             name: ToolName::new("delegate"),
@@ -8254,7 +8260,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         .expect("outer side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: outer_side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
             name: ToolName::new("delegate"),
@@ -8314,7 +8320,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         .expect("nested side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: nested_side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -8448,7 +8454,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -8456,7 +8462,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
             name: ToolName::new("delegate"),
@@ -8505,7 +8511,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
         .expect("outer side prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: outer_side_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
             name: ToolName::new("delegate"),
@@ -8611,7 +8617,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "delegate something".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -8774,7 +8780,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: "ROOT: ask top delegate to delegate again".to_owned(),
-            agent_id: "agent".into(),
+            agent_id: tau_proto::AgentId::parse("agent").expect("agent id"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -8782,7 +8788,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "top-call".into(),
             name: ToolName::new("delegate"),
@@ -8831,7 +8837,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         .expect("top prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: top_spid,
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "leaf-call".into(),
             name: ToolName::new("delegate"),
@@ -8950,7 +8956,7 @@ fn stale_same_conversation_tool_call_response_is_ignored() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: old_spid.clone(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "stale-call".into(),
             name: ToolName::new("wait"),
@@ -9142,7 +9148,7 @@ fn message_tool_stopped_recipient_errors_without_agent_message() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     let cid = ensure_test_user_agent(&mut h);
-    let stopped_cid: AgentId = "stopped-recipient".into();
+    let stopped_cid: AgentId = crate::parse_agent_id("stopped-recipient");
     h.agents.insert(
         stopped_cid.clone(),
         Agent::new(
@@ -9269,7 +9275,7 @@ fn inbound_agent_message_events_are_ignored() {
 
     let forged = Event::AgentMessageSent(tau_proto::AgentMessageSent {
         message_id: "test-message".into(),
-        sender_id: "attacker".to_owned().into(),
+        sender_id: crate::parse_agent_id("attacker"),
         recipient: tau_proto::AgentMessageRecipient::User,
         message: "forged".to_owned(),
     });

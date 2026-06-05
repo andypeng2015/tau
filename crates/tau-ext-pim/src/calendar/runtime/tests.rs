@@ -1079,7 +1079,7 @@ fn read_event_validates_output_timezone_before_backend_access() {
                 calendar: Some("bad-tz/main".to_owned()),
                 event_id: Some("evt".to_owned()),
             },
-            &AgentId::from("agent"),
+            &AgentId::parse("agent").expect("agent id"),
         )
         .expect_err("invalid timezone should fail before backend access");
 
@@ -1218,7 +1218,7 @@ fn title_filter_matches_visible_event_summaries() {
 fn read_event_can_use_single_recent_event_for_agent() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let engine = test_engine(temp.path());
-    let agent_id = AgentId::from("agent");
+    let agent_id = AgentId::parse("agent").expect("agent id");
     let account = ValidatedAccount {
         id: "feed".to_owned(),
         enable: true,
@@ -1364,7 +1364,7 @@ fn test_engine(root: &std::path::Path) -> Engine {
 }
 
 fn dispatch_test(engine: &Engine, arguments: CborValue) -> CborValue {
-    engine.dispatch(&arguments, &AgentId::from("test-agent"))
+    engine.dispatch(&arguments, &AgentId::parse("test-agent").expect("agent id"))
 }
 
 fn command_args(command: &str, args: Vec<(&str, CborValue)>) -> CborValue {
@@ -1379,7 +1379,7 @@ fn tool_started(tool_name: &str, args: Vec<(&str, CborValue)>) -> ToolStarted {
         call_id: tau_proto::ToolCallId::from("call-1"),
         tool_name: tau_proto::ToolName::new(tool_name),
         arguments: cbor_map(args),
-        agent_id: Default::default(),
+        agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
         originator: tau_proto::PromptOriginator::User,
     }
 }

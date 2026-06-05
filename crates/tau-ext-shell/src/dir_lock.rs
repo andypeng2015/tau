@@ -737,10 +737,24 @@ pub(crate) fn dispatch_dir_lock_tool(
         }
         "unlock" => {
             let owner_arg = optional_argument_text(&invoke.arguments, "owner_agent_id");
-            let owner = owner_arg
-                .as_deref()
-                .map(AgentId::new)
-                .unwrap_or_else(|| invoke.agent_id.clone());
+            let owner = match owner_arg.as_deref() {
+                Some(owner) => match owner.parse::<AgentId>() {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        send_event(
+                            tx,
+                            tool_error_with_args(
+                                &invoke,
+                                format!("invalid owner_agent_id `{owner}`: {error}"),
+                                Some(invoke.arguments.clone()),
+                                Some(dir_lock_display_args("unlock", &dir)),
+                            ),
+                        );
+                        return;
+                    }
+                },
+                None => invoke.agent_id.clone(),
+            };
             match manager.unlock_manual(&owner, &dir) {
                 Ok(()) => send_event(
                     tx,

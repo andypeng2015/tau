@@ -21,6 +21,10 @@ use super::chat::{
     is_local_slash_command, next_active_agent, role_cycling_enabled, should_send_draft_snapshot,
 };
 use super::event_renderer::EventRenderer;
+
+fn agent_id(value: &str) -> tau_proto::AgentId {
+    tau_proto::AgentId::parse(value).expect("valid test agent id")
+}
 use super::tool_render::{
     CompactionStatus, ToolStatus, build_delegate_completion_display, build_osc1337_set_user_var,
     cache_hit_percent, format_turn_stats_line, render_action_error_block,
@@ -329,12 +333,12 @@ fn sync(handle: &TermHandle) {
 fn agent_message(sender_id: &str, recipient: &str, message: &str) -> Event {
     Event::AgentMessageSent(tau_proto::AgentMessageSent {
         message_id: format!("msg-{sender_id}-{recipient}").into(),
-        sender_id: sender_id.to_owned().into(),
+        sender_id: agent_id(sender_id),
         recipient: if recipient == "user" {
             tau_proto::AgentMessageRecipient::User
         } else {
             tau_proto::AgentMessageRecipient::Agent {
-                agent_id: recipient.to_owned().into(),
+                agent_id: agent_id(recipient),
             }
         },
         message: message.to_owned(),
@@ -370,7 +374,7 @@ fn assistant_message_item(text: impl Into<String>) -> ContextItem {
 fn agent_prompt_created(agent_prompt_id: &str, session_id: &str) -> AgentPromptCreated {
     AgentPromptCreated {
         agent_prompt_id: agent_prompt_id.into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         session_id: session_id.into(),
         system_prompt: String::new(),
         context: tau_proto::PromptContext::default(),
@@ -445,7 +449,7 @@ fn first_agent_prompt_created_selects_new_agent_and_new_session_clears_it() {
     );
 
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "engineer_abc12345".to_owned().into(),
+        agent_id: agent_id("engineer_abc12345"),
         ..agent_prompt_created("sp1", "s1")
     }));
     sync(&handle);
@@ -515,7 +519,7 @@ fn extension_prompt_with_target_does_not_select_from_empty_state() {
         query_id: "q-worker".to_owned(),
     };
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: originator.clone(),
         ..agent_prompt_created("worker-sp", "s1")
     }));
@@ -529,7 +533,7 @@ fn extension_prompt_with_target_does_not_select_from_empty_state() {
     );
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator,
         ..finished_response("worker-sp", vec![assistant_message_item("worker answer")])
     }));
@@ -574,7 +578,7 @@ fn replayed_durable_first_user_prompt_selects_live_agent() {
         reason: SessionStartReason::Initial,
     }));
     renderer.handle(&Event::AgentPromptSubmitted(AgentPromptSubmitted {
-        agent_id: "engineer_abc12345".to_owned().into(),
+        agent_id: agent_id("engineer_abc12345"),
         text: "hello".to_owned(),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
@@ -671,7 +675,7 @@ fn tool_started(call_id: &str, tool_name: &str, arguments: CborValue) -> Event {
         call_id: call_id.into(),
         tool_name: tau_proto::ToolName::new(tool_name),
         arguments,
-        agent_id: Default::default(),
+        agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
         originator: tau_proto::PromptOriginator::User,
     })
 }
@@ -735,7 +739,7 @@ fn finished_response(
     };
     ProviderResponseFinished {
         agent_prompt_id: agent_prompt_id.into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items,
         stop_reason,
         error: None,
@@ -765,12 +769,12 @@ fn first_agent_event_does_not_force_full_redraw() {
         reason: tau_proto::SessionStartReason::Initial,
     }));
     renderer.handle(&Event::AgentStarted(tau_proto::AgentStarted {
-        agent_id: "engineer_abc12345".to_owned().into(),
+        agent_id: agent_id("engineer_abc12345"),
         role: "engineer".to_owned(),
         display_name: None,
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "engineer_abc12345".to_owned().into(),
+        agent_id: agent_id("engineer_abc12345"),
         ..agent_prompt_created("sp1", "s1")
     }));
     sync(&handle);
@@ -796,7 +800,7 @@ fn new_agent_after_new_session_does_not_force_full_redraw() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "first".into(),
-        agent_id: "engineer_one".into(),
+        agent_id: tau_proto::AgentId::parse("engineer_one").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -811,7 +815,7 @@ fn new_agent_after_new_session_does_not_force_full_redraw() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s2".into(),
         text: "second".into(),
-        agent_id: "engineer_two".into(),
+        agent_id: tau_proto::AgentId::parse("engineer_two").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -856,7 +860,7 @@ fn switching_between_displayed_agents_restores_transcripts() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "worker one transcript".into(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -865,7 +869,7 @@ fn switching_between_displayed_agents_restores_transcripts() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "worker two transcript".into(),
-        agent_id: "worker-2".to_owned().into(),
+        agent_id: agent_id("worker-2"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -895,7 +899,7 @@ fn extension_context_ready_routes_to_agent_ui_state() {
     renderer.handle(&Event::ExtensionContextReady(
         tau_proto::ExtensionContextReady {
             session_id: "s1".into(),
-            agent_id: "worker-1".to_owned().into(),
+            agent_id: agent_id("worker-1"),
         },
     ));
     sync(&handle);
@@ -926,7 +930,7 @@ fn hidden_agent_events_do_not_force_visible_full_redraw() {
 
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
         originator: tau_proto::PromptOriginator::Extension {
@@ -958,7 +962,7 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
     }));
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     renderer.suspend_agent("worker-1");
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
@@ -974,11 +978,11 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
         display: None,
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         ..agent_prompt_created("worker-sp", "s1")
     }));
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         ..finished_response("worker-sp", vec![assistant_message_item("done")])
     }));
     renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
@@ -1026,7 +1030,7 @@ fn delegated_agent_is_active_until_start_agent_result() {
 
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
 
     let live = renderer
@@ -1072,7 +1076,7 @@ fn extension_agent_prompt_lifecycle_is_active_until_response_finishes() {
     );
 
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
             query_id: "q-worker".to_owned(),
@@ -1092,7 +1096,7 @@ fn extension_agent_prompt_lifecycle_is_active_until_response_finishes() {
     assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
             query_id: "q-worker".to_owned(),
@@ -1120,7 +1124,7 @@ fn extension_agent_prompt_lifecycle_is_active_until_response_finishes() {
     assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
             query_id: "q-worker".to_owned(),
@@ -1152,13 +1156,13 @@ fn clearing_selected_agent_preserves_previous_transcript() {
 
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     renderer.switch_agent("worker-1".to_owned());
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "worker transcript survives".into(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -1166,7 +1170,7 @@ fn clearing_selected_agent_preserves_previous_transcript() {
     renderer.clear_selected_agent();
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-helper".to_owned(),
-        agent_id: "helper-1".to_owned().into(),
+        agent_id: agent_id("helper-1"),
     }));
     renderer.switch_agent("helper-1".to_owned());
     renderer.switch_agent("worker-1".to_owned());
@@ -1185,7 +1189,7 @@ fn new_session_resets_agent_transcripts() {
     );
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     renderer.switch_agent("worker-1".to_owned());
     renderer.handle(&Event::SessionStarted(tau_proto::SessionStarted {
@@ -1219,7 +1223,7 @@ fn hidden_agent_activity_keeps_global_in_progress() {
     )));
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
         originator: tau_proto::PromptOriginator::Extension {
@@ -1253,14 +1257,14 @@ fn switched_agent_shows_its_tool_usage() {
     }));
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     let originator = tau_proto::PromptOriginator::Extension {
         name: "core-subagents".into(),
         query_id: "q-worker".to_owned(),
     };
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: originator.clone(),
         ..finished_response(
             "worker-sp",
@@ -1312,7 +1316,7 @@ fn delegate_progress_routes_to_hidden_tool_owner() {
     }));
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
     let originator = tau_proto::PromptOriginator::Extension {
         name: "core-subagents".into(),
@@ -1324,7 +1328,7 @@ fn delegate_progress_routes_to_hidden_tool_owner() {
     )]);
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator,
         ..finished_response(
             "worker-sp",
@@ -1386,7 +1390,7 @@ fn shell_progress_routes_to_command_owner_after_agent_switch() {
         command_id: "ui-sh-1".into(),
         command: "printf worker-output".into(),
         include_in_context: false,
-        target_agent_id: Some("worker-1".into()),
+        target_agent_id: Some(agent_id("worker-1")),
     }));
     renderer.switch_agent("main".to_owned());
 
@@ -1395,7 +1399,7 @@ fn shell_progress_routes_to_command_owner_after_agent_switch() {
             command_id: "ui-sh-1".into(),
             stream: tau_proto::ShellStream::Stdout,
             chunk: "worker-output".into(),
-            target_agent_id: Some("worker-1".into()),
+            target_agent_id: Some(agent_id("worker-1")),
         },
     ));
     renderer.handle(&Event::ShellCommandFinished(
@@ -1404,7 +1408,7 @@ fn shell_progress_routes_to_command_owner_after_agent_switch() {
             session_id: "s1".into(),
             command: "printf worker-output".into(),
             include_in_context: false,
-            target_agent_id: Some("worker-1".into()),
+            target_agent_id: Some(agent_id("worker-1")),
             output: "worker-output".into(),
             exit_code: Some(0),
             cancelled: false,
@@ -1439,7 +1443,7 @@ fn shell_command_target_field_survives_switch_before_echo_and_replay() {
         command_id: "ui-sh-race".into(),
         command: "printf race-output".into(),
         include_in_context: false,
-        target_agent_id: Some("worker-1".into()),
+        target_agent_id: Some(agent_id("worker-1")),
     }));
     renderer.handle(&Event::ShellCommandFinished(
         tau_proto::ShellCommandFinished {
@@ -1447,7 +1451,7 @@ fn shell_command_target_field_survives_switch_before_echo_and_replay() {
             session_id: "s1".into(),
             command: "printf race-output".into(),
             include_in_context: false,
-            target_agent_id: Some("worker-1".into()),
+            target_agent_id: Some(agent_id("worker-1")),
             output: "race-output".into(),
             exit_code: Some(0),
             cancelled: false,
@@ -1476,7 +1480,7 @@ fn shell_command_target_field_survives_switch_before_echo_and_replay() {
             session_id: "s1".into(),
             command: "printf replay-output".into(),
             include_in_context: false,
-            target_agent_id: Some("worker-1".into()),
+            target_agent_id: Some(agent_id("worker-1")),
             output: "replay-output".into(),
             exit_code: Some(0),
             cancelled: false,
@@ -1509,7 +1513,7 @@ fn replay_learns_side_agent_from_durable_agent_prompt_submission() {
     };
     renderer.handle(&Event::AgentPromptSubmitted(
         tau_proto::AgentPromptSubmitted {
-            agent_id: "worker-1".to_owned().into(),
+            agent_id: agent_id("worker-1"),
             text: "side task".to_owned(),
             message_class: tau_proto::PromptMessageClass::User,
             originator: originator.clone(),
@@ -1518,7 +1522,7 @@ fn replay_learns_side_agent_from_durable_agent_prompt_submission() {
         },
     ));
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator,
         ..finished_response(
             "worker-sp",
@@ -1548,7 +1552,7 @@ fn agent_switch_preserves_separate_transcripts() {
     }));
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-worker".to_owned(),
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
     }));
 
     let originator = tau_proto::PromptOriginator::Extension {
@@ -1556,12 +1560,12 @@ fn agent_switch_preserves_separate_transcripts() {
         query_id: "q-worker".to_owned(),
     };
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator: originator.clone(),
         ..agent_prompt_created("worker-sp", "s1")
     }));
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
-        agent_id: "worker-1".to_owned().into(),
+        agent_id: agent_id("worker-1"),
         originator,
         ..finished_response("worker-sp", vec![assistant_message_item("worker answer")])
     }));
@@ -1597,7 +1601,7 @@ fn deselect_then_first_prompt_for_new_agent_does_not_inherit_prior_transcript() 
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "agent one prompt".to_owned(),
-        agent_id: "agent-one".to_owned().into(),
+        agent_id: agent_id("agent-one"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -1612,7 +1616,7 @@ fn deselect_then_first_prompt_for_new_agent_does_not_inherit_prior_transcript() 
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "agent two prompt".to_owned(),
-        agent_id: "agent-two".to_owned().into(),
+        agent_id: agent_id("agent-two"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -1641,7 +1645,7 @@ fn queued_prompt_from_old_agent_does_not_steal_no_agent_selection() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "old agent prompt".to_owned(),
-        agent_id: "old-agent".to_owned().into(),
+        agent_id: agent_id("old-agent"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -1652,19 +1656,19 @@ fn queued_prompt_from_old_agent_does_not_steal_no_agent_selection() {
     renderer.clear_selected_agent();
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "queued old-agent prompt".into(),
-        agent_id: "old-agent".into(),
+        agent_id: tau_proto::AgentId::parse("old-agent").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "stale old-agent prompt".to_owned(),
-        agent_id: "old-agent".to_owned().into(),
+        agent_id: agent_id("old-agent"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "old-agent".into(),
+        agent_id: tau_proto::AgentId::parse("old-agent").expect("agent id"),
         ..agent_prompt_created("old-sp", "s1")
     }));
     sync(&handle);
@@ -1679,7 +1683,7 @@ fn queued_prompt_from_old_agent_does_not_steal_no_agent_selection() {
     );
 
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "new-agent".into(),
+        agent_id: tau_proto::AgentId::parse("new-agent").expect("agent id"),
         ..agent_prompt_created("new-sp", "s1")
     }));
     sync(&handle);
@@ -1707,7 +1711,7 @@ fn queued_prompt_selects_agent_from_empty_state() {
 
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "queued live-agent prompt".into(),
-        agent_id: "live-agent".into(),
+        agent_id: tau_proto::AgentId::parse("live-agent").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -1736,7 +1740,7 @@ fn manual_compaction_selects_agent_from_empty_state() {
     );
 
     renderer.handle(&Event::AgentCompactionTriggered(AgentCompactionTriggered {
-        agent_id: "live-agent".into(),
+        agent_id: tau_proto::AgentId::parse("live-agent").expect("agent id"),
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -1910,7 +1914,7 @@ fn agent_messages_render_all_recipients_as_history() {
         renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
             session_id: "s1".into(),
             text: format!("scroll filler {idx}"),
-            agent_id: "engineer_22222222".to_owned().into(),
+            agent_id: agent_id("engineer_22222222"),
             message_class: tau_proto::PromptMessageClass::User,
             originator: tau_proto::PromptOriginator::User,
             ctx_id: None,
@@ -1954,7 +1958,7 @@ fn user_recipient_agent_messages_broadcast_to_visible_agent_even_when_hidden() {
 
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q-visible".to_owned(),
-        agent_id: "visible-agent".to_owned().into(),
+        agent_id: agent_id("visible-agent"),
     }));
     renderer.switch_agent("visible-agent".to_owned());
     renderer.apply_setting("show-messages", "none");
@@ -2028,7 +2032,7 @@ fn new_session_clears_session_ui_state() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "old prompt".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2229,7 +2233,7 @@ fn status_identity_matches_no_agent_placeholder_semantics() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hello".into(),
-        agent_id: "engineer_abc".into(),
+        agent_id: tau_proto::AgentId::parse("engineer_abc").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2271,14 +2275,14 @@ fn status_agent_chip_keeps_id_primary_and_display_name_secondary() {
         reason: SessionStartReason::New,
     }));
     renderer.handle(&Event::AgentStarted(tau_proto::AgentStarted {
-        agent_id: "junior-engineer_b".to_owned().into(),
+        agent_id: agent_id("junior-engineer_b"),
         role: "junior-engineer".to_owned(),
         display_name: Some("sleep 6".to_owned()),
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hello".into(),
-        agent_id: "junior-engineer_b".into(),
+        agent_id: tau_proto::AgentId::parse("junior-engineer_b").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2341,7 +2345,7 @@ fn focused_agent_context_usage_event_replaces_unknown_context_window() {
     )));
     renderer.handle(&Event::HarnessAgentContextUsageChanged(
         tau_proto::HarnessAgentContextUsageChanged {
-            agent_id: "main".into(),
+            agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
             input_tokens: Some(12_000),
             cached_tokens: Some(0),
             context_window: Some(200_000),
@@ -2389,7 +2393,7 @@ fn model_status_shows_main_tool_usage_before_context() {
     // side-conversation tool calls stay rolled up under their delegate.
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
         agent_prompt_id: "side-sp".into(),
-        agent_id: "q1".into(),
+        agent_id: tau_proto::AgentId::parse("q1").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "side-call".into(),
             name: tau_proto::ToolName::new("grep"),
@@ -2485,7 +2489,7 @@ fn model_status_shows_main_tool_usage_before_context() {
     // main progress stays visible while side-conversation tool calls remain
     // rolled up under their own delegate blocks.
     renderer.handle(&Event::AgentPromptCreated(AgentPromptCreated {
-        agent_id: "q2".into(),
+        agent_id: tau_proto::AgentId::parse("q2").expect("agent id"),
         originator: tau_proto::PromptOriginator::Extension {
             name: "core-subagents".into(),
             query_id: "q2".to_owned(),
@@ -2558,7 +2562,7 @@ fn model_status_shows_main_tool_usage_before_context() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "next task".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2586,7 +2590,7 @@ fn agent_in_progress_ignores_completed_replayed_prompt_history() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "old prompt".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2626,7 +2630,7 @@ fn prompt_termination_clears_live_response_and_activity() {
     // response block and Ctrl-D guard stuck forever.
     renderer.handle(&Event::AgentPromptTerminated(AgentPromptTerminated {
         agent_prompt_id: "sp-stale".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         reason: AgentPromptTerminationReason::Stale,
         originator: tau_proto::PromptOriginator::User,
     }));
@@ -2715,7 +2719,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
 
     renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
         query_id: "q1".to_owned(),
-        agent_id: "engineer_1".to_owned().into(),
+        agent_id: agent_id("engineer_1"),
     }));
 
     // A running parent `delegate` call is the visible main-agent work while
@@ -2944,7 +2948,7 @@ fn single_prompt_response_cycle() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hello".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -2994,7 +2998,7 @@ fn thinking_renders_as_separate_block_above_response() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3083,7 +3087,7 @@ fn set_show_thinking_round_trip_restores_history() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3165,7 +3169,7 @@ fn thinking_created_while_off_stays_invisible_after_toggle_on() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3205,7 +3209,7 @@ fn no_thinking_block_when_summary_absent() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3241,7 +3245,7 @@ fn queued_prompt_renders_after_first_completes() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "first".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3256,7 +3260,7 @@ fn queued_prompt_renders_after_first_completes() {
     // event itself must make the user's prompt visible.
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "second".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -3345,13 +3349,13 @@ fn queued_prompt_then_late_ui_submit_advances_without_duplicate() {
     // normal transcript item rather than leaving stale "(queued)" text behind.
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "late echo".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "late echo".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3385,7 +3389,7 @@ fn queued_prompt_steered_promotes_without_duplicate() {
     // prompt instead of lingering or duplicating.
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "folded queued prompt".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -3397,7 +3401,7 @@ fn queued_prompt_steered_promotes_without_duplicate() {
 
     renderer.handle(&Event::AgentPromptSteered(AgentPromptSteered {
         text: "folded queued prompt".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -3437,19 +3441,19 @@ fn internal_prompt_events_are_hidden() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "[tau-internal] Tool call `bg` is complete.".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::Internal,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "[tau-internal] Tool call `queued` is complete.".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     renderer.handle(&Event::AgentPromptSteered(AgentPromptSteered {
         text: "[tau-internal] Tool call `steered` is complete.".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::Internal,
     }));
     sync(&handle);
@@ -3478,7 +3482,7 @@ fn queued_prompt_does_not_replace_dispatched_same_text() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "repeat".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -3488,7 +3492,7 @@ fn queued_prompt_does_not_replace_dispatched_same_text() {
     )));
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "repeat".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     sync(&handle);
@@ -3520,7 +3524,7 @@ fn three_queued_prompts_render_sequentially() {
             renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
                 session_id: "s1".into(),
                 text: format!("msg-{i}"),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 message_class: tau_proto::PromptMessageClass::User,
                 originator: tau_proto::PromptOriginator::User,
                 ctx_id: None,
@@ -3531,7 +3535,7 @@ fn three_queued_prompts_render_sequentially() {
         } else {
             renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
                 text: format!("msg-{i}"),
-                agent_id: "main".into(),
+                agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
                 message_class: tau_proto::PromptMessageClass::User,
             }));
         }
@@ -3677,7 +3681,7 @@ fn manual_compaction_trigger_does_not_render_progress_status() {
     );
 
     renderer.handle(&Event::AgentCompactionTriggered(AgentCompactionTriggered {
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         originator: tau_proto::PromptOriginator::User,
     }));
     sync(&handle);
@@ -4085,7 +4089,7 @@ fn tool_started_renders_pending_until_provider_progress() {
                 CborValue::Text("path".into()),
                 CborValue::Text("fallback.rs".into()),
             )]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }),
         tau_proto::UnixMicros::new(1_000_000),
@@ -4733,7 +4737,7 @@ fn streaming_block_does_not_duplicate_on_finish() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -5712,7 +5716,7 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -5739,27 +5743,27 @@ fn three_prompts_during_streaming_all_render_correctly() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
     }));
     renderer.handle(&Event::AgentPromptQueued(AgentPromptQueued {
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
     }));
 
@@ -5875,7 +5879,7 @@ fn emoji_in_response_renders_correctly() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -5934,7 +5938,7 @@ fn multiple_emoji_no_column_drift() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "hi".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,
@@ -5975,7 +5979,7 @@ fn overflowing_stream_replaced_cleanly_on_finish() {
     renderer.handle(&Event::UiPromptSubmitted(UiPromptSubmitted {
         session_id: "s1".into(),
         text: "overflow please".into(),
-        agent_id: "main".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         message_class: tau_proto::PromptMessageClass::User,
         originator: tau_proto::PromptOriginator::User,
         ctx_id: None,

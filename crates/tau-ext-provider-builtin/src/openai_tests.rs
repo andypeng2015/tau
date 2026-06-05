@@ -47,7 +47,7 @@ fn model_id(provider: &str, model: &str) -> ModelId {
 fn prompt() -> tau_proto::AgentPromptCreated {
     tau_proto::AgentPromptCreated {
         agent_prompt_id: "sp-1".into(),
-        agent_id: "agent-1".into(),
+        agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
         session_id: "session-1".into(),
         system_prompt: String::new(),
         context: tau_proto::PromptContext {
@@ -249,7 +249,7 @@ fn prompt_workers_start_concurrently() {
             .write_frame(&Frame::Event(Event::ProviderResponseFinished(
                 simple_finished(
                     agent_prompt_id.clone(),
-                    "agent-1".into(),
+                    tau_proto::AgentId::parse("agent-1").expect("valid test agent id"),
                     originator,
                     "done",
                 ),

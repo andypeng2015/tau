@@ -4,6 +4,10 @@ fn path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn agent_id(value: &str) -> AgentId {
+    AgentId::parse(value).expect("valid test agent id")
+}
+
 fn cbor_text_field<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
     let CborValue::Map(entries) = value else {
         return None;
@@ -75,12 +79,24 @@ fn path_conflicts_include_ancestors_and_children() {
 fn fifo_front_waiter_blocks_later_independent_request() {
     let manager = DirLockManager::default();
     manager
-        .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+        .acquire_manual(
+            "manual-a".into(),
+            agent_id("agent-a"),
+            path("/repo/a"),
+            || {},
+        )
         .expect("manual lock");
 
     let first = std::thread::spawn({
         let manager = manager.clone();
-        move || manager.acquire_manual("manual-root".into(), "agent-b".into(), path("/repo"), || {})
+        move || {
+            manager.acquire_manual(
+                "manual-root".into(),
+                agent_id("agent-b"),
+                path("/repo"),
+                || {},
+            )
+        }
     });
     wait_until(|| manager.inner.state.lock().expect("state").waiters.len() == 1);
 
@@ -89,7 +105,7 @@ fn fifo_front_waiter_blocks_later_independent_request() {
         move || {
             manager.acquire_auto(
                 "auto-b".into(),
-                "agent-c".into(),
+                agent_id("agent-c"),
                 vec![path("/other")],
                 || {},
             )
@@ -103,11 +119,11 @@ fn fifo_front_waiter_blocks_later_independent_request() {
     );
 
     manager
-        .unlock_manual(&"agent-a".into(), Path::new("/repo/a"))
+        .unlock_manual(&agent_id("agent-a"), Path::new("/repo/a"))
         .expect("unlock");
     first.join().expect("first").expect("first acquired");
     manager
-        .unlock_manual(&"agent-b".into(), Path::new("/repo"))
+        .unlock_manual(&agent_id("agent-b"), Path::new("/repo"))
         .expect("unlock root");
     let guard = second.join().expect("second").expect("second acquired");
     drop(guard);
@@ -117,7 +133,12 @@ fn fifo_front_waiter_blocks_later_independent_request() {
 fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     let manager = DirLockManager::default();
     manager
-        .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+        .acquire_manual(
+            "manual-a".into(),
+            agent_id("agent-a"),
+            path("/repo/a"),
+            || {},
+        )
         .expect("manual lock");
 
     // A second manual lock by the same agent is usually a forgotten unlock,
@@ -126,7 +147,7 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     assert_eq!(
         manager.acquire_manual(
             "manual-a-again".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             path("/repo/a"),
             || {}
         ),
@@ -137,7 +158,7 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     assert_eq!(
         manager.acquire_manual(
             "manual-a-child".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             path("/repo/a/child"),
             || {}
         ),
@@ -146,7 +167,12 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
         })
     );
     assert_eq!(
-        manager.acquire_manual("manual-root".into(), "agent-a".into(), path("/repo"), || {}),
+        manager.acquire_manual(
+            "manual-root".into(),
+            agent_id("agent-a"),
+            path("/repo"),
+            || {}
+        ),
         Err(ManualLockAcquireError::AlreadyHeld {
             dir: path("/repo/a")
         })
@@ -155,7 +181,7 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     let first_guard = manager
         .acquire_auto(
             "auto-a".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             vec![path("/repo/a/child")],
             || {},
         )
@@ -168,7 +194,7 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     let second_guard = manager
         .acquire_auto(
             "auto-a-second".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             vec![path("/repo/a/child")],
             || panic!("same-owner automatic reentry should not wait"),
         )
@@ -183,7 +209,7 @@ fn same_owner_automatic_locks_still_serialize_without_manual_lock() {
     let guard = manager
         .acquire_auto(
             "auto-a".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             vec![path("/repo/a")],
             || {},
         )
@@ -197,7 +223,7 @@ fn same_owner_automatic_locks_still_serialize_without_manual_lock() {
         move || {
             manager.acquire_auto(
                 "auto-a-second".into(),
-                "agent-a".into(),
+                agent_id("agent-a"),
                 vec![path("/repo/a/child")],
                 || {},
             )
@@ -213,7 +239,12 @@ fn same_owner_automatic_locks_still_serialize_without_manual_lock() {
 fn abandoned_manual_lock_errors_after_liveness_check() {
     let manager = DirLockManager::default();
     manager
-        .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+        .acquire_manual(
+            "manual-a".into(),
+            agent_id("agent-a"),
+            path("/repo/a"),
+            || {},
+        )
         .expect("manual lock");
     make_manual_lock_stale(&manager, "/repo/a");
 
@@ -223,7 +254,7 @@ fn abandoned_manual_lock_errors_after_liveness_check() {
     let err = manager
         .acquire_auto_with_policy(
             "auto-b".into(),
-            "agent-b".into(),
+            agent_id("agent-b"),
             vec![path("/repo/a/child")],
             || {},
             fast_liveness_policy(),
@@ -232,7 +263,7 @@ fn abandoned_manual_lock_errors_after_liveness_check() {
     let LockAcquireError::Abandoned(lock) = err else {
         panic!("expected abandoned lock error");
     };
-    assert_eq!(lock.owner, "agent-a");
+    assert_eq!(lock.owner.as_str(), "agent-a");
     assert_eq!(lock.dir, path("/repo/a"));
     assert!(Duration::from_secs(1) < lock.idle_for);
 
@@ -269,13 +300,18 @@ fn abandoned_manual_lock_errors_after_liveness_check() {
 fn active_same_owner_auto_prevents_abandoned_lock_error() {
     let manager = DirLockManager::default();
     manager
-        .acquire_manual("manual-a".into(), "agent-a".into(), path("/repo/a"), || {})
+        .acquire_manual(
+            "manual-a".into(),
+            agent_id("agent-a"),
+            path("/repo/a"),
+            || {},
+        )
         .expect("manual lock");
     make_manual_lock_stale(&manager, "/repo/a");
     let guard = manager
         .acquire_auto(
             "auto-a".into(),
-            "agent-a".into(),
+            agent_id("agent-a"),
             vec![path("/repo/a/child")],
             || {},
         )
@@ -289,7 +325,7 @@ fn active_same_owner_auto_prevents_abandoned_lock_error() {
         move || {
             let result = manager.acquire_auto_with_policy(
                 "auto-b".into(),
-                "agent-b".into(),
+                agent_id("agent-b"),
                 vec![path("/repo/a/child")],
                 || {},
                 fast_liveness_policy(),
@@ -305,7 +341,7 @@ fn active_same_owner_auto_prevents_abandoned_lock_error() {
 
     drop(guard);
     manager
-        .unlock_manual(&"agent-a".into(), Path::new("/repo/a"))
+        .unlock_manual(&agent_id("agent-a"), Path::new("/repo/a"))
         .expect("unlock");
     let acquired = waiter.join().expect("waiter").expect("lock acquired");
     drop(acquired);

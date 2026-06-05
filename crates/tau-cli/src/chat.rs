@@ -822,7 +822,9 @@ impl InputRoutingState {
     }
 
     fn selected_side_agent_id(&self) -> Option<tau_proto::AgentId> {
-        self.selected_agent_id().map(Into::into)
+        self.selected_agent_id().map(|agent_id| {
+            tau_proto::AgentId::parse(&agent_id).expect("UI stores valid agent ids")
+        })
     }
 
     fn set_selected_agent(&self, agent_id: Option<String>) {
@@ -1368,7 +1370,7 @@ impl<'a> TerminalInputSession<'a> {
         }
         let event = Event::UiSetAgentDisplayName(UiSetAgentDisplayName {
             session_id: self.session_id.as_str().into(),
-            agent_id: agent_id.into(),
+            agent_id: tau_proto::AgentId::parse(agent_id).expect("known agent id is valid"),
             display_name: display_name.to_owned(),
         });
         if send_event(self.writer, &event).is_ok() {
@@ -1582,7 +1584,9 @@ impl<'a> TerminalInputSession<'a> {
         self.ctx
             .agent_in_progress
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        let event = if let Some(target_agent_id) = selected_agent.map(Into::into) {
+        let event = if let Some(target_agent_id) = selected_agent.map(|agent_id| {
+            tau_proto::AgentId::parse(&agent_id).expect("UI stores valid agent ids")
+        }) {
             Event::UiPromptSubmitted(UiPromptSubmitted {
                 session_id: self.session_id.as_str().into(),
                 text: text.to_owned(),

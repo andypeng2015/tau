@@ -32,7 +32,8 @@ fn compacted_estimate_uses_items_from_latest_compaction_forward() {
     let replay_window = latest_compaction_replay_window(&items).expect("compaction window");
     assert_eq!(replay_window.len(), 2);
     assert!(
-        estimate_compacted_input_tokens(replay_window).unwrap()
-            > estimate_compacted_input_tokens(&[compaction]).unwrap()
+        estimate_compacted_input_tokens(replay_window).expect("replay window has token estimate")
+            > estimate_compacted_input_tokens(&[compaction])
+                .expect("compaction event has token estimate")
     );
 }

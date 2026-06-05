@@ -224,7 +224,7 @@ fn forwards_query_and_num_results_to_exa_searcher_and_returns_text() {
                     CborValue::Integer(3.into()),
                 ),
             ]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -266,7 +266,7 @@ fn defaults_num_results_when_omitted() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("hello world".to_owned()),
             )]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -291,7 +291,7 @@ fn missing_query_returns_tool_error() {
             call_id: "call-3".into(),
             tool_name: tau_proto::ToolName::new(EXA_TOOL_NAME),
             arguments: CborValue::Map(Vec::new()),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -318,7 +318,7 @@ fn searcher_error_surfaces_as_tool_error() {
                 CborValue::Text("query".to_owned()),
                 CborValue::Text("anything".to_owned()),
             )]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -351,7 +351,7 @@ fn rejects_num_results_out_of_range() {
                     CborValue::Integer(0.into()),
                 ),
             ]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -385,7 +385,7 @@ fn forwards_parallel_search_to_web_search_and_returns_text() {
                     CborValue::Integer(3.into()),
                 ),
             ]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -421,7 +421,7 @@ fn forwards_parallel_fetch_to_web_fetch() {
                 CborValue::Text("url".to_owned()),
                 CborValue::Text("https://example.com".to_owned()),
             )]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");
@@ -451,7 +451,7 @@ fn parallel_non_string_argument_keys_are_rejected_before_forwarding() {
                 CborValue::Integer(1.into()),
                 CborValue::Text("anything".to_owned()),
             )]),
-            agent_id: Default::default(),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
         .expect("write");

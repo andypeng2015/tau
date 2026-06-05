@@ -9,7 +9,7 @@ fn publish(
     value: serde_json::Value,
 ) {
     store.publish(
-        tau_proto::AgentId::from(agent),
+        tau_proto::AgentId::parse(agent).expect("agent id"),
         tau_proto::AgentContextKey::from(key),
         tau_proto::ConnectionId::from(contributor),
         extension_name.to_owned(),
@@ -18,7 +18,7 @@ fn publish(
 }
 
 fn template_value(store: &AgentContextStore, agent: &str) -> serde_json::Value {
-    let agent_id = tau_proto::AgentId::from(agent);
+    let agent_id = tau_proto::AgentId::parse(agent).expect("agent id");
     store.template_value(Some(&agent_id))
 }
 

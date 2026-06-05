@@ -50,77 +50,95 @@ fn echo_runner(r: UnixStream, w: UnixStream) -> Result<(), String> {
     crate::harness::run_echo_provider(r, w).map_err(|e| e.to_string())
 }
 
-fn agent_id_suffix<'a>(agent_id: &'a str, role: &str) -> &'a str {
-    let prefix = format!("{role}_");
-    agent_id
-        .strip_prefix(&prefix)
-        .expect("agent id should include the role prefix")
+fn assert_agent_id_chars(agent_id: &str) {
+    assert!(!agent_id.is_empty());
+    assert!(agent_id.len() <= tau_proto::AGENT_ID_MAX_LEN);
+    assert!(
+        agent_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    );
 }
 
-fn assert_role_hex_agent_id(agent_id: &str, role: &str) {
-    let suffix = agent_id_suffix(agent_id, role);
-
-    assert!(
-        (super::AGENT_ID_MIN_SUFFIX_NIBBLES..=super::AGENT_ID_MAX_SUFFIX_NIBBLES)
-            .contains(&suffix.len())
-    );
-    assert!(suffix.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f')));
+fn assert_role_hex_agent_id(agent_id: &str, _role: &str) {
+    assert_agent_id_chars(agent_id);
 }
 
 #[test]
-fn minted_agent_ids_use_minimal_role_prefixed_hex_suffixes() {
+fn minted_agent_ids_use_default_random_alphanumeric_template() {
     let agent_id = super::mint_agent_id_for_role("engineer");
 
-    assert_role_hex_agent_id(&agent_id, "engineer");
-    assert_eq!(
-        agent_id_suffix(&agent_id, "engineer").len(),
-        super::AGENT_ID_MIN_SUFFIX_NIBBLES
-    );
+    assert_eq!(agent_id.len(), 6);
+    assert_agent_id_chars(&agent_id);
 }
 
 #[test]
-fn minting_agent_ids_retries_same_size_hex_collisions() {
-    // Randomized search can start on a used suffix. The harness should keep
-    // grinding the current minimal width before growing the visible id.
+fn minting_agent_ids_renders_configured_template() {
+    let mut warnings = Vec::new();
     let agent_id = super::mint_available_agent_id_for_role_with(
         "engineer",
-        |agent_id| agent_id == "engineer_a",
-        |suffix_nibbles, candidate_count| {
-            assert_eq!(suffix_nibbles, 1);
-            assert_eq!(candidate_count, 16);
-            0xa
-        },
+        "{{role}}-{{random_alphanumeric 6}}",
+        |_| false,
+        |kind, warning| warnings.push((kind, warning)),
     );
 
-    assert_eq!(agent_id, "engineer_b");
+    assert!(agent_id.starts_with("engineer-"));
+    assert_eq!(agent_id.len(), "engineer-".len() + 6);
+    assert_agent_id_chars(&agent_id);
+    assert!(warnings.is_empty());
 }
 
 #[test]
-fn minting_agent_ids_grows_only_after_shorter_suffixes_are_taken() {
-    // If every one-nibble suffix is already reserved in memory or on disk,
-    // the harness moves to two nibbles and keeps the id as short as possible.
-    let mut searched = Vec::new();
+fn minting_agent_ids_falls_back_immediately_on_invalid_rendered_id() {
+    // Invalid configured output must not be retried; it falls back to the safe
+    // default template and reports a warning the harness can surface to users.
+    let mut warnings = Vec::new();
     let agent_id = super::mint_available_agent_id_for_role_with(
         "engineer",
-        |agent_id| {
-            agent_id
-                .strip_prefix("engineer_")
-                .is_some_and(|suffix| suffix.len() == 1)
-        },
-        |suffix_nibbles, candidate_count| {
-            searched.push((suffix_nibbles, candidate_count));
-            0
-        },
+        "bad/id",
+        |_| false,
+        |kind, warning| warnings.push((kind, warning)),
     );
 
-    assert_eq!(agent_id, "engineer_00");
-    assert_eq!(searched, vec![(1, 16), (2, 256)]);
+    assert_eq!(agent_id.len(), 6);
+    assert_agent_id_chars(&agent_id);
+    assert!(matches!(
+        warnings.as_slice(),
+        [(
+            super::AgentIdTemplateKind::Configured,
+            super::AgentIdMintWarning::InvalidRendered { .. }
+        )]
+    ));
+}
+
+#[test]
+fn minting_agent_ids_falls_back_after_configured_template_collisions() {
+    // A configured template that keeps producing a reserved id should not loop
+    // forever. After the configured attempt budget, minting falls back to the
+    // default random template.
+    let mut warnings = Vec::new();
+    let agent_id = super::mint_available_agent_id_for_role_with(
+        "engineer",
+        "taken",
+        |agent_id| agent_id == "taken",
+        |kind, warning| warnings.push((kind, warning)),
+    );
+
+    assert_ne!(agent_id, "taken");
+    assert_agent_id_chars(&agent_id);
+    assert!(warnings.iter().any(|(kind, warning)| matches!(
+        (kind, warning),
+        (
+            super::AgentIdTemplateKind::Configured,
+            super::AgentIdMintWarning::CollisionsExceeded { attempts }
+        ) if *attempts == super::AGENT_ID_TEMPLATE_COLLISION_ATTEMPTS
+    )));
 }
 
 #[test]
 fn minting_agent_ids_skips_persisted_agent_dirs() {
-    // A suffix already present on disk must stay reserved even when the lazy
-    // store has not loaded that agent tree into memory yet.
+    // A rendered id already present on disk must stay reserved even when the
+    // lazy store has not loaded that agent tree into memory yet.
     let td = TempDir::new().expect("tempdir");
     let agents_dir = td.path().join("agents");
     let store = AgentStore::open_lazy(agents_dir.clone()).expect("agent store");
@@ -128,13 +146,23 @@ fn minting_agent_ids_skips_persisted_agent_dirs() {
     std::fs::create_dir_all(&reserved_dir).expect("agent dir");
     std::fs::write(reserved_dir.join("meta.json"), "{}").expect("agent meta");
 
+    let mut warnings = Vec::new();
     let agent_id = super::mint_available_agent_id_for_role_with(
         "engineer",
+        "engineer_0",
         |agent_id| store.agent_exists(agent_id),
-        |_, _| 0,
+        |kind, warning| warnings.push((kind, warning)),
     );
 
-    assert_eq!(agent_id, "engineer_1");
+    assert_ne!(agent_id, "engineer_0");
+    assert_agent_id_chars(&agent_id);
+    assert!(warnings.iter().any(|(kind, warning)| matches!(
+        (kind, warning),
+        (
+            super::AgentIdTemplateKind::Configured,
+            super::AgentIdMintWarning::CollisionsExceeded { .. }
+        )
+    )));
 }
 
 #[test]
@@ -188,7 +216,7 @@ fn ensure_test_user_agent(h: &mut Harness) -> AgentId {
         .agents
         .get(&cid)
         .and_then(|conv| conv.agent_id.as_deref())
-        .map(tau_proto::AgentId::from)
+        .map(crate::parse_agent_id)
     {
         h.pending_agent_context_ready.remove(&agent_id);
     }
@@ -203,11 +231,12 @@ fn test_user_agent(h: &Harness) -> AgentId {
 }
 
 fn durable_agent_id_for_conversation(h: &Harness, cid: &AgentId) -> tau_proto::AgentId {
-    h.agents
-        .get(cid)
-        .and_then(|conv| conv.agent_id.clone())
-        .expect("conversation has durable agent id")
-        .into()
+    crate::parse_agent_id(
+        h.agents
+            .get(cid)
+            .and_then(|conv| conv.agent_id.clone())
+            .expect("conversation has durable agent id"),
+    )
 }
 
 fn default_agent_tree(h: &Harness) -> &AgentTree {
@@ -496,7 +525,7 @@ fn seed_assistant_tool_round(h: &mut Harness, cid: &crate::AgentId, calls: &[(&s
         cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
             agent_prompt_id: "sp-seeded-tools".into(),
-            agent_id: agent_id.into(),
+            agent_id: crate::parse_agent_id(&agent_id),
             output_items: calls
                 .iter()
                 .map(|(call_id, tool_name)| {

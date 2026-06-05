@@ -63,7 +63,7 @@ fn build_request_includes_prompt_cache_key_when_supported() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -104,7 +104,7 @@ fn build_request_includes_service_tier_when_configured() {
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
     };
 
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -130,7 +130,7 @@ fn build_request_maps_off_effort_to_openai_none() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -166,7 +166,7 @@ fn build_request_omits_prompt_cache_key_without_seed() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -194,7 +194,7 @@ fn build_request_first_turn_replays_full_history_without_chain() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -246,7 +246,7 @@ fn build_request_full_replay_serializes_restored_tool_error_before_next_user_mes
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -303,7 +303,7 @@ fn build_request_chain_turn_sends_delta_and_previous_response_id() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -340,7 +340,7 @@ fn build_request_cached_response_missing_from_context_falls_back_to_full_replay(
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -383,7 +383,7 @@ fn build_request_chain_turn_still_emits_prompt_cache_key() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -416,7 +416,7 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let ext_request = PromptPayload {
@@ -428,7 +428,7 @@ fn build_request_prompt_cache_key_differs_for_side_query_originator() {
         compaction: None,
         originator: &ext,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -469,7 +469,7 @@ fn build_request_share_user_cache_key_pins_extension_to_user_bucket() {
         originator: &ext,
         share_user_cache_key: true,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
     };
     let body =
         serde_json::to_value(build_request(&config, &shared_request, None)).expect("serialize");
@@ -517,7 +517,7 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
         originator: &tau_proto::PromptOriginator::User,
         share_user_cache_key: false,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
     };
     let shared_ext_request = PromptPayload {
         system_prompt: "sys",
@@ -529,7 +529,7 @@ fn build_request_cache_shared_extension_matches_user_wire_body() {
         originator: &ext,
         share_user_cache_key: true,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
     };
 
     let user_body =
@@ -574,7 +574,7 @@ fn build_request_emits_tool_choice_none_while_keeping_tools_declared() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -607,7 +607,7 @@ fn build_request_sends_compaction_context_management_and_trigger_item() {
         }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -646,7 +646,7 @@ fn build_request_trims_full_replay_before_latest_compaction_item() {
         }),
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -773,7 +773,7 @@ fn build_request_stamps_phase_on_assistant_messages_when_supported() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -812,7 +812,7 @@ fn build_request_omits_phase_when_unsupported() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -857,7 +857,7 @@ fn build_request_stamps_phase_on_pre_tool_call_text_flush() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -950,7 +950,7 @@ fn build_request_emits_include_when_encrypted_reasoning_supported() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -975,7 +975,7 @@ fn build_request_omits_include_when_encrypted_reasoning_unsupported() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -1017,7 +1017,7 @@ fn build_request_replays_reasoning_item_as_top_level_input() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
     let body = serde_json::to_value(build_request(&config, &request, None)).expect("serialize");
@@ -1080,7 +1080,7 @@ fn build_request_emits_custom_tool_definition_and_round_trips_custom_tool_output
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -1183,7 +1183,7 @@ fn build_request_chain_keeps_custom_tool_output_type_from_prior_history() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -1325,7 +1325,7 @@ fn ws_envelope_adds_type_and_drops_stream() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
@@ -1364,7 +1364,7 @@ fn ws_prewarm_envelope_sets_generate_false_and_drops_previous_response() {
         compaction: None,
         originator: &tau_proto::PromptOriginator::User,
         session_id: &tau_proto::SessionId::new("test-session"),
-        agent_id: &tau_proto::AgentId::new("test-agent"),
+        agent_id: &tau_proto::AgentId::parse("test-agent").expect("agent id"),
         share_user_cache_key: false,
     };
 
