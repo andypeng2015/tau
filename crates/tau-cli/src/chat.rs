@@ -548,18 +548,10 @@ pub(crate) fn run_chat(
     );
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/agent"),
-        build_agent_arg_completer(
-            known_agents.clone(),
-            agent_display_names.clone(),
-            live_agents.clone(),
-            suspended_agents.clone(),
-        ),
+        build_agent_arg_completer(input_routing.clone(), agent_display_names.clone()),
     );
-    completion_data.set_agent_mention_completer(build_agent_mention_completer(
-        known_agents.clone(),
-        live_agents.clone(),
-        suspended_agents.clone(),
-    ));
+    completion_data
+        .set_agent_mention_completer(build_agent_mention_completer(input_routing.clone()));
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new("/session"),
         build_session_arg_completer(),
@@ -844,6 +836,22 @@ impl InputRoutingState {
             .lock()
             .map(|agents| agents.clone())
             .unwrap_or_default()
+    }
+
+    fn active_agents(&self) -> std::collections::HashSet<String> {
+        let live = self
+            .live_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        let suspended = self
+            .suspended_agents
+            .lock()
+            .map(|agents| agents.clone())
+            .unwrap_or_default();
+        live.into_iter()
+            .filter(|agent| !suspended.contains(agent))
+            .collect()
     }
 
     fn active_count(&self) -> usize {
@@ -1871,10 +1879,8 @@ fn build_session_arg_completer() -> tau_cli_term::ArgCompleter {
 }
 
 fn build_agent_arg_completer(
-    known_agents: Arc<Mutex<Vec<String>>>,
+    routing: InputRoutingState,
     agent_display_names: Arc<Mutex<HashMap<String, String>>>,
-    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
-    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
 ) -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
@@ -1890,26 +1896,12 @@ fn build_agent_arg_completer(
                     .collect()
             }
             2 => {
-                let known = known_agents
-                    .lock()
-                    .map(|agents| agents.clone())
-                    .unwrap_or_default();
+                let known = routing.known_agents();
                 let display_names = agent_display_names
                     .lock()
                     .map(|names| names.clone())
                     .unwrap_or_default();
-                let live = live_agents
-                    .lock()
-                    .map(|agents| agents.clone())
-                    .unwrap_or_default();
-                let suspended = suspended_agents
-                    .lock()
-                    .map(|agents| agents.clone())
-                    .unwrap_or_default();
-                let active = live
-                    .into_iter()
-                    .filter(|agent| !suspended.contains(agent))
-                    .collect();
+                let active = routing.active_agents();
                 let needle = args[1].to_lowercase();
                 agent_completion_candidates(args[0], known, active)
                     .into_iter()
@@ -1928,33 +1920,15 @@ fn build_agent_arg_completer(
     })
 }
 
-fn build_agent_mention_completer(
-    known_agents: Arc<Mutex<Vec<String>>>,
-    live_agents: Arc<Mutex<std::collections::HashSet<String>>>,
-    suspended_agents: Arc<Mutex<std::collections::HashSet<String>>>,
-) -> tau_cli_term::ArgCompleter {
+fn build_agent_mention_completer(routing: InputRoutingState) -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
     Arc::new(move |args: &[&str]| {
         if args.len() != 1 {
             return Vec::new();
         }
-        let known = known_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let live = live_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let suspended = suspended_agents
-            .lock()
-            .map(|agents| agents.clone())
-            .unwrap_or_default();
-        let active: std::collections::HashSet<_> = live
-            .into_iter()
-            .filter(|agent| !suspended.contains(agent))
-            .collect();
+        let known = routing.known_agents();
+        let active = routing.active_agents();
         let needle = args[0].to_lowercase();
         known
             .into_iter()

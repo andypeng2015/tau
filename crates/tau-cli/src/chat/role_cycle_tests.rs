@@ -1,14 +1,23 @@
 use super::*;
+fn routing_state(
+    known: Arc<Mutex<Vec<String>>>,
+    live: Arc<Mutex<std::collections::HashSet<String>>>,
+    suspended: Arc<Mutex<std::collections::HashSet<String>>>,
+) -> InputRoutingState {
+    InputRoutingState::new(Arc::new(Mutex::new(None)), known, live, suspended)
+}
 
 #[test]
 fn agent_completer_offers_subcommands_first() {
     // `/agent` is now a command group; the first argument must guide users
     // to the concrete action instead of switching immediately.
     let completer = build_agent_arg_completer(
-        Arc::new(Mutex::new(Vec::new())),
+        routing_state(
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Default::default())),
+            Arc::new(Mutex::new(Default::default())),
+        ),
         Arc::new(Mutex::new(HashMap::new())),
-        Arc::new(Mutex::new(Default::default())),
-        Arc::new(Mutex::new(Default::default())),
     );
 
     let completions = completer(&[""]);
@@ -36,12 +45,14 @@ fn agent_new_takes_no_agent_id_completion() {
     // `/agent new` only clears the selected agent; it must not offer or
     // accept an agent-id argument like switch/suspend/resume do.
     let completer = build_agent_arg_completer(
-        Arc::new(Mutex::new(vec!["worker".to_owned()])),
+        routing_state(
+            Arc::new(Mutex::new(vec!["worker".to_owned()])),
+            Arc::new(Mutex::new(std::collections::HashSet::from([
+                "worker".to_owned()
+            ]))),
+            Arc::new(Mutex::new(Default::default())),
+        ),
         Arc::new(Mutex::new(HashMap::new())),
-        Arc::new(Mutex::new(std::collections::HashSet::from([
-            "worker".to_owned()
-        ]))),
-        Arc::new(Mutex::new(Default::default())),
     );
 
     assert!(completer(&["new", ""]).is_empty());
@@ -85,7 +96,7 @@ fn agent_mention_completer_offers_only_active_agents() {
     let suspended = Arc::new(Mutex::new(std::collections::HashSet::from([
         "helper".to_owned()
     ])));
-    let completer = build_agent_mention_completer(known, live, suspended);
+    let completer = build_agent_mention_completer(routing_state(known, live, suspended));
 
     let values: Vec<_> = completer(&[""])
         .into_iter()
@@ -107,8 +118,10 @@ fn agent_completer_filters_active_and_suspended_agents() {
     let suspended = Arc::new(Mutex::new(std::collections::HashSet::from([
         "helper".to_owned()
     ])));
-    let completer =
-        build_agent_arg_completer(known, Arc::new(Mutex::new(HashMap::new())), live, suspended);
+    let completer = build_agent_arg_completer(
+        routing_state(known, live, suspended),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
 
     let switch_values: Vec<_> = completer(&["switch", ""])
         .into_iter()
@@ -141,7 +154,7 @@ fn agent_completer_uses_display_names_as_descriptions() {
         "worker".to_owned()
     ])));
     let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
-    let completer = build_agent_arg_completer(known, names, live, suspended);
+    let completer = build_agent_arg_completer(routing_state(known, live, suspended), names);
 
     let completions = completer(&["switch", "worker"]);
 
