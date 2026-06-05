@@ -1153,14 +1153,7 @@ impl<'a> TerminalInputSession<'a> {
     fn send_cancel_prompt(&self) {
         let _ = send_event(
             self.writer,
-            &Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
-                session_id: self.session_id.as_str().into(),
-                target_agent_id: self.selected_side_agent_id(),
-                // Broadcast cancel within the selected agent conversation — abort
-                // whatever is in flight there, regardless of spid. The targeted
-                // variant is used by the harness for surgical preempts.
-                agent_prompt_id: None,
-            }),
+            &crate::ui_events::cancel_prompt(self.session_id, self.selected_side_agent_id()),
         );
     }
 
@@ -1182,10 +1175,7 @@ impl<'a> TerminalInputSession<'a> {
         if text == "/tree" {
             let _ = send_event(
                 self.writer,
-                &Event::UiTreeRequest(tau_proto::UiTreeRequest {
-                    session_id: self.session_id.as_str().into(),
-                    target_agent_id: self.selected_side_agent_id(),
-                }),
+                &crate::ui_events::tree_request(self.session_id, self.selected_side_agent_id()),
             );
             return true;
         }
@@ -1201,11 +1191,11 @@ impl<'a> TerminalInputSession<'a> {
             Ok(node_id) => {
                 let _ = send_event(
                     self.writer,
-                    &Event::UiNavigateTree(tau_proto::UiNavigateTree {
-                        session_id: self.session_id.as_str().into(),
-                        target_agent_id: self.selected_side_agent_id(),
+                    &crate::ui_events::navigate_tree(
+                        self.session_id,
+                        self.selected_side_agent_id(),
                         node_id,
-                    }),
+                    ),
                 );
             }
             Err(_) => {
@@ -1219,10 +1209,7 @@ impl<'a> TerminalInputSession<'a> {
         if text == "/compact" {
             let _ = send_event(
                 self.writer,
-                &Event::UiCompactRequest(tau_proto::UiCompactRequest {
-                    session_id: self.session_id.as_str().into(),
-                    target_agent_id: self.selected_side_agent_id(),
-                }),
+                &crate::ui_events::compact_request(self.session_id, self.selected_side_agent_id()),
             );
             return true;
         }
@@ -1518,12 +1505,7 @@ impl<'a> TerminalInputSession<'a> {
         if let Some(role) = text.strip_prefix("/model ") {
             let role = role.trim();
             if !role.is_empty() {
-                let _ = send_event(
-                    self.writer,
-                    &Event::UiRoleSelect(tau_proto::UiRoleSelect {
-                        role: role.to_owned(),
-                    }),
-                );
+                let _ = send_event(self.writer, &crate::ui_events::role_select(role));
             }
             return true;
         }
@@ -2229,12 +2211,7 @@ fn handle_role_command(text: &str, writer: &WriterHandle, print_local: &impl Fn(
         return;
     };
     let Some(command) = command else {
-        let _ = send_event(
-            writer,
-            &Event::UiRoleSelect(tau_proto::UiRoleSelect {
-                role: role.to_owned(),
-            }),
-        );
+        let _ = send_event(writer, &crate::ui_events::role_select(role));
         return;
     };
     if command == "delete" {
@@ -2244,10 +2221,7 @@ fn handle_role_command(text: &str, writer: &WriterHandle, print_local: &impl Fn(
         }
         let _ = send_event(
             writer,
-            &Event::UiRoleUpdate(tau_proto::UiRoleUpdate {
-                role: role.to_owned(),
-                action: tau_proto::UiRoleUpdateAction::Delete,
-            }),
+            &crate::ui_events::role_update(role, tau_proto::UiRoleUpdateAction::Delete),
         );
         return;
     }
@@ -2266,13 +2240,7 @@ fn handle_role_command(text: &str, writer: &WriterHandle, print_local: &impl Fn(
             return;
         }
     };
-    let _ = send_event(
-        writer,
-        &Event::UiRoleUpdate(tau_proto::UiRoleUpdate {
-            role: role.to_owned(),
-            action,
-        }),
-    );
+    let _ = send_event(writer, &crate::ui_events::role_update(role, action));
 }
 
 fn run_provider_auth(provider: &str, print_local: &impl Fn(&str)) {
@@ -2296,23 +2264,9 @@ fn send_shell_command(
     include_in_context: bool,
     target_agent_id: Option<tau_proto::AgentId>,
 ) -> io::Result<()> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let command_id = format!(
-        "ui-sh-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
     send_event(
         writer,
-        &Event::UiShellCommand(tau_proto::UiShellCommand {
-            session_id: session_id.into(),
-            command_id: command_id.into(),
-            command: command.to_owned(),
-            include_in_context,
-            target_agent_id,
-        }),
+        &crate::ui_events::shell_command(session_id, command, include_in_context, target_agent_id),
     )
 }
 

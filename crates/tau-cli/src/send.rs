@@ -34,32 +34,18 @@ fn event_for_line(session_id: &str, text: &str) -> Option<Event> {
         return None;
     }
     if text == "/cancel" {
-        return Some(Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
-            session_id: session_id.into(),
-            target_agent_id: None,
-            agent_prompt_id: None,
-        }));
+        return Some(crate::ui_events::cancel_prompt(session_id, None));
     }
     if text == "/tree" {
-        return Some(Event::UiTreeRequest(tau_proto::UiTreeRequest {
-            session_id: session_id.into(),
-            target_agent_id: None,
-        }));
+        return Some(crate::ui_events::tree_request(session_id, None));
     }
     if let Some(arg) = text.strip_prefix("/tree ")
         && let Ok(node_id) = arg.trim().parse::<u64>()
     {
-        return Some(Event::UiNavigateTree(tau_proto::UiNavigateTree {
-            session_id: session_id.into(),
-            target_agent_id: None,
-            node_id,
-        }));
+        return Some(crate::ui_events::navigate_tree(session_id, None, node_id));
     }
     if text == "/compact" {
-        return Some(Event::UiCompactRequest(tau_proto::UiCompactRequest {
-            session_id: session_id.into(),
-            target_agent_id: None,
-        }));
+        return Some(crate::ui_events::compact_request(session_id, None));
     }
     if text == "/fast" || text.starts_with("/fast ") {
         return None;
@@ -73,23 +59,25 @@ fn event_for_line(session_id: &str, text: &str) -> Option<Event> {
     if let Some(role) = text.strip_prefix("/model ") {
         let role = role.trim();
         if !role.is_empty() {
-            return Some(Event::UiRoleSelect(tau_proto::UiRoleSelect {
-                role: role.to_owned(),
-            }));
+            return Some(crate::ui_events::role_select(role));
         }
         return None;
     }
     if let Some(command) = text.strip_prefix("!!") {
         let command = command.trim();
         if !command.is_empty() {
-            return Some(shell_command(session_id, command, false));
+            return Some(crate::ui_events::shell_command(
+                session_id, command, false, None,
+            ));
         }
         return None;
     }
     if let Some(command) = text.strip_prefix('!') {
         let command = command.trim();
         if !command.is_empty() {
-            return Some(shell_command(session_id, command, true));
+            return Some(crate::ui_events::shell_command(
+                session_id, command, true, None,
+            ));
         }
         return None;
     }
@@ -109,17 +97,15 @@ fn role_event_for_command(rest: &str) -> Option<Event> {
     let extra = parts.next();
 
     match command {
-        None => Some(Event::UiRoleSelect(tau_proto::UiRoleSelect {
-            role: role.to_owned(),
-        })),
+        None => Some(crate::ui_events::role_select(role)),
         Some("delete") => {
             if value.is_some() {
                 return None;
             }
-            Some(Event::UiRoleUpdate(tau_proto::UiRoleUpdate {
-                role: role.to_owned(),
-                action: tau_proto::UiRoleUpdateAction::Delete,
-            }))
+            Some(crate::ui_events::role_update(
+                role,
+                tau_proto::UiRoleUpdateAction::Delete,
+            ))
         }
         Some(setting) => {
             let value = value?;
@@ -127,31 +113,9 @@ fn role_event_for_command(rest: &str) -> Option<Event> {
                 return None;
             }
             let action = crate::chat::parse_role_setting_update(setting, value).ok()?;
-            Some(Event::UiRoleUpdate(tau_proto::UiRoleUpdate {
-                role: role.to_owned(),
-                action,
-            }))
+            Some(crate::ui_events::role_update(role, action))
         }
     }
-}
-
-fn shell_command(session_id: &str, command: &str, include_in_context: bool) -> Event {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let command_id = format!(
-        "ui-sh-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    Event::UiShellCommand(tau_proto::UiShellCommand {
-        session_id: session_id.into(),
-        command_id: command_id.into(),
-        command: command.to_owned(),
-        include_in_context,
-        target_agent_id: None,
-    })
 }
 
 fn find_daemon_for_session(session_id: &str) -> Option<PathBuf> {
