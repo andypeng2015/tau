@@ -65,6 +65,67 @@ fn assert_role_hex_agent_id(agent_id: &str, _role: &str) {
 }
 
 #[test]
+fn extension_data_paths_reject_escape_components() {
+    assert!(super::sanitize_extension_data_path("notes/file.txt", false).is_ok());
+    assert!(super::sanitize_extension_data_path("", true).is_ok());
+    assert!(super::sanitize_extension_data_path("", false).is_err());
+    assert!(super::sanitize_extension_data_path("../secret", false).is_err());
+    assert!(super::sanitize_extension_data_path("notes/../secret", false).is_err());
+    assert!(super::sanitize_extension_data_path("/tmp/secret", false).is_err());
+    assert!(super::sanitize_extension_data_path("./secret", false).is_err());
+}
+
+#[test]
+fn extension_data_list_skips_symlinks_and_returns_relative_entries() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path().join("root");
+    std::fs::create_dir_all(root.join("nested")).expect("mkdir");
+    std::fs::write(root.join("file.txt"), b"abc").expect("write file");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/tmp", root.join("outside")).expect("symlink");
+
+    let entries = super::list_extension_data_entries(&root, &root).expect("list entries");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| { entry.path == "file.txt" && !entry.is_dir && entry.len == Some(3) })
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.path == "nested" && entry.is_dir)
+    );
+    assert!(!entries.iter().any(|entry| entry.path == "outside"));
+}
+
+#[test]
+fn extension_data_checked_path_rejects_symlink_leaf_and_ancestor() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path().join("root");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/tmp", root.join("leaf")).expect("leaf symlink");
+        std::os::unix::fs::symlink("/tmp", root.join("parent")).expect("parent symlink");
+        assert!(super::checked_extension_data_path(&root, Path::new("leaf"), false).is_err());
+        assert!(super::checked_extension_data_path(&root, Path::new("parent/file"), true).is_err());
+    }
+}
+#[test]
+fn extension_data_checked_path_rejects_symlink_root() {
+    let tmp = TempDir::new().expect("tempdir");
+    let real = tmp.path().join("real");
+    let root = tmp.path().join("root");
+    std::fs::create_dir_all(&real).expect("mkdir real");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&real, &root).expect("root symlink");
+        assert!(super::checked_extension_data_path(&root, Path::new("file"), true).is_err());
+        assert!(super::checked_extension_data_path(&root, Path::new(""), true).is_err());
+    }
+}
+
+#[test]
 fn minted_agent_ids_use_default_random_alphanumeric_template() {
     let agent_id = super::mint_agent_id_for_role("engineer");
 

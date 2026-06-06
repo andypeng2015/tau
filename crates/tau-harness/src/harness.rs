@@ -96,6 +96,124 @@ fn session_dir_status_from_reason(
         tau_proto::SessionStartReason::Resume => tau_proto::SessionDirStatus::Resumed,
     }
 }
+fn sanitize_extension_data_path(path: &str, allow_empty: bool) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return if allow_empty {
+            Ok(PathBuf::new())
+        } else {
+            Err("path must not be empty".to_owned())
+        };
+    }
+    let input = Path::new(path);
+    if input.is_absolute() {
+        return Err("path must be relative".to_owned());
+    }
+    let mut out = PathBuf::new();
+    for component in input.components() {
+        match component {
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::CurDir => return Err("path must not contain `.`".to_owned()),
+            std::path::Component::ParentDir => return Err("path must not contain `..`".to_owned()),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err("path must be relative".to_owned());
+            }
+        }
+    }
+    if out.as_os_str().is_empty() && !allow_empty {
+        return Err("path must not be empty".to_owned());
+    }
+    Ok(out)
+}
+
+fn checked_extension_data_path(
+    root: &Path,
+    rel: &Path,
+    allow_missing_leaf: bool,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("failed to create extension data root: {error}"))?;
+    let root_metadata = std::fs::symlink_metadata(root)
+        .map_err(|error| format!("failed to stat extension data root: {error}"))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("extension data root is not a real directory".to_owned());
+    }
+    reject_symlink_ancestors(root, rel)?;
+    let full = root.join(rel);
+    match std::fs::symlink_metadata(&full) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("path `{}` is a symlink", rel.display()))
+        }
+        Ok(metadata) if metadata.is_dir() || metadata.is_file() => Ok(full),
+        Ok(_) => Err(format!(
+            "path `{}` is not a file or directory",
+            rel.display()
+        )),
+        Err(error) if allow_missing_leaf && error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(full)
+        }
+        Err(error) => Err(format!("failed to stat `{}`: {error}", rel.display())),
+    }
+}
+
+fn reject_symlink_ancestors(root: &Path, rel: &Path) -> Result<(), String> {
+    let mut current = root.to_path_buf();
+    let mut components = rel.components().peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            break;
+        }
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!("path `{}` crosses a symlink", rel.display()));
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "path ancestor `{}` is not a directory",
+                    current.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(format!("failed to stat `{}`: {error}", current.display())),
+        }
+    }
+    Ok(())
+}
+
+fn list_extension_data_entries(
+    root: &Path,
+    dir: &Path,
+) -> Result<Vec<tau_proto::ExtensionDataEntry>, String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("failed to list `{}`: {error}", dir.display()))?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to stat `{}`: {error}", entry.path().display()))?;
+        if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("failed to stat `{}`: {error}", entry.path().display()))?;
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|error| format!("failed to relativize listed entry: {error}"))?
+            .to_string_lossy()
+            .into_owned();
+        out.push(tau_proto::ExtensionDataEntry {
+            path: rel,
+            is_dir: metadata.is_dir(),
+            len: metadata.is_file().then_some(metadata.len()),
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
 
 pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
     format!(
@@ -3191,6 +3309,107 @@ impl Harness {
             ))),
         );
     }
+    fn send_extension_data_result(
+        &mut self,
+        connection_id: &str,
+        request_id: String,
+        result: tau_proto::ExtensionDataResultPayload,
+    ) {
+        let _ = self.bus.send_to(
+            connection_id,
+            None,
+            Frame::Message(Message::ExtensionDataResult(Box::new(
+                tau_proto::ExtensionDataResult { request_id, result },
+            ))),
+        );
+    }
+
+    fn handle_extension_data_request(
+        &mut self,
+        connection_id: &str,
+        request: tau_proto::ExtensionDataRequest,
+    ) {
+        let request_id = request.request_id;
+        let result = match self.run_extension_data_request(connection_id, request.scope, request.op)
+        {
+            Ok(value) => tau_proto::ExtensionDataResultPayload::Ok { value },
+            Err(message) => tau_proto::ExtensionDataResultPayload::Error { message },
+        };
+        self.send_extension_data_result(connection_id, request_id, result);
+    }
+
+    fn run_extension_data_request(
+        &self,
+        connection_id: &str,
+        scope: tau_proto::ExtensionDataScope,
+        op: tau_proto::ExtensionDataRequestOp,
+    ) -> Result<tau_proto::ExtensionDataValue, String> {
+        let root = self.extension_data_scope_root(connection_id, scope)?;
+        match op {
+            tau_proto::ExtensionDataRequestOp::ReadFile { path } => {
+                let rel = sanitize_extension_data_path(&path, false)?;
+                let path = checked_extension_data_path(&root, &rel, false)?;
+                let contents = std::fs::read(&path)
+                    .map_err(|error| format!("failed to read `{}`: {error}", rel.display()))?;
+                Ok(tau_proto::ExtensionDataValue::ReadFile { contents })
+            }
+            tau_proto::ExtensionDataRequestOp::WriteFile { path, contents } => {
+                let rel = sanitize_extension_data_path(&path, false)?;
+                let path = checked_extension_data_path(&root, &rel, true)?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
+                        format!(
+                            "failed to create parent directories for `{}`: {error}",
+                            rel.display()
+                        )
+                    })?;
+                }
+                std::fs::write(&path, contents)
+                    .map_err(|error| format!("failed to write `{}`: {error}", rel.display()))?;
+                Ok(tau_proto::ExtensionDataValue::WriteFile)
+            }
+            tau_proto::ExtensionDataRequestOp::ListFiles { path } => {
+                let rel = sanitize_extension_data_path(&path, true)?;
+                let dir = checked_extension_data_path(&root, &rel, true)?;
+                if !dir.exists() {
+                    return Ok(tau_proto::ExtensionDataValue::ListFiles {
+                        entries: Vec::new(),
+                    });
+                }
+                let entries = list_extension_data_entries(&root, &dir)?;
+                Ok(tau_proto::ExtensionDataValue::ListFiles { entries })
+            }
+        }
+    }
+
+    fn extension_data_scope_root(
+        &self,
+        connection_id: &str,
+        scope: tau_proto::ExtensionDataScope,
+    ) -> Result<PathBuf, String> {
+        let name = self
+            .extensions
+            .get(connection_id)
+            .map(|entry| entry.name.as_str())
+            .ok_or_else(|| "unknown extension connection".to_owned())?;
+        tau_config::settings::validate_extension_name(name).map_err(|error| error.to_string())?;
+        match scope {
+            tau_proto::ExtensionDataScope::Session => {
+                Ok(tau_config::settings::sessions_dir_of(&self.state_dir)
+                    .join(self.current_session_id.as_str())
+                    .join("ext")
+                    .join("data")
+                    .join(name))
+            }
+            tau_proto::ExtensionDataScope::User => {
+                tau_config::settings::extension_state_dir_of(&self.state_dir, name)
+                    .map_err(|error| error.to_string())
+            }
+            tau_proto::ExtensionDataScope::Cache => dirs::cache_dir()
+                .map(|dir| dir.join("tau").join("ext").join(name))
+                .ok_or_else(|| "could not determine user cache directory".to_owned()),
+        }
+    }
 
     fn should_stage_extension_capabilities(&self, source_id: &str) -> bool {
         self.extensions
@@ -3648,6 +3867,9 @@ impl Harness {
             Message::GetAgentPromptCreated(request) => {
                 self.send_agent_prompt_created_result(source_id, request);
             }
+            Message::ExtensionDataRequest(request) => {
+                self.handle_extension_data_request(source_id, request);
+            }
             // Messages sent by clients or the harness only — extensions shouldn't
             // round-trip these. Ignore silently.
             Message::Configure(_)
@@ -3658,6 +3880,7 @@ impl Harness {
             | Message::AgentPromptCreatedResult(_)
             | Message::RenderedSystemPromptResult(_)
             | Message::RenderedToolDefinitionsResult(_)
+            | Message::ExtensionDataResult(_)
             | Message::LogEvent(_) => {}
         }
         Ok(())
@@ -4104,6 +4327,8 @@ impl Harness {
             | Message::AgentPromptCreatedResult(_)
             | Message::RenderedSystemPromptResult(_)
             | Message::RenderedToolDefinitionsResult(_)
+            | Message::ExtensionDataRequest(_)
+            | Message::ExtensionDataResult(_)
             | Message::LogEvent(_)
             | Message::Emit(_) => Ok(true),
         }

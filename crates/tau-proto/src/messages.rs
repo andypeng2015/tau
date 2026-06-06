@@ -385,6 +385,89 @@ pub struct RenderedToolDefinitionsResult {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Extension data RPC
+// ---------------------------------------------------------------------------
+
+/// Harness-owned storage scope for extension data RPC requests.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionDataScope {
+    /// Session-local data under `<session_data_dir>/ext/data/<ext-name>`.
+    Session,
+    /// User-persistent data under `~/.local/state/tau/ext/<ext-name>`.
+    User,
+    /// User cache data under `~/.cache/tau/ext/<ext-name>`.
+    Cache,
+}
+
+/// Extension request for harness-mediated file access inside its data roots.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionDataRequest {
+    /// Request correlation id echoed by [`ExtensionDataResult`].
+    pub request_id: String,
+    /// Storage scope to access.
+    pub scope: ExtensionDataScope,
+    /// File operation to perform.
+    pub op: ExtensionDataRequestOp,
+}
+
+/// File operation requested by an extension data RPC.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ExtensionDataRequestOp {
+    /// Read one whole file at a sanitized relative path.
+    ReadFile { path: String },
+    /// Write one whole file at a sanitized relative path, replacing any old
+    /// content.
+    WriteFile { path: String, contents: Vec<u8> },
+    /// List direct children of a sanitized relative directory path.
+    ListFiles { path: String },
+}
+
+/// Harness response to an [`ExtensionDataRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionDataResult {
+    /// Request correlation id copied from the request.
+    pub request_id: String,
+    /// Operation result or human-readable error.
+    pub result: ExtensionDataResultPayload,
+}
+
+/// Result payload for an extension data RPC.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ExtensionDataResultPayload {
+    /// Operation succeeded.
+    Ok { value: ExtensionDataValue },
+    /// Operation failed.
+    Error { message: String },
+}
+
+/// Successful value returned by an extension data RPC.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ExtensionDataValue {
+    /// Whole file contents from a read request.
+    ReadFile { contents: Vec<u8> },
+    /// Empty success marker for a write request.
+    WriteFile,
+    /// Direct child entries from a list request.
+    ListFiles { entries: Vec<ExtensionDataEntry> },
+}
+
+/// One direct child returned by an extension data list request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtensionDataEntry {
+    /// Sanitized path relative to the requested scope root.
+    pub path: String,
+    /// True when this entry is a directory.
+    pub is_dir: bool,
+    /// File size in bytes for files. Directories use `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub len: Option<u64>,
+}
+
 /// Receiver → sender acknowledgement that all log events with sequence
 /// `<= up_to` have been processed. Cumulative — newer acks supersede
 /// older ones.
@@ -397,12 +480,91 @@ pub struct Ack {
 // Top-level message envelope
 // ---------------------------------------------------------------------------
 
-/// Point-to-point control-plane message envelope used on the wire.
+/// Directional subsets of the point-to-point control-plane protocol.
+///
+/// The harness ↔ extension protocol is directional even though the shared wire
+/// envelope below remains bidirectional for compatibility and UI/client use.
+/// Control-plane messages sent by the harness to an extension.
+///
+/// These are point-to-point replies, lifecycle/configuration messages, or live
+/// delivery envelopes. They are not extension-authored requests and do not by
+/// themselves represent facts appended to the event log.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "message", content = "payload", rename_all = "snake_case")]
+pub enum HarnessMessage {
+    Configure(Configure),
+    Disconnect(Disconnect),
+    InterceptRequest(InterceptRequest),
+    AgentPromptCreatedResult(Box<AgentPromptCreatedResult>),
+    ExtensionDataResult(Box<ExtensionDataResult>),
+    LogEvent(LogEvent),
+}
+
+impl From<HarnessMessage> for Message {
+    fn from(message: HarnessMessage) -> Self {
+        match message {
+            HarnessMessage::Configure(value) => Self::Configure(value),
+            HarnessMessage::Disconnect(value) => Self::Disconnect(value),
+            HarnessMessage::InterceptRequest(value) => Self::InterceptRequest(value),
+            HarnessMessage::AgentPromptCreatedResult(value) => {
+                Self::AgentPromptCreatedResult(value)
+            }
+            HarnessMessage::ExtensionDataResult(value) => Self::ExtensionDataResult(value),
+            HarnessMessage::LogEvent(value) => Self::LogEvent(value),
+        }
+    }
+}
+
+/// Control-plane messages sent by an extension to the harness.
+///
+/// These are extension-authored lifecycle messages, subscriptions,
+/// event-publication requests, interceptor replies, RPC requests, and delivery
+/// acknowledgements. Some variants are also accepted from UI clients, but this
+/// direction names the extension side of the harness ↔ extension protocol.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "message", content = "payload", rename_all = "snake_case")]
+pub enum ExtensionMessage {
+    Hello(Hello),
+    Subscribe(Subscribe),
+    Intercept(Intercept),
+    Ready(Ready),
+    ConfigError(ConfigError),
+    Emit(Emit),
+    InterceptReply(InterceptReply),
+    GetAgentPromptCreated(GetAgentPromptCreated),
+    ExtensionDataRequest(ExtensionDataRequest),
+    Ack(Ack),
+}
+
+impl From<ExtensionMessage> for Message {
+    fn from(message: ExtensionMessage) -> Self {
+        match message {
+            ExtensionMessage::Hello(value) => Self::Hello(value),
+            ExtensionMessage::Subscribe(value) => Self::Subscribe(value),
+            ExtensionMessage::Intercept(value) => Self::Intercept(value),
+            ExtensionMessage::Ready(value) => Self::Ready(value),
+            ExtensionMessage::ConfigError(value) => Self::ConfigError(value),
+            ExtensionMessage::Emit(value) => Self::Emit(value),
+            ExtensionMessage::InterceptReply(value) => Self::InterceptReply(value),
+            ExtensionMessage::GetAgentPromptCreated(value) => Self::GetAgentPromptCreated(value),
+            ExtensionMessage::ExtensionDataRequest(value) => Self::ExtensionDataRequest(value),
+            ExtensionMessage::Ack(value) => Self::Ack(value),
+        }
+    }
+}
+
+/// Bidirectional point-to-point control-plane message envelope used on the
+/// wire.
 ///
 /// Wire form is `{"message": "<flat_name>", "payload": {...}}`. Names
 /// are flat (no dot, snake_case) to make the discriminator trivially
 /// distinguishable from [`Event`]'s dotted `category.call` form — the
 /// outer [`crate::Frame`] envelope relies on this distinction.
+///
+/// Prefer [`HarnessMessage`] or [`ExtensionMessage`] in new extension-facing
+/// code when the communication direction is known. This bidirectional enum is
+/// retained as the shared wire envelope and for UI/client messages that are not
+/// exclusively part of the harness ↔ extension flow.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "message", content = "payload", rename_all = "snake_case")]
 pub enum Message {
@@ -421,7 +583,9 @@ pub enum Message {
     GetRenderedSystemPrompt(GetRenderedSystemPrompt),
     RenderedSystemPromptResult(Box<RenderedSystemPromptResult>),
     GetRenderedToolDefinitions(GetRenderedToolDefinitions),
+    ExtensionDataRequest(ExtensionDataRequest),
     RenderedToolDefinitionsResult(Box<RenderedToolDefinitionsResult>),
+    ExtensionDataResult(Box<ExtensionDataResult>),
     LogEvent(LogEvent),
     Ack(Ack),
 }

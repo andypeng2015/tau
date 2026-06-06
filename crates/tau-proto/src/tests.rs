@@ -393,6 +393,25 @@ fn representative_messages() -> Vec<Message> {
             }]),
             error: None,
         })),
+        Message::ExtensionDataRequest(ExtensionDataRequest {
+            request_id: "ext-data-1".to_owned(),
+            scope: ExtensionDataScope::Session,
+            op: ExtensionDataRequestOp::ReadFile {
+                path: "notes/state.cbor".to_owned(),
+            },
+        }),
+        Message::ExtensionDataResult(Box::new(ExtensionDataResult {
+            request_id: "ext-data-1".to_owned(),
+            result: ExtensionDataResultPayload::Ok {
+                value: ExtensionDataValue::ListFiles {
+                    entries: vec![ExtensionDataEntry {
+                        path: "notes/state.cbor".to_owned(),
+                        is_dir: false,
+                        len: Some(3),
+                    }],
+                },
+            },
+        })),
         Message::LogEvent(LogEvent {
             seq: EventLogSeq::new(42),
             recorded_at: UnixMicros::new(1_700_000_000_000_000),
@@ -446,6 +465,20 @@ fn agent_message_events_have_names_and_persistence_defaults() {
     assert_eq!(received.name(), EventName::AGENT_MESSAGE_RECEIVED);
     assert_eq!(received.name().to_string(), "agent.message_received");
     assert!(!received.defaults_to_transient());
+}
+#[test]
+fn directional_messages_convert_to_shared_wire_message() {
+    let extension: Message = ExtensionMessage::Ready(Ready {
+        message: Some("ready".to_owned()),
+    })
+    .into();
+    assert!(matches!(extension, Message::Ready(_)));
+
+    let harness: Message = HarnessMessage::Disconnect(Disconnect {
+        reason: Some("shutdown".to_owned()),
+    })
+    .into();
+    assert!(matches!(harness, Message::Disconnect(_)));
 }
 
 #[test]

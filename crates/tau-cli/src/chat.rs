@@ -254,7 +254,9 @@ fn ui_io_message_name(message: &Message) -> &'static str {
         Message::GetRenderedSystemPrompt(_) => "get_rendered_system_prompt",
         Message::RenderedSystemPromptResult(_) => "rendered_system_prompt_result",
         Message::GetRenderedToolDefinitions(_) => "get_rendered_tool_definitions",
+        Message::ExtensionDataRequest(_) => "extension_data_request",
         Message::RenderedToolDefinitionsResult(_) => "rendered_tool_definitions_result",
+        Message::ExtensionDataResult(_) => "extension_data_result",
         Message::LogEvent(_) => "log_event",
         Message::Ack(_) => "ack",
     }

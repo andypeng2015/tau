@@ -28,6 +28,8 @@ fn message_variant(msg: &Message) -> &'static str {
         Message::RenderedSystemPromptResult(_) => "RenderedSystemPromptResult",
         Message::GetRenderedToolDefinitions(_) => "GetRenderedToolDefinitions",
         Message::RenderedToolDefinitionsResult(_) => "RenderedToolDefinitionsResult",
+        Message::ExtensionDataRequest(_) => "ExtensionDataRequest",
+        Message::ExtensionDataResult(_) => "ExtensionDataResult",
         Message::LogEvent(_) => "LogEvent",
         Message::Ack(_) => "Ack",
     }
