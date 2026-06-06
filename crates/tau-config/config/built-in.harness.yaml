@@ -37,7 +37,7 @@ role_groups:
       staff-engineer:
         enable: true
         description: Slow and expensive individual contributor using maximum reasoning. Best used only for hardest engineering problems.
-        effort: xhigh
+        effort: high
 
   manager:
     roles:

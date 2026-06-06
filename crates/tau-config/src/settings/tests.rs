@@ -1177,7 +1177,7 @@ fn harness_built_in_roles_load_from_json_with_manager_prompt() {
     );
     assert!(!s.roles.contains_key("assistant"));
     let staff_engineer = &s.roles["staff-engineer"];
-    assert_eq!(staff_engineer.effort, Some(tau_proto::Effort::XHigh));
+    assert_eq!(staff_engineer.effort, Some(tau_proto::Effort::High));
     assert!(
         staff_engineer
             .prompt_fragments
@@ -1278,7 +1278,7 @@ fn missing_user_files_load_the_built_in_baseline() {
     assert!(harness.roles.contains_key("staff-engineer"));
     assert_eq!(
         harness.roles["staff-engineer"].effort,
-        Some(tau_proto::Effort::XHigh)
+        Some(tau_proto::Effort::High)
     );
     assert!(!harness.roles.contains_key("smart"));
     assert!(!harness.roles.contains_key("deep"));
