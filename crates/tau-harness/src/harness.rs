@@ -693,9 +693,9 @@ fn render_agent_template(
     agent_id: &str,
     task_name: Option<&str>,
     collision_extra_len: usize,
+    rng: &mut StdRng,
 ) -> Result<String, handlebars::RenderError> {
-    let mut rng = deterministic_agent_id_rng();
-    let handlebars = handlebars_for_agent_template(collision_extra_len, &mut rng);
+    let handlebars = handlebars_for_agent_template(collision_extra_len, rng);
     let mut context = base_agent_template_context(role, role_group);
     context.insert(
         "agent_id".to_owned(),
@@ -1097,10 +1097,9 @@ pub struct Harness {
     /// receive a replayed `SessionStarted` snapshot with this reason.
     pub(crate) current_session_start_reason: tau_proto::SessionStartReason,
     /// Random stream for agent-id template helpers. Production harnesses seed
-    /// it from OS entropy; tests seed it deterministically from the session id
-    /// so they can stabilize generated agent ids. Advanced on each agent
-    /// creation so one harness does not mint the same random candidate
-    /// repeatedly.
+    /// it from OS entropy; tests can replace it with a deterministic stream
+    /// to stabilize generated agent ids. Advanced on each agent creation so
+    /// one harness does not mint the same random candidate repeatedly.
     agent_id_rng: StdRng,
     /// `call_id` → owning agent for every tool call currently
     /// in flight. Read by `session_id_for_event` (via the
@@ -7600,7 +7599,15 @@ impl Harness {
             return fallback;
         };
         let role_group = self.role_group_name_for_role(role);
-        match render_agent_template(&template, role, &role_group, agent_id, task_name, 0) {
+        match render_agent_template(
+            &template,
+            role,
+            &role_group,
+            agent_id,
+            task_name,
+            0,
+            &mut self.agent_id_rng,
+        ) {
             Ok(rendered) => normalize_display_name(Some(&rendered)).or(fallback),
             Err(error) => {
                 self.emit_info(&format!(

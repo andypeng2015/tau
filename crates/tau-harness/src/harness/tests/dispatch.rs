@@ -421,10 +421,14 @@ fn cbor_map_text<'a>(value: &'a CborValue, key: &str) -> Option<&'a str> {
     })
 }
 
-fn provider_text_response(spid: &AgentPromptId, text: &str) -> ProviderResponseFinished {
+fn provider_text_response(
+    spid: &AgentPromptId,
+    agent_id: tau_proto::AgentId,
+    text: &str,
+) -> ProviderResponseFinished {
     ProviderResponseFinished {
         agent_prompt_id: spid.clone(),
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -1567,8 +1571,10 @@ fn disconnect_idle_multi_background_errors_dispatch_prompt_after_batch() {
         AgentTurnState::AgentThinking { agent_prompt_id } => agent_prompt_id.clone(),
         state => panic!("expected placeholder follow-up prompt, got {state:?}"),
     };
+    let agent_id = durable_agent_id_for_conversation(&h, &cid);
     h.handle_provider_response_finished(provider_text_response(
         &followup_spid,
+        agent_id,
         "placeholders observed",
     ))
     .expect("finish placeholder follow-up");
@@ -2501,6 +2507,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
         "provider-other",
         Frame::Event(Event::ProviderResponseFinished(provider_text_response(
             &spid,
+            durable_agent_id_for_conversation(&h, &test_user_agent(&h)),
             "spoofed final",
         ))),
     )
@@ -2543,6 +2550,7 @@ fn provider_execution_events_must_come_from_prompt_owner() {
         "provider-owner",
         Frame::Event(Event::ProviderResponseFinished(provider_text_response(
             &spid,
+            durable_agent_id_for_conversation(&h, &test_user_agent(&h)),
             "real final",
         ))),
     )
@@ -2692,8 +2700,10 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
 
     append_user_message_via_event(&mut h, "s1", "go");
     let cid = ensure_test_user_agent(&mut h);
-    seed_agent_thinking(&mut h, &cid, "sp-x");
-    h.prompt_agents.insert("sp-x".into(), cid);
+    let agent_id = durable_agent_id_for_conversation(&h, &cid);
+    let spid: AgentPromptId = format!("ap-{agent_id}-0").into();
+    seed_agent_thinking(&mut h, &cid, spid.as_str());
+    h.prompt_agents.insert(spid.clone(), cid);
 
     let edit_args = |name: &str| {
         CborValue::Map(vec![
@@ -2725,8 +2735,8 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
         ])
     };
     let response = ProviderResponseFinished {
-        agent_prompt_id: "sp-x".into(),
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_prompt_id: spid,
+        agent_id,
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "c1".into(),
@@ -2787,8 +2797,7 @@ fn multi_tool_turn_keeps_all_results_in_followup_prompt() {
     // After all three tools complete, the harness has auto-dispatched
     // a follow-up prompt. Read its context items and check that every
     // tool call has a matching tool result on the same branch.
-    let spid: AgentPromptId = "sp-0".into();
-    let prompt = read_prompt_created(&h, &spid);
+    let prompt = read_nth_prompt_created(&h, 0);
     let tool_use_ids: Vec<String> = prompt
         .context
         .flatten()
@@ -3007,7 +3016,6 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
     // is published before the next-round AgentPromptCreated, and the
     // latter's `context_items` includes the steered text alongside the
     // original user prompt.
-    let next_round_spid: AgentPromptId = "sp-0".into();
     let mut cursor = tau_proto::EventLogSeq::new(0);
     let mut saw_steered = false;
     let mut saw_next_round = false;
@@ -3022,7 +3030,7 @@ fn queued_prompt_is_steered_into_next_round_after_tool_result() {
                 );
                 saw_steered = true;
             }
-            Event::AgentPromptCreated(p) if p.agent_prompt_id == next_round_spid => {
+            Event::AgentPromptCreated(p) if saw_steered => {
                 assert!(
                     saw_steered,
                     "next-round prompt must follow the AgentPromptSteered",
@@ -3098,8 +3106,8 @@ fn tool_calls_stop_reason_without_tool_items_does_not_wedge_turn() {
     h.submit_user_prompt("s1".into(), "hello".to_owned())
         .expect("submit");
     h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: "sp-0".into(),
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_prompt_id: read_nth_prompt_created(&h, 0).agent_prompt_id,
+        agent_id: read_nth_prompt_created(&h, 0).agent_id,
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
             content: vec![ContentPart::Text {
@@ -3281,12 +3289,12 @@ fn response_id_anchors_next_prompt_with_previous_response() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
-    let _prompt1 = read_prompt_created(&h, &spid1);
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3320,8 +3328,7 @@ fn response_id_anchors_next_prompt_with_previous_response() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3340,10 +3347,11 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3377,10 +3385,11 @@ fn chained_sub_chunk_cacheable_tokens_does_not_emit_diagnostic() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
+    let prompt2 = read_nth_prompt_created(&h, 1);
+    let spid2 = prompt2.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid2,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt2.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3438,10 +3447,11 @@ fn model_switch_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3478,8 +3488,7 @@ fn model_switch_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3509,10 +3518,11 @@ fn params_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3552,8 +3562,7 @@ fn params_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3578,10 +3587,11 @@ fn system_prompt_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3632,8 +3642,7 @@ fn system_prompt_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3656,10 +3665,11 @@ fn tools_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3711,8 +3721,7 @@ fn tools_drift_invalidates_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3735,10 +3744,11 @@ fn stable_params_preserve_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3772,8 +3782,7 @@ fn stable_params_preserve_chain_anchor() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3794,11 +3803,12 @@ fn missing_response_id_leaves_chain_unset() {
 
     h.submit_user_prompt("s1".into(), "first".to_owned())
         .expect("submit first");
-    let spid1: AgentPromptId = "sp-0".into();
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3832,8 +3842,7 @@ fn missing_response_id_leaves_chain_unset() {
 
     h.submit_user_prompt("s1".into(), "second".to_owned())
         .expect("submit second");
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
 
     assert_eq!(
         prompt2.context.flatten().last().and_then(text_part),
@@ -3860,8 +3869,8 @@ fn queued_prompt_extends_completed_first_prompt() {
         .and_then(|conv| conv.agent_id.clone())
         .expect("first prompt agent id");
     publish_pending_agent_context_ready(&mut h, first_agent_id.as_str());
-    let spid1: AgentPromptId = "sp-0".into();
-    let prompt1 = read_prompt_created(&h, &spid1);
+    let prompt1 = read_nth_prompt_created(&h, 0);
+    let spid1 = prompt1.agent_prompt_id.clone();
 
     let second = h
         .submit_user_prompt("s1".into(), "second".to_owned())
@@ -3870,7 +3879,7 @@ fn queued_prompt_extends_completed_first_prompt() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: spid1,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: prompt1.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 
@@ -3903,8 +3912,7 @@ fn queued_prompt_extends_completed_first_prompt() {
     })
     .expect("finish first");
 
-    let spid2: AgentPromptId = "sp-1".into();
-    let prompt2 = read_prompt_created(&h, &spid2);
+    let prompt2 = read_nth_prompt_created(&h, 1);
     assert!(
         prompt1.context.flatten().len() < prompt2.context.flatten().len(),
         "queued follow-up should extend the first prompt"
@@ -3989,8 +3997,7 @@ fn resumed_startup_folds_restore_notice_before_first_user_prompt() {
 
     h.submit_user_prompt("s1".into(), "after restore".to_owned())
         .expect("submit first resumed prompt");
-    let spid: AgentPromptId = "sp-0".into();
-    let prompt = read_prompt_created(&h, &spid);
+    let prompt = read_nth_prompt_created(&h, 0);
     let notice_pos = prompt
         .context
         .flatten()
@@ -4031,19 +4038,22 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
 
         h.submit_user_prompt("s1".into(), "first after restore".to_owned())
             .expect("submit first resumed prompt");
-        let first_spid: AgentPromptId = "sp-0".into();
-        let first_prompt = read_prompt_created(&h, &first_spid);
+        let first_prompt = read_nth_prompt_created(&h, 0);
+        let first_spid = first_prompt.agent_prompt_id.clone();
         let notice = restore_notice_context_text(&first_prompt)
             .expect("restore notice")
             .to_owned();
         assert_eq!(restore_notice_context_count(&first_prompt), 1);
 
-        h.handle_provider_response_finished(provider_text_response(&first_spid, "first answer"))
-            .expect("finish first prompt");
+        h.handle_provider_response_finished(provider_text_response(
+            &first_spid,
+            first_prompt.agent_id.clone(),
+            "first answer",
+        ))
+        .expect("finish first prompt");
         h.submit_user_prompt("s1".into(), "second after restore".to_owned())
             .expect("submit second prompt");
-        let second_spid: AgentPromptId = "sp-1".into();
-        let second_prompt = read_prompt_created(&h, &second_spid);
+        let second_prompt = read_nth_prompt_created(&h, 1);
         assert_eq!(context_text_count(&second_prompt, notice.as_str()), 1);
         assert_eq!(restore_notice_context_count(&second_prompt), 1);
         assert_eq!(restore_notice_event_count(&h), 1);
@@ -4060,8 +4070,7 @@ fn restore_notice_is_not_duplicated_by_followups_or_later_resumes() {
 
         h.submit_user_prompt("s1".into(), "third after restore".to_owned())
             .expect("submit after second resume");
-        let spid: AgentPromptId = "sp-0".into();
-        let prompt = read_prompt_created(&h, &spid);
+        let prompt = read_nth_prompt_created(&h, 0);
         assert_eq!(context_text_count(&prompt, notice.as_str()), 1);
         assert_eq!(restore_notice_context_count(&prompt), 1);
         assert_eq!(restore_notice_event_count(&h), 1);
@@ -4102,8 +4111,8 @@ fn resumed_lost_background_tool_gets_error_and_wait_returns() {
 
     h.submit_user_prompt("s1".into(), "after restore".to_owned())
         .expect("submit first resumed prompt");
-    let first_spid: AgentPromptId = "sp-0".into();
-    let first_prompt = read_prompt_created(&h, &first_spid);
+    let first_prompt = read_nth_prompt_created(&h, 0);
+    let first_spid = first_prompt.agent_prompt_id.clone();
     let notice_pos = first_prompt
         .context
         .flatten()
@@ -4120,7 +4129,7 @@ fn resumed_lost_background_tool_gets_error_and_wait_returns() {
 
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: first_spid,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: first_prompt.agent_id.clone(),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "wait-lost-bg".into(),
             name: ToolName::new("wait"),
@@ -4193,10 +4202,10 @@ fn resumed_completed_background_result_can_be_consumed_by_no_arg_wait() {
             .expect("resume");
     h.submit_user_prompt("s1".into(), "collect restored background".to_owned())
         .expect("submit first resumed prompt");
-    let spid: AgentPromptId = "sp-0".into();
+    let prompt = read_nth_prompt_created(&h, 0);
     h.handle_provider_response_finished(ProviderResponseFinished {
-        agent_prompt_id: spid,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_prompt_id: prompt.agent_prompt_id,
+        agent_id: prompt.agent_id,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "wait-restored-any".into(),
             name: ToolName::new("wait"),
@@ -4390,12 +4399,7 @@ fn switch_session_clears_loaded_agents_until_next_prompt() {
         .clone()
         .expect("new session agent id");
     publish_pending_agent_context_ready(&mut h, new_agent_id.as_str());
-    assert!(
-        read_prompt_created(&h, &AgentPromptId::from("sp-0"))
-            .agent_id
-            .as_str()
-            == new_agent_id
-    );
+    assert!(read_nth_prompt_created(&h, 0).agent_id.as_str() == new_agent_id);
 
     h.shutdown().expect("shutdown");
 }
@@ -4534,6 +4538,7 @@ fn start_background_tool_and_finish_placeholder_turn(
     let placeholder_followup = active_prompt_for(h, cid);
     h.handle_provider_response_finished(provider_text_response(
         &placeholder_followup,
+        durable_agent_id_for_conversation(h, cid),
         "placeholder acknowledged",
     ))
     .expect("finish placeholder followup");
@@ -5719,10 +5724,11 @@ fn non_tool_start_agent_request_preserves_tool_choice_without_parent_chain_ancho
     // `handle_provider_response_finished` actually mints the anchor.
     h.submit_user_prompt("s1".into(), "find the bug in foo.rs".to_owned())
         .expect("submit main");
-    let main_spid: AgentPromptId = "sp-0".into();
+    let main_prompt = read_nth_prompt_created(&h, 0);
+    let main_spid = main_prompt.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
         agent_prompt_id: main_spid,
-        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        agent_id: main_prompt.agent_id.clone(),
         output_items: vec![ContextItem::Message(MessageItem {
             role: ContextRole::Assistant,
 

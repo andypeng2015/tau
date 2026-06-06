@@ -157,6 +157,7 @@ fn minting_agent_ids_reject_display_name_only_template_fields() {
 
 #[test]
 fn agent_template_uses_role_when_task_name_is_absent() {
+    let mut rng = super::deterministic_agent_id_rng();
     let rendered = super::render_agent_template(
         "{{#if task_name_present}}{{role}}: {{task_name}}{{else}}{{role}}{{/if}}",
         "staff-engineer",
@@ -164,6 +165,7 @@ fn agent_template_uses_role_when_task_name_is_absent() {
         "engineer-Ab12",
         None,
         0,
+        &mut rng,
     )
     .expect("render");
 
@@ -172,6 +174,7 @@ fn agent_template_uses_role_when_task_name_is_absent() {
 
 #[test]
 fn agent_template_renders_display_name_context() {
+    let mut rng = super::deterministic_agent_id_rng();
     let rendered = super::render_agent_template(
         "{{role_group}}/{{role}}/{{agent_id}}/{{task_name}}/{{task_name_present}}/{{random_alphanumeric 4}}",
         "staff-engineer",
@@ -179,6 +182,7 @@ fn agent_template_renders_display_name_context() {
         "engineer-Ab12",
         Some("review fix"),
         0,
+        &mut rng,
     )
     .expect("render");
 
@@ -610,6 +614,13 @@ fn seed_agent_thinking(h: &mut Harness, cid: &crate::AgentId, spid: &str) {
         .ensure_agent_id_for_agent(cid)
         .expect("conversation agent id");
     let conv = h.agents.get_mut(cid).expect("conversation present");
+    if let Some(next_index) = spid
+        .rsplit_once('-')
+        .and_then(|(_, index)| index.parse::<u64>().ok())
+        .map(|index| index.saturating_add(1))
+    {
+        conv.next_prompt_index = conv.next_prompt_index.max(next_index);
+    }
     conv.turn_state = AgentTurnState::AgentThinking {
         agent_prompt_id: spid.into(),
     };
