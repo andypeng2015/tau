@@ -126,6 +126,25 @@ fn at_token_completes_agent_mentions_in_prompt_text() {
 }
 
 #[test]
+fn at_mentions_remain_agent_completion_after_dotslash_fuzzy_port() {
+    // The external patch also used `@` for file fuzzy search. Tau reserves that
+    // prefix for agent mentions, so keep this regression focused and hermetic.
+    let data = CompletionData::new();
+    data.set_agent_mention_completer(std::sync::Arc::new(|args| {
+        assert_eq!(args, ["wor"]);
+        vec![crate::completion::CompletionItem::plain("worker")]
+    }));
+
+    let mentions = build_candidates(
+        &[SlashCommand::new("/whatever", "")],
+        &data,
+        "ask @wor",
+        "ask @wor".len(),
+    );
+    assert_eq!(mentions.len(), 1);
+    assert_eq!(mentions[0].replacement, "ask @worker");
+}
+#[test]
 fn non_slash_non_path_buffer_returns_nothing() {
     let cands = build_candidates(
         &[SlashCommand::new("/model", "Switch model")],

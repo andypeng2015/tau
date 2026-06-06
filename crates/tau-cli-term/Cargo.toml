@@ -15,6 +15,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+nucleo-matcher.workspace = true
 tau-cli-term-raw.workspace = true
 tau-term-screen.workspace = true
 tau-themes.workspace = true

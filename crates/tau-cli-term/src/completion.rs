@@ -21,6 +21,8 @@ use tau_themes::Theme;
 
 use crate::resolve;
 
+mod git_files;
+
 /// A slash-command name, always prefixed with `/` (e.g. `"/model"`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CommandName(String);
@@ -360,6 +362,10 @@ fn build_agent_mention_candidates(data: &CompletionData, token: &PathToken<'_>) 
         .collect()
 }
 
+fn cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 fn home_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     if home.as_os_str().is_empty() {
@@ -368,7 +374,6 @@ fn home_dir() -> Option<PathBuf> {
         Some(PathBuf::from(home))
     }
 }
-
 fn home_expanded_path(prefix: &str, home_dir: Option<&Path>) -> Option<PathBuf> {
     if prefix == "~" {
         Some(home_dir?.to_path_buf())
@@ -415,6 +420,29 @@ fn build_filesystem_candidates_with_home(
         };
         (lookup_dir, display_dir, partial)
     };
+
+    if prefix.starts_with("./") && !partial.is_empty() {
+        let cwd = cwd();
+        if let Some((repo_root, files)) = git_files::git_repo_files(&cwd) {
+            let matches = git_files::fuzzy_match_git_files(partial, &files);
+            if !matches.is_empty() {
+                return matches
+                    .into_iter()
+                    .map(|path| {
+                        let display = git_files::dotslash_display_path(path, &repo_root, &cwd);
+                        Candidate {
+                            label: display.clone(),
+                            description: "git file".to_owned(),
+                            replacement: format!(
+                                "{}{}{}",
+                                path_token.before, display, path_token.after
+                            ),
+                        }
+                    })
+                    .collect();
+            }
+        }
+    }
 
     let Ok(entries) = std::fs::read_dir(lookup_dir) else {
         return Vec::new();

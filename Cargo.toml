@@ -144,6 +144,10 @@ lru = { version = "0.18", default-features = false }
 mail-parser = { version = "0.11", default-features = false, features = [
   "full_encoding",
 ] }
+nucleo-matcher = { version = "0.3.1", default-features = false, features = [
+  "unicode-casefold",
+  "unicode-normalization",
+] }
 parse_datetime = { version = "0.14", default-features = false }
 rand = { version = "0.8", default-features = false, features = [
   "std",

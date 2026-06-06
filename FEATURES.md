@@ -468,11 +468,14 @@ available like in-session history.
 
 ### Path autocompletion
 
-When the prompt buffer starts with `./` or `../`, Tab triggers filesystem path
-completion against the current working directory — handy for naming files in
-free-form prompts. Standard fzf-style fuzzy-search bindings are also available
-inside the completion menu. Slash-command arguments use the same menu but are
-populated dynamically by the harness (model list, effort levels, …).
+When the prompt buffer starts with `./`, Tab fuzzy-searches git-tracked and
+unignored files in the current repository using `nucleo-matcher`; outside a git
+repository, or when no fuzzy matches are found, it falls back to directory prefix
+completion. `../`, `~`, and `~/` use directory prefix completion. `@...` remains
+reserved for agent mention completion. Standard fzf-style fuzzy-search bindings
+are also available inside the completion menu. Slash-command arguments use the
+same menu but are populated dynamically by the harness (model list, effort
+levels, …).
 
 ### Bang shell commands
 

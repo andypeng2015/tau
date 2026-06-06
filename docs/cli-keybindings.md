@@ -31,6 +31,18 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 | `C-z` | `prompt-undo` | Undo the last edit in the current prompt/history entry. |
 | `C-y` | `shell-prompt-insert` | Pick a jj change or git commit with `fzf` and insert its id at the cursor. |
 | `C-o`, `C-g` | `shell-prompt-edit` | Edit the current prompt in `$TAU_EDITOR`. |
+## Built-in file completion triggers
+
+Typing any of the following prefixes at the prompt triggers inline path completion:
+
+| Prefix | Behavior |
+| --- | --- |
+| `./` | Fuzzy search git-tracked and unignored files in the current repository with `nucleo-matcher`; falls back to directory prefix matching outside git repos or when nothing fuzzy-matches. |
+| `../` | Directory prefix matching in the parent directory. |
+| `~`, `~/` | Directory prefix matching in the home directory. |
+
+`@...` is intentionally not a file completion trigger; it remains reserved for
+agent mention completion.
 
 
 ## Built-in editing keys
