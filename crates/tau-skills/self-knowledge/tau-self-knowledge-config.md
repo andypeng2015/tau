@@ -12,7 +12,7 @@ advertise: false
 Tau follows the XDG directory layout on Linux:
 
 - Config: `~/.config/tau/`
-  - `cli.yaml`, `cli.d/*.yaml` — CLI display preferences and key bindings.
+  - `cli.yaml`, `cli.d/*.yaml` — CLI display preferences, key bindings, and prompt completions. See `tau-self-knowledge-cli-ui` for UI-specific behavior.
   - `harness.yaml`, `harness.d/*.yaml` — harness roles/defaults, extensions, tools, and session retention.
 - State: `~/.local/state/tau/` or the platform/user state directory.
   - `sessions/<session_id>/` — durable session membership, metadata, logs, and debug captures.

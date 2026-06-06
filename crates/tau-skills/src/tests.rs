@@ -507,6 +507,7 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
             "tau-self-knowledge",
             "tau-self-knowledge-architecture",
             "tau-self-knowledge-config",
+            "tau-self-knowledge-cli-ui",
             "tau-self-knowledge-email",
             "tau-self-knowledge-ext-pim",
             "tau-self-knowledge-ext-provider-builtin",
@@ -539,6 +540,7 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
     );
     assert!(skill.content.contains("tau-self-knowledge-architecture"));
     assert!(skill.content.contains("tau-self-knowledge-config"));
+    assert!(skill.content.contains("tau-self-knowledge-cli-ui"));
     assert!(skill.content.contains("tau-self-knowledge-email"));
     assert!(skill.content.contains("tau-self-knowledge-ext-pim"));
     assert!(
@@ -576,6 +578,14 @@ fn built_in_tau_self_knowledge_skills_load_from_embedded_markdown() {
         .expect("built-in config skill");
     assert!(!config.add_to_prompt);
     assert!(config.content.contains("tau provider add"));
+
+    let cli_ui = skills
+        .iter()
+        .find(|skill| skill.name == "tau-self-knowledge-cli-ui")
+        .expect("built-in CLI UI skill");
+    assert!(!cli_ui.add_to_prompt);
+    assert!(cli_ui.content.contains("complete_with_command"));
+    assert!(cli_ui.content.contains("slash/action completion"));
 
     let prompt_templating = skills
         .iter()

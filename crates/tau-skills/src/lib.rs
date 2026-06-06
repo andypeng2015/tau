@@ -123,6 +123,10 @@ const BUILT_IN_SKILL_SOURCES: &[BuiltInSkillSource] = &[
         content: include_str!("../self-knowledge/tau-self-knowledge-config.md"),
     },
     BuiltInSkillSource {
+        diagnostic_path: "tau-self-knowledge-cli-ui.md",
+        content: include_str!("../self-knowledge/tau-self-knowledge-cli-ui.md"),
+    },
+    BuiltInSkillSource {
         diagnostic_path: "tau-self-knowledge-email.md",
         content: include_str!("../self-knowledge/tau-self-knowledge-email.md"),
     },

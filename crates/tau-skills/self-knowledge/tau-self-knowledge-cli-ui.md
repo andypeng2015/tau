@@ -1,0 +1,55 @@
+---
+name: tau-self-knowledge-cli-ui
+description: >
+  Use this skill when the user asks about Tau's terminal CLI UI, prompt input,
+  slash commands, prompt history, key bindings, or prompt completions.
+advertise: false
+---
+
+# Tau CLI UI
+
+Tau's terminal UI is the interactive `tau` client. It connects to a harness daemon, renders the transcript, and owns prompt input behavior such as slash commands, history, key bindings, external editor integration, and prompt completions.
+
+## Configuration files
+
+CLI UI configuration lives under `~/.config/tau/`:
+
+- `cli.yaml` — main CLI display, key binding, and completion settings.
+- `cli.d/*.yaml` — drop-in CLI overrides layered after `cli.yaml`.
+
+Runtime UI toggles changed with `/set` are stored in the state directory as `cli.json`.
+
+## Slash commands
+
+Type `/` as the first non-whitespace character in the prompt to open slash/action completion. Built-in commands include session and agent management, model/role switching, `/set`, `/tree`, `/fast`, `/detach`, and `/quit`. Extension-provided actions can add dynamic slash commands and argument completions at runtime.
+
+## Prompt history and editing
+
+Submitted prompts are kept in the current process and persisted under the state directory as `prompt-history.cbor`. Up/Down navigate prompt history. Built-in key bindings also support prompt undo/redo, Ctrl-R history search, Ctrl-O/Ctrl-G external editor integration, and shell-backed prompt insertion commands.
+
+## Prompt completions
+
+Prompt word completions are configured in `cli.yaml` with a `completions` map from trigger prefix to completer spec:
+
+```yaml
+completions:
+  "@": complete_agents
+  "./": complete_path
+  "../": complete_path
+  "/": complete_path
+  "~": complete_path
+  "~/": complete_path
+  "#/": complete_with_command fzf some arguments
+```
+
+The longest matching word prefix wins, except `/` as the first non-whitespace character always opens slash/action completion for now.
+
+Available completers:
+
+- `complete_agents` — complete active agent mentions, preserving the trigger prefix.
+- `complete_path` — plain filesystem directory-prefix completion.
+- `complete_path_fuzzy` — fuzzy git-tracked path completion for `./<partial>`, falling back to directory-prefix completion.
+- `complete_actions` — complete slash/action command names; useful for future or custom non-leading command triggers.
+- `complete_with_command <argv...>` — run the command when the trigger token is typed exactly, release the terminal while it runs, trim stdout, and replace the trigger token with stdout. Arguments are currently split on whitespace; use a wrapper script for complex shell snippets or argv entries containing spaces.
+
+The shipped defaults use plain path completion. Configure `./: complete_path_fuzzy` to opt into fuzzy git path completion for `./<partial>`.
