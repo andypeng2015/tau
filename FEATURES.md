@@ -539,7 +539,7 @@ bind: {
   "C-Enter": { action: "submit-prompt" },
   "C-f": {
     action: "shell-prompt-insert",
-    command: "rg --files --hidden --glob '!.git' | fzf --height=100%",
+    command: "rg --files --hidden --glob '!.git' | fzf --height=100% --preview 'cat -- {}' --preview-window 'right,60%,wrap'",
     trim: true,
   },
   "C-k": { action: "agent-previous" },
@@ -616,7 +616,7 @@ into the prompt is straightforward:
 bind: {
   "C-f": {
     action: "shell-prompt-insert",
-    command: "rg --files --hidden --glob '!.git' | fzf --height=100%",
+    command: "rg --files --hidden --glob '!.git' | fzf --height=100% --preview 'cat -- {}' --preview-window 'right,60%,wrap'",
     trim: true,
   },
   "C-r": {
@@ -637,10 +637,11 @@ bind: {
 },
 ```
 
-`C-r` searches prompt history (newest first), shows the selected prompt in an
-fzf preview pane, and replaces the current draft with the selected original
-prompt; `C-z` restores the draft that was active before the picker opened. `C-t`
-starts with an empty result list; type a query
+`C-f` lists files, shows the selected file in an fzf preview pane, and inserts
+the selected path at the cursor. `C-r` searches prompt history (newest first),
+shows the selected prompt in an fzf preview pane, and replaces the current draft
+with the selected original prompt; `C-z` restores the draft that was active
+before the picker opened. `C-t` starts with an empty result list; type a query
 to search file contents with `rg`, preview the matching context, and insert the
 selected file path. `C-y` opens a jj change picker when inside a jj repository,
 falls back to git

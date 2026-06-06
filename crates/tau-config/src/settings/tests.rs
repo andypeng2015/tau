@@ -84,6 +84,11 @@ fn cli_settings_user_binding_keeps_built_in_chords() {
             .as_deref()
             .is_some_and(|command| command.contains("fzf"))
     );
+    let built_in = CliSettings::built_in();
+    let built_in_cf = built_in.bind.get("C-f").expect("C-f");
+    assert!(built_in_cf.command.as_deref().is_some_and(|command| {
+        command.contains("--preview") && command.contains("--preview-window 'right,60%,wrap'")
+    }));
     assert!(s.bind.contains_key("C-t"));
     assert!(s.bind.contains_key("C-o"));
     assert_eq!(s.bind.get("Enter").expect("Enter").action, "submit-prompt");

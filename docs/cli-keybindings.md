@@ -19,7 +19,7 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 | `Left`, `Right` | `cursor-left`, `cursor-right` | Move by one character. |
 | `Up`, `Down` | `cursor-up`, `cursor-down` | Move within multiline input, completion candidates, or prompt history. |
 | `Esc` | `escape` | Dismiss the completion menu if open, otherwise surface Escape. |
-| `C-f` | `shell-prompt-insert` | Pick a file with `fzf` and insert it at the cursor. |
+| `C-f` | `shell-prompt-insert` | Pick a file with `fzf`, preview the highlighted file, and insert it at the cursor. |
 | `C-k` | `agent-previous` | Switch to the previous active agent. |
 | `C-j` | `agent-next` | Switch to the next active agent. |
 | `C-r` | `prompt-history-search` | Search past prompts with `fzf`, preview the highlighted prompt, and replace the current prompt with the selected prompt. |

@@ -42,7 +42,7 @@ Esc:
 C-f:
   action: shell-prompt-insert
   command: >-
-    rg --files --hidden --glob '!.git' | fzf --height=100%
+    rg --files --hidden --glob '!.git' | fzf --height=100% --preview 'cat -- {}' --preview-window 'right,60%,wrap'
   trim: true
 C-k:
   action: agent-previous
