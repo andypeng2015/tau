@@ -9333,7 +9333,7 @@ fn tool_group_overrides_apply_before_individual_tool_overrides() {
         h.selected_role.clone(),
         tau_config::settings::AgentRole {
             enable_tool_groups: vec![tau_proto::ToolGroupName::new("pim")],
-            disable_tools: vec![ToolName::new("email_delete")],
+            disable_tools: vec![ToolName::new("email_trash")],
             disable_tool_groups: vec![tau_proto::ToolGroupName::new("shell")],
             enable_tools: vec![ToolName::new("shell_safe")],
             ..Default::default()
@@ -9341,8 +9341,8 @@ fn tool_group_overrides_apply_before_individual_tool_overrides() {
     );
 
     for (name, group) in [
-        ("email_get", "pim"),
-        ("email_delete", "pim"),
+        ("email_read", "pim"),
+        ("email_trash", "pim"),
         ("shell_exec", "shell"),
         ("shell_safe", "shell"),
     ] {
@@ -9361,7 +9361,7 @@ fn tool_group_overrides_apply_before_individual_tool_overrides() {
                 },
                 tool_group: Some(tau_proto::ToolGroup {
                     name: tau_proto::ToolGroupName::new(group),
-                    prompt_fragment: (name == "email_delete").then(|| {
+                    prompt_fragment: (name == "email_trash").then(|| {
                         tau_proto::PromptFragment::new(
                             format!("{group}.instructions"),
                             tau_proto::PromptPriority::new(10),
@@ -9377,11 +9377,11 @@ fn tool_group_overrides_apply_before_individual_tool_overrides() {
     let defs = h.gather_tool_definitions_for_role(&h.selected_role);
     let names = defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>();
     assert!(
-        names.contains(&"email_get"),
+        names.contains(&"email_read"),
         "expected group-enabled tool: {names:?}"
     );
     assert!(
-        !names.contains(&"email_delete"),
+        !names.contains(&"email_trash"),
         "individual disable must win: {names:?}"
     );
     assert!(

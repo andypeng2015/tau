@@ -61,19 +61,18 @@ pub const TOOL_NAME: &str = "email";
 /// Prefix for model-visible split email command tools.
 pub const TOOL_PREFIX: &str = "email_";
 
-const EMAIL_TOOL_COMMANDS: &[(&str, &str)] = &[
-    ("list_folders", "list_folders"),
-    ("search", "list_recent"),
-    ("get", "read"),
-    ("request_full", "request_full"),
-    ("mark_read", "mark_read"),
-    ("mark_unread", "mark_unread"),
-    ("star", "star"),
-    ("unstar", "unstar"),
-    ("delete", "trash"),
-    ("send", "send"),
+const EMAIL_COMMANDS: &[&str] = &[
+    "list_folders",
+    "list_recent",
+    "read",
+    "request_access",
+    "mark_read",
+    "mark_unread",
+    "star",
+    "unstar",
+    "trash",
+    "send",
 ];
-
 /// Run the extension over stdio.
 pub fn run_stdio() -> Result<(), Box<dyn Error>> {
     tau_extension::init_logging_for(LOG_TARGET);
@@ -97,7 +96,7 @@ where
     let handshake = register_tools_with_prompt_fragment(
         handshake,
         email_tool_specs(),
-        "email_get",
+        "email_read",
         email_prompt_fragment(),
     );
     handshake
@@ -2831,7 +2830,7 @@ impl<B: EmailBackend> Engine<B> {
                 account,
                 folder,
                 uid,
-            } => self.request_full(&account, &folder, &uid),
+            } => self.request_access(&account, &folder, &uid),
             EmailCommand::ManageMessage {
                 command,
                 account,
@@ -3262,7 +3261,7 @@ impl<B: EmailBackend> Engine<B> {
             return error_envelope_with_details(
                 Some("read"),
                 "approval_required",
-                "full access to this email requires approval; use email request_full to request user approval",
+                "full access to this email requires approval; use email_request_access to request user approval",
                 cbor_map(vec![
                     ("access", CborValue::Text(ACCESS_NONE.to_owned())),
                     ("requested_access", CborValue::Text(ACCESS_FULL.to_owned())),
@@ -3429,7 +3428,7 @@ impl<B: EmailBackend> Engine<B> {
                 (
                     "message",
                     CborValue::Text(
-                        "Preview only. Use email request_full for user approval before reading the full message."
+                        "Preview only. Use email_request_access for user approval before reading the full message."
                             .to_owned(),
                     ),
                 ),
@@ -3437,15 +3436,15 @@ impl<B: EmailBackend> Engine<B> {
         )
     }
 
-    fn request_full(&self, account_id: &str, folder: &str, uid: &str) -> CborValue {
+    fn request_access(&self, account_id: &str, folder: &str, uid: &str) -> CborValue {
         let (account_id, metadata, target, access, decision) =
-            match self.incoming_access_target("request_full", account_id, folder, uid) {
+            match self.incoming_access_target("request_access", account_id, folder, uid) {
                 Ok(target) => target,
                 Err(error) => return error,
             };
         if access == ACCESS_FULL {
             return ok_envelope(
-                "request_full",
+                "request_access",
                 "already_full",
                 cbor_map(vec![
                     (
@@ -3480,7 +3479,7 @@ impl<B: EmailBackend> Engine<B> {
         };
         match self.state.pending_incoming(&approval) {
             Ok(_id) => ok_envelope(
-                "request_full",
+                "request_access",
                 "approval_required",
                 cbor_map(vec![
                     (
@@ -3499,7 +3498,7 @@ impl<B: EmailBackend> Engine<B> {
                     ),
                 ]),
             ),
-            Err(message) => error_envelope(Some("request_full"), "internal_error", &message),
+            Err(message) => error_envelope(Some("request_access"), "internal_error", &message),
         }
     }
 
@@ -4076,7 +4075,7 @@ impl<B: EmailBackend> Engine<B> {
             Ok(approval) => {
                 self.state.approve_incoming(id)?;
                 Ok(format!(
-                    "Approved incoming email read {id}; repeat the matching email_get with folder={}/{} email_id={} to fetch content.",
+                    "Approved incoming email read {id}; repeat the matching email_read with folder={}/{} email_id={} to fetch content.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4085,7 +4084,7 @@ impl<B: EmailBackend> Engine<B> {
             Err(_) => {
                 let approval = self.state.approved_incoming_by_id(id)?;
                 Ok(format!(
-                    "Incoming email read {id} is already approved; repeat the matching email_get with folder={}/{} email_id={} to fetch content.",
+                    "Incoming email read {id} is already approved; repeat the matching email_read with folder={}/{} email_id={} to fetch content.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4126,7 +4125,7 @@ impl<B: EmailBackend> Engine<B> {
             Ok(approval) => {
                 self.state.deny_incoming(id)?;
                 Ok(format!(
-                    "Denied incoming email read {id}; future matching email_get requests with folder={}/{} email_id={} report access=none. Explicit email_request_full can ask again.",
+                    "Denied incoming email read {id}; future matching email_read requests with folder={}/{} email_id={} report access=none. Explicit email_request_access can ask again.",
                     safe_display_line(&approval.account),
                     safe_display_line(&approval.folder),
                     safe_display_line(&approval.uid)
@@ -4135,7 +4134,7 @@ impl<B: EmailBackend> Engine<B> {
             Err(pending_error) => {
                 if let Ok(approval) = self.state.denied_incoming_by_id(id) {
                     return Ok(format!(
-                        "Incoming email read {id} is already denied; matching email_get requests with folder={}/{} email_id={} report access=none. Explicit email_request_full can ask again.",
+                        "Incoming email read {id} is already denied; matching email_read requests with folder={}/{} email_id={} report access=none. Explicit email_request_access can ask again.",
                         safe_display_line(&approval.account),
                         safe_display_line(&approval.folder),
                         safe_display_line(&approval.uid)
@@ -4537,9 +4536,9 @@ fn ack_log_event<W: Write>(
 
 /// Return the model-visible split email tool specifications.
 pub fn email_tool_specs() -> Vec<ToolSpec> {
-    EMAIL_TOOL_COMMANDS
+    EMAIL_COMMANDS
         .iter()
-        .map(|(tool_name, command)| email_command_tool_spec(tool_name, command))
+        .map(|command| email_command_tool_spec(command))
         .collect()
 }
 
@@ -4548,9 +4547,9 @@ pub fn email_tool_spec() -> ToolSpec {
     email_envelope_tool_spec(TOOL_NAME)
 }
 
-fn email_command_tool_spec(tool_name: &str, command: &str) -> ToolSpec {
-    let mut spec = email_envelope_tool_spec(&format!("{TOOL_PREFIX}{tool_name}"));
-    spec.description = Some(email_tool_description(tool_name, command).to_owned());
+fn email_command_tool_spec(command: &str) -> ToolSpec {
+    let mut spec = email_envelope_tool_spec(&format!("{TOOL_PREFIX}{command}"));
+    spec.description = Some(email_tool_description(command).to_owned());
     spec.parameters = Some(email_command_parameters(command));
     spec
 }
@@ -4559,14 +4558,14 @@ fn email_envelope_tool_spec(name: &str) -> ToolSpec {
     ToolSpec {
         name: tau_proto::ToolName::new(name),
         model_visible_name: None,
-        description: Some("Controlled email access. Folder ids are opaque values returned by email_list_folders; omit folder to use the default folder. request_full and sends can require approval; message-management commands do not.".to_owned()),
+        description: Some("Controlled email access. Folder ids are opaque values returned by email_list_folders; omit folder to use the default folder. request_access and sends can require approval; message-management commands do not.".to_owned()),
         tool_type: tau_proto::ToolType::Function,
         parameters: Some(serde_json::json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": EMAIL_TOOL_COMMANDS.iter().map(|(_, command)| command).collect::<Vec<_>>(),
+                    "enum": EMAIL_COMMANDS,
                     "description": "Email operation to perform."
                 },
                 "args": email_common_arg_properties()
@@ -4582,7 +4581,7 @@ fn email_envelope_tool_spec(name: &str) -> ToolSpec {
 
 fn email_command_parameters(command: &str) -> serde_json::Value {
     let required = match command {
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             serde_json::json!(["email_id"])
         }
         "send" => serde_json::json!(["to", "subject", "body_text"]),
@@ -4603,8 +4602,8 @@ fn email_common_arg_properties() -> serde_json::Value {
         "properties": {
             "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional for folder-targeting commands; defaults to the default folder."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to list. Optional; defaults to 100 and is capped at 100."},
-            "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "For email_search, include messages with IMAP internal date in the last N calendar days. Optional; defaults to 7 and is capped at 365."},
-            "cursor": {"type": "string", "description": "Pagination cursor returned by email_search."},
+            "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "For email_list_recent, include messages with IMAP internal date in the last N calendar days. Optional; defaults to 7 and is capped at 365."},
+            "cursor": {"type": "string", "description": "Pagination cursor returned by email_list_recent."},
             "email_id": {"type": "string", "description": "Message id from email list results."},
             "to": {"type": "array", "items": {"type": "string"}, "description": "Recipients. Required for email_send."},
             "cc": {"type": "array", "items": {"type": "string"}, "description": "Cc recipients for email_send."},
@@ -4626,7 +4625,7 @@ fn email_command_properties(command: &str) -> serde_json::Value {
             "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to the default folder."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum messages to return. Optional; defaults to 100."},
             "days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "Search messages from the last N days. Optional; defaults to 7."},
-            "cursor": {"type": "string", "description": "Pagination cursor returned by email_search."}
+            "cursor": {"type": "string", "description": "Pagination cursor returned by email_list_recent."}
 
         }),
         "list_by_uid" => serde_json::json!({
@@ -4635,7 +4634,7 @@ fn email_command_properties(command: &str) -> serde_json::Value {
             "cursor": {"type": "string", "description": "Pagination cursor."}
 
         }),
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             serde_json::json!({
                 "folder": {"type": "string", "description": "Folder id from email_list_folders. Optional; defaults to the default folder."},
                 "email_id": {"type": "string", "description": "Message id from email list results."}
@@ -4655,26 +4654,24 @@ fn email_command_properties(command: &str) -> serde_json::Value {
     }
 }
 
-fn email_tool_description(tool_name: &str, command: &str) -> &'static str {
-    match (tool_name, command) {
-        ("list_folders", _) => {
+fn email_tool_description(command: &str) -> &'static str {
+    match command {
+        "list_folders" => {
             "List configured email folders. Returns folder ids for other email tools."
         }
-        ("search", _) => {
+        "list_recent" => {
             "List recent email messages. Optional folder, days, limit, and cursor; omit folder to use the default folder."
         }
-        ("get", _) => {
-            "Get an email by email_id. Returns full content only when policy or approval allows it; otherwise returns preview or approval_required."
+        "read" => {
+            "Read an email by email_id. Returns full content only when policy or approval allows it; otherwise returns preview or approval_required."
         }
-        ("request_full", _) => {
-            "Request user approval to read full content for one email by email_id."
-        }
-        ("mark_read", _) => "Mark one email as read by email_id.",
-        ("mark_unread", _) => "Mark one email as unread by email_id.",
-        ("star", _) => "Star one email by email_id.",
-        ("unstar", _) => "Unstar one email by email_id.",
-        ("delete", _) => "Move one email to Trash by email_id.",
-        ("send", _) => "Send a plain-text email. May require user approval.",
+        "request_access" => "Request user approval to read full content for one email by email_id.",
+        "mark_read" => "Mark one email as read by email_id.",
+        "mark_unread" => "Mark one email as unread by email_id.",
+        "star" => "Star one email by email_id.",
+        "unstar" => "Unstar one email by email_id.",
+        "trash" => "Move one email to Trash by email_id.",
+        "send" => "Send a plain-text email. May require user approval.",
         _ => "Run an email command.",
     }
 }
@@ -4952,7 +4949,7 @@ fn email_command_name(command: &EmailCommand) -> &'static str {
         EmailCommand::ListByUid { .. } => "list_by_uid",
         EmailCommand::ListRecent { .. } => "list_recent",
         EmailCommand::Read { .. } => "read",
-        EmailCommand::RequestFull { .. } => "request_full",
+        EmailCommand::RequestFull { .. } => "request_access",
         EmailCommand::ManageMessage { command, .. } => command.command_name(),
         EmailCommand::Trash { .. } => "trash",
         EmailCommand::Send { .. } => "send",
@@ -5060,11 +5057,10 @@ fn command_for_tool_name(tool_name: &str) -> Option<&'static str> {
         return None;
     }
     let tool_suffix = tool_name.strip_prefix(TOOL_PREFIX)?;
-    EMAIL_TOOL_COMMANDS
+    EMAIL_COMMANDS
         .iter()
-        .find_map(|(tool_name, command)| (*tool_name == tool_suffix).then_some(*command))
+        .find_map(|command| (*command == tool_suffix).then_some(*command))
 }
-
 fn command_arguments(command: &str, args: CborValue) -> CborValue {
     let args = split_tool_args_to_command_args(command, args);
     CborValue::Map(vec![
@@ -5099,7 +5095,7 @@ fn split_tool_args_to_command_args(command: &str, args: CborValue) -> CborValue 
 fn uses_email_id(command: &str) -> bool {
     matches!(
         command,
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash"
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash"
     )
 }
 
@@ -5133,7 +5129,7 @@ fn parse_command(arguments: &CborValue) -> Result<EmailCommand, CborValue> {
         "list" | "list_by_uid" => parse_list_by_uid(&command, args),
         "list_recent" => parse_list_recent(&command, args),
         "read" => parse_read(&command, args),
-        "request_full" => parse_request_full(&command, args),
+        "request_access" => parse_request_access(&command, args),
         "mark_read" => parse_manage_message(&command, args, MessageManagementCommand::MarkRead),
         "mark_unread" => parse_manage_message(&command, args, MessageManagementCommand::MarkUnread),
         "star" => parse_manage_message(&command, args, MessageManagementCommand::Star),
@@ -5220,7 +5216,7 @@ fn parse_read(command: &str, args: &[(CborValue, CborValue)]) -> Result<EmailCom
         uid,
     })
 }
-fn parse_request_full(
+fn parse_request_access(
     command: &str,
     args: &[(CborValue, CborValue)],
 ) -> Result<EmailCommand, CborValue> {
@@ -6012,7 +6008,7 @@ fn invocation_display_args(arguments: &CborValue) -> Option<String> {
     match command {
         "list_folders" => Some("list_folders".to_owned()),
         "list" | "list_by_uid" | "list_recent" => list_display_args(command, args),
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             message_target_display(command, args)
         }
         "send" => {
@@ -6048,7 +6044,7 @@ fn split_invocation_display_args(command: &str, args: Option<&CborValue>) -> Opt
     match command {
         "list_folders" => Some(String::new()),
         "list" | "list_by_uid" | "list_recent" => split_list_display_args(args),
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             split_message_target_display(args)
         }
         "send" => {
@@ -6066,7 +6062,7 @@ fn split_email_display_args(command: &str, data: Option<&CborValue>) -> Option<S
     match command {
         "list_folders" => Some(String::new()),
         "list" | "list_by_uid" | "list_recent" => split_list_display_args(data),
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             split_message_target_display(data)
         }
         "send" => Some(String::new()),
@@ -6077,7 +6073,7 @@ fn email_display_args(command: &str, data: Option<&CborValue>) -> Option<String>
     match command {
         "list_folders" => Some("list_folders".to_owned()),
         "list" | "list_by_uid" | "list_recent" => list_display_args(command, data),
-        "read" | "request_full" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
+        "read" | "request_access" | "mark_read" | "mark_unread" | "star" | "unstar" | "trash" => {
             message_target_display(command, data)
         }
         "send" => data.map(|_| "send".to_owned()),

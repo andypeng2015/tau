@@ -53,7 +53,7 @@ where
         handshake,
         email::email_tool_specs(),
         tau_proto::ToolGroupName::new("email"),
-        "email_get",
+        "email_read",
         email::email_prompt_fragment(),
     );
     let handshake = register_tools_with_prompt_fragment(

@@ -6,7 +6,7 @@ advertise: false
 
 # Tau std-pim email configuration
 
-Tau's preferred built-in PIM extension is named `std-pim`. It runs `tau ext ext-pim`, registers split model-visible email tools such as `email_list_folders`, `email_get`, and `email_send`, and publishes `/email` approval/denial actions. The legacy `std-email` built-in alias remains for old email-only configs; do not enable both names together.
+Tau's preferred built-in PIM extension is named `std-pim`. It runs `tau ext ext-pim`, registers split model-visible email tools such as `email_list_folders`, `email_read`, and `email_send`, and publishes `/email` approval/denial actions. The legacy `std-email` built-in alias remains for old email-only configs; do not enable both names together.
 
 Use this skill when helping a user configure email. Do not include personal addresses, server names, passwords, authserv-ids, or message contents unless the user explicitly provided them for that answer.
 
@@ -79,13 +79,13 @@ extensions:
 Important fields:
 
 - Preferred built-in extension name: `std-pim`; legacy alias: `std-email`.
-- Model-visible email tools are split by command, for example `email_list_folders`, `email_search`, `email_get`, `email_request_full`, and `email_send`.
+- Model-visible email tools are split by command, for example `email_list_folders`, `email_list_recent`, `email_read`, `email_request_access`, and `email_send`.
 - IMAP default: port 993 with `tls: required`.
 - SMTP default: port 587 with `tls: start_tls`.
 - Password auth requires `auth.password_secret` and a matching declaration under `extensions.std-pim.secrets`.
 - `auth.method: none` is only for SMTP-only or relay-style setups; IMAP requires password auth.
 - OAuth and command-based password sources are not implemented or are rejected.
-- List-style email outputs use Tau's header-then-payload tool-output shape: headers such as `format: ...` first, one empty line, then plain unindented rows. Message rows start with UID. Pass that row UID as `email_id` to message-targeting split tools. Whitespace inside token fields is percent-encoded so follow-up keys stay one-column and reversible; percent-decode token fields before passing them back as tool arguments. Attachment metadata inside `email_get` is structured detail metadata, not a top-level list response.
+- List-style email outputs use Tau's header-then-payload tool-output shape: headers such as `format: ...` first, one empty line, then plain unindented rows. Message rows start with UID. Pass that row UID as `email_id` to message-targeting split tools. Whitespace inside token fields is percent-encoded so follow-up keys stay one-column and reversible; percent-decode token fields before passing them back as tool arguments. Attachment metadata inside `email_read` is structured detail metadata, not a top-level list response.
 
 
 ## Secrets
@@ -159,19 +159,19 @@ Advice:
 Incoming reads:
 
 - `email_list_folders` returns a `format` header plus one line per visible folder. Folder ids are opaque `<folder>` values to pass back to other email tools.
-- `email_search` shows recent messages from IMAP internal-date search; omit `folder` to use the default folder. It returns a `format` header plus one line per message, redacts untrusted message details, and includes `access=full|preview|none`.
-- `email_get` returns full body content only when access is `full`, meaning policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
-- For `preview` access, `email_get` returns only a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. It does not ask the user for approval.
-- Use `email_request_full` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id> [id...]`.
-- Use `/email in deny <id> [id...]` to persist exact denials. Future matching reads report `access=none`; explicit `email_request_full` calls can ask again.
-- After approval, the agent must repeat the matching `email_get` call.
+- `email_list_recent` shows recent messages from IMAP internal-date search; omit `folder` to use the default folder. It returns a `format` header plus one line per message, redacts untrusted message details, and includes `access=full|preview|none`.
+- `email_read` returns full body content only when access is `full`, meaning policy passes or an exact incoming approval exists. Agent-visible read bodies are simplified and wrapped in `<external_unstrusted_message>...</external_unstrusted_message>`.
+- For `preview` access, `email_read` returns only a heavily stripped `body_preview`: HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. It does not ask the user for approval.
+- Use `email_request_access` for a preview/none message only when the preview or metadata justifies asking the user. Then use `/email in list`, `/email in open <id>`, and `/email in approve <id> [id...]`.
+- Use `/email in deny <id> [id...]` to persist exact denials. Future matching reads report `access=none`; explicit `email_request_access` calls can ask again.
+- After approval, the agent must repeat the matching `email_read` call.
 
 Message management:
 
-- The `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_delete` tools operate on a `folder` plus `email_id` target.
+- The `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_trash` tools operate on a `folder` plus `email_id` target.
 - These commands do not require content approval.
 - `star` and `unstar` map to the IMAP `\\Flagged` flag.
-- `email_delete` moves the message to Trash.
+- `email_trash` moves the message to Trash.
 
 Outgoing sends:
 
@@ -182,7 +182,7 @@ Outgoing sends:
 
 Audit log:
 
-- Agent `email_search`, `email_get`, `email_request_full`, `email_send`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_delete` activity is appended as sanitized JSONL under the email state directory.
+- Agent `email_list_recent`, `email_read`, `email_request_access`, `email_send`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_trash` activity is appended as sanitized JSONL under the email state directory.
 - Use `/email log last [number]` to review recent activity; the number defaults to 20.
 - The pretty log is intentionally minimal and does not include message bodies.
 

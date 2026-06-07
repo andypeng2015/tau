@@ -478,10 +478,10 @@ fn registers_split_email_tools() {
     assert!(!tool.enabled_by_default);
 
     let specs = email_tool_specs();
-    assert!(specs.iter().any(|spec| spec.name.as_str() == "email_get"));
+    assert!(specs.iter().any(|spec| spec.name.as_str() == "email_read"));
     let read_parameters = specs
         .iter()
-        .find(|spec| spec.name.as_str() == "email_get")
+        .find(|spec| spec.name.as_str() == "email_read")
         .and_then(|spec| spec.parameters.as_ref())
         .expect("read parameters");
     assert_eq!(
@@ -500,7 +500,7 @@ fn registers_split_email_tools() {
 }
 
 #[test]
-fn registers_email_get_tool_prompt_fragment() {
+fn registers_email_read_tool_prompt_fragment() {
     // Email read can expose hostile message content. Keep the safety notice on
     // that split tool only, without duplicating it across unrelated email tools.
     let mut pair = spawn_extension();
@@ -510,7 +510,7 @@ fn registers_email_get_tool_prompt_fragment() {
         match pair.reader.read_message().expect("read").expect("frame") {
             HarnessInputMessage::Emit(emit) => {
                 if let Event::ToolRegister(register) = *emit.event {
-                    if register.tool.name.as_str() == "email_get" {
+                    if register.tool.name.as_str() == "email_read" {
                         let fragment = register.prompt_fragment.expect("read prompt fragment");
                         assert_eq!(fragment.name, "email.instructions");
                         assert!(fragment.template.contains("external data"));
@@ -914,7 +914,7 @@ fn split_email_tool_displays_do_not_repeat_internal_command() {
 
     let event = finish_tool_result(
         split_tool_started(
-            "email_search",
+            "email_list_recent",
             vec![
                 ("folder", CborValue::Text("work/INBOX".to_owned())),
                 ("limit", CborValue::Integer(10.into())),
@@ -932,7 +932,7 @@ fn split_email_tool_displays_do_not_repeat_internal_command() {
     assert_eq!(display.info_chips, vec!["2 messages".to_owned()]);
 
     let initial = initial_display_for_tool(
-        "email_get",
+        "email_read",
         &cbor_map(vec![
             ("folder", CborValue::Text("work/INBOX".to_owned())),
             ("email_id", CborValue::Text("6218".to_owned())),
@@ -943,7 +943,7 @@ fn split_email_tool_displays_do_not_repeat_internal_command() {
 #[test]
 fn split_email_tool_error_display_uses_external_tool_name_and_email_id() {
     let invoke = invoke_with_command(split_tool_started(
-        "email_get",
+        "email_read",
         vec![
             ("folder", CborValue::Text("work/INBOX".to_owned())),
             ("email_id", CborValue::Text("6218".to_owned())),
@@ -958,7 +958,7 @@ fn split_email_tool_error_display_uses_external_tool_name_and_email_id() {
         panic!("failed split email command should be a tool error")
     };
     let display = error.display.expect("display");
-    let expected = "email_get failed (network_error): IMAP parser failed";
+    let expected = "email_read failed (network_error): IMAP parser failed";
     assert_eq!(error.message, expected);
     assert_eq!(display.status_text, expected);
     assert_eq!(display.args, "work/INBOX email_id=6218");
@@ -1542,7 +1542,7 @@ fn rfc822_parser_failure_omits_raw_message_body() {
 }
 
 #[test]
-fn request_full_creation_repeat_stability_and_exact_approval() {
+fn request_access_creation_repeat_stability_and_exact_approval() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
     let preview = engine.dispatch(EmailCommand::Read {
@@ -2675,7 +2675,7 @@ fn email_log_records_agent_access_and_mutations() {
     assert!(entries[0].title_redacted);
     assert_eq!(entries[0].from.as_deref(), Some("mallory@evil.test"));
     assert_eq!(entries[1].kind, "access");
-    assert_eq!(entries[1].command, "request_full");
+    assert_eq!(entries[1].command, "request_access");
     assert_eq!(entries[1].status, "approval_required");
     assert_eq!(entries[1].access.as_deref(), Some("none"));
     assert_eq!(entries[1].approval_id.as_deref(), None);
@@ -2702,9 +2702,9 @@ fn email_log_records_agent_access_and_mutations() {
 }
 
 #[test]
-fn incoming_deny_persists_none_access_but_request_full_can_ask_again() {
+fn incoming_deny_persists_none_access_but_request_access_can_ask_again() {
     // A denial blocks automatic preview reads from escalating into another
-    // approval, but an explicit request_full can still ask the user again.
+    // approval, but an explicit request_access can still ask the user again.
     let temp = tempfile::TempDir::new().expect("tempdir");
     let mut engine = engine(&temp);
     let _queued = engine.dispatch(EmailCommand::RequestFull {
@@ -3674,10 +3674,10 @@ fn parser_accepts_and_rejects_command_shapes() {
     );
     assert_eq!(
         parse_command(&command_args(
-            "request_full",
+            "request_access",
             vec![("uid", CborValue::Text("1".to_owned()))]
         ))
-        .expect("request_full defaults"),
+        .expect("request_access defaults"),
         EmailCommand::RequestFull {
             account: String::new(),
             folder: DEFAULT_FOLDER.to_owned(),

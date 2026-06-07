@@ -495,7 +495,7 @@ fn harness_settings_load_role_group_default_tool_overrides_without_relisting_rol
         dir.join("harness.yaml"),
         r#"{
             role_groups: {
-                engineer: { enable_tools: ["email_search"], disable_tools: ["email"] },
+                engineer: { enable_tools: ["email_list_recent"], disable_tools: ["email"] },
             },
         }"#,
     )
@@ -505,7 +505,7 @@ fn harness_settings_load_role_group_default_tool_overrides_without_relisting_rol
     for role_name in ["senior-engineer", "junior-engineer", "staff-engineer"] {
         assert_eq!(
             s.roles[role_name].enable_tools,
-            vec![tau_proto::ToolName::new("email_search")]
+            vec![tau_proto::ToolName::new("email_list_recent")]
         );
         assert_eq!(
             s.roles[role_name].disable_tools,

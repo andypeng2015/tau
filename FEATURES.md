@@ -152,7 +152,7 @@ role_groups:
         effort: medium
         tools: [read, grep]
         enable_tool_groups: [calendar, email]
-        disable_tools: [email_delete]
+        disable_tools: [email_trash]
       staff-engineer:
         description: Maximum-reasoning engineer
         effort: xhigh
@@ -317,17 +317,17 @@ filesystem root.
 
 The PIM extension exposes controlled split email and calendar tools for personal
 information workflows. Email accounts can list folders with `email_list_folders`,
-recent messages by IMAP internal date with `email_search`, read approved or
+recent messages by IMAP internal date with `email_list_recent`, read approved or
 policy-allowed content with
-`email_get`, request full read approval with `email_request_full`, send mail
+`email_read`, request full read approval with `email_request_access`, send mail
 through approval gates with `email_send`, and safely manage message state with
 `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and
-`email_delete`. Message listings include `access=full|preview|none`; pass the row
+`email_trash`. Message listings include `access=full|preview|none`; pass the row
 UID as `email_id` to message-targeting tools. `preview` reads return only a
 heavily stripped `body_preview` with HTML removed, links replaced by `LINK`, and
 a tiny ASCII character set, while `full` reads return simplified body text
 wrapped in `<external_unstrusted_message>`. `/email in deny <id> [id...]`
-persists exact read denials as `none` access, but explicit `email_request_full`
+persists exact read denials as `none` access, but explicit `email_request_access`
 calls can ask again. `/email in approve`, `/email in deny`, and `/email out
 approve` accept multiple ids. Agent access and mutation activity is appended as
 JSONL and can be reviewed with `/email log last [number]`.

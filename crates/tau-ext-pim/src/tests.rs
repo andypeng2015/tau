@@ -81,7 +81,7 @@ fn handshake_registers_email_and_calendar_tools() {
         handshake,
         email::email_tool_specs(),
         tau_proto::ToolGroupName::new("email"),
-        "email_get",
+        "email_read",
         email::email_prompt_fragment(),
     );
     let handshake = register_tools_with_prompt_fragment(
@@ -164,7 +164,7 @@ fn handshake_registers_email_and_calendar_tools() {
     assert!(
         per_tool_prompt_tools
             .iter()
-            .any(|tool| tool.as_str() == "email_get")
+            .any(|tool| tool.as_str() == "email_read")
     );
     assert!(
         per_tool_prompt_tools

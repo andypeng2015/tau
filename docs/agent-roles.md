@@ -50,7 +50,7 @@ Roles live in `harness.yaml` under globally unique `role_groups`. Each group has
           compaction: { threshold: 200000 },
           tools: ["read", "grep"],
           enable_tool_groups: ["calendar", "email"],
-          disable_tools: ["email_delete"],
+          disable_tools: ["email_trash"],
         },
         "staff-engineer": {
           description: "Maximum-reasoning engineer",
@@ -100,7 +100,7 @@ Examples:
 /role engineer model chatgpt/gpt-5.3-codex
 /role manager effort xhigh
 /role engineer enable-tool-groups calendar,email
-/role engineer disable-tools email_delete
+/role engineer disable-tools email_trash
 /role temporary model anthropic/claude-sonnet-4-20250514
 /role temporary delete
 ```

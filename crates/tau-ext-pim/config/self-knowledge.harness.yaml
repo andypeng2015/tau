@@ -85,9 +85,9 @@ role_groups:
       assistant:
         enable_tools:
           - email_list_folders
-          - email_search
-          - email_get
-          - email_request_full
+          - email_list_recent
+          - email_read
+          - email_request_access
           - email_send
           - calendar_list_calendars
           - calendar_search

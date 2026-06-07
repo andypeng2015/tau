@@ -1,6 +1,6 @@
 # tau-ext-pim
 
-`tau-ext-pim` is Tau's standard personal information management extension. It exposes split model-visible email tools such as `email_list_folders`, `email_get`, and `email_send`, plus split calendar tools such as `calendar_search` and `calendar_create`. `/email` and `/calendar` slash actions handle user review and approvals.
+`tau-ext-pim` is Tau's standard personal information management extension. It exposes split model-visible email tools such as `email_list_folders`, `email_read`, and `email_send`, plus split calendar tools such as `calendar_search` and `calendar_create`. `/email` and `/calendar` slash actions handle user review and approvals.
 
 The preferred built-in extension name is `std-pim`. The legacy `std-email` alias remains for existing email-only configs. Both are disabled by default and must be explicitly enabled in `harness.yaml`; enable only one of them.
 
@@ -23,11 +23,11 @@ Email is hostile input. Message bodies, subjects, display names, addresses, MIME
 
 ### Incoming email gating
 
-`email_search` returns bounded line-oriented metadata with a `format` header and one line per message. Each line includes an `access` field: `full`, `preview`, or `none`. `full` means `email_get` can return simplified full content. `preview` means `email_get` returns only a stripped `body_preview`. `none` means `email_get` returns an `approval_required` error and no body preview.
+`email_list_recent` returns bounded line-oriented metadata with a `format` header and one line per message. Each line includes an `access` field: `full`, `preview`, or `none`. `full` means `email_read` can return simplified full content. `preview` means `email_read` returns only a stripped `body_preview`. `none` means `email_read` returns an `approval_required` error and no body preview.
 
 The list format is `uid date from flags access attachments subject...`. For messages that do not have `full` access, `flags` includes `redacted`, attachment metadata is `?`, and `subject...` is only a short lossy preview containing ASCII letters/digits, commas, semicolons, periods, spaces, and dashes.
 
-`email_get` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. In `preview` mode, it returns a heavily stripped `body_preview` without creating a user approval request. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. If the preview justifies full access, the agent can call `email_request_full` for the same message to create an incoming approval. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny the exact request with `/email in deny <id>`. After approval, the model must repeat the matching `email_get` call to fetch the content. After denial, matching reads report `access=none`; an explicit `email_request_full` can still ask the user again.
+`email_read` first fetches bounded headers and makes a policy decision before exposing body-like text to the model. In `preview` mode, it returns a heavily stripped `body_preview` without creating a user approval request. The preview has HTML removed, links replaced with `LINK`, and only ASCII letters/digits, spaces, commas, and periods inside the wrapper. If the preview justifies full access, the agent can call `email_request_access` for the same message to create an incoming approval. The user can inspect the message with `/email in open <id>`, approve it with `/email in approve <id>`, or deny the exact request with `/email in deny <id>`. After approval, the model must repeat the matching `email_read` call to fetch the content. After denial, matching reads report `access=none`; an explicit `email_request_access` can still ask the user again.
 
 Incoming approval records are bound to account, folder, UID, UIDVALIDITY when available, normalized sender, date, and message-id. Approval is not just a free-floating id that can be reused for a different message.
 
@@ -85,7 +85,7 @@ Model-visible incoming `From` values are normalized to the address instead of tr
 
 ### Bounded IMAP access
 
-Metadata and body fetches are bounded. Header fetches use a fixed byte window, body reads have a byte and line cap, and outputs mark truncation. `email_search` uses IMAP `UID SEARCH SINCE` against server internal dates, pages matching UIDs, and sorts the fetched page by internal date descending. `email_id` and folder arguments are validated before use, and returned UIDs are checked against the requested message.
+Metadata and body fetches are bounded. Header fetches use a fixed byte window, body reads have a byte and line cap, and outputs mark truncation. `email_list_recent` uses IMAP `UID SEARCH SINCE` against server internal dates, pages matching UIDs, and sorts the fetched page by internal date descending. `email_id` and folder arguments are validated before use, and returned UIDs are checked against the requested message.
 
 If authentication headers are truncated during the metadata fetch, the extension denies auto-read with `auth truncated` instead of guessing.
 
@@ -101,7 +101,7 @@ Queued outgoing approvals persist the full draft for user review. Bcc recipients
 
 Approval files are validated on load and written atomically without overwriting existing records on id collision. Incoming and outgoing approval ids should still be treated as sensitive user-interface tokens: do not ask the model to invent or reuse them.
 
-Agent email access and mutation commands append sanitized JSONL entries to `logs/email.jsonl` under the extension state directory. Use `/email log last [number]` to review recent `email_search`, `email_get`, `email_request_full`, `email_send`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_delete` activity without exposing message bodies.
+Agent email access and mutation commands append sanitized JSONL entries to `logs/email.jsonl` under the extension state directory. Use `/email log last [number]` to review recent `email_list_recent`, `email_read`, `email_request_access`, `email_send`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_trash` activity without exposing message bodies.
 
 The `/email in whitelist <pattern>` and `/email out whitelist <pattern>` actions persist additional allowlist patterns when `policy.allow_state_policy_extensions` is true. This is convenient, but it means UI actions can extend policy outside the static config file. Set it to false if you want config-only policy:
 
@@ -262,17 +262,17 @@ Folder allowlists are glob patterns over mailbox folder names. Empty `folders.al
 Email is exposed as split model-visible tools:
 
 - `email_list_folders` — returns `format: folder flags` plus one line per visible folder. Folder ids are the opaque `<folder>` values to pass back to other email tools; whitespace in list row fields is percent-encoded so ids remain single-column and reversible. Percent-decode token fields before passing them back as tool arguments.
-- `email_search`
-- `email_get`
-- `email_request_full`
+- `email_list_recent`
+- `email_read`
+- `email_request_access`
 - `email_mark_read`
 - `email_mark_unread`
 - `email_star`
 - `email_unstar`
-- `email_delete`
+- `email_trash`
 - `email_send`
 
-`email_search` accepts optional `folder`, `limit`, `cursor`, and `days`; omitted `folder` defaults to the default folder, and `days` defaults to 7. List-style commands return a `format` header and one safe line per listed item, with the follow-up key first and whitespace/control-safe fields so rows cannot forge extra columns or lines; percent-decode token fields before reusing them as arguments. Message-targeting tools (`email_get`, `email_request_full`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_delete`) take the same `folder` plus `email_id` target; pass the list row `uid` value as `email_id`. `email_request_full` creates or reuses a pending incoming approval so the user can decide whether the agent may read the full message. Message-management commands do not require content approval. `email_delete` moves the message to Trash.
+`email_list_recent` accepts optional `folder`, `limit`, `cursor`, and `days`; omitted `folder` defaults to the default folder, and `days` defaults to 7. List-style commands return a `format` header and one safe line per listed item, with the follow-up key first and whitespace/control-safe fields so rows cannot forge extra columns or lines; percent-decode token fields before reusing them as arguments. Message-targeting tools (`email_read`, `email_request_access`, `email_mark_read`, `email_mark_unread`, `email_star`, `email_unstar`, and `email_trash`) take the same `folder` plus `email_id` target; pass the list row `uid` value as `email_id`. `email_request_access` creates or reuses a pending incoming approval so the user can decide whether the agent may read the full message. Message-management commands do not require content approval. `email_trash` moves the message to Trash.
 
 Calendar is exposed as split model-visible tools:
 
@@ -297,7 +297,7 @@ The extension publishes `/email` actions for review:
 - `/email in list` — list pending incoming read approvals.
 - `/email in open <id>` — inspect an incoming message; may display email content to the user.
 - `/email in approve <id> [id...]` — approve exact incoming reads.
-- `/email in deny <id> [id...]` — deny exact incoming reads; future `email_get` calls report `access=none`, while explicit `email_request_full` calls can ask again.
+- `/email in deny <id> [id...]` — deny exact incoming reads; future `email_read` calls report `access=none`, while explicit `email_request_access` calls can ask again.
 - `/email in whitelist <pattern>` — persist an incoming allow pattern, if state policy extensions are enabled.
 - `/email out list` — list pending outgoing drafts.
 - `/email out open <id>` — inspect an outgoing draft, including Bcc.
