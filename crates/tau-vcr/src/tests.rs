@@ -90,3 +90,35 @@ fn mode_parses_record_if_missing_without_record_overwrite_mode() {
     );
     assert!(VcrMode::parse("record").is_err());
 }
+
+/// Escaped byte strings keep common UTF-8 cassette data readable while still
+/// round-tripping rare invalid UTF-8 bytes without YAML byte lists.
+#[test]
+fn escaped_bytes_serialize_as_single_readable_string() {
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
+    struct Cassette {
+        bytes: EscapedBytes,
+    }
+
+    let cassette = Cassette {
+        bytes: EscapedBytes::new(b"hello \\ path \xFF".to_vec()),
+    };
+
+    let yaml = serde_yaml_ng::to_string(&cassette).expect("serialize");
+    assert!(yaml.contains("hello"));
+    assert!(yaml.contains("\\\\ path"));
+    assert!(yaml.contains("\\uDCFF"));
+    assert!(!yaml.contains("- 255"));
+
+    let loaded: Cassette = serde_yaml_ng::from_str(&yaml).expect("deserialize");
+    assert_eq!(loaded.bytes.as_slice(), b"hello \\ path \xFF");
+}
+
+#[test]
+fn escaped_byte_helpers_round_trip_mixed_utf8_and_invalid_bytes() {
+    let bytes = b"snowman: \xE2\x98\x83 bad: \xF0( slash: \\";
+
+    let encoded = encode_escaped_bytes(bytes);
+    assert_eq!(encoded, "snowman: ☃ bad: \\uDCF0( slash: \\\\");
+    assert_eq!(decode_escaped_bytes(&encoded).expect("decode"), bytes);
+}

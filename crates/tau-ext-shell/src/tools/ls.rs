@@ -6,7 +6,7 @@ use tau_proto::{CborValue, ToolUseStats};
 
 use crate::argument::{optional_argument_int_strict, optional_argument_text};
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
-use crate::tools::world::{ShellWorld, WorldEntryName};
+use crate::tools::world::ShellWorld;
 use crate::truncate::truncate_line_oriented_lines;
 
 pub(crate) const DEFAULT_LS_LIMIT: usize = 500;
@@ -155,11 +155,8 @@ fn line_oriented_len<'a>(lines: impl IntoIterator<Item = &'a str>) -> usize {
     bytes + count.saturating_sub(1)
 }
 
-fn render_entry_name(name: &WorldEntryName, is_dir: bool) -> LsEntry {
-    match name {
-        WorldEntryName::Utf8(text) => render_entry_text(text, is_dir, false),
-        WorldEntryName::Bytes(bytes) => render_entry_bytes(bytes, is_dir),
-    }
+fn render_entry_name(name: &tau_vcr::EscapedBytes, is_dir: bool) -> LsEntry {
+    render_entry_bytes(name.as_slice(), is_dir)
 }
 
 fn render_entry_bytes(bytes: &[u8], is_dir: bool) -> LsEntry {

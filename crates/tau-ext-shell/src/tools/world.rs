@@ -199,7 +199,8 @@ impl ShellWorld {
                 let result = std::fs::read(path);
                 cassette.ops.push(WorldOp::ReadFile {
                     path: cassette_path(path),
-                    result: OpResult::from_io_result_ref(&result),
+                    result: OpResult::from_io_result_ref(&result)
+                        .map_ok(tau_vcr::EscapedBytes::new),
                 });
                 result
             }
@@ -217,7 +218,10 @@ impl ShellWorld {
                     return Err(unexpected_replay_op(key, "read_file", path));
                 };
                 check_replay_path(key, "read_file", expected_path, path)?;
-                result.clone().into_io_result()
+                result
+                    .clone()
+                    .map_ok(|bytes| bytes.into_vec())
+                    .into_io_result()
             }
         }
     }
@@ -229,7 +233,7 @@ impl ShellWorld {
                 let result = std::fs::write(path, bytes);
                 cassette.ops.push(WorldOp::WriteFile {
                     path: cassette_path(path),
-                    bytes: bytes.to_vec(),
+                    bytes: tau_vcr::EscapedBytes::new(bytes),
                     result: OpResult::from_io_result_ref(&result),
                 });
                 result
@@ -249,11 +253,11 @@ impl ShellWorld {
                     return Err(unexpected_replay_op(key, "write_file", path));
                 };
                 check_replay_path(key, "write_file", expected_path, path)?;
-                if expected_bytes != bytes {
+                if expected_bytes.as_slice() != bytes {
                     return Err(replay_io_error(format!(
                         "vcr replay for {key} expected write_file({}) with {} byte(s) but got {} byte(s)",
                         path.display(),
-                        expected_bytes.len(),
+                        expected_bytes.as_slice().len(),
                         bytes.len()
                     )));
                 }
@@ -399,15 +403,8 @@ impl ShellWorld {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorldDirEntry {
-    pub(crate) name: WorldEntryName,
+    pub(crate) name: tau_vcr::EscapedBytes,
     pub(crate) is_dir: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub(crate) enum WorldEntryName {
-    Utf8(String),
-    Bytes(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -422,19 +419,15 @@ pub(crate) enum WorldShellOutcome {
 }
 
 #[cfg(unix)]
-fn os_str_name(value: &std::ffi::OsStr) -> WorldEntryName {
+fn os_str_name(value: &std::ffi::OsStr) -> tau_vcr::EscapedBytes {
     use std::os::unix::ffi::OsStrExt;
 
-    let bytes = value.as_bytes();
-    match std::str::from_utf8(bytes) {
-        Ok(text) => WorldEntryName::Utf8(text.to_owned()),
-        Err(_) => WorldEntryName::Bytes(bytes.to_vec()),
-    }
+    tau_vcr::EscapedBytes::new(value.as_bytes())
 }
 
 #[cfg(not(unix))]
-fn os_str_name(value: &std::ffi::OsStr) -> WorldEntryName {
-    WorldEntryName::Utf8(value.to_string_lossy().into_owned())
+fn os_str_name(value: &std::ffi::OsStr) -> tau_vcr::EscapedBytes {
+    tau_vcr::EscapedBytes::new(value.to_string_lossy().as_bytes())
 }
 
 fn cassette_path(path: &Path) -> String {
@@ -514,11 +507,11 @@ enum WorldOp {
     },
     ReadFile {
         path: String,
-        result: OpResult<Vec<u8>>,
+        result: OpResult<tau_vcr::EscapedBytes>,
     },
     WriteFile {
         path: String,
-        bytes: Vec<u8>,
+        bytes: tau_vcr::EscapedBytes,
         result: OpResult<()>,
     },
     PathExists {
@@ -592,7 +585,7 @@ impl WorldIoError {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RecordedDirEntry {
-    name: WorldEntryName,
+    name: tau_vcr::EscapedBytes,
     is_dir: bool,
 }
 
@@ -720,14 +713,16 @@ mod tests {
             .expect("read cassette");
         assert!(cassette.contains("op: is_dir"));
         assert!(cassette.contains("op: read_dir"));
-        assert!(cassette.contains("kind: utf8"));
+        assert!(cassette.contains("name: alpha"));
+        assert!(!cassette.contains("kind: utf8"));
+        assert!(!cassette.contains("value: alpha"));
         assert!(!cassette.contains("1 alpha/"));
     }
     #[test]
     fn read_vcr_replays_file_bytes_through_read_logic() {
         let real_dir = tempfile::TempDir::new().expect("real dir");
         let file = real_dir.path().join("file.txt");
-        std::fs::write(&file, b"alpha\nbeta").expect("write file");
+        std::fs::write(&file, b"alpha\n\xFFbeta").expect("write file");
         let cassette_dir = tempfile::TempDir::new().expect("cassette dir");
         let args = CborValue::Map(vec![
             (
@@ -771,8 +766,9 @@ mod tests {
         let cassette = std::fs::read_to_string(cassette_dir.path().join("call_read.yaml"))
             .expect("read cassette");
         assert!(cassette.contains("op: read_file"));
+        assert!(cassette.contains("\\uDCFFbeta"));
+        assert!(!cassette.contains("- 255"));
     }
-
     #[test]
     fn edit_vcr_replay_asserts_write_without_mutating_live_file() {
         let real_dir = tempfile::TempDir::new().expect("real dir");

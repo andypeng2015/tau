@@ -7,8 +7,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const ENV_MODE: &str = "TAU_VCR";
 const ENV_DIR: &str = "TAU_VCR_DIR";
@@ -82,6 +82,138 @@ impl VcrConfig {
     #[must_use]
     pub fn store(&self) -> VcrStore {
         VcrStore::new(&self.dir)
+    }
+}
+
+/// Bytes serialized as a single UTF-8 string using escaped-byte text.
+///
+/// Valid UTF-8 bytes are stored literally, literal backslashes are escaped as
+/// `\\\\`, and invalid UTF-8 bytes are stored as ASCII `\\uDCxx` escape text.
+/// The string therefore stays valid YAML/UTF-8 while preserving arbitrary
+/// bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscapedBytes(Vec<u8>);
+
+impl EscapedBytes {
+    /// Wraps raw bytes for escaped-byte serialization.
+    #[must_use]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Returns the wrapped raw bytes.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Consumes the wrapper and returns the raw bytes.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl Serialize for EscapedBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_escaped_bytes(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for EscapedBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        decode_escaped_bytes(&text)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Encodes arbitrary bytes as valid UTF-8 text using escaped byte markers.
+#[must_use]
+pub fn encode_escaped_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::new();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(text) => {
+                push_escaped_valid_text(&mut encoded, text);
+                break;
+            }
+            Err(error) => {
+                let (valid, rest) = remaining.split_at(error.valid_up_to());
+                // SAFETY: `valid_up_to` is guaranteed to end on a UTF-8 boundary.
+                push_escaped_valid_text(
+                    &mut encoded,
+                    std::str::from_utf8(valid).expect("valid prefix"),
+                );
+                remaining = rest;
+                let invalid_len = error.error_len().unwrap_or(remaining.len());
+                let (invalid, rest) = remaining.split_at(invalid_len);
+                for byte in invalid {
+                    use std::fmt::Write as _;
+                    write!(&mut encoded, "\\uDC{byte:02X}").expect("write to string");
+                }
+                remaining = rest;
+            }
+        }
+    }
+    encoded
+}
+
+/// Decodes text produced by [`encode_escaped_bytes`] back into bytes.
+pub fn decode_escaped_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut buffer = [0; 4];
+            decoded.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => decoded.push(b'\\'),
+            Some('u') => decoded.push(decode_escaped_bytes_byte(&mut chars)?),
+            Some(other) => return Err(format!("unsupported escaped byte escape \\{other}")),
+            None => return Err("trailing escaped byte backslash".to_owned()),
+        }
+    }
+    Ok(decoded)
+}
+
+fn push_escaped_valid_text(encoded: &mut String, text: &str) {
+    for ch in text.chars() {
+        if ch == '\\' {
+            encoded.push_str("\\\\");
+        } else {
+            encoded.push(ch);
+        }
+    }
+}
+
+fn decode_escaped_bytes_byte(chars: &mut std::str::Chars<'_>) -> Result<u8, String> {
+    match (chars.next(), chars.next(), chars.next(), chars.next()) {
+        (Some('D'), Some('C'), Some(high), Some(low)) => {
+            let high = high
+                .to_digit(16)
+                .ok_or_else(|| "invalid escaped byte hex".to_owned())?;
+            let low = low
+                .to_digit(16)
+                .ok_or_else(|| "invalid escaped byte hex".to_owned())?;
+            let byte = (high << 4) | low;
+            let byte = u8::try_from(byte).map_err(|_| "invalid escaped byte".to_owned())?;
+            if byte < 0x80 {
+                return Err("escaped bytes must use \\uDC80 through \\uDCFF".to_owned());
+            }
+            Ok(byte)
+        }
+        _ => Err("escaped bytes must use \\uDCxx".to_owned()),
     }
 }
 
