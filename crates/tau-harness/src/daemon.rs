@@ -19,7 +19,7 @@ use crate::event::HarnessEvent;
 use crate::format::{format_extension_event, format_tool_progress};
 use crate::harness::{Harness, assistant_text_from_output_items, tool_calls_from_output_items};
 use crate::runtime_dir;
-use crate::settings::{Config, resolve_config};
+use crate::settings::{Config, resolve_config, resolve_config_in};
 
 /// Cap on how long [`send_daemon_message_with_trace`] (a synchronous test
 /// helper) waits for a daemon response. This is not a daemon-wide knob —
@@ -188,14 +188,22 @@ pub fn run_embedded_message_with_options(
     options: EmbeddedOptions,
 ) -> Result<InteractionOutcome, HarnessError> {
     let state_dir = state_dir.into();
-    let dirs = options
-        .dirs
-        .unwrap_or_else(|| tau_config::settings::TauDirs {
-            config_dir: Some(state_dir.join("config")),
-            state_dir: Some(state_dir.join("runtime")),
-        });
-    let config =
-        resolve_config(None).map_err(|error| HarnessError::Participant(error.to_string()))?;
+    let (config, dirs) = match options.dirs {
+        Some(dirs) => {
+            let config = resolve_config_in(&dirs)
+                .map_err(|error| HarnessError::Participant(error.to_string()))?;
+            (config, dirs)
+        }
+        None => {
+            let dirs = tau_config::settings::TauDirs {
+                config_dir: Some(state_dir.join("config")),
+                state_dir: Some(state_dir.join("runtime")),
+            };
+            let config = resolve_config(None)
+                .map_err(|error| HarnessError::Participant(error.to_string()))?;
+            (config, dirs)
+        }
+    };
     let mut harness = Harness::from_config(
         &config,
         &state_dir,
@@ -291,15 +299,22 @@ pub fn run_daemon(
     let listener_handle = open_listener(&socket_path)?;
     let cleanup_socket_path = listener_handle.cleanup_socket_path;
     let listener = listener_handle.listener;
-    let dirs = options
-        .dirs
-        .clone()
-        .unwrap_or_else(|| tau_config::settings::TauDirs {
-            config_dir: Some(state_dir.join("config")),
-            state_dir: Some(state_dir.join("runtime")),
-        });
-    let config =
-        resolve_config(None).map_err(|error| HarnessError::Participant(error.to_string()))?;
+    let (config, dirs) = match options.dirs.clone() {
+        Some(dirs) => {
+            let config = resolve_config_in(&dirs)
+                .map_err(|error| HarnessError::Participant(error.to_string()))?;
+            (config, dirs)
+        }
+        None => {
+            let dirs = tau_config::settings::TauDirs {
+                config_dir: Some(state_dir.join("config")),
+                state_dir: Some(state_dir.join("runtime")),
+            };
+            let config = resolve_config(None)
+                .map_err(|error| HarnessError::Participant(error.to_string()))?;
+            (config, dirs)
+        }
+    };
     let mut harness = Harness::from_config(
         &config,
         state_dir,

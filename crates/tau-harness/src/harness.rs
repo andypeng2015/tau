@@ -74,7 +74,7 @@ use crate::tool_turn::{ForegroundAction, PendingToolInvocation, ToolTurnMachine}
 use crate::turn::{PromptSubmission, TurnState};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const BUILT_IN_SKILLS_SOURCE_ID: &str = "harness:built-in-skills";
 const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const SELF_KNOWLEDGE_HASH_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_HASH__";

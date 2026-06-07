@@ -1,0 +1,21 @@
+[package]
+name = "tau-e2e-tests"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tau-config.workspace = true
+tau-harness.workspace = true
+tempfile.workspace = true

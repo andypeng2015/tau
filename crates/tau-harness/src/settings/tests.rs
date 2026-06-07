@@ -70,6 +70,29 @@ fn builtins() -> Vec<BuiltinExtension> {
 }
 
 #[test]
+fn resolve_config_in_uses_supplied_config_dir() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let config_dir = tempdir.path().join("config");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("harness.yaml"),
+        "extensions:\n  core-shell:\n    enable: false\n",
+    )
+    .expect("write harness config");
+
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(config_dir),
+        state_dir: Some(tempdir.path().join("state")),
+    };
+    let config = resolve_config_in(&dirs).expect("resolve config from supplied dirs");
+
+    assert!(
+        !config.extensions.contains_key("core-shell"),
+        "headless embedded tests must not accidentally read the developer's global harness config"
+    );
+}
+
+#[test]
 fn resolve_extensions_returns_builtins_when_user_config_empty() {
     let s = HarnessSettings::built_in();
     let resolved = resolve_extensions(&s, builtins()).expect("resolve");

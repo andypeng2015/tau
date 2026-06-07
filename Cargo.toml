@@ -9,6 +9,7 @@ members = [
   "crates/tau-cli-term-raw",
   "crates/tau-config",
   "crates/tau-core",
+  "crates/tau-e2e-tests",
   "crates/tau-ext-pim",
   "crates/tau-ext-provider-builtin",
   "crates/tau-ext-rhai",

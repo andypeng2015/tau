@@ -475,18 +475,20 @@ pub fn validate_cli_overrides(
     extension_overrides: &[ExtensionCliOverride],
     harness_config_overrides: &[HarnessConfigCliOverride],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = load_settings_for_cli_overrides(role_overrides, harness_config_overrides)?;
+    let dirs = tau_config::settings::TauDirs::default();
+    let settings =
+        load_settings_for_cli_overrides_in(&dirs, role_overrides, harness_config_overrides)?;
     resolve_extensions_with_cli_overrides(&settings, builtin_extensions(), extension_overrides)?;
     Ok(())
 }
 
-fn load_settings_for_cli_overrides(
+fn load_settings_for_cli_overrides_in(
+    dirs: &tau_config::settings::TauDirs,
     role_overrides: &[RoleCliOverride],
     harness_config_overrides: &[HarnessConfigCliOverride],
 ) -> Result<HarnessSettings, Box<dyn std::error::Error>> {
-    let dirs = tau_config::settings::TauDirs::default();
     match tau_config::settings::load_harness_settings_with_cli_overrides_in(
-        &dirs,
+        dirs,
         role_overrides,
         harness_config_overrides,
     ) {
@@ -518,6 +520,13 @@ fn load_settings_for_cli_overrides(
 pub(crate) fn resolve_config(
     _explicit_path: Option<&std::path::Path>,
 ) -> Result<Config, Box<dyn std::error::Error>> {
+    let dirs = tau_config::settings::TauDirs::default();
+    resolve_config_in(&dirs)
+}
+
+pub(crate) fn resolve_config_in(
+    dirs: &tau_config::settings::TauDirs,
+) -> Result<Config, Box<dyn std::error::Error>> {
     // Extensions live in `harness.yaml` under `extensions: { ... }`.
     // We start from the built-in provider + tools defaults and apply the
     // user's overrides on top; a malformed harness.yaml falls back
@@ -526,7 +535,8 @@ pub(crate) fn resolve_config(
     // ignored.
     let role_overrides = role_cli_overrides_from_env();
     let harness_config_overrides = harness_config_overrides_from_env()?;
-    let settings = load_settings_for_cli_overrides(&role_overrides, &harness_config_overrides)?;
+    let settings =
+        load_settings_for_cli_overrides_in(dirs, &role_overrides, &harness_config_overrides)?;
     let extension_overrides = extension_cli_overrides_from_env();
     let extensions = resolve_extensions_with_cli_overrides(
         &settings,

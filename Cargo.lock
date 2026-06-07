@@ -2689,6 +2689,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tau-config",
+ "tau-harness",
+ "tempfile",
+]
+
+[[package]]
 name = "tau-ext-pim"
 version = "0.1.0"
 dependencies = [
