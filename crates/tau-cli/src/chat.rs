@@ -724,6 +724,8 @@ pub(crate) fn run_chat(
     let remote_disconnected = Arc::new(AtomicBool::new(false));
     let socket_remote_disconnected = remote_disconnected.clone();
     let socket_ui_io_meter = ui_io_meter.clone();
+    let local_disconnect_started = Arc::new(AtomicBool::new(false));
+    let socket_local_disconnect_started = local_disconnect_started.clone();
     let socket_reader = std::thread::spawn(move || {
         let notify_disconnect = |reason: Option<String>| {
             socket_remote_disconnected.store(true, Ordering::Release);
@@ -753,6 +755,9 @@ pub(crate) fn run_chat(
                             }
                         }
                         HarnessOutputMessage::Disconnect(d) => {
+                            if socket_local_disconnect_started.load(Ordering::Acquire) {
+                                return;
+                            }
                             notify_disconnect(d.reason);
                             return;
                         }
@@ -763,12 +768,16 @@ pub(crate) fn run_chat(
                     }
                 }
                 Ok(None) => {
-                    notify_disconnect(Some("harness connection closed".to_owned()));
+                    if !socket_local_disconnect_started.load(Ordering::Acquire) {
+                        notify_disconnect(Some("harness connection closed".to_owned()));
+                    }
                     return;
                 }
                 Err(error) => {
-                    tracing::warn!(target: "tau_cli::ui", %error, "socket reader exiting");
-                    notify_disconnect(Some(format!("harness connection error: {error}")));
+                    if !socket_local_disconnect_started.load(Ordering::Acquire) {
+                        tracing::warn!(target: "tau_cli::ui", %error, "socket reader exiting");
+                        notify_disconnect(Some(format!("harness connection error: {error}")));
+                    }
                     return;
                 }
             }
@@ -998,6 +1007,7 @@ pub(crate) fn run_chat(
         socket_reader,
         renderer_thread,
         exit,
+        local_disconnect_started,
     );
     finish_daemon_for_exit(exit, daemon);
 
@@ -1033,8 +1043,10 @@ fn shutdown_ui_connection(
     socket_reader: std::thread::JoinHandle<()>,
     renderer_thread: std::thread::JoinHandle<()>,
     exit: InputLoopExit,
+    local_disconnect_started: Arc<AtomicBool>,
 ) -> &'static str {
     let reason = exit.reason();
+    local_disconnect_started.store(true, Ordering::Release);
     let _ = send_frame(
         &writer,
         &HarnessInputMessage::Disconnect(Disconnect {
