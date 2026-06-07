@@ -396,6 +396,15 @@ fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
         .stdout(spec.stdout)
         .stderr(spec.stderr);
 
+    for key in [
+        "LISTEN_FDS",
+        "LISTEN_PID",
+        "LISTEN_FDS_FIRST_FD",
+        "LISTEN_FDNAMES",
+    ] {
+        cmd.env_remove(key);
+    }
+
     if let Some(role) = spec.startup_role.filter(|role| !role.is_empty()) {
         cmd.env(tau_harness::STARTUP_ROLE_ENV, role);
     }

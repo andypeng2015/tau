@@ -118,6 +118,48 @@ pub(crate) fn bind_listener(path: &Path) -> Result<UnixListener, HarnessError> {
     UnixListener::bind(path).map_err(HarnessError::from)
 }
 
+struct ListenerHandle {
+    listener: UnixListener,
+    cleanup_socket_path: bool,
+}
+
+fn open_listener(path: &Path) -> Result<ListenerHandle, HarnessError> {
+    let mut listenfd = listenfd::ListenFd::from_env();
+    if let Some(listener) = listenfd.take_unix_listener(0).map_err(HarnessError::Io)? {
+        tracing::info!(
+            target: "tau_harness::startup",
+            socket_path = %path.display(),
+            "using socket-activated harness listener",
+        );
+        let actual_path = listener
+            .local_addr()
+            .map_err(HarnessError::Io)?
+            .as_pathname()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| {
+                HarnessError::Participant(
+                    "socket-activated harness listener must have a pathname".to_owned(),
+                )
+            })?;
+        if actual_path != path {
+            return Err(HarnessError::Participant(format!(
+                "socket-activated harness listener path `{}` does not match expected `{}`",
+                actual_path.display(),
+                path.display()
+            )));
+        }
+        return Ok(ListenerHandle {
+            listener,
+            cleanup_socket_path: false,
+        });
+    }
+
+    Ok(ListenerHandle {
+        listener: bind_listener(path)?,
+        cleanup_socket_path: true,
+    })
+}
+
 /// Runs one embedded interaction and returns progress plus the final
 /// agent response.
 pub fn run_embedded_message_with_trace(
@@ -246,7 +288,9 @@ pub fn run_daemon(
 ) -> Result<(), HarnessError> {
     let socket_path = socket_path.into();
     let state_dir = state_dir.into();
-    let listener = bind_listener(&socket_path)?;
+    let listener_handle = open_listener(&socket_path)?;
+    let cleanup_socket_path = listener_handle.cleanup_socket_path;
+    let listener = listener_handle.listener;
     let dirs = options
         .dirs
         .clone()
@@ -275,7 +319,9 @@ pub fn run_daemon(
 
     let result = harness.run_event_loop(options.max_clients, options.exit_on_disconnect);
     let _ = harness.shutdown();
-    let _ = std::fs::remove_file(&socket_path);
+    if cleanup_socket_path {
+        let _ = std::fs::remove_file(&socket_path);
+    }
     result
 }
 
@@ -294,7 +340,9 @@ pub fn run_daemon_with_echo(
     }
     let socket_path = socket_path.into();
     let state_dir = state_dir.into();
-    let listener = bind_listener(&socket_path)?;
+    let listener_handle = open_listener(&socket_path)?;
+    let cleanup_socket_path = listener_handle.cleanup_socket_path;
+    let listener = listener_handle.listener;
     let dirs = options
         .dirs
         .clone()
@@ -323,7 +371,9 @@ pub fn run_daemon_with_echo(
 
     let result = harness.run_event_loop(options.max_clients, options.exit_on_disconnect);
     let _ = harness.shutdown();
-    let _ = std::fs::remove_file(&socket_path);
+    if cleanup_socket_path {
+        let _ = std::fs::remove_file(&socket_path);
+    }
     result
 }
 
@@ -337,7 +387,9 @@ pub fn run_daemon_with_config(
 ) -> Result<(), HarnessError> {
     let socket_path = socket_path.into();
     let state_dir = state_dir.into();
-    let listener = bind_listener(&socket_path)?;
+    let listener_handle = open_listener(&socket_path)?;
+    let cleanup_socket_path = listener_handle.cleanup_socket_path;
+    let listener = listener_handle.listener;
     let dirs = options.dirs.clone().unwrap_or_default();
     let mut harness = Harness::from_config(
         config,
@@ -358,7 +410,9 @@ pub fn run_daemon_with_config(
 
     let result = harness.run_event_loop(options.max_clients, options.exit_on_disconnect);
     let _ = harness.shutdown();
-    let _ = std::fs::remove_file(&socket_path);
+    if cleanup_socket_path {
+        let _ = std::fs::remove_file(&socket_path);
+    }
     result
 }
 
@@ -675,7 +729,6 @@ fn run_harness_daemon_with_internal_tools_and_initial_client(
     let daemon_dir = runtime_dir::prepare_daemon_dir(project_root)?;
     tracing::debug!(target: "tau_harness::startup", daemon_dir = %daemon_dir.path().display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "prepared daemon dir");
     let listener = bind_listener(&daemon_dir.socket_path())?;
-    tracing::debug!(target: "tau_harness::startup", socket_path = %daemon_dir.socket_path().display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "bound daemon socket");
 
     let state_dir = tau_session_inspect::default_state_dir();
     let dirs = options.dirs.clone().unwrap_or_default();

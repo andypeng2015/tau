@@ -46,6 +46,39 @@ fn daemon_command_sets_and_clears_harness_config_override_env() {
 }
 
 #[test]
+fn daemon_command_clears_socket_activation_env() {
+    let command = build_daemon_command(DaemonCommandSpec {
+        tau_binary: Path::new("tau"),
+        session_id: "session-1",
+        session_status: SessionLaunchStatus::New,
+        stdout: Stdio::null(),
+        stderr: Stdio::null(),
+        stdin: Stdio::null(),
+        startup_role: None,
+        cli_overrides: DaemonCliOverrides {
+            role: &[],
+            extension: &[],
+            harness_config: &[],
+        },
+        initial_ui_stdio: false,
+    });
+
+    for expected_key in [
+        "LISTEN_FDS",
+        "LISTEN_PID",
+        "LISTEN_FDS_FIRST_FD",
+        "LISTEN_FDNAMES",
+    ] {
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == expected_key && value.is_none()),
+            "expected {expected_key} to be removed from harness child environment"
+        );
+    }
+}
+
+#[test]
 fn daemon_command_can_request_initial_ui_stdio() {
     let command = build_daemon_command(DaemonCommandSpec {
         tau_binary: Path::new("tau"),
