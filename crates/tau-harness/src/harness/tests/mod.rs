@@ -256,8 +256,18 @@ fn assert_role_hex_agent_id(agent_id: &str, _role: &str) {
 fn extension_data_paths_reject_escape_components() {
     assert!(super::sanitize_extension_data_path("notes/file.txt", false).is_ok());
     assert!(super::sanitize_extension_data_path("", true).is_ok());
-    assert!(super::sanitize_extension_data_path("", false).is_err());
-    assert!(super::sanitize_extension_data_path("../secret", false).is_err());
+    assert_eq!(
+        super::sanitize_extension_data_path("", false)
+            .expect_err("empty file path")
+            .kind,
+        tau_proto::ExtensionDataErrorKind::InvalidPath
+    );
+    assert_eq!(
+        super::sanitize_extension_data_path("../secret", false)
+            .expect_err("parent escape")
+            .kind,
+        tau_proto::ExtensionDataErrorKind::InvalidPath
+    );
     assert!(super::sanitize_extension_data_path("notes/../secret", false).is_err());
     assert!(super::sanitize_extension_data_path("/tmp/secret", false).is_err());
     assert!(super::sanitize_extension_data_path("./secret", false).is_err());
@@ -307,12 +317,65 @@ fn extension_data_checked_path_rejects_symlink_root() {
     std::fs::create_dir_all(&real).expect("mkdir real");
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod real");
         std::os::unix::fs::symlink(&real, &root).expect("root symlink");
         assert!(super::checked_extension_data_path(&root, Path::new("file"), true).is_err());
         assert!(super::checked_extension_data_path(&root, Path::new(""), true).is_err());
+        let real_mode = std::fs::metadata(&real)
+            .expect("real metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(real_mode, 0o755);
     }
 }
+#[test]
+fn extension_data_file_helpers_create_append_replace_delete_private_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path().join("root");
+    let file = root.join("nested/file.txt");
 
+    super::create_extension_data_file(&file, b"first").expect("create file");
+    assert_eq!(std::fs::read(&file).expect("read created"), b"first");
+    let duplicate = super::create_extension_data_file(&file, b"second").expect_err("duplicate");
+    assert_eq!(duplicate.kind(), std::io::ErrorKind::AlreadyExists);
+
+    super::append_extension_data_file(&file, b"\nappended").expect("append file");
+    assert_eq!(
+        std::fs::read(&file).expect("read appended"),
+        b"first\nappended"
+    );
+
+    super::atomic_replace_extension_data_file(&file, b"replaced").expect("replace file");
+    assert_eq!(std::fs::read(&file).expect("read replaced"), b"replaced");
+    let renamed = root.join("nested/renamed.txt");
+    super::rename_extension_data_file(&file, &renamed).expect("rename file");
+    assert!(!file.exists());
+    assert_eq!(std::fs::read(&renamed).expect("read renamed"), b"replaced");
+
+    super::delete_extension_data_file(&renamed).expect("delete file");
+    assert!(!renamed.exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir_mode = std::fs::metadata(root.join("nested"))
+            .expect("nested metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        super::create_extension_data_file(&file, b"private").expect("recreate file");
+        let file_mode = std::fs::metadata(&file)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600);
+    }
+}
 #[test]
 fn minted_agent_ids_use_default_random_alphanumeric_template() {
     let agent_id = super::mint_agent_id_for_role("engineer");

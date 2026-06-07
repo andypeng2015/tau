@@ -502,13 +502,23 @@ pub struct ExtensionDataRequest {
 pub enum ExtensionDataRequestOp {
     /// Read one whole file at a sanitized relative path.
     ReadFile { path: String },
-    /// Write one whole file at a sanitized relative path, replacing any old
-    /// content.
+    /// Write one whole file at a sanitized relative path, atomically replacing
+    /// any old content.
     WriteFile { path: String, contents: Vec<u8> },
+    /// Create one whole file at a sanitized relative path, failing when the
+    /// file already exists.
+    CreateFile { path: String, contents: Vec<u8> },
+    /// Append bytes to one file at a sanitized relative path, creating it when
+    /// missing.
+    AppendFile { path: String, contents: Vec<u8> },
+    /// Delete one file at a sanitized relative path. Missing files succeed.
+    DeleteFile { path: String },
+    /// Rename one file at sanitized relative paths. The destination must not
+    /// already exist.
+    RenameFile { from: String, to: String },
     /// List direct children of a sanitized relative directory path.
     ListFiles { path: String },
 }
-
 /// Harness response to an [`ExtensionDataRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionDataResult {
@@ -525,7 +535,13 @@ pub enum ExtensionDataResultPayload {
     /// Operation succeeded.
     Ok { value: ExtensionDataValue },
     /// Operation failed.
-    Error { message: String },
+    Error {
+        /// Machine-readable error kind.
+        #[serde(default = "default_extension_data_error_kind")]
+        kind: ExtensionDataErrorKind,
+        /// Human-readable error details.
+        message: String,
+    },
 }
 
 /// Successful value returned by an extension data RPC.
@@ -536,10 +552,41 @@ pub enum ExtensionDataValue {
     ReadFile { contents: Vec<u8> },
     /// Empty success marker for a write request.
     WriteFile,
+    /// Empty success marker for a create request.
+    CreateFile,
+    /// Empty success marker for an append request.
+    AppendFile,
+    /// Empty success marker for a delete request.
+    DeleteFile,
+    /// Empty success marker for a rename request.
+    RenameFile,
     /// Direct child entries from a list request.
     ListFiles { entries: Vec<ExtensionDataEntry> },
 }
 
+/// Machine-readable extension data RPC error kind.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionDataErrorKind {
+    /// Requested path or ancestor does not exist.
+    NotFound,
+    /// Exclusive create requested for an existing file.
+    AlreadyExists,
+    /// Path failed extension data path validation.
+    InvalidPath,
+    /// Requested file operation targeted a directory or non-file.
+    NotFile,
+    /// Requested directory operation targeted a file or non-directory.
+    NotDir,
+    /// Permission denied by the operating system.
+    Permission,
+    /// Any other I/O or harness-side error.
+    Io,
+}
+
+fn default_extension_data_error_kind() -> ExtensionDataErrorKind {
+    ExtensionDataErrorKind::Io
+}
 /// One direct child returned by an extension data list request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionDataEntry {
