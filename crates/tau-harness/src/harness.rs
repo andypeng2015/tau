@@ -24,10 +24,10 @@ use tau_proto::{
     HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessInputMessage,
     HarnessOutputMessage, HarnessRoleSelected, Hello, MessageItem, ModelId, PROTOCOL_VERSION,
     PromptFragment, PromptOriginator, ProviderModelInfo, ProviderResponseFinished,
-    ProviderStopReason, ProviderTokenUsage, SessionId, TokenUsageStats, ToolBackgroundError,
-    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled, ToolDefinition, ToolError,
-    ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind, ToolType,
-    UiCancelPrompt,
+    ProviderStopReason, ProviderTokenUsage, SecretValue, SessionId, TokenUsageStats,
+    ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled,
+    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult,
+    ToolResultKind, ToolType, UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -1248,6 +1248,10 @@ pub struct Harness {
     /// Used to start follower threads for log-based replay + delivery.
     pub(crate) client_writers:
         std::collections::HashMap<tau_proto::ConnectionId, Sender<HarnessOutputMessage>>,
+    /// A UI sent `/detach` while the harness was still in startup gating.
+    /// The main event loop consumes this to preserve detach semantics after
+    /// startup completes.
+    startup_detach_requested: bool,
     /// Buffered human-readable lifecycle messages (extension init,
     /// model changes, etc.) surfaced to the UI as part of the next
     /// `InteractionOutcome`.
@@ -1776,6 +1780,7 @@ impl Harness {
             pending_action_invocations: HashMap::new(),
             event_log: EventLog::new(),
             client_writers: std::collections::HashMap::new(),
+            startup_detach_requested: false,
             lifecycle_messages: Vec::new(),
             replayable_harness_infos: Vec::new(),
             extensions: std::collections::HashMap::new(),
@@ -1894,6 +1899,24 @@ impl Harness {
         eager_session_id: &str,
         eager_session_start_reason: tau_proto::SessionStartReason,
     ) -> Result<Self, HarnessError> {
+        Self::from_config_with_initial_client(
+            config,
+            state_dir,
+            dirs,
+            eager_session_id,
+            eager_session_start_reason,
+            None,
+        )
+    }
+
+    pub(crate) fn from_config_with_initial_client(
+        config: &Config,
+        state_dir: impl Into<PathBuf>,
+        dirs: tau_config::settings::TauDirs,
+        eager_session_id: &str,
+        eager_session_start_reason: tau_proto::SessionStartReason,
+        initial_client: Option<UnixStream>,
+    ) -> Result<Self, HarnessError> {
         let startup_started_at = Instant::now();
         tracing::debug!(target: "tau_harness::startup", eager_session_id, "constructing harness from config");
         let state_dir = state_dir.into();
@@ -1915,60 +1938,6 @@ impl Harness {
             load_secret_sources().map_err(|error| HarnessError::Participant(error.to_string()))?;
         let extension_secrets = resolve_extension_secrets(config, &state_dir, &secret_sources)
             .map_err(|error| HarnessError::Participant(error.to_string()))?;
-
-        let mut extension_connects = Vec::new();
-        let mut next_iid = instance_id_factory();
-
-        for ext_config in config.extensions.values() {
-            tracing::info!(
-                target: "tau_harness::startup",
-                extension = %ext_config.name,
-                command = %ext_config.command,
-                args = ?ext_config.args,
-                elapsed_ms = startup_started_at.elapsed().as_millis(),
-                "spawning extension",
-            );
-            let kind = match ext_config.role.as_deref() {
-                Some("provider") => ClientKind::Provider,
-                _ => ClientKind::Tool,
-            };
-
-            let log_path =
-                extension_stderr_log_path(&sessions_dir, eager_session_id, &ext_config.name)
-                    .map_err(|error| HarnessError::Participant(error.to_string()))?;
-            let spawned = spawn_supervised(ext_config, kind.clone(), Some(log_path), &tx)?;
-            let conn_id = spawned.connection_id.clone();
-            tracing::info!(
-                target: "tau_harness::startup",
-                extension = %ext_config.name,
-                pid = spawned.child_pid,
-                elapsed_ms = startup_started_at.elapsed().as_millis(),
-                "extension spawned",
-            );
-
-            extension_connects.push(ExtensionConnectCommand {
-                entry: ExtensionEntry {
-                    name: ext_config.name.clone(),
-                    instance_id: next_iid(),
-                    connection_id: conn_id,
-                    kind: kind.clone(),
-                    pid: Some(spawned.child_pid),
-                    in_process_thread: None,
-                    supervised_config: Some(ext_config.clone()),
-                    secrets: extension_secrets
-                        .get(&ext_config.name)
-                        .cloned()
-                        .unwrap_or_default(),
-                    restart_attempt: 0,
-                    state: ExtensionState::Spawning,
-                    last_acked: tau_proto::EventLogSeq::default(),
-                },
-                origin: ConnectionOrigin::Supervised,
-                writer_tx: spawned.writer_tx,
-                initialized_ack: spawned.initialized_ack,
-                replaces: None,
-            });
-        }
 
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "loading harness settings");
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
@@ -2017,6 +1986,7 @@ impl Harness {
             pending_action_invocations: HashMap::new(),
             event_log: EventLog::new(),
             client_writers: std::collections::HashMap::new(),
+            startup_detach_requested: false,
             lifecycle_messages: Vec::new(),
             replayable_harness_infos: Vec::new(),
             extensions: std::collections::HashMap::new(),
@@ -2085,11 +2055,19 @@ impl Harness {
         ) {
             harness.rehydrate_agents_from_session();
         }
+        if let Some(stream) = initial_client {
+            harness.accept_client(stream)?;
+            harness.wait_for_initial_ui_subscribe()?;
+        }
         harness.publish_current_session_dir();
 
-        for command in extension_connects {
-            harness.queue_extension_connect(command)?;
-        }
+        harness.spawn_configured_extensions(
+            config,
+            &sessions_dir,
+            eager_session_id,
+            &extension_secrets,
+            startup_started_at,
+        )?;
         harness.wait_for_extensions_ready()?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "extensions ready");
         #[cfg(test)]
@@ -2106,6 +2084,164 @@ impl Harness {
         harness.wait_for_session_init()?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "session init complete");
         Ok(harness)
+    }
+
+    fn spawn_configured_extensions(
+        &mut self,
+        config: &Config,
+        sessions_dir: &Path,
+        eager_session_id: &str,
+        extension_secrets: &BTreeMap<String, BTreeMap<String, SecretValue>>,
+        startup_started_at: Instant,
+    ) -> Result<(), HarnessError> {
+        let mut extension_connects = Vec::new();
+        let mut next_iid = instance_id_factory();
+        for ext_config in config.extensions.values() {
+            tracing::info!(
+                target: "tau_harness::startup",
+                extension = %ext_config.name,
+                command = %ext_config.command,
+                args = ?ext_config.args,
+                elapsed_ms = startup_started_at.elapsed().as_millis(),
+                "spawning extension",
+            );
+            let kind = match ext_config.role.as_deref() {
+                Some("provider") => ClientKind::Provider,
+                _ => ClientKind::Tool,
+            };
+
+            let log_path =
+                extension_stderr_log_path(sessions_dir, eager_session_id, &ext_config.name)
+                    .map_err(|error| HarnessError::Participant(error.to_string()))?;
+            let spawned = spawn_supervised(ext_config, kind.clone(), Some(log_path), &self.tx)?;
+            let conn_id = spawned.connection_id.clone();
+            tracing::info!(
+                target: "tau_harness::startup",
+                extension = %ext_config.name,
+                pid = spawned.child_pid,
+                elapsed_ms = startup_started_at.elapsed().as_millis(),
+                "extension spawned",
+            );
+
+            extension_connects.push(ExtensionConnectCommand {
+                entry: ExtensionEntry {
+                    name: ext_config.name.clone(),
+                    instance_id: next_iid(),
+                    connection_id: conn_id,
+                    kind: kind.clone(),
+                    pid: Some(spawned.child_pid),
+                    in_process_thread: None,
+                    supervised_config: Some(ext_config.clone()),
+                    secrets: extension_secrets
+                        .get(&ext_config.name)
+                        .cloned()
+                        .unwrap_or_default(),
+                    restart_attempt: 0,
+                    state: ExtensionState::Spawning,
+                    last_acked: tau_proto::EventLogSeq::default(),
+                },
+                origin: ConnectionOrigin::Supervised,
+                writer_tx: spawned.writer_tx,
+                initialized_ack: spawned.initialized_ack,
+                replaces: None,
+            });
+        }
+        for command in extension_connects {
+            self.queue_extension_connect(command)?;
+        }
+        Ok(())
+    }
+
+    fn wait_for_initial_ui_subscribe(&mut self) -> Result<(), HarnessError> {
+        let started_at = Instant::now();
+        loop {
+            let remaining = STARTUP_TIMEOUT
+                .checked_sub(started_at.elapsed())
+                .unwrap_or(Duration::ZERO);
+            let harness_evt = self
+                .rx
+                .recv_timeout(remaining)
+                .map_err(|_| HarnessError::StartupTimeout)?;
+            self.log_event(&harness_evt);
+            match harness_evt {
+                HarnessEvent::FromConnection {
+                    connection_id,
+                    message,
+                } => {
+                    if self.handle_startup_from_connection(&connection_id, *message)? {
+                        return Ok(());
+                    }
+                }
+                HarnessEvent::Disconnected { connection_id } => {
+                    self.handle_startup_disconnect(&connection_id)?;
+                }
+                HarnessEvent::NewClient(stream) => self.accept_client(stream)?,
+                HarnessEvent::Command(command) => self.handle_harness_command(command)?,
+            }
+        }
+    }
+
+    fn handle_startup_from_connection(
+        &mut self,
+        connection_id: &str,
+        message: HarnessInputMessage,
+    ) -> Result<bool, HarnessError> {
+        let origin = self.bus.connection(connection_id).map(|m| m.origin.clone());
+        match origin {
+            Some(ConnectionOrigin::Socket) => {
+                let detach_requested = matches!(
+                    &message,
+                    HarnessInputMessage::Emit(emit)
+                        if matches!(emit.event.as_ref(), Event::UiDetachRequest(_))
+                );
+                let subscribed = matches!(&message, HarnessInputMessage::Subscribe(_));
+                if detach_requested {
+                    self.startup_detach_requested = true;
+                }
+                let keep = self.handle_client_message(connection_id, message)?;
+                if !keep {
+                    let _ = self.bus.disconnect(connection_id);
+                    if self.startup_detach_requested {
+                        return Ok(false);
+                    }
+                    return Err(HarnessError::Participant(
+                        "initial UI disconnected during startup handshake".to_owned(),
+                    ));
+                }
+                Ok(subscribed)
+            }
+            Some(_) => {
+                self.handle_extension_message(connection_id, message)?;
+                Ok(false)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn handle_startup_disconnect(&mut self, connection_id: &str) -> Result<(), HarnessError> {
+        let name = self
+            .bus
+            .connection(connection_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| connection_id.to_string());
+        let was_socket = self
+            .bus
+            .connection(connection_id)
+            .is_some_and(|m| m.origin == ConnectionOrigin::Socket);
+        let was_provider = self.is_provider_extension(connection_id);
+        self.handle_disconnect(connection_id);
+        if was_socket {
+            if self.startup_detach_requested {
+                return Ok(());
+            }
+            return Err(HarnessError::Participant(format!(
+                "{name} disconnected during startup"
+            )));
+        }
+        if was_provider {
+            return Err(provider_disconnected_error());
+        }
+        Ok(())
     }
 
     fn log_event(&mut self, harness_event: &HarnessEvent) {
@@ -3055,14 +3191,10 @@ impl Harness {
                     connection_id,
                     message,
                 } => {
-                    self.handle_extension_message(&connection_id, *message)?;
+                    let _ = self.handle_startup_from_connection(&connection_id, *message)?;
                 }
                 HarnessEvent::Disconnected { connection_id } => {
-                    let was_provider = self.is_provider_extension(&connection_id);
-                    self.handle_disconnect(&connection_id);
-                    if was_provider {
-                        return Err(provider_disconnected_error());
-                    }
+                    self.handle_startup_disconnect(&connection_id)?;
                 }
                 HarnessEvent::NewClient(_) => {}
                 HarnessEvent::Command(command) => self.handle_harness_command(command)?,
@@ -3094,18 +3226,10 @@ impl Harness {
                     connection_id,
                     message,
                 } => {
-                    self.handle_extension_message(&connection_id, *message)?;
+                    let _ = self.handle_startup_from_connection(&connection_id, *message)?;
                 }
                 HarnessEvent::Disconnected { connection_id } => {
-                    let name = self
-                        .bus
-                        .connection(&connection_id)
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| connection_id.to_string());
-                    self.handle_disconnect(&connection_id);
-                    return Err(HarnessError::Participant(format!(
-                        "{name} disconnected during startup"
-                    )));
+                    self.handle_startup_disconnect(&connection_id)?;
                 }
                 HarnessEvent::NewClient(_) => {}
                 HarnessEvent::Command(command) => self.handle_harness_command(command)?,
@@ -3124,7 +3248,10 @@ impl Harness {
         mut exit_on_disconnect: bool,
     ) -> Result<(), HarnessError> {
         let mut served_clients = 0_usize;
-        let mut ever_attached = false;
+        if self.startup_detach_requested {
+            exit_on_disconnect = false;
+        }
+        let mut ever_attached = !self.client_writers.is_empty();
         loop {
             if max_clients.is_some_and(|max| served_clients >= max) {
                 break;

@@ -24,6 +24,7 @@ pub(crate) fn run_print_prompt(
             extension: extension_cli_overrides,
             harness_config: harness_config_overrides,
         },
+        false,
     )?;
 
     let prompt = tau_harness::get_daemon_rendered_system_prompt(daemon.socket_path(), role)?;

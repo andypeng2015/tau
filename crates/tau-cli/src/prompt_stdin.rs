@@ -47,6 +47,7 @@ pub(crate) fn run_prompt_stdin(
             extension: extension_cli_overrides,
             harness_config: harness_config_overrides,
         },
+        false,
     )?;
     let (mut reader, mut writer) = connect_prompt_stdin_client(&daemon.socket_path())?;
     let role = prompt_stdin_role(startup_role);

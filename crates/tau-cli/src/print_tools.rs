@@ -24,6 +24,7 @@ pub(crate) fn run_print_tools(
             extension: extension_cli_overrides,
             harness_config: harness_config_overrides,
         },
+        false,
     )?;
 
     let tools = tau_harness::get_daemon_rendered_tool_definitions(daemon.socket_path(), role)?;

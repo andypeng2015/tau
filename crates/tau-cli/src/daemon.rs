@@ -20,11 +20,17 @@ const RESUME_PICKER_LIMIT: usize = 10;
 ///   (calls [`DaemonHandle::leak`]), in which case we forget the `Child` so the
 ///   daemon outlives us.
 /// - `Attached`: we joined a daemon someone else owns. Drop never touches it.
+pub(crate) struct InitialUiStdio {
+    pub(crate) stdin: std::process::ChildStdin,
+    pub(crate) stdout: std::process::ChildStdout,
+}
+
 pub(crate) enum DaemonHandle {
     /// `child` is `Some` until [`leak`] pulls it out.
     Owned {
         child: Option<std::process::Child>,
         daemon_dir: PathBuf,
+        initial_ui: Option<InitialUiStdio>,
     },
     Attached {
         daemon_dir: PathBuf,
@@ -34,6 +40,13 @@ pub(crate) enum DaemonHandle {
 impl DaemonHandle {
     pub(crate) fn socket_path(&self) -> PathBuf {
         runtime_dir::socket_path(self.daemon_dir())
+    }
+
+    pub(crate) fn take_initial_ui_stdio(&mut self) -> Option<InitialUiStdio> {
+        match self {
+            Self::Owned { initial_ui, .. } => initial_ui.take(),
+            Self::Attached { .. } => None,
+        }
     }
 
     fn daemon_dir(&self) -> &Path {
@@ -228,6 +241,7 @@ pub(crate) fn resolve_daemon(
     daemon_output: Option<DaemonOutput>,
     startup_role: Option<&str>,
     cli_overrides: DaemonCliOverrides<'_>,
+    initial_ui_stdio: bool,
 ) -> Result<DaemonHandle, CliError> {
     tracing::debug!(target: "tau_cli::startup", attach, session_id, "resolving harness daemon");
     let project_root = std::env::current_dir()?;
@@ -244,6 +258,7 @@ pub(crate) fn resolve_daemon(
         daemon_output.expect("daemon output for spawned harness"),
         startup_role,
         cli_overrides,
+        initial_ui_stdio,
     )
 }
 
@@ -255,37 +270,43 @@ fn read_daemon_output_since(path: &Path, start_offset: u64) -> io::Result<String
     Ok(output)
 }
 
-/// Spawns a new harness daemon and waits for its socket to be ready.
+/// Spawns a new harness daemon.
 ///
-/// Synchronization is via a pipe wired to the child process's stdin rather
-/// than a polling loop: the read end is retained by the parent and the write
-/// end is passed to the child. The harness writes one byte and closes its end
-/// once the socket is bound and the runtime markers are in place (see
-/// [`runtime_dir::signal_ready_to_parent`]);
-/// the parent blocks on `read_exact` until that byte arrives. EOF
-/// without a byte means the child exited early — we reap it and
-/// surface its captured output.
+/// Normal daemon startup uses a readiness pipe wired to the child process's
+/// stdin. The harness writes one byte once the socket is bound and the runtime
+/// markers are in place (see [`runtime_dir::signal_ready_to_parent`]).
+///
+/// Initial-UI stdio startup instead reserves the child stdin/stdout pipes for
+/// the UI protocol and returns them immediately; the harness delays extension
+/// startup internally until that UI sends its subscribe message.
 fn start_daemon(
     session_id: &str,
     session_status: SessionLaunchStatus,
     output: DaemonOutput,
     startup_role: Option<&str>,
     cli_overrides: DaemonCliOverrides<'_>,
+    initial_ui_stdio: bool,
 ) -> Result<DaemonHandle, CliError> {
     let tau_binary = std::env::current_exe()?;
     tracing::debug!(target: "tau_cli::startup", tau_binary = %tau_binary.display(), session_id, "spawning harness daemon");
 
-    let (mut read_pipe, write_pipe) = io::pipe()?;
+    let (read_pipe, stdin, stdout) = if initial_ui_stdio {
+        (None, Stdio::piped(), Stdio::piped())
+    } else {
+        let (read_pipe, write_pipe) = io::pipe()?;
+        (Some(read_pipe), Stdio::from(write_pipe), output.stdout)
+    };
 
     let spawn_result = build_daemon_command(DaemonCommandSpec {
         tau_binary: &tau_binary,
         session_id,
         session_status,
-        stdout: output.stdout,
+        stdout,
         stderr: output.stderr,
-        stdin: Stdio::from(write_pipe),
+        stdin,
         startup_role,
         cli_overrides,
+        initial_ui_stdio,
     })
     .spawn();
 
@@ -295,6 +316,23 @@ fn start_daemon(
     let daemon_dir = runtime_dir::root_runtime_dir().join(child.id().to_string());
     let started_at = Instant::now();
 
+    if initial_ui_stdio {
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| CliError::Participant("missing harness stdin pipe".to_owned()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CliError::Participant("missing harness stdout pipe".to_owned()))?;
+        return Ok(DaemonHandle::Owned {
+            child: Some(child),
+            daemon_dir,
+            initial_ui: Some(InitialUiStdio { stdin, stdout }),
+        });
+    }
+
+    let mut read_pipe = read_pipe.expect("ready pipe for socket startup");
     let mut byte = [0u8; 1];
     match read_pipe.read_exact(&mut byte) {
         Ok(()) => {
@@ -302,6 +340,7 @@ fn start_daemon(
             Ok(DaemonHandle::Owned {
                 child: Some(child),
                 daemon_dir,
+                initial_ui: None,
             })
         }
         Err(_eof_or_err) => {
@@ -329,10 +368,11 @@ struct DaemonCommandSpec<'a> {
     stdin: Stdio,
     startup_role: Option<&'a str>,
     cli_overrides: DaemonCliOverrides<'a>,
+    initial_ui_stdio: bool,
 }
 
-/// Build the `tau ext harness` command with the readiness-pipe write end wired
-/// to the child's stdin.
+/// Build the `tau ext harness` command, optionally reserving stdio for the
+/// initial UI protocol instead of the readiness pipe.
 fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
     let mut cmd = Command::new(spec.tau_binary);
     cmd.arg("ext")
@@ -343,7 +383,6 @@ fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
         // here; the harness child now reads its own `built` snapshot
         // (see `tau_harness::version::export_to_env`) and publishes
         // them to its own environment instead.
-        .env(tau_harness::runtime_dir::READY_FD_ENV, "0")
         // Default-enable info logging in the child process so `tau`
         // captures harness logs without requiring an env var. Users
         // can still override/filter with `TAU_LOG`.
@@ -381,6 +420,13 @@ fn build_daemon_command(spec: DaemonCommandSpec<'_>) -> Command {
         );
     } else {
         cmd.env_remove(tau_harness::HARNESS_CONFIG_CLI_OVERRIDES_ENV);
+    }
+
+    if spec.initial_ui_stdio {
+        cmd.arg("--initial-ui-stdio");
+        cmd.env_remove(tau_harness::runtime_dir::READY_FD_ENV);
+    } else {
+        cmd.env(tau_harness::runtime_dir::READY_FD_ENV, "0");
     }
 
     cmd

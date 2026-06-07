@@ -1,9 +1,9 @@
 //! Public entry points: blocking `run_*` daemons, the embedded
 //! single-message helpers, and the small types passed to/from them.
 
-use std::os::unix::net::UnixListener;
-#[cfg(any(test, feature = "echo-agent"))]
-use std::os::unix::net::UnixStream;
+use std::io::{self, Write as _};
+use std::net::Shutdown;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -652,6 +652,24 @@ pub fn run_harness_daemon_with_internal_tools(
     options: ServeOptions,
     internal_tool_handlers: crate::InternalToolHandlers,
 ) -> Result<(), HarnessError> {
+    run_harness_daemon_with_internal_tools_and_initial_client(
+        project_root,
+        config,
+        eager_session_id,
+        options,
+        internal_tool_handlers,
+        None,
+    )
+}
+
+fn run_harness_daemon_with_internal_tools_and_initial_client(
+    project_root: &Path,
+    config: &Config,
+    eager_session_id: &str,
+    options: ServeOptions,
+    internal_tool_handlers: crate::InternalToolHandlers,
+    initial_client: Option<UnixStream>,
+) -> Result<(), HarnessError> {
     let startup_started_at = Instant::now();
     tracing::debug!(target: "tau_harness::startup", project_root = %project_root.display(), eager_session_id, "starting harness daemon");
     let daemon_dir = runtime_dir::prepare_daemon_dir(project_root)?;
@@ -662,27 +680,26 @@ pub fn run_harness_daemon_with_internal_tools(
     let state_dir = tau_session_inspect::default_state_dir();
     let dirs = options.dirs.clone().unwrap_or_default();
     tracing::debug!(target: "tau_harness::startup", state_dir = %state_dir.display(), elapsed_ms = startup_started_at.elapsed().as_millis(), "constructing harness");
-    let mut harness = Harness::from_config(
+    let mut harness = Harness::from_config_with_initial_client(
         config,
         &state_dir,
         dirs,
         eager_session_id,
         session_start_reason(options.session_status),
+        initial_client,
     )?;
     harness.install_internal_tool_handlers(internal_tool_handlers);
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "harness constructed");
-    // Write marker AFTER extensions are ready.
+
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "writing daemon ready markers");
     daemon_dir.write_marker()?;
     daemon_dir.write_pid()?;
     daemon_dir.write_session_id(eager_session_id)?;
     tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "daemon ready markers written");
 
-    // Signal the parent CLI (if it passed us a pipe fd via
-    // `TAU_READY_FD`) that the socket is bound and discoverable. The
-    // parent is blocked on `read()` until this byte arrives, so the
-    // wakeup latency is whatever it takes the kernel to deliver one
-    // byte — not the 10ms granularity of a poll loop.
+    // Signal the parent CLI (if it passed us a pipe fd via `TAU_READY_FD`) that
+    // the socket is bound and discoverable. Initial stdio UI launches do not
+    // set that env var, so this is a no-op for them.
     runtime_dir::signal_ready_to_parent();
 
     let tx = harness.tx.clone();
@@ -708,6 +725,23 @@ pub fn run_component() -> Result<(), Box<dyn std::error::Error>> {
 /// Entrypoint for `tau ext harness` with injected internal tool handlers.
 pub fn run_component_with_internal_tools(
     internal_tool_handlers: crate::InternalToolHandlers,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_component_with_internal_tools_and_initial_client(internal_tool_handlers, None)
+}
+
+/// Entrypoint for `tau ext harness` with injected internal tool handlers and
+/// an initial UI connection carried over stdio.
+pub fn run_component_with_internal_tools_and_initial_ui_stdio(
+    internal_tool_handlers: crate::InternalToolHandlers,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (harness_end, bridge_end) = UnixStream::pair()?;
+    spawn_stdio_bridge(bridge_end)?;
+    run_component_with_internal_tools_and_initial_client(internal_tool_handlers, Some(harness_end))
+}
+
+fn run_component_with_internal_tools_and_initial_client(
+    internal_tool_handlers: crate::InternalToolHandlers,
+    initial_client: Option<UnixStream>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let startup_started_at = Instant::now();
     let current_exe = std::env::current_exe()
@@ -740,7 +774,7 @@ pub fn run_component_with_internal_tools(
         Ok("resumed") => crate::daemon::SessionLaunchStatus::Resumed,
         _ => crate::daemon::SessionLaunchStatus::New,
     };
-    run_harness_daemon_with_internal_tools(
+    run_harness_daemon_with_internal_tools_and_initial_client(
         &project_root,
         &config,
         &eager_session_id,
@@ -753,6 +787,22 @@ pub fn run_component_with_internal_tools(
             ..Default::default()
         },
         internal_tool_handlers,
+        initial_client,
     )
     .map_err(Into::into)
+}
+
+fn spawn_stdio_bridge(mut stream: UnixStream) -> io::Result<()> {
+    let mut stream_read = stream.try_clone()?;
+    thread::spawn(move || {
+        let mut stdin = io::stdin().lock();
+        let _ = io::copy(&mut stdin, &mut stream);
+        let _ = stream.shutdown(Shutdown::Write);
+    });
+    thread::spawn(move || {
+        let mut stdout = io::stdout().lock();
+        let _ = io::copy(&mut stream_read, &mut stdout);
+        let _ = stdout.flush();
+    });
+    Ok(())
 }

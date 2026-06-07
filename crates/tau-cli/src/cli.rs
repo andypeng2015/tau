@@ -171,6 +171,11 @@ pub enum Command {
         /// ext-test-dummy, ext-std-notifications, ext-websearch, ext-email,
         /// ext-pim)
         name: String,
+
+        /// Use stdin/stdout as the initial UI connection before starting
+        /// harness extensions. Only valid with `tau ext harness`.
+        #[arg(long, hide = true)]
+        initial_ui_stdio: bool,
     },
 }
 

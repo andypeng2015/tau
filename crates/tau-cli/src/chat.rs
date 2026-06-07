@@ -2,7 +2,7 @@
 //! loop, draft debouncer, and the threading glue that joins them.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{self, BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,14 +190,17 @@ impl UiIoTracker {
 }
 
 struct UiWriter {
-    writer: PeerOutputWriter<BufWriter<UnixStream>>,
+    writer: PeerOutputWriter<BufWriter<Box<dyn Write + Send>>>,
     meter: UiIoMeter,
 }
 
 impl UiWriter {
-    fn new(stream: UnixStream, meter: UiIoMeter) -> Self {
+    fn new<W>(writer: W, meter: UiIoMeter) -> Self
+    where
+        W: Write + Send + 'static,
+    {
         Self {
-            writer: PeerOutputWriter::new(BufWriter::new(stream)),
+            writer: PeerOutputWriter::new(BufWriter::new(Box::new(writer))),
             meter,
         }
     }
@@ -220,6 +223,42 @@ impl UiWriter {
 /// `UiPromptSubmitted` mid-byte. Contention is essentially zero —
 /// debounce fires at most once per second per typing burst.
 type WriterHandle = Arc<Mutex<UiWriter>>;
+
+struct UiConnection {
+    read_stream: Box<dyn Read + Send>,
+    writer: WriterHandle,
+    socket_shutdown_stream: Option<UnixStream>,
+}
+
+fn connect_ui_transport(
+    daemon: &mut DaemonHandle,
+    ui_io_meter: &UiIoMeter,
+    startup_started_at: Instant,
+) -> Result<UiConnection, CliError> {
+    if let Some(initial_ui) = daemon.take_initial_ui_stdio() {
+        tracing::debug!(target: "tau_cli::startup", "using harness stdio for initial UI connection");
+        return Ok(UiConnection {
+            read_stream: Box::new(initial_ui.stdout),
+            writer: Arc::new(Mutex::new(UiWriter::new(
+                initial_ui.stdin,
+                ui_io_meter.clone(),
+            ))),
+            socket_shutdown_stream: None,
+        });
+    }
+
+    let socket_path = daemon.socket_path();
+    tracing::debug!(target: "tau_cli::startup", socket_path = %socket_path.display(), "connecting to harness daemon socket");
+    let stream = UnixStream::connect(&socket_path)?;
+    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "connected to harness daemon socket");
+    let read_stream = stream.try_clone()?;
+    let socket_shutdown_stream = read_stream.try_clone()?;
+    Ok(UiConnection {
+        read_stream: Box::new(read_stream),
+        writer: Arc::new(Mutex::new(UiWriter::new(stream, ui_io_meter.clone()))),
+        socket_shutdown_stream: Some(socket_shutdown_stream),
+    })
+}
 
 /// Lock the writer, write one frame and flush. Returns the underlying
 /// `io::Error` on failure so callers can use `?` or discard with
@@ -642,7 +681,7 @@ pub(crate) fn run_chat(
     } else {
         Some(daemon_output_for_session(session_id)?)
     };
-    let daemon = resolve_daemon(
+    let mut daemon = resolve_daemon(
         attach,
         session_id,
         session_status,
@@ -653,18 +692,14 @@ pub(crate) fn run_chat(
             extension: extension_cli_overrides,
             harness_config: harness_config_overrides,
         },
+        !attach,
     )?;
-    let socket_path = daemon.socket_path();
-
-    // Connect and split into independent reader/writer — no mutex
-    // needed since they operate on cloned halves of the same stream.
-    tracing::debug!(target: "tau_cli::startup", socket_path = %socket_path.display(), "connecting to harness daemon socket");
-    let stream = UnixStream::connect(&socket_path)?;
-    tracing::debug!(target: "tau_cli::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "connected to harness daemon socket");
-    let read_stream = stream.try_clone()?;
-    let socket_shutdown_stream = read_stream.try_clone()?;
     let ui_io_meter = UiIoMeter::default();
-    let writer: WriterHandle = Arc::new(Mutex::new(UiWriter::new(stream, ui_io_meter.clone())));
+    let UiConnection {
+        read_stream,
+        writer,
+        socket_shutdown_stream,
+    } = connect_ui_transport(&mut daemon, &ui_io_meter, startup_started_at)?;
 
     // Handshake.
     send_frame(&writer, &crate::ui_client::hello_message("tau-chat")).map_err(CliError::Io)?;
@@ -690,6 +725,18 @@ pub(crate) fn run_chat(
     let socket_remote_disconnected = remote_disconnected.clone();
     let socket_ui_io_meter = ui_io_meter.clone();
     let socket_reader = std::thread::spawn(move || {
+        let notify_disconnect = |reason: Option<String>| {
+            socket_remote_disconnected.store(true, Ordering::Release);
+            if let Some(handle) = socket_input_shutdown
+                .lock()
+                .expect(MUTEX_POISONED)
+                .as_ref()
+                .cloned()
+            {
+                handle.request_input_shutdown();
+            }
+            let _ = socket_event_tx.send(RendererCmd::RemoteDisconnect(reason));
+        };
         let mut reader = PeerInputReader::new(BufReader::new(read_stream));
         loop {
             match reader.read_message() {
@@ -706,16 +753,8 @@ pub(crate) fn run_chat(
                             }
                         }
                         HarnessOutputMessage::Disconnect(d) => {
-                            socket_remote_disconnected.store(true, Ordering::Release);
-                            if let Some(handle) = socket_input_shutdown
-                                .lock()
-                                .expect(MUTEX_POISONED)
-                                .as_ref()
-                                .cloned()
-                            {
-                                handle.request_input_shutdown();
-                            }
-                            RendererCmd::RemoteDisconnect(d.reason)
+                            notify_disconnect(d.reason);
+                            return;
                         }
                         _ => continue,
                     };
@@ -723,9 +762,13 @@ pub(crate) fn run_chat(
                         return;
                     }
                 }
-                Ok(None) => return,
+                Ok(None) => {
+                    notify_disconnect(Some("harness connection closed".to_owned()));
+                    return;
+                }
                 Err(error) => {
                     tracing::warn!(target: "tau_cli::ui", %error, "socket reader exiting");
+                    notify_disconnect(Some(format!("harness connection error: {error}")));
                     return;
                 }
             }
@@ -986,7 +1029,7 @@ impl InputLoopExit {
 
 fn shutdown_ui_connection(
     writer: WriterHandle,
-    socket_shutdown_stream: UnixStream,
+    socket_shutdown_stream: Option<UnixStream>,
     socket_reader: std::thread::JoinHandle<()>,
     renderer_thread: std::thread::JoinHandle<()>,
     exit: InputLoopExit,
@@ -1003,7 +1046,9 @@ fn shutdown_ui_connection(
     // by the main thread so the socket reader unblocks even if the daemon does
     // not close promptly after the best-effort disconnect.
     drop(writer);
-    let _ = socket_shutdown_stream.shutdown(Shutdown::Both);
+    if let Some(stream) = socket_shutdown_stream {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
 
     join_ui_thread(socket_reader, "socket reader");
     join_ui_thread(renderer_thread, "renderer");

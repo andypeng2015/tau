@@ -139,8 +139,18 @@ impl From<tau_session_inspect::InspectError> for CliError {
 // banner, and `tau --version`).
 // ---------------------------------------------------------------------------
 
-fn run_harness_component() -> Result<(), Box<dyn std::error::Error>> {
-    tau_harness::run_component_with_internal_tools(tau_harness_tools::builtin_handlers())
+fn run_harness_component_default() -> Result<(), Box<dyn std::error::Error>> {
+    run_harness_component(false)
+}
+
+fn run_harness_component(initial_ui_stdio: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if initial_ui_stdio {
+        tau_harness::run_component_with_internal_tools_and_initial_ui_stdio(
+            tau_harness_tools::builtin_handlers(),
+        )
+    } else {
+        tau_harness::run_component_with_internal_tools(tau_harness_tools::builtin_handlers())
+    }
 }
 
 fn build_revision() -> String {
@@ -614,11 +624,26 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 }
             },
 
-            cli::Command::Ext { name } => {
+            cli::Command::Ext {
+                name,
+                initial_ui_stdio,
+            } => {
                 reject_harness_config_overrides(&harness_config_overrides, "ext")?;
+                if initial_ui_stdio && name != "harness" {
+                    return Err(CliError::Participant(
+                        "--initial-ui-stdio is only valid for `tau ext harness`".to_owned(),
+                    ));
+                }
+                if name == "harness" && initial_ui_stdio {
+                    ui_logging::init_stderr_from_env(
+                        "tau_harness=info,tau_cli=info,provider-builtin=info",
+                    );
+                    return run_harness_component(true)
+                        .map_err(|e| CliError::Participant(e.to_string()));
+                }
                 let built_in_components = [Component {
                     name: "harness",
-                    runner: run_harness_component,
+                    runner: run_harness_component_default,
                     logging: ComponentLogging::CliStderr,
                 }];
                 let component = built_in_components
