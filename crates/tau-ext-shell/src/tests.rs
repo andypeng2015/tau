@@ -1848,7 +1848,7 @@ fn edit_result_reports_minimal_status_without_model_diff() {
     .expect("edit");
 
     assert!(cbor_map_field(&output.result, "path").is_none());
-    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
+    assert_eq!(cbor_int_field(&output.result, "edits"), Some(1));
     assert_eq!(cbor_bool_field(&output.result, "changed"), Some(true));
     assert_eq!(
         cbor_int_field(&output.result, "new_max_valid_start_line"),
@@ -1879,7 +1879,7 @@ fn edit_self_replacement_counts_without_diff() {
     .expect("edit");
 
     assert!(cbor_map_field(&output.result, "path").is_none());
-    assert_eq!(cbor_int_field(&output.result, "replacements"), Some(1));
+    assert_eq!(cbor_int_field(&output.result, "edits"), Some(1));
     assert_eq!(cbor_bool_field(&output.result, "changed"), Some(false));
     assert_eq!(
         cbor_int_field(&output.result, "new_max_valid_start_line"),
@@ -1902,7 +1902,7 @@ fn edit_new_file_reports_created_as_changed() {
     .expect("edit")
     .result;
 
-    assert_eq!(cbor_int_field(&result, "replacements"), Some(1));
+    assert_eq!(cbor_int_field(&result, "edits"), Some(1));
     assert_eq!(cbor_bool_field(&result, "changed"), Some(true));
     assert_eq!(cbor_int_field(&result, "new_max_valid_start_line"), Some(2));
     assert_eq!(cbor_int_field(&result, "total_bytes"), Some(8));
@@ -2871,7 +2871,7 @@ fn edit_uses_original_line_numbers_for_multiple_replacements() {
     let Event::ToolResult(result) = result else {
         panic!("expected tool result");
     };
-    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(2));
+    assert_eq!(cbor_map_int(&result.result, "edits"), Some(2));
     assert_eq!(
         cbor_map_int(&result.result, "new_max_valid_start_line"),
         Some(5)
@@ -2916,7 +2916,7 @@ fn edit_replaces_exact_line_range() {
         result.display.as_ref().map(|display| display.args.as_str()),
         Some(expected_args.as_str())
     );
-    assert_eq!(cbor_map_int(&result.result, "replacements"), Some(1));
+    assert_eq!(cbor_map_int(&result.result, "edits"), Some(1));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "fish\ncat\nfish\n"

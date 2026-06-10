@@ -617,7 +617,7 @@ fn edit_display_args(path: &str, ranges: &[String]) -> String {
 }
 
 fn edit_result_value(
-    replacements: usize,
+    edits: usize,
     changed: bool,
     new_max_valid_start_line: usize,
     total_bytes: usize,
@@ -625,8 +625,8 @@ fn edit_result_value(
 ) -> CborValue {
     let mut fields = vec![
         (
-            CborValue::Text("replacements".to_owned()),
-            CborValue::Integer((replacements as i64).into()),
+            CborValue::Text("edits".to_owned()),
+            CborValue::Integer((edits as i64).into()),
         ),
         (
             CborValue::Text("changed".to_owned()),
