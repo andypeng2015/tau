@@ -229,15 +229,12 @@ where
             name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
             model_visible_name: None,
             description: Some(
-                "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+                "Use the `apply_patch` tool to edit files."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Custom,
             parameters: None,
-            format: Some(tau_proto::ToolFormat::Grammar {
-                syntax: tau_proto::ToolGrammarSyntax::Lark,
-                definition: crate::tools::apply_patch::APPLY_PATCH_LARK_GRAMMAR.to_owned(),
-            }),
+            format: Some(tau_proto::ToolFormat::Text),
             enabled_by_default: false,
             background_support: None,
         },

@@ -10,6 +10,7 @@ use crate::tools::world::ShellWorld;
 
 const SUMMARY_HEADER: &str = "Success. Updated the following files:";
 
+#[expect(unused)]
 pub(crate) const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("apply_patch.lark");
 
 pub(crate) fn apply_patch(
