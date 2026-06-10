@@ -248,6 +248,7 @@ pub fn run_embedded_message_with_echo(
         tau_proto::SessionStartReason::Initial,
     )?;
     disable_echo_tool_context_gate_for_tests(&mut harness);
+    harness.enable_echo_tool_for_tests();
     let mut outcome = match harness.send_user_message(session_id, message, None) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -374,6 +375,7 @@ pub fn run_daemon_with_echo(
         session_start_reason(options.session_status),
     )?;
     disable_echo_tool_context_gate_for_tests(&mut harness);
+    harness.enable_echo_tool_for_tests();
 
     let tx = harness.tx.clone();
     thread::spawn(move || {

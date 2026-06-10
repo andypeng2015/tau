@@ -808,6 +808,7 @@ fn echo_harness_with_dirs_and_start_reason(
         start_reason,
     )?;
     h.agent_id_rng = super::deterministic_agent_id_rng();
+    h.enable_echo_tool_for_tests();
     // not let its startup context-provider registration defer unrelated prompt
     // dispatch assertions; readiness-specific tests register providers directly.
     h.agent_context_providers.clear();

@@ -2035,6 +2035,17 @@ enum BackgroundCompletionPromptMode {
 }
 
 impl Harness {
+    /// Enables the test-only echo tool explicitly for every configured role.
+    #[cfg(any(test, feature = "echo-agent"))]
+    pub(crate) fn enable_echo_tool_for_tests(&mut self) {
+        let echo = tau_proto::ToolName::new("echo");
+        for role in self.available_roles.values_mut() {
+            if !role.enable_tools.iter().any(|tool| tool == &echo) {
+                role.enable_tools.push(echo.clone());
+            }
+        }
+    }
+
     #[cfg(any(test, feature = "echo-agent"))]
     pub(crate) fn new_with_provider(
         state_dir: impl Into<PathBuf>,
@@ -9016,11 +9027,6 @@ impl Harness {
         group: Option<&tau_proto::ToolGroup>,
         role_name: &str,
     ) -> bool {
-        #[cfg(any(test, feature = "echo-agent"))]
-        if spec.name.as_str() == "echo" {
-            return true;
-        }
-
         let Some(role) = self.available_roles.get(role_name) else {
             return spec.enabled_by_default;
         };
