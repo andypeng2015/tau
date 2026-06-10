@@ -594,7 +594,6 @@ fn parse_patch(patch: &str) -> Result<Vec<Hunk>, String> {
 
                 let mut old_lines = Vec::new();
                 let mut new_lines = Vec::new();
-                let mut saw_change = false;
                 let mut is_end_of_file = false;
                 while index + 1 < lines.len()
                     && !lines[index].starts_with("@@")
@@ -606,31 +605,32 @@ fn parse_patch(patch: &str) -> Result<Vec<Hunk>, String> {
                         break;
                     }
                     let mut chars = lines[index].chars();
-                    let prefix = chars
-                        .next()
-                        .ok_or_else(|| "unexpected empty hunk line".to_owned())?;
-                    let rest = chars.as_str().to_owned();
-                    match prefix {
-                        ' ' => {
+                    match chars.next() {
+                        None => {
+                            old_lines.push(String::new());
+                            new_lines.push(String::new());
+                        }
+                        Some(' ') => {
+                            let rest = chars.as_str().to_owned();
                             old_lines.push(rest.clone());
                             new_lines.push(rest);
                         }
-                        '-' => {
+                        Some('-') => {
+                            let rest = chars.as_str().to_owned();
                             old_lines.push(rest);
-                            saw_change = true;
                         }
-                        '+' => {
+                        Some('+') => {
+                            let rest = chars.as_str().to_owned();
                             new_lines.push(rest);
-                            saw_change = true;
                         }
                         _ => return Err(format!("invalid update hunk line: {}", lines[index])),
                     }
                     index += 1;
                 }
 
-                if !saw_change {
+                if old_lines.is_empty() && new_lines.is_empty() {
                     return Err(format!(
-                        "Update File hunk for {} must contain a change",
+                        "Update File hunk for {} must contain at least one line",
                         path
                     ));
                 }

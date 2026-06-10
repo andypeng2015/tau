@@ -22,6 +22,27 @@ fn compute_replacements_with_context() {
 }
 
 #[test]
+fn context_only_chunk_can_position_later_update_chunk() {
+    // Codex-style patches sometimes use an initial context-only chunk as a
+    // cursor before a later chunk performs the real edit. Accept that shape so
+    // Tau can apply patches generated for the same apply_patch format.
+    let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n fn anchor() {\n@@\n }\n\n+#[test]\n+fn inserted() {}\n+\n #[test]\n fn next() {}\n*** End Patch";
+    let hunks = parse_patch(patch).expect("context-only chunk should parse");
+    let [Hunk::Update { chunks, .. }] = hunks.as_slice() else {
+        panic!("expected one update hunk");
+    };
+
+    let original = "fn before() {}\n\nfn anchor() {\n}\n\n#[test]\nfn next() {}\n";
+    let new_contents = derive_new_contents_from_chunks(Path::new("file.txt"), original, chunks)
+        .expect("context-only chunk should guide the later insertion");
+
+    assert_eq!(
+        new_contents,
+        "fn before() {}\n\nfn anchor() {\n}\n\n#[test]\nfn inserted() {}\n\n#[test]\nfn next() {}\n"
+    );
+}
+
+#[test]
 fn format_single_file_diff_payload() {
     let summary = format_summary(&[AppliedChange {
         display_path: "file.txt".to_owned(),
