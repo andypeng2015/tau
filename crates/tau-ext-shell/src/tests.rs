@@ -613,7 +613,7 @@ fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
     }
     assert_eq!(
         fs::read_to_string(&edit_path).expect("edited file"),
-        "hello"
+        "hello\n"
     );
 
     writer
@@ -778,7 +778,7 @@ fn dir_lock_blocks_conflicting_edit_until_unlock() {
     }
     assert_eq!(
         fs::read_to_string(&edit_path).expect("edited file"),
-        "hello"
+        "hello\n"
     );
 
     writer
@@ -1058,7 +1058,7 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-edit" => {
                 assert_eq!(
                     fs::read_to_string(child_dir.join("file.txt")).expect("same-agent edit file"),
-                    "hello"
+                    "hello\n"
                 );
                 break;
             }
@@ -1250,7 +1250,7 @@ fn same_agent_edit_reenters_manual_lock_while_shell_auto_lock_is_active() {
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "same-agent-edit" => {
                 assert_eq!(
                     fs::read_to_string(&edit_path).expect("same-agent edit file"),
-                    "hello"
+                    "hello\n"
                 );
                 break;
             }
@@ -2058,7 +2058,7 @@ fn extension_edit_creates_file() {
     assert_eq!(result.tool_name, EDIT_TOOL_NAME);
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "written content"
+        "written content\n"
     );
 
     writer
@@ -2159,7 +2159,7 @@ fn extension_edit_creates_directories() {
     assert!(matches!(result, Event::ToolResult(_)));
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "deep content"
+        "deep content\n"
     );
 
     writer
@@ -2714,7 +2714,7 @@ fn edit_adds_missing_line_ending_before_following_content() {
 }
 
 #[test]
-fn edit_allows_no_final_newline_at_end_of_file() {
+fn edit_preserves_final_newline_at_end_of_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "before\ntarget\n").expect("write");
@@ -2723,12 +2723,12 @@ fn edit_allows_no_final_newline_at_end_of_file() {
         &file_path,
         vec![guarded_line_edit(2, 2, "replacement", "target")],
     ))
-    .expect("last line replacement may omit final newline")
+    .expect("last line replacement should preserve final newline")
     .result;
 
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
-        "before\nreplacement"
+        "before\nreplacement\n"
     );
 }
 

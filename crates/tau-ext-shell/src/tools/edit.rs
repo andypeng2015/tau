@@ -68,7 +68,6 @@ pub(crate) fn edit_file(
             &original_lines,
             &range,
             start_byte,
-            end_byte,
         );
         replacements.push(LineReplacement {
             start_line: range.start_line,
@@ -171,32 +170,39 @@ fn normalize_new_text_line_ending(
     original_lines: &LineIndex,
     range: &EditRange,
     start_byte: usize,
-    end_byte: usize,
 ) -> bool {
     if new_text.is_empty() {
         return false;
     }
 
+    let mut changed = false;
     if range.is_empty()
         && 0 < start_byte
         && start_byte == original_bytes.len()
         && !original_lines.has_trailing_line_ending()
     {
-        return maybe_prepend_missing_boundary_line_ending(new_text);
+        changed |= maybe_prepend_missing_boundary_line_ending(new_text);
     }
 
-    if original_bytes.len() <= end_byte || new_text.ends_with(b"\n") || new_text.ends_with(b"\r") {
-        return false;
+    if new_text.ends_with(b"\n") || new_text.ends_with(b"\r") {
+        return changed;
     }
 
-    let line = if range.is_empty() {
-        range.start_line
+    let line_ending = if range.is_empty() {
+        if range.start_line <= original_lines.total_lines() {
+            original_lines
+                .line_ending_for_line(range.start_line, original_bytes)
+                .unwrap_or(b"\n")
+        } else {
+            b"\n"
+        }
     } else {
-        range.end_line_exclusive.saturating_sub(1)
+        let line = range.end_line_exclusive.saturating_sub(1);
+        let Some(line_ending) = original_lines.line_ending_for_line(line, original_bytes) else {
+            return changed;
+        };
+        line_ending
     };
-    let line_ending = original_lines
-        .line_ending_for_line(line, original_bytes)
-        .unwrap_or(b"\n");
     new_text.extend_from_slice(line_ending);
     true
 }
