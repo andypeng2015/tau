@@ -12,7 +12,7 @@ use crate::tools::world::ShellWorld;
 use crate::truncate::truncate_line_oriented;
 
 const MAX_EDITS_PER_CALL: usize = 100;
-const GUARD_MISMATCH_CONTEXT_LINES: usize = 10;
+const CONTEXT_LINE_MISMATCH_CONTEXT_LINES: usize = 10;
 
 pub(crate) fn edit_file(
     arguments: &CborValue,
@@ -57,7 +57,7 @@ pub(crate) fn edit_file(
         })?;
         requested_ranges.push(range.display.clone());
         display_args = edit_display_args(&display_path, &requested_ranges);
-        let guard = parse_required_guard(edit, &display_args)?;
+        let context_line = parse_required_context_line(edit, &display_args)?;
         let start_byte = original_lines.byte_start_for_line(range.start_line, original_bytes.len());
         let end_byte =
             original_lines.byte_start_for_line(range.end_line_exclusive, original_bytes.len());
@@ -75,12 +75,12 @@ pub(crate) fn edit_file(
             start_byte,
             end_byte,
             new_text,
-            guard,
+            context_line,
         });
     }
 
     validate_non_overlapping(&replacements, &display_args)?;
-    validate_guards(
+    validate_context_lines(
         &replacements,
         &original_bytes,
         &original_lines,
@@ -155,13 +155,7 @@ struct LineReplacement<'a> {
     start_byte: usize,
     end_byte: usize,
     new_text: Vec<u8>,
-    guard: &'a str,
-}
-
-impl LineReplacement<'_> {
-    fn is_empty(&self) -> bool {
-        self.start_line == self.end_line_exclusive
-    }
+    context_line: &'a str,
 }
 
 fn normalize_new_text_line_ending(
@@ -327,24 +321,24 @@ fn validate_non_overlapping(
     Ok(())
 }
 
-fn validate_guards(
+fn validate_context_lines(
     replacements: &[LineReplacement<'_>],
     original_bytes: &[u8],
     original_lines: &LineIndex,
     display_args: &str,
 ) -> Result<(), ToolFailure> {
     for replacement in replacements {
-        let guard = replacement.guard;
-        if original_lines.line_content_text(replacement.start_line, original_bytes) == Some(guard) {
+        let context_line = replacement.context_line;
+        let context_line_number = replacement.start_line.saturating_sub(1);
+        let actual_context_line = if context_line_number == 0 {
+            Some("")
+        } else {
+            original_lines.line_content_text(context_line_number, original_bytes)
+        };
+        if actual_context_line == Some(context_line) {
             continue;
         }
-        if replacement.is_empty()
-            && original_lines.total_lines().saturating_add(1) == replacement.start_line
-            && guard.is_empty()
-        {
-            continue;
-        }
-        return Err(guard_mismatch_failure(
+        return Err(context_line_mismatch_failure(
             replacement,
             original_bytes,
             display_args,
@@ -353,16 +347,18 @@ fn validate_guards(
     Ok(())
 }
 
-fn guard_mismatch_failure(
+fn context_line_mismatch_failure(
     replacement: &LineReplacement<'_>,
     original_bytes: &[u8],
     display_args: &str,
 ) -> ToolFailure {
     let start_line = replacement.start_line;
-    let context_start_line = start_line
-        .saturating_sub(GUARD_MISMATCH_CONTEXT_LINES)
+    let context_line_number = start_line.saturating_sub(1);
+    let context_anchor_line = context_line_number.max(1);
+    let context_start_line = context_anchor_line
+        .saturating_sub(CONTEXT_LINE_MISMATCH_CONTEXT_LINES)
         .max(1);
-    let context_end_line = start_line.saturating_add(GUARD_MISMATCH_CONTEXT_LINES);
+    let context_end_line = context_anchor_line.saturating_add(CONTEXT_LINE_MISMATCH_CONTEXT_LINES);
     let ranges = vec![ReadLineRange {
         start_line: context_start_line,
         end_line: Some(context_end_line),
@@ -375,8 +371,8 @@ fn guard_mismatch_failure(
             CborValue::Text(truncated.content.clone()),
         ),
         (
-            CborValue::Text("guard_start_line".to_owned()),
-            CborValue::Integer((start_line as i64).into()),
+            CborValue::Text("context_line_number".to_owned()),
+            CborValue::Integer((context_line_number as i64).into()),
         ),
     ];
     if !rendered.valid_utf8 {
@@ -402,9 +398,11 @@ fn guard_mismatch_failure(
         ));
     }
 
-    let mut failure = ToolFailure::new(format!("guard for line {start_line} did not match"))
-        .with_args(display_args.to_owned())
-        .with_details(CborValue::Map(details));
+    let mut failure = ToolFailure::new(format!(
+        "context_line before line {start_line} did not match"
+    ))
+    .with_args(display_args.to_owned())
+    .with_details(CborValue::Map(details));
     failure.display.stats = text_stats(&truncated.content);
     failure
 }
@@ -561,19 +559,19 @@ fn parse_required_line(
     }
 }
 
-fn parse_required_guard<'a>(
+fn parse_required_context_line<'a>(
     edit: &'a CborValue,
     display_args: &str,
 ) -> Result<&'a str, ToolFailure> {
     let CborValue::Map(entries) = edit else {
         return Err(with_display_args(
             display_args,
-            ToolFailure::new("each edit must have a string guard"),
+            ToolFailure::new("each edit must have a string context_line"),
         ));
     };
     for (key, value) in entries {
         if let CborValue::Text(key) = key
-            && key == "guard"
+            && key == "context_line"
         {
             return match value {
                 CborValue::Text(value) => {
@@ -581,21 +579,23 @@ fn parse_required_guard<'a>(
                     if value.contains('\n') || value.contains('\r') {
                         return Err(with_display_args(
                             display_args,
-                            ToolFailure::new("guard must not include embedded newline characters"),
+                            ToolFailure::new(
+                                "context_line must not include embedded newline characters",
+                            ),
                         ));
                     }
                     Ok(value)
                 }
                 _ => Err(with_display_args(
                     display_args,
-                    ToolFailure::new("guard must be a string"),
+                    ToolFailure::new("context_line must be a string"),
                 )),
             };
         }
     }
     Err(with_display_args(
         display_args,
-        ToolFailure::new("each edit must have a string guard"),
+        ToolFailure::new("each edit must have a string context_line"),
     ))
 }
 

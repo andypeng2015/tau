@@ -172,11 +172,10 @@ where
                  appends at EOF. All ranges use the original file numbering as if \
                  applied simultaneously. Non-empty replacements are kept as whole \
                  lines. Ranges must be non-overlapping. Missing files are treated as \
-                 empty and missing parent directories are created. Per-edit `guard` \
-                 must exactly match the original `start_line` content when that \
-                 line exists. Empty insertions before existing lines therefore guard \
-                 the line after the insertion slot. EOF appends and empty/missing \
-                 files have no `start_line` content and must use an empty guard."
+                 empty and missing parent directories are created. Per-edit `context_line` \
+                 must exactly match the original line immediately before `start_line`; \
+                 use an empty context_line when `start_line` is 1. EOF appends use \
+                 the original last line as context when the file is non-empty."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -209,12 +208,12 @@ where
                                     "type": "string",
                                     "description": "Replacement text. Non-empty replacements stay whole-line."
                                 },
-                                "guard": {
+                                "context_line": {
                                     "type": "string",
-                                    "description": "Exact expected content of the original start_line, including spaces and tabs, when that line exists. For empty insertions before an existing line, guard that following line. EOF appends and empty/missing-file creation have no start_line content and must use an empty string. An empty guard only matches an actually empty existing start_line, or these no-start-line special cases. If it does not match, the edit fails and returns correct current content of the guard line with context around it."
+                                    "description": "Exact expected content of the original line immediately before start_line, including spaces and tabs. Use an empty context_line when start_line is 1. Appends at EOF use the original last line as context when the file is non-empty. If it does not match, the edit fails and returns current line-numbered context around the expected context line."
                                 }
                             },
-                            "required": ["start_line", "end_line_exclusive", "newText", "guard"],
+                            "required": ["start_line", "end_line_exclusive", "newText", "context_line"],
                             "additionalProperties": false
                         }
                     }

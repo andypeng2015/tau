@@ -212,12 +212,13 @@ fn line_edit(start_line: i64, end_line: i64, new_text: &str) -> CborValue {
     ])
 }
 
-fn guarded_line_edit(start_line: i64, end_line: i64, new_text: &str, guard: &str) -> CborValue {
-    let end_line_exclusive = if guard.is_empty() && start_line == end_line {
-        end_line
-    } else {
-        end_line + 1
-    };
+fn context_line_edit(
+    start_line: i64,
+    end_line: i64,
+    new_text: &str,
+    context_line: &str,
+) -> CborValue {
+    let end_line_exclusive = end_line + 1;
     cbor_map(vec![
         ("start_line", CborValue::Integer(start_line.into())),
         (
@@ -225,15 +226,15 @@ fn guarded_line_edit(start_line: i64, end_line: i64, new_text: &str, guard: &str
             CborValue::Integer(end_line_exclusive.into()),
         ),
         ("newText", CborValue::Text(new_text.to_owned())),
-        ("guard", CborValue::Text(guard.to_owned())),
+        ("context_line", CborValue::Text(context_line.to_owned())),
     ])
 }
 
-fn guarded_half_open_edit(
+fn context_half_open_edit(
     start_line: i64,
     end_line_exclusive: i64,
     new_text: &str,
-    guard: &str,
+    context_line: &str,
 ) -> CborValue {
     cbor_map(vec![
         ("start_line", CborValue::Integer(start_line.into())),
@@ -242,7 +243,7 @@ fn guarded_half_open_edit(
             CborValue::Integer(end_line_exclusive.into()),
         ),
         ("newText", CborValue::Text(new_text.to_owned())),
-        ("guard", CborValue::Text(guard.to_owned())),
+        ("context_line", CborValue::Text(context_line.to_owned())),
     ])
 }
 
@@ -371,7 +372,12 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             let edit_item = &parameters["properties"]["edits"]["items"];
             assert_eq!(
                 edit_item["required"],
-                serde_json::json!(["start_line", "end_line_exclusive", "newText", "guard"])
+                serde_json::json!([
+                    "start_line",
+                    "end_line_exclusive",
+                    "newText",
+                    "context_line"
+                ])
             );
             assert_eq!(
                 edit_item["properties"]["after_line"],
@@ -384,7 +390,7 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
             assert_eq!(edit_item["properties"]["end_line"], serde_json::Value::Null);
             assert_eq!(edit_item["properties"]["oldText"], serde_json::Value::Null);
             assert_eq!(
-                edit_item["properties"]["guard"]["type"],
+                edit_item["properties"]["context_line"]["type"],
                 serde_json::json!("string")
             );
             found_edit_schema = true;
@@ -590,7 +596,7 @@ fn shell_dir_force_unlock_releases_overlapping_manual_lock() {
         .write_event(&tool_started(
             "edit-after-force-unlock",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
+            edit_arguments(&edit_path, vec![context_half_open_edit(1, 1, "hello", "")]),
             "agent-b",
         ))
         .expect("edit");
@@ -723,7 +729,7 @@ fn dir_lock_blocks_conflicting_edit_until_unlock() {
         .write_event(&tool_started(
             "blocked-edit",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
+            edit_arguments(&edit_path, vec![context_half_open_edit(1, 1, "hello", "")]),
             "agent-b",
         ))
         .expect("edit");
@@ -1047,7 +1053,7 @@ fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
             EDIT_TOOL_NAME,
             edit_arguments(
                 &child_dir.join("file.txt"),
-                vec![guarded_line_edit(1, 1, "hello", "")],
+                vec![context_half_open_edit(1, 1, "hello", "")],
             ),
             "agent-a",
         ))
@@ -1239,7 +1245,7 @@ fn same_agent_edit_reenters_manual_lock_while_shell_auto_lock_is_active() {
         .write_event(&tool_started(
             "same-agent-edit",
             EDIT_TOOL_NAME,
-            edit_arguments(&edit_path, vec![guarded_line_edit(1, 1, "hello", "")]),
+            edit_arguments(&edit_path, vec![context_half_open_edit(1, 1, "hello", "")]),
             "agent-a",
         ))
         .expect("same-agent edit");
@@ -1838,12 +1844,7 @@ fn edit_result_reports_minimal_status_without_model_diff() {
 
     let output = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(
-            1,
-            1,
-            "alpha BETA gamma\n",
-            "alpha beta gamma",
-        )],
+        vec![context_line_edit(1, 1, "alpha BETA gamma\n", "")],
     ))
     .expect("edit");
 
@@ -1873,7 +1874,7 @@ fn edit_self_replacement_counts_without_diff() {
 
     let output = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 1, "same\n", "same")],
+        vec![context_line_edit(1, 1, "same\n", "")],
     ))
     .expect("edit");
 
@@ -1896,7 +1897,7 @@ fn edit_new_file_reports_created_as_changed() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 1, "created\n", "")],
+        vec![context_half_open_edit(1, 1, "created\n", "")],
     ))
     .expect("edit")
     .result;
@@ -1922,7 +1923,7 @@ fn edit_existing_symlink_updates_target() {
 
     let result = edit_file(&edit_arguments(
         &link_path,
-        vec![guarded_line_edit(1, 1, "new\n", "old")],
+        vec![context_line_edit(1, 1, "new\n", "")],
     ))
     .expect("edit")
     .result;
@@ -1943,7 +1944,7 @@ fn edit_dangling_symlink_creates_target() {
 
     let result = edit_file(&edit_arguments(
         &link_path,
-        vec![guarded_line_edit(1, 1, "", "")],
+        vec![context_half_open_edit(1, 1, "", "")],
     ))
     .expect("edit")
     .result;
@@ -1954,32 +1955,35 @@ fn edit_dangling_symlink_creates_target() {
 }
 
 #[test]
-fn edit_guard_rejects_invalid_utf8_original_line() {
+fn edit_context_line_rejects_invalid_utf8_original_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("invalid.bin");
-    fs::write(&file_path, [0xff, 0xfe, b'a']).expect("write fixture");
+    fs::write(&file_path, b"abc\xffdef\nsecond\n").expect("write fixture");
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 2, "", "")],
+        vec![context_line_edit(2, 2, "SECOND\n", "abc�def")],
     ))
-    .expect_err("invalid UTF-8 guard should fail");
+    .expect_err("invalid UTF-8 context_line should fail");
 
-    assert_eq!(error.message, "guard for line 1 did not match");
+    assert_eq!(error.message, "context_line before line 2 did not match");
     let details = error.details.as_deref().expect("details");
     assert_eq!(
         cbor_map_text(details, "line-numbered content"),
-        Some("1(invalid-utf8,no_nl) ��a")
+        Some("1(invalid-utf8) abc�def\n2 second")
     );
     assert_eq!(cbor_bool_field(details, "valid_utf8"), Some(false));
-    assert_eq!(fs::read(&file_path).expect("read back"), [0xff, 0xfe, b'a']);
+    assert_eq!(
+        fs::read(&file_path).expect("read back"),
+        b"abc\xffdef\nsecond\n"
+    );
 }
 #[test]
 fn edit_rejects_edit_request_over_cap() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     let edits = (0..=100)
-        .map(|_| guarded_line_edit(1, 1, "x", ""))
+        .map(|_| context_half_open_edit(1, 1, "x", ""))
         .collect::<Vec<_>>();
 
     let error = edit_file(&edit_arguments(&file_path, edits))
@@ -1992,7 +1996,7 @@ fn edit_rejects_edit_request_over_cap() {
 #[test]
 fn edit_rejects_edit_request_over_cap_before_reading_file() {
     let edits = (0..=100)
-        .map(|_| guarded_line_edit(1, 1, "x", ""))
+        .map(|_| context_half_open_edit(1, 1, "x", ""))
         .collect::<Vec<_>>();
     let args = cbor_map(vec![
         (
@@ -2016,8 +2020,8 @@ fn edit_rejects_overlapping_ranges_without_partial_write() {
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![
-            guarded_line_edit(1, 2, "x\n", "aa"),
-            guarded_line_edit(2, 2, "y\n", "bb"),
+            context_line_edit(1, 2, "x\n", ""),
+            context_line_edit(2, 2, "y\n", "aa"),
         ],
     ))
     .expect_err("overlap should fail");
@@ -2043,7 +2047,7 @@ fn extension_edit_creates_file() {
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(
                 &file_path,
-                vec![guarded_line_edit(1, 1, "written content", "")],
+                vec![context_half_open_edit(1, 1, "written content", "")],
             ),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
@@ -2081,7 +2085,7 @@ fn extension_edit_missing_parent_reports_short_error() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![guarded_line_edit(1, 1, "x", "")]),
+            arguments: edit_arguments(&file_path, vec![context_half_open_edit(1, 1, "x", "")]),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2112,7 +2116,10 @@ fn extension_edit_directory_reports_short_error() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(Path::new("/tmp"), vec![guarded_line_edit(1, 1, "x", "")]),
+            arguments: edit_arguments(
+                Path::new("/tmp"),
+                vec![context_half_open_edit(1, 1, "x", "")],
+            ),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2147,7 +2154,7 @@ fn extension_edit_creates_directories() {
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
             arguments: edit_arguments(
                 &file_path,
-                vec![guarded_line_edit(1, 1, "deep content", "")],
+                vec![context_half_open_edit(1, 1, "deep content", "")],
             ),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
@@ -2661,7 +2668,7 @@ fn edit_rejects_zero_end_line_exclusive() {
             ("start_line", CborValue::Integer(1.into())),
             ("end_line_exclusive", CborValue::Integer(0.into())),
             ("newText", CborValue::Text("x".to_owned())),
-            ("guard", CborValue::Text("hello".to_owned())),
+            ("context_line", CborValue::Text("hello".to_owned())),
         ])],
     ))
     .expect_err("end_line_exclusive=0 should fail");
@@ -2681,7 +2688,7 @@ fn edit_rejects_end_line_exclusive_before_start_line() {
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(3, 1, "x", "world")],
+        vec![context_half_open_edit(3, 1, "x", "world")],
     ))
     .expect_err("end_line_exclusive before start_line should fail");
 
@@ -2703,7 +2710,7 @@ fn edit_adds_missing_line_ending_before_following_content() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "replacement", "target")],
+        vec![context_line_edit(2, 2, "replacement", "before")],
     ))
     .expect("replacement without line ending should be normalized")
     .result;
@@ -2721,7 +2728,7 @@ fn edit_preserves_final_newline_at_end_of_file() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "replacement", "target")],
+        vec![context_line_edit(2, 2, "replacement", "before")],
     ))
     .expect("last line replacement should preserve final newline")
     .result;
@@ -2740,7 +2747,7 @@ fn edit_preserves_original_crlf_when_adding_missing_line_ending() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "replacement", "target")],
+        vec![context_line_edit(2, 2, "replacement", "before")],
     ))
     .expect("replacement should reuse original line ending")
     .result;
@@ -2758,7 +2765,7 @@ fn edit_noop_after_normalization_reports_unchanged() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 1, "a", "a")],
+        vec![context_line_edit(1, 1, "a", "")],
     ))
     .expect("normalization may make an edit a no-op")
     .result;
@@ -2775,7 +2782,7 @@ fn edit_deletion_before_following_content_does_not_add_newline_header() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "", "target")],
+        vec![context_line_edit(2, 2, "", "before")],
     ))
     .expect("deletion should not be normalized")
     .result;
@@ -2793,7 +2800,7 @@ fn edit_preserves_original_cr_when_adding_missing_line_ending() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "replacement", "target")],
+        vec![context_line_edit(2, 2, "replacement", "before")],
     ))
     .expect("replacement should reuse original CR line ending")
     .result;
@@ -2845,8 +2852,8 @@ fn edit_uses_original_line_numbers_for_multiple_replacements() {
             arguments: edit_arguments(
                 &file_path,
                 vec![
-                    guarded_line_edit(1, 1, "x\ny\n", "a"),
-                    guarded_line_edit(3, 3, "z\n", "c"),
+                    context_line_edit(1, 1, "x\ny\n", ""),
+                    context_line_edit(3, 3, "z\n", "b"),
                 ],
             ),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
@@ -2888,7 +2895,7 @@ fn edit_replaces_exact_line_range() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![guarded_line_edit(2, 2, "cat\n", "fish")]),
+            arguments: edit_arguments(&file_path, vec![context_line_edit(2, 2, "cat\n", "fish")]),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -2924,7 +2931,7 @@ fn edit_appends_to_line_after_trailing_newline() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "cat\n", "")],
+        vec![context_half_open_edit(2, 2, "cat\n", "fish")],
     ))
     .expect("edit")
     .result;
@@ -2944,7 +2951,7 @@ fn edit_half_open_replaces_line_range() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 3, "TWO", "two")],
+        vec![context_half_open_edit(2, 3, "TWO", "one")],
     ))
     .expect("boundary replacement should edit line 2")
     .result;
@@ -2963,8 +2970,8 @@ fn edit_half_open_inserts_at_top_and_middle() {
     let output = edit_file(&edit_arguments(
         &file_path,
         vec![
-            guarded_half_open_edit(1, 1, "zero", "one"),
-            guarded_half_open_edit(2, 2, "middle", "two"),
+            context_half_open_edit(1, 1, "zero", ""),
+            context_half_open_edit(2, 2, "middle", "one"),
         ],
     ))
     .expect("empty half-open ranges should insert");
@@ -2981,16 +2988,16 @@ fn edit_half_open_inserts_at_top_and_middle() {
 }
 
 #[test]
-fn edit_half_open_guards_empty_insertion_with_start_line() {
+fn edit_half_open_context_lines_empty_insertion_with_previous_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "one\n").expect("write");
 
     edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 1, "zero\n", "one")],
+        vec![context_half_open_edit(1, 1, "zero\n", "")],
     ))
-    .expect("empty insertion before content should guard start_line");
+    .expect("empty insertion at BOF should accept empty context_line");
 
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
@@ -3006,7 +3013,7 @@ fn edit_half_open_appends_after_file_with_trailing_newline() {
 
     edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 2, "two\n", "")],
+        vec![context_half_open_edit(2, 2, "two\n", "one")],
     ))
     .expect("EOF insertion should not add blank line after existing line ending");
 
@@ -3024,7 +3031,7 @@ fn edit_half_open_inserts_before_line_without_trailing_newline() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 1, "zero", "one")],
+        vec![context_half_open_edit(1, 1, "zero", "")],
     ))
     .expect("insertion before unterminated content should stay line-oriented")
     .result;
@@ -3042,7 +3049,7 @@ fn edit_half_open_insertion_preserves_following_crlf() {
 
     edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 2, "middle", "two")],
+        vec![context_half_open_edit(2, 2, "middle", "one")],
     ))
     .expect("boundary insertion should use following line ending style");
 
@@ -3060,7 +3067,7 @@ fn edit_half_open_appends_after_file_without_trailing_newline() {
 
     let _result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 2, "two\n", "")],
+        vec![context_half_open_edit(2, 2, "two\n", "one")],
     ))
     .expect("EOF insertion should keep line boundary")
     .result;
@@ -3077,7 +3084,7 @@ fn edit_half_open_creates_empty_file() {
 
     edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 1, "hello\n", "")],
+        vec![context_half_open_edit(1, 1, "hello\n", "")],
     ))
     .expect("half-open insertion should create missing file");
 
@@ -3099,7 +3106,7 @@ fn edit_rejects_legacy_start_line_and_end_line() {
             ("start_line", CborValue::Integer(1.into())),
             ("end_line", CborValue::Integer(1.into())),
             ("newText", CborValue::Text("x\n".to_owned())),
-            ("guard", CborValue::Text("one".to_owned())),
+            ("context_line", CborValue::Text("one".to_owned())),
         ])],
     ))
     .expect_err("legacy edit ranges should fail");
@@ -3122,7 +3129,7 @@ fn edit_rejects_legacy_after_line_and_before_line() {
             ("after_line", CborValue::Integer(0.into())),
             ("before_line", CborValue::Integer(2.into())),
             ("newText", CborValue::Text("x\n".to_owned())),
-            ("guard", CborValue::Text("one".to_owned())),
+            ("context_line", CborValue::Text("one".to_owned())),
         ])],
     ))
     .expect_err("legacy boundary edit ranges should fail");
@@ -3141,7 +3148,7 @@ fn edit_replaces_empty_file_line_one() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 1, "hello\n", "")],
+        vec![context_half_open_edit(1, 1, "hello\n", "")],
     ))
     .expect("edit")
     .result;
@@ -3166,7 +3173,7 @@ fn edit_rejects_end_line_exclusive_past_end() {
         .write_event(&Event::ToolStarted(ToolStarted {
             call_id: "call-1".into(),
             tool_name: tau_proto::ToolName::new(EDIT_TOOL_NAME),
-            arguments: edit_arguments(&file_path, vec![guarded_half_open_edit(2, 4, "x", "")]),
+            arguments: edit_arguments(&file_path, vec![context_half_open_edit(2, 4, "x", "")]),
             agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
             originator: tau_proto::PromptOriginator::User,
         }))
@@ -3203,7 +3210,7 @@ fn edit_rejects_range_past_end_without_trailing_newline() {
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 2, "x", "hello")],
+        vec![context_line_edit(1, 2, "x", "")],
     ))
     .expect_err("range should fail");
 
@@ -3215,15 +3222,15 @@ fn edit_rejects_range_past_end_without_trailing_newline() {
 }
 
 #[test]
-fn edit_guard_allows_matching_first_line() {
+fn edit_context_line_allows_matching_first_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "alpha\nbeta\ngamma\n").expect("write");
 
-    // Guarded edits make the line-number assumption explicit before writing.
+    // Context-line edits make the line-number assumption explicit before writing.
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "BETA\n", "beta")],
+        vec![context_line_edit(2, 2, "BETA\n", "alpha")],
     ))
     .expect("edit")
     .result;
@@ -3236,7 +3243,7 @@ fn edit_guard_allows_matching_first_line() {
 }
 
 #[test]
-fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
+fn edit_context_line_rejects_stale_line_number_and_returns_context_line_context() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     let original = (1..=100)
@@ -3245,28 +3252,29 @@ fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
     fs::write(&file_path, &original).expect("write");
 
     // On mismatch, the file stays untouched and the agent gets read-like
-    // details around the line whose guard failed. This gives enough context to
-    // recover from stale line numbers without dumping context into the UI payload.
+    // details around the line whose context_line failed. This gives enough context
+    // to recover from stale line numbers without dumping context into the UI
+    // payload.
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![
-            guarded_line_edit(1, 1, "LINE 001\n", "line 001"),
-            guarded_line_edit(12, 40, "replacement\n", "wrong"),
+            context_line_edit(1, 1, "LINE 001\n", ""),
+            context_line_edit(12, 40, "replacement\n", "wrong"),
         ],
     ))
-    .expect_err("guard mismatch should fail");
+    .expect_err("context_line mismatch should fail");
 
-    let expected_context = (2..=22)
+    let expected_context = (1..=21)
         .map(|line| format!("{line} line {line:03}"))
         .collect::<Vec<_>>()
         .join("\n");
-    assert_eq!(error.message, "guard for line 12 did not match");
+    assert_eq!(error.message, "context_line before line 12 did not match");
     let details = error.details.as_deref().expect("details");
     assert_eq!(
         cbor_map_text(details, "line-numbered content"),
         Some(expected_context.as_str())
     );
-    assert_eq!(cbor_int_field(details, "guard_start_line"), Some(12));
+    assert_eq!(cbor_int_field(details, "context_line_number"), Some(11));
     assert_eq!(error.display.payload, None);
     assert_eq!(error.display.stats.lines, Some(21));
     assert_eq!(
@@ -3278,35 +3286,35 @@ fn edit_guard_rejects_stale_line_number_and_returns_guard_context() {
 }
 
 #[test]
-fn edit_rejects_non_empty_guard_for_missing_file_insertion() {
+fn edit_rejects_non_empty_context_line_for_missing_file_insertion() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("missing.txt");
 
-    // Missing files have no original start_line content, so creation must use
-    // an empty guard.
+    // Missing files have no line before the insertion point, so creation must
+    // use an empty context_line.
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 1, "created\n", "not-empty")],
+        vec![context_half_open_edit(1, 1, "created\n", "not-empty")],
     ))
-    .expect_err("non-empty guard on missing-file insertion should fail");
+    .expect_err("non-empty context_line on missing-file insertion should fail");
 
-    assert_eq!(error.message, "guard for line 1 did not match");
+    assert_eq!(error.message, "context_line before line 1 did not match");
     assert!(!file_path.exists());
 }
 
 #[test]
-fn edit_empty_insertion_rejects_stale_start_line_guard() {
+fn edit_empty_insertion_rejects_following_line_as_context_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "one\ntwo\n").expect("write");
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 2, "middle\n", "one")],
+        vec![context_half_open_edit(2, 2, "middle\n", "two")],
     ))
-    .expect_err("empty insertion should guard current start_line content");
+    .expect_err("empty insertion should reject following-line context");
 
-    assert_eq!(error.message, "guard for line 2 did not match");
+    assert_eq!(error.message, "context_line before line 2 did not match");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "one\ntwo\n"
@@ -3314,7 +3322,7 @@ fn edit_empty_insertion_rejects_stale_start_line_guard() {
 }
 
 #[test]
-fn edit_rejects_missing_guard_without_writing() {
+fn edit_rejects_missing_context_line_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "alpha\n").expect("write");
@@ -3323,9 +3331,9 @@ fn edit_rejects_missing_guard_without_writing() {
         &file_path,
         vec![line_edit(1, 1, "ALPHA\n")],
     ))
-    .expect_err("missing guard should fail");
+    .expect_err("missing context_line should fail");
 
-    assert_eq!(error.message, "each edit must have a string guard");
+    assert_eq!(error.message, "each edit must have a string context_line");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "alpha\n"
@@ -3333,7 +3341,7 @@ fn edit_rejects_missing_guard_without_writing() {
 }
 
 #[test]
-fn edit_guard_rejects_non_string_guard_without_writing() {
+fn edit_context_line_rejects_non_string_context_line_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "alpha\n").expect("write");
@@ -3344,12 +3352,12 @@ fn edit_guard_rejects_non_string_guard_without_writing() {
             ("start_line", CborValue::Integer(1.into())),
             ("end_line_exclusive", CborValue::Integer(2.into())),
             ("newText", CborValue::Text("ALPHA\n".to_owned())),
-            ("guard", CborValue::Integer(1.into())),
+            ("context_line", CborValue::Integer(1.into())),
         ])],
     ))
-    .expect_err("non-string guard should fail");
+    .expect_err("non-string context_line should fail");
 
-    assert_eq!(error.message, "guard must be a string");
+    assert_eq!(error.message, "context_line must be a string");
     assert_eq!(
         fs::read_to_string(&file_path).expect("read back"),
         "alpha\n"
@@ -3357,59 +3365,59 @@ fn edit_guard_rejects_non_string_guard_without_writing() {
 }
 
 #[test]
-fn edit_guard_trims_trailing_newline_characters() {
+fn edit_context_line_trims_trailing_newline_characters() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
 
-    for guard in ["alpha\n", "alpha\r", "alpha\r\n", "alpha\n\n"] {
-        fs::write(&file_path, "alpha\n").expect("write");
+    for context_line in ["alpha\n", "alpha\r", "alpha\r\n", "alpha\n\n"] {
+        fs::write(&file_path, "alpha\nbeta\n").expect("write");
         edit_file(&edit_arguments(
             &file_path,
-            vec![guarded_line_edit(1, 1, "ALPHA\n", guard)],
+            vec![context_line_edit(2, 2, "BETA\n", context_line)],
         ))
-        .expect("guard with trailing newline should match");
+        .expect("context_line with trailing newline should match");
 
         assert_eq!(
             fs::read_to_string(&file_path).expect("read back"),
-            "ALPHA\n"
+            "alpha\nBETA\n"
         );
     }
 }
 
 #[test]
-fn edit_guard_rejects_embedded_newline_characters_without_writing() {
+fn edit_context_line_rejects_embedded_newline_characters_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
-    fs::write(&file_path, "alpha\n").expect("write");
+    fs::write(&file_path, "alpha\nbeta\n").expect("write");
 
-    // Guards describe one line's content only, so embedded line endings are
+    // Context lines describe one line's content only, so embedded line endings are
     // malformed instead of being treated as ordinary mismatching text.
-    for guard in ["al\npha", "al\rpha", "al\r\npha"] {
+    for context_line in ["al\npha", "al\rpha", "al\r\npha"] {
         let error = edit_file(&edit_arguments(
             &file_path,
-            vec![guarded_line_edit(1, 1, "ALPHA\n", guard)],
+            vec![context_line_edit(2, 2, "BETA\n", context_line)],
         ))
-        .expect_err("guard with embedded newline should fail");
+        .expect_err("context_line with embedded newline should fail");
 
         assert_eq!(
             error.message,
-            "guard must not include embedded newline characters"
+            "context_line must not include embedded newline characters"
         );
         assert_eq!(
             fs::read_to_string(&file_path).expect("read back"),
-            "alpha\n"
+            "alpha\nbeta\n"
         );
     }
 }
 #[test]
-fn edit_guard_matches_crlf_line_without_ending() {
+fn edit_context_line_matches_crlf_line_without_ending() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "one\r\ntwo\r\n").expect("write");
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "TWO\r\n", "two")],
+        vec![context_line_edit(2, 2, "TWO\r\n", "one")],
     ))
     .expect("edit")
     .result;
@@ -3422,14 +3430,14 @@ fn edit_guard_matches_crlf_line_without_ending() {
 }
 
 #[test]
-fn edit_guard_allows_empty_append_line_after_trailing_newline() {
+fn edit_context_line_allows_empty_append_line_after_trailing_newline() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "fish\n").expect("write");
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "cat\n", "")],
+        vec![context_half_open_edit(2, 2, "cat\n", "fish")],
     ))
     .expect("edit")
     .result;
@@ -3449,7 +3457,7 @@ fn edit_handles_crlf_line_ranges() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(2, 2, "TWO\r\n", "two")],
+        vec![context_line_edit(2, 2, "TWO\r\n", "one")],
     ))
     .expect("edit")
     .result;
@@ -5478,19 +5486,22 @@ fn read_file_truncates_single_long_line() {
 }
 
 #[test]
-fn edit_guard_rejects_invalid_utf8_bytes_without_writing() {
+fn edit_context_line_rejects_invalid_utf8_bytes_without_writing() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.bin");
-    fs::write(&file_path, b"abc\xffdef\n").expect("write fixture");
+    fs::write(&file_path, b"abc\xffdef\nsecond\n").expect("write fixture");
 
     let error = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_line_edit(1, 1, "XYZ\n", "abc�def")],
+        vec![context_line_edit(2, 2, "SECOND\n", "abc�def")],
     ))
-    .expect_err("invalid UTF-8 guard should fail");
+    .expect_err("invalid UTF-8 context_line should fail");
 
-    assert_eq!(error.message, "guard for line 1 did not match");
-    assert_eq!(fs::read(&file_path).expect("read back"), b"abc\xffdef\n");
+    assert_eq!(error.message, "context_line before line 2 did not match");
+    assert_eq!(
+        fs::read(&file_path).expect("read back"),
+        b"abc\xffdef\nsecond\n"
+    );
 }
 #[test]
 fn run_find_double_star_matches_top_level_files() {

@@ -796,8 +796,8 @@ mod tests {
                         CborValue::Text("TWO\n".to_owned()),
                     ),
                     (
-                        CborValue::Text("guard".to_owned()),
-                        CborValue::Text("two".to_owned()),
+                        CborValue::Text("context_line".to_owned()),
+                        CborValue::Text("one".to_owned()),
                     ),
                 ])]),
             ),
