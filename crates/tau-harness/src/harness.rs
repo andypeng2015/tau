@@ -2003,7 +2003,7 @@ impl Harness {
                 }
                 let keep = self.handle_client_message(connection_id, message)?;
                 if !keep {
-                    let _ = self.bus.disconnect(connection_id);
+                    self.handle_disconnect(connection_id);
                     if self.startup_detach_requested {
                         return Ok(false);
                     }
@@ -3190,7 +3190,7 @@ impl Harness {
                             }
                             let keep = self.handle_client_message(&connection_id, *message)?;
                             if !keep {
-                                let _ = self.bus.disconnect(&connection_id);
+                                self.handle_disconnect(&connection_id);
                                 served_clients += 1;
                             }
                         }

@@ -2778,6 +2778,39 @@ fn hello_protocol_version_mismatch_is_rejected() {
     );
 }
 
+/// Ensures an explicit socket-client disconnect goes through the same cleanup
+/// path as an async disconnect, removing both bus and client-writer state.
+#[test]
+fn explicit_socket_disconnect_cleans_client_writer_and_bus_state() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let (server_end, _client_end) = UnixStream::pair().expect("pair");
+    h.accept_client(server_end).expect("accept client");
+    let socket_conn = h
+        .bus
+        .connections()
+        .into_iter()
+        .find(|metadata| metadata.origin == ConnectionOrigin::Socket)
+        .map(|metadata| metadata.id)
+        .expect("socket client connection");
+    assert!(h.bus.connection(socket_conn.as_str()).is_some());
+    assert!(h.client_writers.contains_key(&socket_conn));
+
+    h.tx.send(HarnessEvent::FromConnection {
+        connection_id: socket_conn.clone(),
+        message: Box::new(HarnessInputMessage::Disconnect(Disconnect {
+            reason: Some("test explicit disconnect".to_owned()),
+        })),
+    })
+    .expect("queue explicit disconnect");
+
+    h.run_event_loop(Some(1), false).expect("event loop exits");
+
+    assert!(h.bus.connection(socket_conn.as_str()).is_none());
+    assert!(!h.client_writers.contains_key(&socket_conn));
+}
+
 #[test]
 fn client_hello_protocol_mismatch_disconnects_only_client() {
     let td = TempDir::new().expect("tempdir");
