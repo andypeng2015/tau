@@ -2439,6 +2439,70 @@ impl Harness {
             .insert(agent_prompt_id.clone(), provider_connection_id);
     }
 
+    fn recover_failed_provider_prompt_route(
+        &mut self,
+        event: &Event,
+        provider_connection_id: &tau_proto::ConnectionId,
+        reason: &str,
+    ) {
+        let Event::AgentPromptCreated(prompt) = event else {
+            return;
+        };
+        let agent_prompt_id = prompt.agent_prompt_id.clone();
+        let cid = self.prompt_agents.get(&agent_prompt_id).cloned();
+        if let Some(cid) = cid.as_ref() {
+            let prompt_context = self.agents.get(cid).map(|conv| {
+                (
+                    conv.session_id.clone(),
+                    conv.originator.clone(),
+                    conv.agent_id.clone(),
+                )
+            });
+            if let Some((session_id, originator, Some(_))) = prompt_context {
+                self.publish_prompt_terminated(
+                    session_id,
+                    agent_prompt_id.clone(),
+                    AgentPromptTerminationReason::Canceled,
+                    originator,
+                );
+            }
+        }
+
+        self.prompt_agents.remove(agent_prompt_id.as_str());
+        self.pending_provider_prompts.remove(&agent_prompt_id);
+        if let Some(model) = self.prompt_models.remove(&agent_prompt_id) {
+            self.current_session_state.token_usage.total.requests = self
+                .current_session_state
+                .token_usage
+                .total
+                .requests
+                .saturating_sub(1);
+            if let Some(counts) = self
+                .current_session_state
+                .token_usage
+                .by_model
+                .get_mut(&model)
+            {
+                counts.requests = counts.requests.saturating_sub(1);
+            }
+        }
+        if let Some(cid) = cid {
+            if let Some(conv) = self.agents.get_mut(&cid) {
+                if conv.in_flight_prompt.as_ref() == Some(&agent_prompt_id) {
+                    conv.in_flight_prompt = None;
+                }
+                if conv.last_prompt_id.as_ref() == Some(&agent_prompt_id) {
+                    conv.last_prompt_id = None;
+                }
+            }
+            self.set_agent_turn_state(&cid, AgentTurnState::Idle);
+        }
+        self.emit_info(&format!(
+            "provider prompt route failed for `{agent_prompt_id}` via `{provider_connection_id}`: {reason}"
+        ));
+        self.try_advance_queue();
+    }
+
     /// Final commit: persist (when applicable), append to the event
     /// log, and broadcast on the bus. Does not consult interception
     /// state — the caller is responsible for getting here only when
@@ -2588,6 +2652,11 @@ impl Harness {
                         ?report,
                         "provider prompt route did not deliver"
                     );
+                    self.recover_failed_provider_prompt_route(
+                        &event,
+                        &provider_connection_id,
+                        "no provider connection accepted the prompt",
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -2596,6 +2665,11 @@ impl Harness {
                         provider_connection_id = %provider_connection_id,
                         %error,
                         "provider prompt route failed"
+                    );
+                    self.recover_failed_provider_prompt_route(
+                        &event,
+                        &provider_connection_id,
+                        &error.to_string(),
                     );
                 }
             }

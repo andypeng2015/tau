@@ -2050,6 +2050,49 @@ fn role_disabled_tool_is_reported_without_dispatch() {
     h.shutdown().expect("shutdown");
 }
 
+/// Ensures a failed direct provider prompt route unwinds in-flight prompt
+/// bookkeeping and emits user-visible lifecycle diagnostics.
+#[test]
+fn provider_prompt_route_failure_clears_prompt_bookkeeping() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let model: tau_proto::ModelId = "test/model".into();
+    h.provider_model_routes
+        .insert(model.clone(), "missing-provider".into());
+    h.agents.get_mut(&cid).expect("agent").model_override = Some(model);
+
+    let agent_prompt_id = h
+        .send_prompt_to_agent_for(&cid)
+        .expect("prompt should be constructed before route failure");
+
+    assert!(!h.prompt_agents.contains_key(agent_prompt_id.as_str()));
+    assert!(!h.prompt_models.contains_key(&agent_prompt_id));
+    assert!(!h.pending_provider_prompts.contains_key(&agent_prompt_id));
+    let conv = h.agents.get(&cid).expect("agent still loaded");
+    assert_eq!(conv.in_flight_prompt, None);
+    assert_eq!(conv.last_prompt_id, None);
+    assert!(matches!(conv.turn_state, AgentTurnState::Idle));
+    assert_eq!(h.current_session_state.token_usage.total.requests, 0);
+
+    let events = event_log_events(&h);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::AgentPromptTerminated(terminated)
+            if terminated.agent_prompt_id == agent_prompt_id
+                && terminated.reason == tau_proto::AgentPromptTerminationReason::Canceled
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::HarnessInfo(info)
+            if info.message.contains("provider prompt route failed")
+                && info.message.contains(agent_prompt_id.as_str())
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
 /// Ensures targetless user shell output is routed to the default user agent
 /// instead of panicking when the shell extension omits a target agent id.
 #[test]
