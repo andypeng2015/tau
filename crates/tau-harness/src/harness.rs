@@ -52,6 +52,7 @@ use crate::extension::{
     spawn_supervised,
 };
 use crate::format::{format_tool_progress, render_entry_preview};
+use crate::harness::agent_context::AgentContextStore;
 use crate::harness::current_session::CurrentSessionState;
 use crate::harness::extension_data::{
     ExtensionDataError, run_extension_data_append_file, run_extension_data_create_file,
@@ -429,23 +430,6 @@ fn load_system_prompt_templates(config_dir: Option<&Path>) -> HashMap<String, St
     templates
 }
 
-#[derive(Clone, Debug)]
-struct AgentContextContribution {
-    extension_name: String,
-    value: tau_proto::AgentContextValue,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AgentContextStore {
-    by_agent: BTreeMap<
-        tau_proto::AgentId,
-        BTreeMap<
-            tau_proto::AgentContextKey,
-            BTreeMap<tau_proto::ConnectionId, AgentContextContribution>,
-        >,
-    >,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PromptFragmentSource {
     RoleConfig {
@@ -524,65 +508,6 @@ fn sorted_tool_prompt_fragments(
             fragment: sourced.fragment,
         })
         .collect()
-}
-impl AgentContextStore {
-    /// Store or replace one contributor's value for an agent context key.
-    pub(crate) fn publish(
-        &mut self,
-        agent_id: tau_proto::AgentId,
-        key: tau_proto::AgentContextKey,
-        contributor: tau_proto::ConnectionId,
-        extension_name: String,
-        value: tau_proto::AgentContextValue,
-    ) {
-        self.by_agent
-            .entry(agent_id)
-            .or_default()
-            .entry(key)
-            .or_default()
-            .insert(
-                contributor,
-                AgentContextContribution {
-                    extension_name,
-                    value,
-                },
-            );
-    }
-
-    /// Return the Handlebars-visible `agent_context` object for one agent.
-    pub(crate) fn template_value(
-        &self,
-        agent_id: Option<&tau_proto::AgentId>,
-    ) -> serde_json::Value {
-        let mut object = serde_json::Map::new();
-        let Some(agent_id) = agent_id else {
-            return serde_json::Value::Object(object);
-        };
-        let Some(keys) = self.by_agent.get(agent_id) else {
-            return serde_json::Value::Object(object);
-        };
-        for (key, contributions) in keys {
-            let mut wrappers: Vec<_> = contributions
-                .iter()
-                .map(|(connection_id, contribution)| {
-                    (
-                        contribution.extension_name.clone(),
-                        connection_id.clone(),
-                        serde_json::json!({
-                            "extension_name": contribution.extension_name,
-                            "value": contribution.value.0,
-                        }),
-                    )
-                })
-                .collect();
-            wrappers.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-            object.insert(
-                key.to_string(),
-                serde_json::Value::Array(wrappers.into_iter().map(|(_, _, value)| value).collect()),
-            );
-        }
-        serde_json::Value::Object(object)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -975,6 +900,7 @@ fn validate_protocol_version(hello: &Hello) -> Result<(), HarnessError> {
 #[cfg(test)]
 mod tests;
 
+mod agent_context;
 mod current_session;
 mod dispatch;
 mod extension_data;
