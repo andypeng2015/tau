@@ -898,6 +898,12 @@ fn validate_protocol_version(hello: &Hello) -> Result<(), HarnessError> {
 }
 
 #[cfg(test)]
+mod agent_context_tests;
+#[cfg(test)]
+mod compaction_metadata_tests;
+#[cfg(test)]
+mod delegate_display_tests;
+#[cfg(test)]
 mod tests;
 
 mod agent_context;
@@ -947,6 +953,13 @@ pub(crate) enum AgentMessageRecipientStatus {
     Unknown,
 }
 
+/// Central harness event loop and runtime state.
+///
+/// `Harness` owns the event bus, live connections, durable session and agent
+/// stores, provider/tool routing state, and the currently bound session. Most
+/// fields remain crate-visible so focused harness submodules and regression
+/// tests can share the state while the implementation is gradually split into
+/// smaller owners.
 pub struct Harness {
     /// Sender side of the harness's central event channel. Cloned into
     /// each per-connection reader thread so they can feed
@@ -1165,9 +1178,8 @@ pub struct Harness {
     /// Prompt ids canceled by `/cancel`. Late agent events for these
     /// prompts are ignored and never folded into session state.
     pub(crate) canceled_prompts: std::collections::HashSet<AgentPromptId>,
-    /// In-flight auto-compaction summaries keyed by the temporary
-    /// side-conversation that is generating them.
-    /// Extension-started side-agent agents waiting for dispatch.
+    /// Extension-started side agents waiting for dispatch after their
+    /// requested role, initial prompt, and queued messages have been resolved.
     pending_start_agent_requests: VecDeque<PendingStartAgentRequest>,
     /// State for harness-owned delegate/wait tools.
     pub(crate) subagents: SubagentToolState,
@@ -3845,10 +3857,9 @@ impl Harness {
                 self.publish_event(Some(source_id), Event::ToolUnregister(unregister));
             }
             Event::ToolRequest(request) => {
-                // Track session attribution before publishing — the
-                // publish path's `session_id_for_event` reads
-                // `pending_tool_sessions` to attach the persisted
-                // record to the right session.
+                // Track the owning agent before publishing so semantic
+                // persistence can fold the tool request onto the right
+                // transcript branch and later terminal events can be enriched.
                 self.track_tool_request_session(&request);
                 // Stamp the publish with the owning agent so
                 // the fold lands on its branch. Without this, after
@@ -8830,10 +8841,9 @@ impl Harness {
         // an extension via StartAgentRequest, route the final text back
         // to the requesting extension as StartAgentResult and
         // tear down the side agent. The harness routes tool
-        // calls per-agent, so any in-flight
-        // pending_tool_invocations entries for this side agent
-        // have already been emitted into the bus and will complete
-        // normally even after teardown.
+        // calls per-agent, so scheduler-selected calls for this side
+        // agent have already been emitted into the bus and will
+        // complete normally even after teardown.
         if let tau_proto::PromptOriginator::Extension {
             ref name,
             ref query_id,
@@ -10124,12 +10134,3 @@ pub(crate) fn selector_matches_event(selectors: &[EventSelector], event: &Event)
         EventSelector::Prefix(prefix) => target_name.matches_prefix(prefix),
     })
 }
-
-#[cfg(test)]
-mod compaction_metadata_tests;
-
-#[cfg(test)]
-mod delegate_display_tests;
-
-#[cfg(test)]
-mod agent_context_tests;
