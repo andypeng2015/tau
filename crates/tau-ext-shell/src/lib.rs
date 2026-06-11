@@ -173,9 +173,10 @@ where
                  applied simultaneously. Non-empty replacements are kept as whole \
                  lines. Ranges must be non-overlapping. Missing files are treated as \
                  empty and missing parent directories are created. Per-edit `guard` \
-                 must exactly match the first original line content for non-empty \
-                 ranges; empty insertion ranges have no first line and must use an \
-                 empty guard."
+                 must exactly match the original `start_line` content when that \
+                 line exists. Empty insertions before existing lines therefore guard \
+                 the line after the insertion slot. EOF appends and empty/missing \
+                 files have no `start_line` content and must use an empty guard."
                     .to_owned(),
             ),
             tool_type: tau_proto::ToolType::Function,
@@ -210,7 +211,7 @@ where
                                 },
                                 "guard": {
                                     "type": "string",
-                                    "description": "For non-empty ranges, exact expected content of the first original line in the replaced range, including spaces and tabs. Empty insertion ranges have no first original line and must use an empty string. For non-empty ranges, an empty guard only matches an actually empty first line. If it does not match, the edit fails and returns correct current content of the guard line with context around it."
+                                    "description": "Exact expected content of the original start_line, including spaces and tabs, when that line exists. For empty insertions before an existing line, guard that following line. EOF appends and empty/missing-file creation have no start_line content and must use an empty string. An empty guard only matches an actually empty existing start_line, or these no-start-line special cases. If it does not match, the edit fails and returns correct current content of the guard line with context around it."
                                 }
                             },
                             "required": ["start_line", "end_line_exclusive", "newText", "guard"],

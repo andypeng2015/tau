@@ -2977,8 +2977,8 @@ fn edit_half_open_inserts_at_top_and_middle() {
     let output = edit_file(&edit_arguments(
         &file_path,
         vec![
-            guarded_half_open_edit(1, 1, "zero", ""),
-            guarded_half_open_edit(2, 2, "middle", ""),
+            guarded_half_open_edit(1, 1, "zero", "one"),
+            guarded_half_open_edit(2, 2, "middle", "two"),
         ],
     ))
     .expect("empty half-open ranges should insert");
@@ -2995,22 +2995,21 @@ fn edit_half_open_inserts_at_top_and_middle() {
 }
 
 #[test]
-fn edit_half_open_rejects_non_empty_guard_for_empty_insertion() {
+fn edit_half_open_guards_empty_insertion_with_start_line() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("edit.txt");
     fs::write(&file_path, "one\n").expect("write");
 
-    let error = edit_file(&edit_arguments(
+    edit_file(&edit_arguments(
         &file_path,
         vec![guarded_half_open_edit(1, 1, "zero\n", "one")],
     ))
-    .expect_err("empty insertion should require empty guard");
+    .expect("empty insertion before content should guard start_line");
 
     assert_eq!(
-        error.message,
-        "guard must be empty for empty insertion ranges"
+        fs::read_to_string(&file_path).expect("read back"),
+        "zero\none\n"
     );
-    assert_eq!(fs::read_to_string(&file_path).expect("read back"), "one\n");
 }
 
 #[test]
@@ -3039,7 +3038,7 @@ fn edit_half_open_inserts_before_line_without_trailing_newline() {
 
     let result = edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(1, 1, "zero", "")],
+        vec![guarded_half_open_edit(1, 1, "zero", "one")],
     ))
     .expect("insertion before unterminated content should stay line-oriented")
     .result;
@@ -3059,7 +3058,7 @@ fn edit_half_open_insertion_preserves_following_crlf() {
 
     edit_file(&edit_arguments(
         &file_path,
-        vec![guarded_half_open_edit(2, 2, "middle", "")],
+        vec![guarded_half_open_edit(2, 2, "middle", "two")],
     ))
     .expect("boundary insertion should use following line ending style");
 
@@ -3301,20 +3300,35 @@ fn edit_rejects_non_empty_guard_for_missing_file_insertion() {
     let tempdir = TempDir::new().expect("tempdir");
     let file_path = tempdir.path().join("missing.txt");
 
-    // Missing files are edited through an empty insertion range, which must
-    // use an empty guard because there is no first replaced line.
+    // Missing files have no original start_line content, so creation must use
+    // an empty guard.
     let error = edit_file(&edit_arguments(
         &file_path,
         vec![guarded_half_open_edit(1, 1, "created\n", "not-empty")],
     ))
-    .expect_err("non-empty guard on empty insertion should fail");
+    .expect_err("non-empty guard on missing-file insertion should fail");
 
-    assert_eq!(
-        error.message,
-        "guard must be empty for empty insertion ranges"
-    );
-    assert!(error.details.is_none());
+    assert_eq!(error.message, "guard for line 1 did not match");
     assert!(!file_path.exists());
+}
+
+#[test]
+fn edit_empty_insertion_rejects_stale_start_line_guard() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let file_path = tempdir.path().join("edit.txt");
+    fs::write(&file_path, "one\ntwo\n").expect("write");
+
+    let error = edit_file(&edit_arguments(
+        &file_path,
+        vec![guarded_half_open_edit(2, 2, "middle\n", "one")],
+    ))
+    .expect_err("empty insertion should guard current start_line content");
+
+    assert_eq!(error.message, "guard for line 2 did not match");
+    assert_eq!(
+        fs::read_to_string(&file_path).expect("read back"),
+        "one\ntwo\n"
+    );
 }
 
 #[test]

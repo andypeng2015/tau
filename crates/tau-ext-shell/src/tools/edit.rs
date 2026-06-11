@@ -164,6 +164,12 @@ struct LineReplacement<'a> {
     newline_added: bool,
 }
 
+impl LineReplacement<'_> {
+    fn is_empty(&self) -> bool {
+        self.start_line == self.end_line_exclusive
+    }
+}
+
 fn normalize_new_text_line_ending(
     new_text: &mut Vec<u8>,
     original_bytes: &[u8],
@@ -328,16 +334,13 @@ fn validate_guards(
 ) -> Result<(), ToolFailure> {
     for replacement in replacements {
         let guard = replacement.guard;
-        if replacement.start_line == replacement.end_line_exclusive {
-            if guard.is_empty() {
-                continue;
-            }
-            return Err(with_display_args(
-                display_args,
-                ToolFailure::new("guard must be empty for empty insertion ranges"),
-            ));
-        }
         if original_lines.line_content_text(replacement.start_line, original_bytes) == Some(guard) {
+            continue;
+        }
+        if replacement.is_empty()
+            && original_lines.total_lines().saturating_add(1) == replacement.start_line
+            && guard.is_empty()
+        {
             continue;
         }
         return Err(guard_mismatch_failure(
