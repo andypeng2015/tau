@@ -2050,6 +2050,71 @@ fn role_disabled_tool_is_reported_without_dispatch() {
     h.shutdown().expect("shutdown");
 }
 
+/// Ensures targetless user shell output is routed to the default user agent
+/// instead of panicking when the shell extension omits a target agent id.
+#[test]
+fn targetless_shell_output_injects_into_default_agent() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let agent_id = durable_agent_id_for_conversation(&h, &cid);
+
+    h.inject_user_shell_output(&tau_proto::ShellCommandFinished {
+        command_id: "shell-1".into(),
+        session_id: "s1".into(),
+        command: "printf hello".to_owned(),
+        include_in_context: true,
+        target_agent_id: None,
+        output: "hello".to_owned(),
+        exit_code: Some(0),
+        cancelled: false,
+    });
+
+    let injected = loaded_agent_events(&h, "s1")
+        .into_iter()
+        .find_map(|event| match event {
+            Event::AgentUserMessageInjected(injected) if injected.text.contains("printf hello") => {
+                Some(injected)
+            }
+            _ => None,
+        })
+        .expect("shell output injected into agent transcript");
+    assert_eq!(injected.agent_id, agent_id);
+    assert!(injected.text.contains("<user_shell"));
+    assert!(injected.text.contains("hello"));
+}
+
+/// Ensures stale or malformed shell finish events cannot inject output into the
+/// wrong session when an explicit target agent belongs to another session.
+#[test]
+fn shell_output_for_wrong_session_is_ignored() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let agent_id = durable_agent_id_for_conversation(&h, &cid);
+
+    h.inject_user_shell_output(&tau_proto::ShellCommandFinished {
+        command_id: "shell-2".into(),
+        session_id: "other-session".into(),
+        command: "printf wrong".to_owned(),
+        include_in_context: true,
+        target_agent_id: Some(agent_id),
+        output: "wrong".to_owned(),
+        exit_code: Some(0),
+        cancelled: false,
+    });
+
+    assert!(loaded_agent_events(&h, "s1").into_iter().all(|event| {
+        !matches!(
+            event,
+            Event::AgentUserMessageInjected(injected)
+                if injected.text.contains("printf wrong")
+        )
+    }));
+}
+
 #[test]
 fn agents_context_is_injected_when_agent_is_created() {
     let td = TempDir::new().expect("tempdir");

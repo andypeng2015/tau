@@ -4594,6 +4594,107 @@ impl Harness {
         self.agents.get(cid).and_then(|conv| conv.agent_id.clone())
     }
 
+    fn resolve_shell_output_target_agent(
+        &mut self,
+        finished: &tau_proto::ShellCommandFinished,
+    ) -> Option<(AgentId, tau_proto::AgentId)> {
+        if finished.session_id != self.current_session_id {
+            self.emit_info(&format!(
+                "shell output ignored: harness is bound to session `{}` but command finished for `{}`",
+                self.current_session_id.as_str(),
+                finished.session_id.as_str(),
+            ));
+            return None;
+        }
+
+        if let Some(target_agent_id) = finished.target_agent_id.as_ref() {
+            let target_agent_id = target_agent_id.to_string();
+            let Some(cid) = self.agent_routes.get(&target_agent_id).cloned() else {
+                self.emit_info(&format!(
+                    "shell output ignored: unknown target agent `{target_agent_id}`"
+                ));
+                return None;
+            };
+            let Some(conv) = self.agents.get(&cid) else {
+                self.emit_info(&format!(
+                    "shell output ignored: target agent `{target_agent_id}` is not loaded"
+                ));
+                return None;
+            };
+            if conv.session_id != finished.session_id {
+                self.emit_info(&format!(
+                    "shell output ignored: target agent `{target_agent_id}` is not in session `{}`",
+                    finished.session_id.as_str(),
+                ));
+                return None;
+            }
+            let Some(agent_id) = conv.agent_id.as_deref() else {
+                self.emit_info(&format!(
+                    "shell output ignored: target agent `{target_agent_id}` has no durable id"
+                ));
+                return None;
+            };
+            return Some((cid, crate::parse_agent_id(agent_id)));
+        }
+
+        self.default_shell_output_target_agent()
+    }
+
+    fn default_shell_output_target_agent(&mut self) -> Option<(AgentId, tau_proto::AgentId)> {
+        let mut candidates: Vec<_> = self
+            .agents
+            .iter()
+            .filter_map(|(cid, conv)| {
+                if conv.session_id != self.current_session_id || !conv.originator.is_user() {
+                    return None;
+                }
+                let agent_id = conv.agent_id.clone()?;
+                let last_user_interaction_time = self
+                    .agent_store
+                    .agent_meta(&agent_id)
+                    .ok()
+                    .flatten()
+                    .map(|meta| meta.last_user_interaction_time)
+                    .unwrap_or_default();
+                Some((last_user_interaction_time, cid.clone(), agent_id))
+            })
+            .collect();
+
+        match candidates.len() {
+            0 => {
+                let role = self.selected_role.clone();
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let cid =
+                    self.create_durable_user_agent(self.current_session_id.clone(), &role, cwd);
+                let agent_id = self
+                    .agents
+                    .get(&cid)
+                    .and_then(|conv| conv.agent_id.as_deref())
+                    .expect("new user agent has durable id");
+                Some((cid, crate::parse_agent_id(agent_id)))
+            }
+            1 => {
+                let (_, cid, agent_id) = candidates.pop().expect("one candidate");
+                Some((cid, crate::parse_agent_id(&agent_id)))
+            }
+            _ => {
+                candidates
+                    .sort_by_key(|(last_user_interaction_time, _, _)| *last_user_interaction_time);
+                let (selected_time, cid, agent_id) = candidates.pop().expect("last candidate");
+                let Some((previous_time, _, _)) = candidates.last() else {
+                    return Some((cid, crate::parse_agent_id(&agent_id)));
+                };
+                if *previous_time < selected_time {
+                    return Some((cid, crate::parse_agent_id(&agent_id)));
+                }
+                self.emit_info(
+                    "shell output ignored: multiple user agents exist and no explicit target was provided",
+                );
+                None
+            }
+        }
+    }
+
     fn handle_recall_queued_prompt(&mut self, req: &tau_proto::UiRecallQueuedPrompt) {
         if req.session_id != self.current_session_id {
             return;
@@ -7517,37 +7618,18 @@ impl Harness {
             "<user_shell command={:?} exit_code={:?}>\n{}\n</user_shell>",
             finished.command, exit, finished.output,
         );
-        let agent_id = finished
-            .target_agent_id
-            .clone()
-            .map(|agent_id| agent_id.to_string())
-            .or_else(|| {
-                self.runtime_agent_id_for_target_agent(finished.target_agent_id.as_deref())
-                    .and_then(|cid| self.agents.get(&cid).and_then(|conv| conv.agent_id.clone()))
-            })
-            .expect("agent has durable id");
+        let Some((cid, agent_id)) = self.resolve_shell_output_target_agent(finished) else {
+            return;
+        };
         let event = Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-            agent_id: crate::parse_agent_id(&agent_id),
+            agent_id,
             text,
             message_class: tau_proto::PromptMessageClass::User,
         });
-        // When the shell output belongs to the bound session, stamp
-        // the publish with the target agent so the fold lands
-        // on the branch whose transcript owned the command (and the
-        // post-commit hook syncs `c.head`). Other sessions:
-        // best-effort plain publish; nothing on this harness instance
-        // is reading their tree.
-        if finished.session_id == self.current_session_id {
-            if let Some(cid) =
-                self.runtime_agent_id_for_target_agent(finished.target_agent_id.as_deref())
-            {
-                self.publish_event_for_agent(&cid, None, event);
-            } else {
-                self.publish_event(None, event);
-            }
-        } else {
-            self.publish_event(None, event);
-        }
+        // Stamp the publish with the target agent so the fold lands on the
+        // branch whose transcript owned the command and the post-commit hook
+        // syncs the conversation head.
+        self.publish_event_for_agent(&cid, None, event);
     }
 
     /// Convenience wrapper that dispatches a prompt for the first user agent in
