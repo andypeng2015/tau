@@ -1464,6 +1464,43 @@ enum BackgroundCompletionPromptMode {
     QueueOnly,
 }
 
+struct HarnessBaseParts {
+    /// Sender side of the harness event channel.
+    tx: Sender<HarnessEvent>,
+    /// Receiver side of the harness event channel.
+    rx: Receiver<HarnessEvent>,
+    /// Event bus configured with the desired subscription policy.
+    bus: EventBus,
+    /// Runtime state directory for this harness.
+    state_dir: PathBuf,
+    /// Session membership store, with the eager session already loaded.
+    store: SessionStore,
+    /// Per-agent transcript store.
+    agent_store: AgentStore,
+    /// Session id the harness is initially bound to.
+    current_session_id: SessionId,
+    /// Reason associated with the initial session binding.
+    current_session_start_reason: tau_proto::SessionStartReason,
+    /// Roles available after applying harness settings.
+    available_roles: HashMap<String, tau_config::settings::AgentRole>,
+    /// Role groups available for navigation and UI display.
+    available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
+    /// Runtime role overrides loaded from settings.
+    role_overrides: HashMap<String, tau_config::settings::AgentRole>,
+    /// Initially selected role name.
+    selected_role: String,
+    /// Initially selected model, if any provider metadata can resolve one.
+    selected_model: Option<ModelId>,
+    /// Template used to mint new agent ids.
+    agent_id_template: String,
+    /// Template used to display newly created agents.
+    agent_display_name_template: Option<String>,
+    /// Loaded system prompt templates keyed by template name.
+    system_prompt_templates: HashMap<String, String>,
+    /// Resolved Tau config/state directories.
+    dirs: tau_config::settings::TauDirs,
+}
+
 impl Harness {
     /// Enables the test-only echo tool explicitly for every configured role.
     #[cfg(any(test, feature = "echo-agent"))]
@@ -1473,6 +1510,77 @@ impl Harness {
             if !role.enable_tools.iter().any(|tool| tool == &echo) {
                 role.enable_tools.push(echo.clone());
             }
+        }
+    }
+
+    fn from_base_parts(parts: HarnessBaseParts) -> Self {
+        Self {
+            tx: parts.tx,
+            rx: parts.rx,
+            bus: parts.bus,
+            registry: ToolRegistry::new(),
+            action_registry: ActionRegistry::new(),
+            internal_tool_handlers: Vec::new(),
+            state_dir: parts.state_dir,
+            store: parts.store,
+            agent_store: parts.agent_store,
+            current_session_id: parts.current_session_id,
+            current_session_start_reason: parts.current_session_start_reason,
+            agent_id_rng: StdRng::from_entropy(),
+            tool_agents: HashMap::new(),
+            pending_tools: HashMap::new(),
+            completed_tool_calls: HashSet::new(),
+            pending_tool_providers: HashMap::new(),
+            pending_action_invocations: HashMap::new(),
+            event_log: EventLog::new(),
+            client_writers: HashMap::new(),
+            startup_detach_requested: false,
+            lifecycle_messages: Vec::new(),
+            replayable_harness_infos: Vec::new(),
+            extensions: ExtensionRuntimeState::default(),
+            prompt_agents: HashMap::new(),
+            agents: HashMap::new(),
+            agent_routes: HashMap::new(),
+            agent_states: HashMap::new(),
+            stopped_agent_ids: HashSet::new(),
+            turn_state: TurnState::Idle,
+            debug_log: None,
+            interceptors: InterceptorRegistry::default(),
+            pending_intercept: None,
+            deferred_publishes: VecDeque::new(),
+            pending_user_prompt_dispatches: VecDeque::new(),
+            pending_publish_idle_dispatches: VecDeque::new(),
+            available_models: Vec::new(),
+            provider_models_by_extension: HashMap::new(),
+            provider_model_info: HashMap::new(),
+            provider_model_routes: HashMap::new(),
+            pending_provider_prompts: HashMap::new(),
+            available_roles: parts.available_roles,
+            available_role_groups: parts.available_role_groups,
+            role_overrides: parts.role_overrides,
+            agent_id_template: parts.agent_id_template,
+            agent_display_name_template: parts.agent_display_name_template,
+            selected_role: parts.selected_role,
+            selected_model: parts.selected_model,
+            current_session_state: CurrentSessionState::default(),
+            prompt_models: HashMap::new(),
+            discovered_skills: built_in_discovered_skills(),
+            discovered_agents_files: Vec::new(),
+            agent_context: AgentContextStore::default(),
+            agent_working_directories: HashMap::new(),
+            agent_context_providers: HashSet::new(),
+            pending_agent_context_ready: HashMap::new(),
+            extension_prompt_fragments: BTreeMap::new(),
+            system_prompt_templates: parts.system_prompt_templates,
+            initialized_sessions: HashSet::new(),
+            pending_notices: PendingPromptNoticeState::default(),
+            tool_turn: ToolTurnMachine::default(),
+            suppressed_background_completion_prompts: HashSet::new(),
+            background_completion_targets: HashMap::new(),
+            canceled_prompts: HashSet::new(),
+            pending_start_agent_requests: VecDeque::new(),
+            subagents: SubagentToolState::default(),
+            dirs: parts.dirs,
         }
     }
 
@@ -1553,7 +1661,6 @@ impl Harness {
 
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
-        let available_models = Vec::new();
         let LoadedRoles {
             roles: available_roles,
             role_overrides,
@@ -1574,76 +1681,25 @@ impl Harness {
         );
         let mut store = store;
         let _ = store.load_session(eager_session_id)?;
-        let agents = std::collections::HashMap::new();
-
-        let mut harness = Self {
+        let mut harness = Self::from_base_parts(HarnessBaseParts {
             tx,
             rx,
             bus,
-            registry: ToolRegistry::new(),
-            action_registry: ActionRegistry::new(),
-            internal_tool_handlers: Vec::new(),
             state_dir: state_dir.clone(),
             store,
             agent_store,
             current_session_id: eager_session_id.into(),
             current_session_start_reason: eager_session_start_reason,
-            agent_id_rng: StdRng::from_entropy(),
-            tool_agents: std::collections::HashMap::new(),
-            pending_tools: std::collections::HashMap::new(),
-            completed_tool_calls: std::collections::HashSet::new(),
-            pending_tool_providers: std::collections::HashMap::new(),
-            pending_action_invocations: HashMap::new(),
-            event_log: EventLog::new(),
-            client_writers: std::collections::HashMap::new(),
-            startup_detach_requested: false,
-            lifecycle_messages: Vec::new(),
-            replayable_harness_infos: Vec::new(),
-            extensions: ExtensionRuntimeState::default(),
-            prompt_agents: std::collections::HashMap::new(),
-            agents,
-            agent_routes: HashMap::new(),
-            agent_states: HashMap::new(),
-            stopped_agent_ids: HashSet::new(),
-            turn_state: TurnState::Idle,
-            debug_log: None,
-            interceptors: InterceptorRegistry::default(),
-            pending_intercept: None,
-            deferred_publishes: VecDeque::new(),
-            pending_user_prompt_dispatches: VecDeque::new(),
-            pending_publish_idle_dispatches: VecDeque::new(),
-            available_models,
-            provider_models_by_extension: HashMap::new(),
-            provider_model_info: HashMap::new(),
-            provider_model_routes: HashMap::new(),
-            pending_provider_prompts: HashMap::new(),
             available_roles,
             available_role_groups,
             role_overrides,
-            agent_id_template: harness_settings.agent_id_template.clone(),
-            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             selected_role,
             selected_model,
-            current_session_state: CurrentSessionState::default(),
-            prompt_models: std::collections::HashMap::new(),
-            discovered_skills: built_in_discovered_skills(),
-            discovered_agents_files: Vec::new(),
-            agent_context: AgentContextStore::default(),
-            agent_working_directories: HashMap::new(),
-            agent_context_providers: HashSet::new(),
-            pending_agent_context_ready: HashMap::new(),
-            extension_prompt_fragments: BTreeMap::new(),
+            agent_id_template: harness_settings.agent_id_template.clone(),
+            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             system_prompt_templates,
-            initialized_sessions: std::collections::HashSet::new(),
-            pending_notices: PendingPromptNoticeState::default(),
-            tool_turn: ToolTurnMachine::default(),
-            suppressed_background_completion_prompts: HashSet::new(),
-            background_completion_targets: HashMap::new(),
-            canceled_prompts: std::collections::HashSet::new(),
-            pending_start_agent_requests: VecDeque::new(),
-            subagents: SubagentToolState::default(),
             dirs,
-        };
+        });
 
         // Debug log lives next to the eager-init session's events file
         // so the session dir stays self-contained: `events.cbor` +
@@ -1752,7 +1808,6 @@ impl Harness {
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "loading harness settings");
         let (harness_settings, harness_settings_error) = load_harness_settings_or_warn(&dirs);
         let system_prompt_templates = load_system_prompt_templates(dirs.config_dir.as_deref());
-        let available_models = Vec::new();
         let LoadedRoles {
             roles: available_roles,
             role_overrides,
@@ -1774,76 +1829,25 @@ impl Harness {
         );
         let mut store = store;
         let _ = store.load_session(eager_session_id)?;
-        let agents = std::collections::HashMap::new();
-
-        let mut harness = Self {
+        let mut harness = Self::from_base_parts(HarnessBaseParts {
             tx,
             rx,
             bus,
-            registry: ToolRegistry::new(),
-            action_registry: ActionRegistry::new(),
-            internal_tool_handlers: Vec::new(),
             state_dir: state_dir.clone(),
             store,
             agent_store,
             current_session_id: eager_session_id.into(),
             current_session_start_reason: eager_session_start_reason,
-            agent_id_rng: StdRng::from_entropy(),
-            tool_agents: std::collections::HashMap::new(),
-            pending_tools: std::collections::HashMap::new(),
-            completed_tool_calls: std::collections::HashSet::new(),
-            pending_tool_providers: std::collections::HashMap::new(),
-            pending_action_invocations: HashMap::new(),
-            event_log: EventLog::new(),
-            client_writers: std::collections::HashMap::new(),
-            startup_detach_requested: false,
-            lifecycle_messages: Vec::new(),
-            replayable_harness_infos: Vec::new(),
-            extensions: ExtensionRuntimeState::default(),
-            prompt_agents: std::collections::HashMap::new(),
-            agents,
-            agent_routes: HashMap::new(),
-            agent_states: HashMap::new(),
-            stopped_agent_ids: HashSet::new(),
-            turn_state: TurnState::Idle,
-            debug_log: None,
-            interceptors: InterceptorRegistry::default(),
-            pending_intercept: None,
-            deferred_publishes: VecDeque::new(),
-            pending_user_prompt_dispatches: VecDeque::new(),
-            pending_publish_idle_dispatches: VecDeque::new(),
-            available_models,
-            provider_models_by_extension: HashMap::new(),
-            provider_model_info: HashMap::new(),
-            provider_model_routes: HashMap::new(),
-            pending_provider_prompts: HashMap::new(),
             available_roles,
             available_role_groups,
             role_overrides,
-            agent_id_template: harness_settings.agent_id_template.clone(),
-            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             selected_role,
             selected_model,
-            current_session_state: CurrentSessionState::default(),
-            prompt_models: std::collections::HashMap::new(),
-            discovered_skills: built_in_discovered_skills(),
-            discovered_agents_files: Vec::new(),
-            agent_context: AgentContextStore::default(),
-            agent_working_directories: HashMap::new(),
-            agent_context_providers: HashSet::new(),
-            pending_agent_context_ready: HashMap::new(),
-            extension_prompt_fragments: BTreeMap::new(),
+            agent_id_template: harness_settings.agent_id_template.clone(),
+            agent_display_name_template: harness_settings.agent_display_name_template.clone(),
             system_prompt_templates,
-            initialized_sessions: std::collections::HashSet::new(),
-            pending_notices: PendingPromptNoticeState::default(),
-            tool_turn: ToolTurnMachine::default(),
-            suppressed_background_completion_prompts: HashSet::new(),
-            background_completion_targets: HashMap::new(),
-            canceled_prompts: std::collections::HashSet::new(),
-            pending_start_agent_requests: VecDeque::new(),
-            subagents: SubagentToolState::default(),
             dirs,
-        };
+        });
 
         let _ = harness.enable_debug_log(&sessions_dir.join(eager_session_id))?;
         tracing::debug!(target: "tau_harness::startup", elapsed_ms = startup_started_at.elapsed().as_millis(), "debug event log enabled");
