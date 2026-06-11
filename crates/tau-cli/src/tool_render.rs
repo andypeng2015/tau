@@ -295,7 +295,7 @@ pub(crate) struct ToolSummaryDisplay {
     pub(crate) removed: u64,
 }
 
-/// Build the completion descriptor for a finished `delegate` call by
+/// Build the completion descriptor for a finished `agent_start` call by
 /// carrying the cached progress (args + counters from the latest
 /// [`tau_proto::DelegateProgress`]) and replacing the trailing
 /// in-progress chip with output stats + the final `ok`/`err: message`
@@ -453,17 +453,17 @@ fn abbreviate_inline_text(text: &str) -> String {
     format!("{head}┄{tail}")
 }
 
-/// Render a `delegate` display with a dedicated suffix for the delegated agent.
-/// Completed delegates show input stats (`↘︎`) before output stats (`↖︎`), then
-/// progress counters and the final status. Cached descriptors may still have
-/// ` +role` embedded in `args`; strip that legacy copy so the line does not
-/// render both the old role chip and the new agent chip.
+/// Render an `agent_start` display with a dedicated suffix for the delegated
+/// agent. Completed delegates show input stats (`↘︎`) before output stats (`↖︎`),
+/// then progress counters and the final status. Cached descriptors may still
+/// have ` +role` embedded in `args`; strip that legacy copy so the line does
+/// not render both the old role chip and the new agent chip.
 pub(crate) fn render_delegate_display(
     display: &ToolUseState,
     agent_id: Option<&str>,
     legacy_role: Option<&str>,
 ) -> ToolCallDisplay {
-    let mut rendered = render_tool_use_state("delegate", display);
+    let mut rendered = render_tool_use_state("agent_start", display);
     let stats_chip = format_tool_use_state_stats(&display.stats);
     if !stats_chip.is_empty() {
         let marker = match display.status {

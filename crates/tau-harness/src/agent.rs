@@ -101,7 +101,7 @@ pub(crate) struct Agent {
     pub(crate) next_ctx_id: Option<String>,
     pub(crate) turn_state: AgentTurnState,
     /// For side agents spawned by a tool-implementing extension
-    /// (currently just `delegate`): the parent agent's tool call id
+    /// (currently just `agent_start`): the parent agent's tool call id
     /// that this conversation is fulfilling. Lets the harness emit
     /// [`tau_proto::DelegateProgress`] under that call id as the
     /// sub-agent runs. `None` for user agents and for non-tool

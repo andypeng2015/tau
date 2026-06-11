@@ -1,4 +1,4 @@
-You were started by agent `{self_agent_id}` using `delegate` tool to perform a task.
+You were started by agent `{self_agent_id}` using `agent_start` tool to perform a task.
 
 Only your first final response in this conversation will be automatically delivered to `{self_agent_id}` as a response, but you can use `message` tool to communicate with any agent at any time.
 

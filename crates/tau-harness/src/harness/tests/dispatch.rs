@@ -815,8 +815,7 @@ fn tool_invoke_call_ids(events: &Arc<Mutex<Vec<RoutedFrame>>>) -> Vec<String> {
 
 /// Invalid model arguments must be rejected before tool dispatch. The harness
 /// still emits a logical `ToolError` for user-visible UI state and a
-/// provider-facing error for the model, but no
-/// `ToolRequest`/`ToolStarted`.
+/// provider-facing error for the model, but no `ToolRequest`/`ToolStarted`.
 #[test]
 fn invalid_tool_arguments_are_rejected_before_logical_dispatch() {
     let td = TempDir::new().expect("tempdir");
@@ -4895,7 +4894,7 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
     h.shutdown().expect("shutdown");
 }
 
-/// While a parent's `delegate` tool call is in flight, the harness
+/// While a parent's `agent_start` tool call is in flight, the harness
 /// must still dispatch the spawned side conversation's prompt
 /// immediately — the parent's `ToolsRunning` turn state is logically
 /// independent from the side conv's own turn. The two failure modes
@@ -5063,7 +5062,7 @@ fn start_agent_request_dispatches_while_tool_is_running_and_restores_turn() {
     assert!(matches!(h.turn_state, TurnState::Idle));
     assert!(
         h.tool_turn.is_in_flight(&ToolCallId::from("delegate-call")),
-        "parent delegate tool must remain in flight until its ToolResult arrives"
+        "parent agent_start tool must remain in flight until its ToolResult arrives"
     );
     let events = delegate_events.lock().expect("delegate events");
     let result = events
@@ -5388,7 +5387,7 @@ fn start_agent_request_conversation_id_is_public_agent_id() {
 }
 
 /// A tool-backed `StartAgentRequest` (`tool_call_id: Some(...)`) is the
-/// `delegate` path: it dispatches *while the parent's tool call is
+/// `agent_start` path: it dispatches *while the parent's tool call is
 /// still in flight*, so the parent conv's tip is a `ToolUse` block
 /// with no matching `ToolResult` yet. The side conv must therefore
 /// fork off the tree root with `head: None`, NOT inherit the
@@ -5409,7 +5408,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -5440,7 +5439,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -5489,7 +5488,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
     // Tool-backed sub-agents (`tool_call_id: Some(...)`) get a fresh
     // context regardless of whether the parent is mid-tool-call: they
     // see only their own `query.instruction`, never the parent's
-    // unresolved `delegate` tool_use (which would be an orphan ToolUse
+    // unresolved `agent_start` tool_use (which would be an orphan ToolUse
     // the provider rejects), and never the user's task framing (which
     // would invite recursive re-delegation).
     let saw_orphan_tool_use = prompt
@@ -5499,7 +5498,7 @@ fn start_agent_request_during_tool_call_branches_off_unresolved_tool_use() {
         .any(|item| tool_call_id(item) == Some("delegate-call"));
     assert!(
         !saw_orphan_tool_use,
-        "side prompt must not replay the parent's unresolved delegate tool_use"
+        "side prompt must not replay the parent's unresolved agent_start tool_use"
     );
 
     let saw_user_framing = prompt.context.flatten().iter().any(|item| {
@@ -5814,7 +5813,7 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -5845,7 +5844,7 @@ fn delegate_start_agent_request_keeps_tool_choice_auto() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -5986,7 +5985,7 @@ fn user_prompt_preempts_in_flight_non_tool_ext_side_conversation() {
 }
 
 /// Regression: a sub-agent's `Shared` tool call must not be gated by the
-/// parent's still-in-flight `Exclusive` `delegate` call. The parent's
+/// parent's still-in-flight `Exclusive` `agent_start` call. The parent's
 /// delegate only resolves once the sub-agent's tools have run, so a
 /// global execution-mode gate produces a self-deadlock — the main
 /// symptom we hit in `tau-agent-m2dpw4`'s event log.
@@ -6001,7 +6000,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -6026,7 +6025,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
         },
     );
 
-    // Main agent issues `delegate`, putting an Exclusive call in flight
+    // Main agent issues `agent_start`, putting an Exclusive call in flight
     // on the default conversation.
     let cid = ensure_test_user_agent(&mut h);
     let main_spid: AgentPromptId = "sp-main".into();
@@ -6048,7 +6047,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -6091,7 +6090,7 @@ fn side_conversation_shared_tool_dispatches_through_parent_exclusive_delegate() 
 
     // Sub-agent now responds with a Shared `websearch` call. Without
     // per-conversation gating this would queue forever behind the
-    // parent's still-in-flight Exclusive `delegate`.
+    // parent's still-in-flight Exclusive `agent_start`.
     let side_spid = h
         .prompt_agents
         .iter()
@@ -6172,7 +6171,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -6218,7 +6217,7 @@ fn background_completion_from_preserved_delegate_queues_on_delegate() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -6429,7 +6428,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -6476,7 +6475,7 @@ fn canceled_side_conversation_drops_inner_background_completion() {
         agent_id: crate::parse_agent_id(&parent_agent_id),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call-cancel".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -7115,7 +7114,7 @@ fn wait_tool_reply_is_folded_into_followup_prompt() {
     h.shutdown().expect("shutdown");
 }
 
-/// Regression for `tau-agent-ral6kd`: a parent `delegate` call is only a
+/// Regression for `tau-agent-ral6kd`: a parent `agent_start` call is only a
 /// side-agent launcher. It must not keep a normal tool from the same agent turn
 /// queued behind it; filesystem locking is handled by ext-shell, not the
 /// harness tool-turn queue.
@@ -7130,7 +7129,7 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -7165,7 +7164,7 @@ fn delegate_launcher_does_not_block_same_turn_exclusive_tool() {
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-call".into(),
-                name: ToolName::new("delegate"),
+                name: ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             }),
@@ -7213,7 +7212,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -7263,13 +7262,13 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-A".into(),
-                name: ToolName::new("delegate"),
+                name: ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: delegate_args.clone(),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "delegate-B".into(),
-                name: ToolName::new("delegate"),
+                name: ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: delegate_args,
             }),
@@ -7421,7 +7420,7 @@ fn mutating_tools_in_distinct_side_conversations_dispatch_concurrently() {
 
 /// Sub-agent state changes (tool start, response usage, tool finish)
 /// must surface to the user as `DelegateProgress` events keyed on the
-/// parent's `delegate` tool call_id. The CLI uses these to repaint
+/// parent's `agent_start` tool call_id. The CLI uses these to repaint
 /// the running tool block as `delegate [task] %a/b #… …`.
 #[test]
 fn delegate_emits_progress_as_sub_agent_makes_progress() {
@@ -7434,7 +7433,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -7479,7 +7478,7 @@ fn delegate_emits_progress_as_sub_agent_makes_progress() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -7656,7 +7655,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -7702,7 +7701,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -7831,7 +7830,7 @@ fn provider_disconnect_for_backgrounded_delegate_tool_updates_progress_and_targe
     h.shutdown().expect("shutdown");
 }
 
-/// An explicit `delegate` role must be a real role switch for the sub-agent,
+/// An explicit `agent_start` role must be a real role switch for the sub-agent,
 /// not just UI metadata: the prompt uses that role's model, params, prompt, and
 /// tool profile.
 #[test]
@@ -8138,9 +8137,10 @@ fn delegate_invalid_or_unavailable_role_errors_with_sorted_available_roles() {
     h.shutdown().expect("shutdown");
 }
 
-/// Omitting `role` on the delegate tool means `senior-engineer`; if that role
-/// cannot resolve to an available model, the harness reports that compatibility
-/// default as the problem instead of silently falling back to another role.
+/// Omitting `role` on the agent_start tool means `senior-engineer`; if that
+/// role cannot resolve to an available model, the harness reports that
+/// compatibility default as the problem instead of silently falling back to
+/// another role.
 #[test]
 fn delegate_missing_default_senior_engineer_errors_when_unavailable() {
     let td = TempDir::new().expect("tempdir");
@@ -8165,7 +8165,7 @@ fn delegate_missing_default_senior_engineer_errors_when_unavailable() {
     let error = start_agent_request_error(&delegate, "q-default").expect("query error");
     assert!(
         error.contains(
-            "delegate requires default role `senior-engineer`, but it is not available: `senior-engineer`"
+            "agent_start requires default role `senior-engineer`, but it is not available: `senior-engineer`"
         ),
         "got: {error}"
     );
@@ -8197,7 +8197,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -8229,7 +8229,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8284,7 +8284,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8383,7 +8383,7 @@ fn sibling_side_conv_teardown_does_not_misplace_other_side_conv_tool_result() {
         "conn-delegate",
         TestProtocolItem::Event(Event::ToolResult(ToolResult {
             call_id: "nested-call".into(),
-            tool_name: tau_proto::ToolName::new("delegate"),
+            tool_name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("nested answer".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
@@ -8454,7 +8454,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -8486,7 +8486,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8535,7 +8535,7 @@ fn nested_start_agent_request_branches_from_tool_owner_conversation() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "nested-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8617,7 +8617,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -8649,7 +8649,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         agent_id: target_agent_id,
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "outer-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8737,7 +8737,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         "conn-delegate",
         TestProtocolItem::Event(Event::ToolResult(ToolResult {
             call_id: "outer-call".into(),
-            tool_name: tau_proto::ToolName::new("delegate"),
+            tool_name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             result: CborValue::Text("outer answer".to_owned()),
             kind: tau_proto::ToolResultKind::Final,
@@ -8780,7 +8780,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -8812,7 +8812,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "top-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
@@ -8861,7 +8861,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
         output_items: vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "leaf-call".into(),
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],

@@ -67,6 +67,23 @@ fn tool_background_result(call_id: &str) -> tau_proto::ToolBackgroundResult {
 }
 
 #[test]
+fn agent_start_spec_advertises_only_current_tool_name() {
+    // Tau does not preserve compatibility for renamed tool call names yet.
+    // Only the current public spelling should be advertised or handled.
+    let tools = BuiltinTools::default();
+    let names: Vec<String> = tools
+        .tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect();
+
+    assert!(names.iter().any(|name| name == AGENT_START_TOOL_NAME));
+    assert!(!names.iter().any(|name| name == "delegate"));
+    assert!(tools.handles(&ToolName::new(AGENT_START_TOOL_NAME)));
+    assert!(!tools.handles(&ToolName::new("delegate")));
+}
+
+#[test]
 fn wait_initial_display_uses_tracked_target_tool_name() {
     // Regression for provider-owned running display: the wait tool should
     // show the logical source tool name, not the opaque target call id.
@@ -108,11 +125,12 @@ fn wait_initial_display_tracks_only_running_or_backgrounded_tools() {
 fn delegate_instruction_names_parent_and_message_followup_path() {
     // Delegated agents get a fresh context, so their injected instruction
     // must explicitly name the parent and explain that only the first final
-    // response flows back through the delegate tool result.
+    // response flows back through the agent_start tool result.
     let instruction = delegate_instruction("engineer_parent", "inspect the change");
 
     assert!(
-        instruction.contains("You were started by agent `engineer_parent` using `delegate` tool")
+        instruction
+            .contains("You were started by agent `engineer_parent` using `agent_start` tool")
     );
     assert!(instruction.contains("Only your first final response"));
     assert!(

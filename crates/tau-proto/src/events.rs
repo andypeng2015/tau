@@ -943,7 +943,7 @@ pub enum ActionOutput {
 /// non-tool extension-side queries (e.g. `std-notifications`' idle
 /// summary) so the cache prefix (tools + system_prompt) stays
 /// byte-identical to the parent conv's while still preventing the
-/// summarizer from accidentally calling `edit` / `delegate`.
+/// summarizer from accidentally calling `edit` / `agent_start`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolChoice {
@@ -1169,9 +1169,9 @@ pub struct ToolBackgroundError {
 /// shapes, error details, or ad-hoc strings. That separation is important: the
 /// event log is the durable source of truth for replay, terminal rendering,
 /// compact summaries, future graphical UIs, and alternate clients. If a
-/// renderer has to know that `grep` uses `pattern`, `delegate` has a role, or
-/// `edit` carries a diff, the abstraction has failed and the special case will
-/// spread.
+/// renderer has to know that `grep` uses `pattern`, `agent_start` has a role,
+/// or `edit` carries a diff, the abstraction has failed and the special case
+/// will spread.
 ///
 /// Prefer extending this general-purpose structure when a new tool needs richer
 /// presentation. Add optional fields, typed counters, typed chips, or a new
@@ -1371,17 +1371,17 @@ pub struct ToolProgress {
     pub display: Option<ToolUseState>,
 }
 
-/// Live snapshot of a sub-agent spawned by the `delegate` tool.
+/// Live snapshot of a sub-agent spawned by the `agent_start` tool.
 ///
 /// Emitted by the harness whenever the side conversation backing a
-/// `delegate` invocation makes observable progress: a tool call starts
+/// `agent_start` invocation makes observable progress: a tool call starts
 /// or finishes, or the sub-agent reports new context-token usage. The
-/// CLI re-renders the running `delegate` tool block to surface this
+/// CLI re-renders the running `agent_start` tool block to surface this
 /// to the user without persisting per-update history. Transient — not
 /// folded into any durable semantic log.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DelegateProgress {
-    /// The original parent `delegate` call — the tool block under
+    /// The original parent `agent_start` call — the tool block under
     /// which this update should appear.
     pub call_id: ToolCallId,
     /// Display name the parent agent provided for the sub-task.
@@ -1644,8 +1644,8 @@ pub struct StartAgentRequest {
     /// conversation's history as a `User` message before dispatch.
     pub instruction: String,
     /// Requested agent role for this side conversation. Tool-backed
-    /// delegate queries default to `engineer`; non-tool queries without a role
-    /// keep using the currently selected interactive role.
+    /// delegate queries default to `senior-engineer`; non-tool queries without
+    /// a role keep using the currently selected interactive role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// Input stats for the extension-provided instruction, excluding
@@ -1655,7 +1655,7 @@ pub struct StartAgentRequest {
     /// `ToolCallId` of the tool invocation that triggered this query,
     /// when the extension is implementing a tool whose live progress
     /// the harness should attribute back to that call. Used by the
-    /// `delegate` tool: the harness emits [`DelegateProgress`] under
+    /// `agent_start` tool: the harness emits [`DelegateProgress`] under
     /// this id as the side conversation runs. Optional — non-tool
     /// extensions issuing queries leave it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

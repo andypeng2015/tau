@@ -221,7 +221,7 @@ Most built-in integrations are regular extensions under `crates/tau-ext-*/`.
 They are configured under `extensions.<name>` in `harness.yaml` and can be
 disabled with `enable: false`, started from a configured `cwd:`, swapped via
 `command:` / `prefix:`, or given free-form `config:` payload that arrives at
-startup as a `LifecycleConfigure` message. Some core tools, such as `delegate`,
+startup as a `LifecycleConfigure` message. Some core tools, such as `agent_start`,
 `wait`, and `skill`, are harness-owned instead of extension processes.
 
 ```json5
@@ -386,19 +386,19 @@ notifications disabled; users can opt in to prompt-submit sounds, final-response
 sounds, idle desktop notifications after `delay_seconds` of inactivity, and idle
 summaries via `agent_summary: true`.
 
-### Harness-owned `delegate` / `wait` / `message` — multi-agent workflows
+### Harness-owned `agent_start` / `wait` / `message` — multi-agent workflows
 
-The harness exposes a `delegate` tool that spawns an isolated side conversation
+The harness exposes an `agent_start` tool that spawns an isolated side conversation
 and returns its result to the caller, plus a `wait` tool for collecting
 background tool results. Long-running background-capable tool calls return an
 immediate placeholder, stay visible in the UI, and deliver their real result or
-error later so the main turn can keep making progress. Unless the `delegate`
-call supplies `role`, delegated sub-agents default to the `engineer` role. The
+error later so the main turn can keep making progress. Unless the `agent_start`
+call supplies `role`, delegated sub-agents default to the `senior-engineer` role. The
 delegate placeholder and final result include `self_agent_id` and
 `sub_agent_id`; pass `sub_agent_id` to the `message` tool for live
-agent-to-agent notes. `message` can also target the special recipient `user`;
-all messages are rendered in the UI as `Message from <sender> to <recipient>:`.
-When `role` is supplied, or when the default `engineer` role is used, the
+coordination after the first final response.
+
+When `role` is supplied, or when the default `senior-engineer` role is used, the
 sub-agent runs with that role's resolved model, model parameters, system prompt,
 and tool profile/filtering. The sub-agent starts with a *fresh* context — only
 the parent's `prompt`, the selected role's system prompt, and the selected

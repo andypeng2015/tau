@@ -1372,13 +1372,17 @@ fn delegate_progress_routes_to_hidden_tool_owner() {
             "worker-sp",
             vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: "worker-delegate".into(),
-                name: tau_proto::ToolName::new("delegate"),
+                name: tau_proto::ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: delegate_args.clone(),
             })],
         )
     }));
-    renderer.handle(&tool_started("worker-delegate", "delegate", delegate_args));
+    renderer.handle(&tool_started(
+        "worker-delegate",
+        "agent_start",
+        delegate_args,
+    ));
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
         call_id: "worker-delegate".into(),
         task_name: "nested".into(),
@@ -2795,14 +2799,14 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         "main-sp",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "delegate-call".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: CborValue::Map(Vec::new()),
         })],
     )));
     renderer.handle(&tool_started(
         "delegate-call",
-        "delegate",
+        "agent_start",
         CborValue::Map(Vec::new()),
     ));
 
@@ -2811,7 +2815,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
         agent_id: agent_id("engineer_1"),
     }));
 
-    // A running parent `delegate` call is the visible main-agent work while
+    // A running parent `agent_start` call is the visible main-agent work while
     // the sub-agent side conversation is active. The side agent is also active
     // while its delegated request is running. Regression coverage: the side
     // prompt lifecycle must not hide `%0/1` from the status bar, because
@@ -2883,7 +2887,7 @@ fn delegate_side_conversation_keeps_parent_tool_status_visible() {
 
     renderer.handle(&Event::ToolCancelled(ToolCancelled {
         call_id: "delegate-call".into(),
-        tool_name: tau_proto::ToolName::new("delegate"),
+        tool_name: tau_proto::ToolName::new("agent_start"),
         tool_type: tau_proto::ToolType::Function,
     }));
     renderer.handle(&Event::StartAgentResult(tau_proto::StartAgentResult {
@@ -3850,15 +3854,15 @@ fn delegate_progress_redraws_live_parent_block() {
         "sp-0",
         vec![ContextItem::ToolCall(ToolCallItem {
             call_id: "call-delegate".into(),
-            name: tau_proto::ToolName::new("delegate"),
+            name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
             arguments: delegate_args.clone(),
         })],
     )));
-    renderer.handle(&tool_started("call-delegate", "delegate", delegate_args));
+    renderer.handle(&tool_started("call-delegate", "agent_start", delegate_args));
     renderer.handle(&initial_tool_progress(
         "call-delegate",
-        "delegate",
+        "agent_start",
         "[probe]",
         "",
     ));
@@ -3867,7 +3871,7 @@ fn delegate_progress_redraws_live_parent_block() {
     assert!(!vt.screen_contains(100, "%3/3"));
 
     // Regression: `ToolDelegateProgress` mutates the already-visible
-    // parent `delegate` block. That live mutation must request its own
+    // parent `agent_start` block. That live mutation must request its own
     // redraw because suppressed sub-agent tool events will not repaint it.
     renderer.handle(&Event::ToolDelegateProgress(tau_proto::DelegateProgress {
         call_id: "call-delegate".into(),
@@ -3922,7 +3926,7 @@ fn provider_tool_error_before_tool_started_is_ignored() {
             "sp-0",
             vec![ContextItem::ToolCall(ToolCallItem {
                 call_id: "bad-args".into(),
-                name: tau_proto::ToolName::new("delegate"),
+                name: tau_proto::ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(vec![(
                     CborValue::Text("unknown_option".into()),
@@ -3938,9 +3942,9 @@ fn provider_tool_error_before_tool_started_is_ignored() {
     renderer.handle_recorded_at(
         &Event::ProviderToolError(ToolError {
             call_id: "bad-args".into(),
-            tool_name: tau_proto::ToolName::new("delegate"),
+            tool_name: tau_proto::ToolName::new("agent_start"),
             tool_type: tau_proto::ToolType::Function,
-            message: "invalid arguments for tool `delegate`".to_owned(),
+            message: "invalid arguments for tool `agent_start`".to_owned(),
             details: None,
             originator: tau_proto::PromptOriginator::User,
 
@@ -5096,7 +5100,7 @@ fn render_delegate_display_pulls_legacy_role_args_into_first_suffix() {
     };
 
     let rendered = render_delegate_display(&display, Some("senior-engineer_a8"), Some("engineer"));
-    assert_eq!(rendered.tool_name, "delegate");
+    assert_eq!(rendered.tool_name, "agent_start");
     assert_eq!(rendered.args, "[probe]");
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(
@@ -5284,7 +5288,7 @@ fn render_tool_use_state_token_progress_formats_context_like_status_bar() {
         ..Default::default()
     };
 
-    let rendered = render_tool_use_state("delegate", &display);
+    let rendered = render_tool_use_state("agent_start", &display);
     let texts: Vec<&str> = rendered.suffixes.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(
         texts,

@@ -1017,7 +1017,7 @@ fn render_template(template: &str, ctx: &TemplateContext<'_>) -> Result<String, 
 /// True when `event` belongs to a side conversation spawned by an
 /// extension (`PromptOriginator::Extension`). Side conversations
 /// share the bus with the user's interactive turn; this extension
-/// must skip them so sub-agent activity (e.g. a `delegate` sub-task
+/// must skip them so sub-agent activity (e.g. an `agent_start` sub-task
 /// or this extension's own idle-summarizer query) doesn't fire
 /// chimes or perturb the idle timer.
 fn is_sub_agent_event(event: &Event) -> bool {

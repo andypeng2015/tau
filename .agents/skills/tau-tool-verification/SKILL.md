@@ -153,11 +153,11 @@ This prompt is model-visible only if it reaches the agent before the completion 
 
 The agent can call `wait({"tool_call_id": "..."})` to collect that specific real result, or `wait({})` to wait for the first background completion in the current conversation. The no-arg form is conversation-scoped: it must not consume completions from parent, child, or sibling conversations. The tool description shown to agents often says not to call `wait` until they know the tool call has completed. This is an optimization to avoid wasting tokens: for foreground calls, the normal tool call result will arrive without an extra `wait`, and for background calls Tau will wake the agent when the completion prompt is delivered. It is not a technical requirement. The `wait` tool must work well when called for tool calls that are still running, and it must have reasonable semantics in all cases. If `wait` is used for a backgrounded call before completion, Tau suppresses that internal completion prompt while still emitting the real background result/error event. If `wait` consumes an already-completed result before its queued completion prompt is delivered to the model, Tau also suppresses/removes that prompt. If `wait({})` consumes a completion, it suppresses the normal `[tau-internal] Tool call ... is complete.` prompt for that completion and returns an `original_tool_call_id: <tool_call_id>` provider-visible header so the agent knows which background call was collected.
 
-Current background timing: most tools background after about 5 seconds, `delegate` backgrounds instantly, and `wait` itself never backgrounds. This may change; when verifying, report if observed behavior differs.
+Current background timing: most tools background after about 5 seconds, `agent_start` backgrounds instantly, and `wait` itself never backgrounds. This may change; when verifying, report if observed behavior differs.
 
-Slow `delegate` calls should include the same `duration_seconds` header semantics as `shell`: omit fast calls, include approximate whole seconds for calls that took longer than about 5 seconds, and allow internal overheads and jitter. Delegate duration measures parent-observed delegate wall-clock time, not only inner tool runtime. It includes sub-agent model latency, tool scheduling, inner background/wait turns, final response latency, and is rounded up to whole seconds. Verify this both for direct background delegate results and for delegate results collected through `wait`.
+Slow `agent_start` calls should include the same `duration_seconds` header semantics as `shell`: omit fast calls, include approximate whole seconds for calls that took longer than about 5 seconds, and allow internal overheads and jitter. Delegate duration measures parent-observed delegate wall-clock time, not only inner tool runtime. It includes sub-agent model latency, tool scheduling, inner background/wait turns, final response latency, and is rounded up to whole seconds. Verify this both for direct background agent_start results and for agent_start results collected through `wait`.
 
-When asked to verify the `delegate` tool, also verify delayed `message` delivery to a live delegated sub-agent whose own tool turn is parked behind a backgrounded tool. This is a delegate-specific regression path, not only a `message` tool test. Use a delegate prompt that first runs `sleep 30`, then after the background placeholder requests a second shell command `sleep 5`, and asks it to report to `user` if it receives a parent message. After the first shell backgrounds and the second shell request is queued, send `message` to the delegate `sub_agent_id` with a nonce. Expected: `Message sent`, the queued `sleep 5` is terminalized internally, and the delegate promptly reports receiving the nonce instead of staying stuck until `sleep 30` finishes. If event logs are available, confirm `AgentMessage`, `ToolCancelled` for the not-yet-started queued call, and a new `AgentPromptCreated` for the delegate message prompt. Treat omission of this scenario as incomplete `delegate` verification.
+When asked to verify the `agent_start` tool, also verify delayed `message` delivery to a live delegated sub-agent whose own tool turn is parked behind a backgrounded tool. This is a delegate-specific regression path, not only a `message` tool test. Use a delegate prompt that first runs `sleep 30`, then after the background placeholder requests a second shell command `sleep 5`, and asks it to report to `user` if it receives a parent message. After the first shell backgrounds and the second shell request is queued, send `message` to the delegate `sub_agent_id` with a nonce. Expected: `Message sent`, the queued `sleep 5` is terminalized internally, and the delegate promptly reports receiving the nonce instead of staying stuck until `sleep 30` finishes. If event logs are available, confirm `AgentMessage`, `ToolCancelled` for the not-yet-started queued call, and a new `AgentPromptCreated` for the delegate message prompt. Treat omission of this scenario as incomplete `agent_start` verification.
 
 Also verify the active-`wait` variant of the same scenario. Use a delegate prompt that starts a long backgroundable tool, then calls `wait` on that tool call ID before it completes. While the delegate is blocked in `wait`, send `message` to the delegate `sub_agent_id` with a nonce. Expected: `Message sent`, the delegate's `wait` returns promptly with a `tau_internal: true` interruption result saying new input is queued, and the delegate receives the hidden message prompt without waiting for the original background tool to complete. If event logs are available, confirm the wait `ToolResult` appears before the message-driven follow-up `AgentPromptCreated`.
 
@@ -166,7 +166,7 @@ A completed background result is consumed by the first successful `wait`. Later 
 
 ### Directory locking verification plan
 
-Use this plan when asked to verify ext-shell directory locking, `dir_lock`, or the interaction between locking, mutating shell tools, backgrounding, `cancel`, and `wait`. Directory locking is optional and advisory. It is owned by `tau-ext-shell`, not the harness or `delegate`.
+Use this plan when asked to verify ext-shell directory locking, `dir_lock`, or the interaction between locking, mutating shell tools, backgrounding, `cancel`, and `wait`. Directory locking is optional and advisory. It is owned by `tau-ext-shell`, not the harness or `agent_start`.
 
 Create a fresh scratch tree in `/tmp`, such as `/tmp/tau-dir-lock-verification.*`, with at least these directories: `root/a`, `root/a/child`, `root/b`, and `other`. Put small files in `root/a/file.txt` and `root/b/file.txt`. Use unique nonces in file contents and messages. Never run destructive shell commands outside the scratch tree.
 
@@ -187,7 +187,7 @@ When locking is enabled, verify all of these behaviors:
 * Waiting on an idle manual lock eventually returns an abandoned-lock error. It should return `error: dir_lock_abandoned` with details headers including `blocking_directory`, `lock_owner_id`, `idle_seconds`, and `held_seconds`, plus a clear text payload in `output`. Active same-owner mutating tools under the lock should prevent this abandoned-lock error.
 * Waiting tool UI/status includes the directory or directories being waited on. `dir_lock` success and failure UI/status should also include the relevant directory when known, and successful lock/unlock status should use the normal `ok` chip.
 * The `/shell-dir-force-unlock DIRECTORY` UI action is published by ext-shell and force-releases manual locks overlapping that canonical directory, regardless of owner.
-* `delegate` agents are independent owners. A parent lock does not automatically cover a delegate, and a delegate lock does not belong to the parent.
+* `agent_start` agents are independent owners. A parent lock does not automatically cover a delegate, and a delegate lock does not belong to the parent.
 * User `!` shell commands are excluded from this lock path.
 
 #### Phase 1: basic manual lock behavior
@@ -268,7 +268,7 @@ Report concise but complete findings:
 
 ### Background tool `cancel`
 
-`cancel` requires `tool_call_id` and never backgrounds. It supports running `delegate` calls and should support running `shell` calls. A successful cancel request returns `Tool cancellation requested`, emits a harness info event containing `tool call cancellation request`, and targets only the requested tool call. Cancellation is async and best effort: the success result only means Tau accepted the request, not that the child process or agent has already stopped. A canceled delegate should complete as a background error so `wait` can observe the cancellation instead of hanging. A canceled shell call should also complete through `wait`, include timing headers if it ran longer than about 5 seconds, and must not keep running to normal `status: 0` completion.
+`cancel` requires `tool_call_id` and never backgrounds. It supports running `agent_start` calls and should support running `shell` calls. A successful cancel request returns `Tool cancellation requested`, emits a harness info event containing `tool call cancellation request`, and targets only the requested tool call. Cancellation is async and best effort: the success result only means Tau accepted the request, not that the child process or agent has already stopped. A canceled delegate should complete as a background error so `wait` can observe the cancellation instead of hanging. A canceled shell call should also complete through `wait`, include timing headers if it ran longer than about 5 seconds, and must not keep running to normal `status: 0` completion.
 
 Calling `cancel` for an unknown, completed, or unsupported tool call should return a tool error. Unknown ids should be distinguished from already-completed ids. Calling it twice for the same target should return a tool error like `Tool call already canceled`.
 
@@ -277,7 +277,7 @@ When verifying this behavior, check that the synthetic foreground result is visi
 
 ### Cancel tool verification plan
 
-Use this plan when asked to verify the `cancel` tool, especially around background `delegate` calls, `wait`, duplicate requests, and leaked work from a canceled sub-agent. The goal is to prove that cancel targets exactly one running delegate call, reports success or errors clearly, and leaves no orphaned tool completions behind.
+Use this plan when asked to verify the `cancel` tool, especially around background `agent_start` calls, `wait`, duplicate requests, and leaked work from a canceled sub-agent. The goal is to prove that cancel targets exactly one running agent_start call, reports success or errors clearly, and leaves no orphaned tool completions behind.
 
 Do not rely on memory. Give every sub-agent a self-contained prompt. A delegated agent starts with a clean context and does not know this skill, the parent conversation, or the IDs of other agents unless you include them in its prompt or later messages.
 
@@ -287,7 +287,7 @@ Create a scratch directory in `/tmp`, such as `/tmp/tau-cancel-verification.*`, 
 
 Record all of these observations:
 
-* The delegate placeholder includes `tau_internal: true`, `self_agent_id`, `sub_agent_id`, and the background delegate tool call ID.
+* The agent_start placeholder includes `tau_internal: true`, `self_agent_id`, `sub_agent_id`, and the background agent_start tool call ID.
 * `cancel` must be called with the delegate `tool_call_id`, not the `sub_agent_id`.
 * A successful cancel returns exactly `Tool cancellation requested` and does not background.
 * The harness emits a `HarnessInfo` event containing `tool call cancellation request` if event logs are available.
@@ -296,7 +296,7 @@ Record all of these observations:
 * `wait({})` can collect a canceled completion and includes `original_tool_call_id`.
 * Waiting before the delegate has completed suppresses the later model-visible completion prompt. Waiting after a completion prompt was already delivered is still valid, but does not retroactively suppress that prompt.
 * Duplicate cancel requests race cleanly: one succeeds, later or parallel ones fail with `Tool call already canceled` or another clear duplicate error.
-* Canceling an unknown id, completed delegate id, unsupported running tool id, empty id, or `sub_agent_id` returns a tool error.
+* Canceling an unknown id, completed agent_start id, unsupported running tool id, empty id, or `sub_agent_id` returns a tool error.
 * Canceling one delegate does not cancel a sibling delegate.
 * Canceling a long-running shell call works and does not let the command complete normally.
 * Slow canceled delegates and shell calls include `duration_seconds` after about 5 seconds. A few seconds of timing overhead is normal and not worth reporting by itself.
@@ -305,10 +305,10 @@ Record all of these observations:
 
 #### Phase 1: running delegate happy path
 
-Start a shared delegate with this prompt:
+Start a shared sub-agent with `agent_start` with this prompt:
 
 ```text
-You are a Tau cancel-tool verification sub-agent. Goal: stay alive until the parent cancels this delegate call.
+You are a Tau cancel-tool verification sub-agent. Goal: stay alive until the parent cancels this agent_start call.
 
 Procedure:
 1. Immediately send a message to `user` exactly: `READY cancel-ready-probe: entering long sleep`.
@@ -318,7 +318,7 @@ Procedure:
 Do not do anything else.
 ```
 
-After the placeholder result returns, record `self_agent_id`, `sub_agent_id`, and the delegate tool call ID. Call `cancel` with that delegate tool call ID. Expect the foreground result to be exactly:
+After the placeholder result returns, record `self_agent_id`, `sub_agent_id`, and the agent_start tool call ID. Call `cancel` with that agent_start tool call ID. Expect the foreground result to be exactly:
 
 ```text
 Tool cancellation requested
@@ -336,7 +336,7 @@ Call `wait` for the same ID again. Expect an already-consumed error. Call `cance
 
 #### Phase 2: no-arg wait and wait suppression
 
-Start another long-sleeping delegate. Cancel it, then call `wait({})`. Expect the canceled error and an `original_tool_call_id` header matching the delegate call ID.
+Start another long-sleeping sub-agent with `agent_start`. Cancel it, then call `wait({})`. Expect the canceled error and an `original_tool_call_id` header matching the agent_start call ID.
 
 Start a third long-sleeping delegate. Call `cancel` and `wait({"tool_call_id": id})` in parallel or as close together as possible. Expect `wait` to return the canceled result. The later `[tau-internal] Tool call ... is complete.` prompt for that same call should be suppressed. If the prompt still appears after `wait` was already active for that call, record it as a discrepancy. If the completion prompt appears before the wait call is active, do not count it as a suppression failure.
 
@@ -346,11 +346,11 @@ Verify each error case independently:
 
 * `cancel({"tool_call_id": ""})` returns `` `tool_call_id` must not be empty ``.
 * A clearly unknown call ID returns `Unknown tool call id` and echoes `tool_call_id`.
-* A completed delegate ID returns `Tool call is already done`.
-* A `sub_agent_id` returns `Unknown tool call id`; this proves the tool wants the delegate call ID.
+* A completed agent_start ID returns `Tool call is already done`.
+* A `sub_agent_id` returns `Unknown tool call id`; this proves the tool wants the agent_start call ID.
 * Two parallel `cancel` calls for the same live delegate produce one success and one duplicate-cancel error.
 
-For the completed-delegate case, spawn a delegate that immediately returns:
+For the completed-agent_start case, spawn a sub-agent with `agent_start` that immediately returns:
 
 ```text
 You are a Tau cancel-tool verification sub-agent. Return immediately with exactly: `FINAL cancel-completed-probe normal completion`.
@@ -366,7 +366,7 @@ Then call `wait` for the shell call. Expect a canceled or terminated result, not
 
 #### Phase 5: target isolation
 
-Start two delegates in parallel. The target should sleep for a long time. The survivor should sleep briefly and return `FINAL cancel-survivor unaffected`.
+Start two sub-agents with `agent_start` in parallel. The target should sleep for a long time. The survivor should sleep briefly and return `FINAL cancel-survivor unaffected`.
 
 Cancel only the target delegate. Then wait for both IDs. Expect:
 
@@ -377,7 +377,7 @@ Any sibling cancellation, missing survivor result, or cross-talk between IDs is 
 
 #### Phase 6: slow cancellation and duration
 
-Start a long-sleeping delegate. Let it run long enough to cross the delegate duration threshold, usually about 6 seconds. Cancel it and wait for the result. Expect the canceled delegate result to include `duration_seconds` with an approximate whole-second value.
+Start a long-sleeping sub-agent with `agent_start`. Let it run long enough to cross the delegate duration threshold, usually about 6 seconds. Cancel it and wait for the result. Expect the canceled agent_start result to include `duration_seconds` with an approximate whole-second value.
 
 Do not require an exact duration. Internal overhead and scheduling can add a few seconds of jitter; do not report small delays by themselves.
 
@@ -385,7 +385,7 @@ Do not require an exact duration. Internal overhead and scheduling can add a few
 
 This phase is important. A canceled delegate can have its own foreground or background tool call in flight. Canceling the delegate must not leave an orphaned inner tool completion that later wakes the parent conversation.
 
-Start a shared delegate with this prompt:
+Start a shared sub-agent with `agent_start` with this prompt:
 
 ```text
 You are a Tau cancel-tool verification sub-agent for inner-tool leak testing. Goal: start an inner tool call, then be canceled by the parent.
@@ -397,7 +397,7 @@ Procedure:
 Do not send messages. Do not do anything else.
 ```
 
-Let the delegate run long enough for the inner shell call to background, usually about 6 seconds. Then cancel the delegate and wait for the delegate result. Expect `error: Tool call canceled`.
+Let the delegate run long enough for the inner shell call to background, usually about 6 seconds. Then cancel the delegate and wait for the agent_start result. Expect `error: Tool call canceled`.
 
 After the delegate cancel result is consumed, watch for stray completion prompts for any other tool call ID, especially the inner shell call. If a stray `[tau-internal] Tool call ... is complete.` prompt appears, call `wait` for that ID and record the full result. Treat this as a leak unless there is a clear documented reason it belongs to the parent conversation.
 
@@ -421,7 +421,7 @@ Report concise but complete findings:
 * Mention any timing surprises, missed completion prompts, duplicate prompts, leaked inner completions, or ordering uncertainty.
 * Confirm the `cancel` success output is only `Tool cancellation requested`; it is an async, best-effort request, not a delivery receipt for child cleanup.
 * Include whether errors distinguish completed delegates from unknown ids.
-* Include whether the `delegate` placeholder made the target ID clear enough, and whether `self_agent_id` and `sub_agent_id` were present without redundant aliases.
+* Include whether the `agent_start` placeholder made the target ID clear enough, and whether `self_agent_id` and `sub_agent_id` were present without redundant aliases.
 * Include whether slow canceled delegates reported `duration_seconds`.
 * Include whether the UI hid completion prompts that should be hidden, or whether that could not be directly verified.
 
@@ -449,7 +449,7 @@ Record all of these observations:
 * Error for an unknown recipient ID.
 * Error for a completed sub-agent recipient ID.
 * Error for an empty message.
-* `delegate` and `wait` behavior around long-running sub-agents, including `duration_seconds` headers for slow delegates.
+* `agent_start` and `wait` behavior around long-running sub-agents, including `duration_seconds` headers for slow delegates.
 
 #### Phase 1: spawn two peer agents and use `user` for live reports
 
@@ -480,7 +480,7 @@ Procedure:
 You are expected to receive messages from the parent and possibly from Agent B. Be precise and do not invent messages.
 ```
 
-After the `delegate` placeholder results return, note the caller `self_agent_id`, each `sub_agent_id`, and both delegate tool call IDs. Use `sub_agent_id` as the message recipient. Send the first batch of messages in parallel:
+After the `agent_start` placeholder results return, note the caller `self_agent_id`, each `sub_agent_id`, and both agent_start tool call IDs. Use `sub_agent_id` as the message recipient. Send the first batch of messages in parallel:
 
 ```text
 To Agent A:
@@ -514,18 +514,18 @@ Also send one message to a clearly invalid recipient such as `engineer_does_not_
 
 Wait for both delegates. In their final logs, verify that:
 
-* The delegate placeholder and final result expose `self_agent_id` and `sub_agent_id` without redundant aliases.
+* The agent_start placeholder and final result expose `self_agent_id` and `sub_agent_id` without redundant aliases.
 * Each agent saw the direct main-agent messages addressed to it.
 * Each agent saw the peer message from the other agent.
 * Each `COMMAND: SEND_PEER` caused exactly one peer `message` call with result `Message sent`.
 * Delayed messages arrived even though the agents were already running.
-* The visible sender ID for messages from the main agent is present and matches the `self_agent_id` from the delegate result. Save that sender ID; it is the main agent recipient ID for the next phase.
+* The visible sender ID for messages from the main agent is present and matches the `self_agent_id` from the agent_start result. Save that sender ID; it is the main agent recipient ID for the next phase.
 
 After both delegates complete, try to send a post-completion message to each old `sub_agent_id`. Expect an error until completed-agent wakeup is implemented. Current behavior may report this the same way as an unknown recipient.
 
 #### Phase 2: verify delivery to a delegate queued behind a backgrounded tool
 
-Start one shared delegate whose job is to create the message-delivery edge case where the sub-agent has a long backgrounded tool still actually running and a second not-yet-started tool queued behind it.
+Start one shared sub-agent with `agent_start` whose job is to create the message-delivery edge case where the sub-agent has a long backgrounded tool still actually running and a second not-yet-started tool queued behind it.
 
 Use this prompt:
 
@@ -541,7 +541,7 @@ Procedure:
 Do not invent messages. Do not finish before checking for the parent message.
 ```
 
-After the delegate placeholder returns, wait until the delegate has had enough time for the first `sleep 30` to background and for the second `sleep 5` request to be queued. In normal UI output this often looks like delegate progress with a running/backgrounded shell call and no response from the second shell yet.
+After the agent_start placeholder returns, wait until the delegate has had enough time for the first `sleep 30` to background and for the second `sleep 5` request to be queued. In normal UI output this often looks like delegate progress with a running/backgrounded shell call and no response from the second shell yet.
 
 Send a message to the delegate `sub_agent_id`:
 
@@ -560,7 +560,7 @@ This scenario specifically protects the code path where `agent.message` delivery
 
 #### Phase 3: verify sub-agent to main-agent routing
 
-Use the main agent recipient ID learned from Phase 1. Spawn two fresh shared delegates, Agent C and Agent D. These agents should report back to the main agent recipient ID, not to `user`. This proves that parent-directed messages are delivered as model-visible `[tau-internal]` inbound messages to the main agent.
+Use the main agent recipient ID learned from Phase 1. Spawn two fresh shared sub-agents with `agent_start`, Agent C and Agent D. These agents should report back to the main agent recipient ID, not to `user`. This proves that parent-directed messages are delivered as model-visible `[tau-internal]` inbound messages to the main agent.
 
 Use this prompt for Agent C, replacing only the agent name where needed for Agent D and filling `{main_agent_id}` with the ID learned in Phase 1:
 
@@ -580,7 +580,7 @@ Procedure:
 3. Final answer: `FINAL Agent C` plus complete inbound log and all message-tool actions/results.
 ```
 
-After the `delegate` placeholders return, send this batch in parallel:
+After the `agent_start` placeholders return, send this batch in parallel:
 
 ```text
 To Agent C:

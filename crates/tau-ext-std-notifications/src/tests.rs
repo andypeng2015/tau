@@ -1337,7 +1337,7 @@ fn user_prompt_during_idle_window_cancels_text_notification() {
 
 /// Sub-agent (`PromptOriginator::Extension`) prompt + response
 /// activity must not perturb the notifications extension. A
-/// `delegate` flow runs an entire side conversation between the
+/// `agent_start` flow runs an entire side conversation between the
 /// user's prompt and the main agent's final response — none of those
 /// side events should clear the idle timer or fire the end-of-turn
 /// chime, since the user isn't seeing them.
@@ -1358,14 +1358,14 @@ fn sub_agent_prompts_and_responses_are_ignored() {
         ))
         .expect("write");
 
-    // Main agent emits a delegate tool_call (mid-turn).
+    // Main agent emits an agent_start tool_call (mid-turn).
     writer
         .write_event(&Event::ProviderResponseFinished(
             tool_call_finished_response(
                 "sp-main",
                 ToolCallItem {
                     call_id: "delegate-call".into(),
-                    name: ToolName::new("delegate"),
+                    name: ToolName::new("agent_start"),
                     tool_type: tau_proto::ToolType::Function,
                     arguments: CborValue::Null,
                 },

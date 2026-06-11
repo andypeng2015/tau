@@ -2296,7 +2296,7 @@ fn empty_tool_call_id_rejects_response_before_commit() {
     h.registry.register(
         "conn-delegate",
         ToolSpec {
-            name: ToolName::new("delegate"),
+            name: ToolName::new("agent_start"),
             model_visible_name: None,
             description: None,
             parameters: None,
@@ -2327,13 +2327,13 @@ fn empty_tool_call_id_rejects_response_before_commit() {
         output_items: vec![
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "".into(),
-                name: ToolName::new("delegate"),
+                name: ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             }),
             ContextItem::ToolCall(ToolCallItem {
                 call_id: "".into(),
-                name: ToolName::new("delegate"),
+                name: ToolName::new("agent_start"),
                 tool_type: tau_proto::ToolType::Function,
                 arguments: CborValue::Map(Vec::new()),
             }),

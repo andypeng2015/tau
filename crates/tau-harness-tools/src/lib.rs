@@ -24,7 +24,7 @@ use tau_proto::{
 };
 
 const SKILL_TOOL_NAME: &str = "skill";
-const DELEGATE_TOOL_NAME: &str = "delegate";
+const AGENT_START_TOOL_NAME: &str = "agent_start";
 const WAIT_TOOL_NAME: &str = "wait";
 const CANCEL_TOOL_NAME: &str = "cancel";
 const MESSAGE_TOOL_NAME: &str = "message";
@@ -100,7 +100,7 @@ impl BuiltinState {
                     tau_proto::PROGRESS_INDICATOR_TEXT,
                 )
             }
-            DELEGATE_TOOL_NAME => {
+            AGENT_START_TOOL_NAME => {
                 let parsed = parse_delegate_args(&call.arguments).ok()?;
                 let args = match parsed.role {
                     Some(role) => format!("[{}] +{role}", parsed.task_name),
@@ -152,7 +152,7 @@ impl InternalToolHandler for BuiltinTools {
     fn tool_specs(&self) -> Vec<ToolSpec> {
         vec![
             skill_tool_spec(),
-            delegate_tool_spec(),
+            agent_start_tool_spec(),
             wait_tool_spec(),
             cancel_tool_spec(),
             message_tool_spec(),
@@ -163,7 +163,7 @@ impl InternalToolHandler for BuiltinTools {
         matches!(
             internal_tool_name.as_str(),
             SKILL_TOOL_NAME
-                | DELEGATE_TOOL_NAME
+                | AGENT_START_TOOL_NAME
                 | WAIT_TOOL_NAME
                 | CANCEL_TOOL_NAME
                 | MESSAGE_TOOL_NAME
@@ -198,7 +198,7 @@ impl InternalToolHandler for BuiltinTools {
                     SKILL_TOOL_NAME => {
                         handle_skill_tool_call(host, &conversation_id, &call, visible_tool_name)
                     }
-                    DELEGATE_TOOL_NAME => self.handle_delegate_tool_call(
+                    AGENT_START_TOOL_NAME => self.handle_delegate_tool_call(
                         host,
                         &conversation_id,
                         &call,
@@ -1228,12 +1228,12 @@ fn skill_tool_spec() -> ToolSpec {
     }
 }
 
-fn delegate_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(DELEGATE_TOOL_NAME), model_visible_name: None, description: Some("Delegate a self-contained sub-task to a new sub-agent, and return its final response. The `prompt` must contain all information the sub-agent needs to complete the task. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short user-visible label for the sub-task (a few words)."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
+fn agent_start_tool_spec() -> ToolSpec {
+    ToolSpec { name: ToolName::new(AGENT_START_TOOL_NAME), model_visible_name: None, description: Some("Start a self-contained sub-task in a new sub-agent, and return its final response. The `prompt` must contain all information the sub-agent needs to complete the task. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short user-visible label for the sub-task (a few words)."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn message_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Send an async message to another agent, or the user. Use recipient_id `user`, or a `sub_agent_id` returned by `delegate`. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient agent_id, or the special value `user`."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Send an async message to another agent, or the user. Use recipient_id `user`, or a `sub_agent_id` returned by `agent_start`. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient agent_id, or the special value `user`."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn cancel_tool_spec() -> ToolSpec {

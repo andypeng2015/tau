@@ -33,7 +33,7 @@ Message sent
 
 ## Send to another agent
 
-Start the other agent with `delegate`. The instant background placeholder includes `self_agent_id` and `sub_agent_id` headers. The final delegate result carries the same ids alongside the sub-agent `output`:
+Start the other agent with `agent_start`. The instant background placeholder includes `self_agent_id` and `sub_agent_id` headers. The final delegate result carries the same ids alongside the sub-agent `output`:
 
 ```text
 tau_internal: true

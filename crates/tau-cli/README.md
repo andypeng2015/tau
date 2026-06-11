@@ -16,7 +16,7 @@ The long-term direction is a single UI model/reducer that owns protocol state, w
 
 UI code must render tool calls through generic `ToolUseState`, `ToolUsePayload`, progress counters, and fallback tool displays. Do not add tool-name-specific rendering for ordinary extension tools.
 
-The current documented exception is harness delegation. The harness emits `delegate` tool calls together with side-conversation lifecycle events and `DelegateProgress`; the UI suppresses nested sub-agent tool spam and rolls it up into the parent delegation line. Delegate-specific code exists only to connect those harness-owned side-conversation events to the generic tool display shape and status chips. New delegate UI behavior should still prefer expressing data in `ToolUseState` / `DelegateProgress` rather than parsing tool names or payloads.
+The current documented exception is harness delegation. The harness emits `agent_start` tool calls together with side-conversation lifecycle events and `DelegateProgress`; the UI suppresses nested sub-agent tool spam and rolls it up into the parent delegation line. Delegate-specific code exists only to connect those harness-owned side-conversation events to the generic tool display shape and status chips. New delegate UI behavior should still prefer expressing data in `ToolUseState` / `DelegateProgress` rather than parsing tool names or payloads.
 
 ## Threading and shutdown direction
 

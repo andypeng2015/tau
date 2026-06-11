@@ -1448,7 +1448,7 @@ mod skill_tool;
 mod subagents_tool;
 
 /// Connection ID used for harness-owned tools and their side-query
-/// [`PromptOriginator`] name (e.g. `skill`, `delegate`, and `wait`).
+/// [`PromptOriginator`] name (e.g. `skill`, `agent_start`, and `wait`).
 pub(crate) const HARNESS_CONNECTION_ID: &str = "__harness__";
 
 #[derive(Debug, Default)]
@@ -6467,7 +6467,7 @@ impl Harness {
         }
 
         let reason = if query.role.is_none() && query.tool_call_id.is_some() {
-            "delegate requires default role `senior-engineer`, but it is not available"
+            "agent_start requires default role `senior-engineer`, but it is not available"
         } else if self.available_roles.contains_key(requested) {
             "requested role is not backed by an available model"
         } else {
@@ -6555,7 +6555,7 @@ impl Harness {
         query: tau_proto::StartAgentRequest,
     ) -> Result<String, String> {
         let Some(pending) = self.prepare_start_agent_request(HARNESS_CONNECTION_ID, query)? else {
-            return Err("duplicate delegate start-agent request".to_owned());
+            return Err("duplicate tool-backed start-agent request".to_owned());
         };
         let agent_id = pending.agent_id.clone();
         let accepted = tau_proto::StartAgentAccepted {
@@ -6687,7 +6687,7 @@ impl Harness {
     ///
     /// Two forking modes depending on whether the request is tool-backed:
     ///
-    /// - **Tool-backed (`tool_call_id: Some(...)`, e.g. `delegate`)**: the
+    /// - **Tool-backed (`tool_call_id: Some(...)`, e.g. `agent_start`)**: the
     ///   sub-agent starts with a *fresh* context — only the delegated
     ///   instruction, no inherited messages from the parent (no user framing,
     ///   no completed prior turns, no in-flight tool blocks). The parent agent
@@ -6750,7 +6750,7 @@ impl Harness {
             initial_head,
             Some(source_id.into()),
         );
-        // For tool-backed extensions (currently just `delegate`)
+        // For tool-backed extensions (currently just `agent_start`)
         // record the parent call id and task name so subsequent
         // sub-agent state changes can be surfaced to the user under
         // that tool block via `DelegateProgress`.
@@ -6812,7 +6812,7 @@ impl Harness {
     }
 
     /// Publish a `DelegateProgress` snapshot for `cid` if it is a side
-    /// conversation backing a `delegate` tool call. No-op for user
+    /// conversation backing an `agent_start` tool call. No-op for user
     /// agents and for non-tool start-agent requests.
     fn emit_delegate_progress(&mut self, cid: &AgentId) {
         let Some(conv) = self.agents.get(cid) else {

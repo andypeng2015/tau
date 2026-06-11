@@ -1064,7 +1064,7 @@ fn tool_spec_defaults_and_background_support() {
     assert_eq!(parsed.background_support, None);
 
     let backgrounded: ToolSpec = serde_json::from_value(serde_json::json!({
-        "name": "delegate",
+        "name": "agent_start",
         "tool_type": "function",
         "background_support": "instant"
     }))

@@ -1,6 +1,6 @@
 # Shell directory locking
 
-This note documents the move of filesystem update coordination out of `delegate` and harness scheduling and into `tau-ext-shell`.
+This note documents the move of filesystem update coordination out of `agent_start` and harness scheduling and into `tau-ext-shell`.
 
 
 ## Current design
@@ -8,7 +8,7 @@ This note documents the move of filesystem update coordination out of `delegate`
 - `tau-ext-shell` owns directory update locking with an optional `dir_lock` tool.
 - The tool name is `dir_lock`; Tau tool names do not allow hyphens.
 - `dir_lock` is registered enabled by default. Setting ext-shell config `dir_lock.enable = false` disables the handler, re-registers the tool as disabled by default, and opts mutating ext-shell tools out of locking.
-- `delegate` sub-agents are independent agents. A parent agent lock does not automatically cover a delegate.
+- `agent_start` sub-agents are independent agents. A parent agent lock does not automatically cover a delegate.
 - The harness no longer enforces tool or start-agent update/exclusive scheduling, and the protocol no longer carries scheduling metadata for tool specs, delegate progress, or start-agent requests.
 
 

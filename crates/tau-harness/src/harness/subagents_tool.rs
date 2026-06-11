@@ -1,4 +1,4 @@
-//! Harness-owned `delegate`, `wait`, `cancel`, and `message` tools.
+//! Harness-owned `agent_start`, `wait`, `cancel`, and `message` tools.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

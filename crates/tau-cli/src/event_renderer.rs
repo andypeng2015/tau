@@ -28,6 +28,8 @@ use crate::tool_render::{
 pub(crate) const UI_IO_MEDIUM_BYTES_PER_SEC: u64 = 10 * 1024;
 const UI_IO_HIGH_BYTES_PER_SEC: u64 = 100 * 1024;
 
+const AGENT_START_TOOL_NAME: &str = "agent_start";
+
 /// Rolling UI↔harness socket throughput maxima for one terminal UI.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct UiIoStats {
@@ -175,7 +177,8 @@ pub(crate) struct EventRenderer {
     /// in the status bar alongside [`Self::main_tools_total`].
     main_tools_completed: u64,
     /// Main-agent tool calls requested for the current user task. Sub-agent
-    /// calls are excluded because they roll up under their `delegate` parent.
+    /// calls are excluded because they roll up under their `agent_start`
+    /// parent.
     main_tools_total: u64,
     /// Main-agent tool call ids whose foreground placeholder has returned, but
     /// whose real background result is still pending. These keep the status-bar
@@ -729,7 +732,7 @@ struct PromptState {
 struct ToolCallState {
     /// Live tool-call block in the active-tools area. `None` for sub-agent
     /// tool calls whose UI is suppressed (their progress is rolled up into the
-    /// parent `delegate` block via `DelegateProgress` instead).
+    /// parent `agent_start` block via `DelegateProgress` instead).
     block_id: Option<tau_cli_term::BlockId>,
     /// Empty history placeholder allocated at the tool call's logical
     /// transcript position. Final results fill this block so live progress
@@ -752,7 +755,7 @@ struct ToolCallState {
     /// chips so the user sees the delegation cost alongside the
     /// response stats.
     delegate_last_progress: Option<tau_proto::DelegateProgress>,
-    /// `true` for the user-facing parent `delegate` tool call that
+    /// `true` for the user-facing parent `agent_start` tool call that
     /// spawned a side conversation. While it is live, side-conversation
     /// prompt lifecycle events must not hide the main tool usage chip.
     is_main_delegate: bool,
@@ -3525,7 +3528,7 @@ impl EventRenderer {
     ) {
         // The event has already been routed into the owning agent transcript.
         // Only the main agent's tool calls land in the UI as their own blocks.
-        // Sub-agent activity is summarized live under the parent's `delegate`
+        // Sub-agent activity is summarized live under the parent's `agent_start`
         // block via `DelegateProgress` instead, so the user sees one line per
         // delegation rather than a flood of nested invocations.
         self.main_agent_turn_active = true;
@@ -3687,7 +3690,7 @@ impl EventRenderer {
             ToolCallState {
                 history_block_id: Some(history_id),
                 summary_block_id,
-                is_main_delegate: call.name.as_str() == "delegate",
+                is_main_delegate: call.name.as_str() == AGENT_START_TOOL_NAME,
                 ..ToolCallState::default()
             },
         );
@@ -3721,7 +3724,7 @@ impl EventRenderer {
             self.handle.push_history(history_id);
             ToolCallState {
                 history_block_id: Some(history_id),
-                is_main_delegate: started.tool_name.as_str() == "delegate",
+                is_main_delegate: started.tool_name.as_str() == AGENT_START_TOOL_NAME,
                 ..ToolCallState::default()
             }
         });
@@ -3998,7 +4001,7 @@ impl EventRenderer {
                     progress.role.as_deref(),
                 ),
                 None => render_delegate_display(
-                    &synthesize_fallback_display("delegate", None),
+                    &synthesize_fallback_display("agent_start", None),
                     progress.agent_id.as_deref(),
                     progress.role.as_deref(),
                 ),
@@ -4056,7 +4059,7 @@ impl EventRenderer {
             return;
         }
         // Sub-agent tool activity stays out of the user's transcript — its
-        // progress is rolled up under the parent's `delegate` block by
+        // progress is rolled up under the parent's `agent_start` block by
         // `DelegateProgress`.
         let Some((prior, known_main_tool)) =
             self.take_finished_tool_call(call_id, result.originator.is_user())
@@ -4128,7 +4131,7 @@ impl EventRenderer {
         result: &tau_proto::ToolResult,
         last_progress: Option<&tau_proto::DelegateProgress>,
     ) -> ToolCallDisplay {
-        if result.tool_name.as_str() == "delegate" {
+        if result.tool_name.as_str() == AGENT_START_TOOL_NAME {
             let role = last_progress.and_then(|p| p.role.as_deref());
             let agent_id = last_progress.and_then(|p| p.agent_id.as_deref());
             if let Some(descriptor) = &result.display {
@@ -4245,7 +4248,7 @@ impl EventRenderer {
         last_progress: Option<&tau_proto::DelegateProgress>,
     ) -> ToolCallDisplay {
         let cbor = error.details.as_ref();
-        if error.tool_name.as_str() == "delegate" {
+        if error.tool_name.as_str() == AGENT_START_TOOL_NAME {
             let role = last_progress.and_then(|p| p.role.as_deref());
             let agent_id = last_progress.and_then(|p| p.agent_id.as_deref());
             if let Some(descriptor) = &error.display {
