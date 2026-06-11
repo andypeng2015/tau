@@ -2913,7 +2913,30 @@ fn extension_tool_request_cannot_reuse_in_flight_agent_call_id() {
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
     let cid = ensure_test_user_agent(&mut h);
+    let owner_agent_id = durable_agent_id_for_conversation(&h, &cid);
     let call_id: ToolCallId = "shared-call".into();
+    h.publish_for_agent(
+        &cid,
+        Event::ProviderResponseFinished(ProviderResponseFinished {
+            agent_prompt_id: "sp-open".into(),
+            agent_id: owner_agent_id.clone(),
+            output_items: vec![ContextItem::ToolCall(ToolCallItem {
+                call_id: call_id.clone(),
+                name: ToolName::new("read"),
+                tool_type: tau_proto::ToolType::Function,
+                arguments: CborValue::Map(Vec::new()),
+            })],
+            stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+            error: None,
+            usage: None,
+            originator: tau_proto::PromptOriginator::User,
+            compaction_original_input_tokens: None,
+            compaction_compacted_input_tokens: None,
+            backend: None,
+            provider_response_id: None,
+            ws_pool_delta: None,
+        }),
+    );
     h.tool_agents.insert(call_id.clone(), cid.clone());
     h.pending_tools.insert(
         call_id.clone(),
@@ -2950,17 +2973,51 @@ fn extension_tool_request_cannot_reuse_in_flight_agent_call_id() {
             .map(tau_proto::ConnectionId::as_str),
         Some("owner-ext")
     );
-    assert!(event_log_contains_source_event(
-        &h,
-        "hijacker-ext",
-        |event| {
-            matches!(
-                event,
-                Event::ToolRejected(rejected)
-                    if rejected.call_id == call_id
-                        && rejected.message.contains("already-known call_id")
-            )
-        }
+    assert!(!event_log_events(&h).iter().any(|event| {
+        matches!(
+            event,
+            Event::ToolRejected(rejected) if rejected.call_id == call_id
+        )
+    }));
+    assert!(event_log_events(&h).iter().any(|event| {
+        matches!(
+            event,
+            Event::HarnessInfo(info) if info.message.contains("already-known call_id")
+        )
+    }));
+    assert!(
+        !default_agent_tree(&h)
+            .nodes()
+            .iter()
+            .any(|node| matches!(node.entry, AgentEntry::ToolResults { .. }))
+    );
+
+    h.handle_extension_event(
+        "owner-ext",
+        TestProtocolItem::Event(Event::ToolResult(ToolResult {
+            call_id: call_id.clone(),
+            tool_name: ToolName::new("read"),
+            tool_type: tau_proto::ToolType::Function,
+            result: CborValue::Text("ok".to_owned()),
+            kind: tau_proto::ToolResultKind::default(),
+            display: None,
+            originator: tau_proto::PromptOriginator::User,
+        })),
+    )
+    .expect("original owner can still complete");
+    let tool_results: Vec<_> = default_agent_tree(&h)
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.entry {
+            AgentEntry::ToolResults { items } => Some(items),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_results.len(), 1);
+    assert_eq!(tool_results[0][0].call_id, call_id);
+    assert!(matches!(
+        tool_results[0][0].status,
+        ToolResultStatus::Success
     ));
 
     h.shutdown().expect("shutdown");

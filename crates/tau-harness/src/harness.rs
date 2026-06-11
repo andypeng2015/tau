@@ -3741,7 +3741,7 @@ impl Harness {
             }
             Event::ToolRequest(request) => {
                 if let Some(message) = self.extension_tool_request_rejection(&request) {
-                    self.reject_extension_tool_request(source_id, request, message);
+                    self.reject_extension_tool_request(message);
                     return Ok(());
                 }
                 // Track extension-originated runtime metadata before
@@ -5445,32 +5445,8 @@ impl Harness {
         })
     }
 
-    fn reject_extension_tool_request(
-        &mut self,
-        source_id: &str,
-        request: ToolRequest,
-        message: String,
-    ) {
-        let rejected = ToolRejected {
-            call_id: request.call_id.clone(),
-            tool_name: request.tool_name.clone(),
-            tool_type: request.tool_type,
-            message: message.clone(),
-            originator: request.originator.clone(),
-        };
-        self.publish_event(Some(source_id), Event::ToolRejected(rejected));
-        self.publish_event(
-            Some(source_id),
-            Event::ToolError(ToolError {
-                call_id: request.call_id,
-                tool_name: request.tool_name,
-                tool_type: request.tool_type,
-                message,
-                details: None,
-                display: None,
-                originator: request.originator,
-            }),
-        );
+    fn reject_extension_tool_request(&mut self, message: String) {
+        self.emit_info(&message);
     }
 
     // -----------------------------------------------------------------------
