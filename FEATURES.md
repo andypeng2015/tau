@@ -62,7 +62,10 @@ extensions alike — gets the same subscribe-time catch-up: the current session
 snapshot plus durable transcript facts, delivered as frames carrying an
 explicit `replay` marker so side-effecting consumers (notifications, tool
 executors) can skip history while stateful ones fold it. Execution triggers
-such as `tool.started` are never replayed.
+such as `tool.started` are never replayed. Subscribers already connected when
+a resumed session finishes initializing get the same history catch-up at that
+moment (their `SessionStarted` arrived live), so a peer's view never depends
+on whether it subscribed before or after init.
 
 ### Interception system
 

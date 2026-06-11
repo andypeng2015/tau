@@ -8035,6 +8035,7 @@ impl Harness {
         // for discovery; the discovered context is injected when a durable agent
         // is explicitly created from the UI's current role/cwd state.
         self.initialized_sessions.insert(session_id.clone());
+        self.catch_up_subscribers_after_session_init();
         self.request_prompt_prewarm(&session_id);
         self.turn_state = TurnState::Idle;
         self.try_advance_queue();

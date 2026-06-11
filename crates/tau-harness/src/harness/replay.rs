@@ -2,8 +2,14 @@
 //!
 //! Every peer — UI client or extension — that subscribes after the harness
 //! has already emitted events is caught up through the same
-//! [`Harness::complete_subscription`] path. Catch-up is semantic state
-//! reconstruction, not a readback of a retained event log:
+//! [`Harness::complete_subscription`] path. There is a second catch-up
+//! moment: when a session finishes initializing,
+//! [`Harness::catch_up_subscribers_after_session_init`] replays the durable
+//! session history to every peer that subscribed *before* init — on resume,
+//! that history predates the process and is never published live, so without
+//! this pass a startup extension would know less than one that joined a
+//! second later. Catch-up is semantic state reconstruction, not a readback of
+//! a retained event log:
 //!
 //! - [`Harness::replay_session_events`] announces the current loaded-agent
 //!   snapshot, then replays each loaded agent's durable transcript facts from
@@ -39,9 +45,11 @@ impl Harness {
     /// UI clients and extensions share this path on purpose — subscribe
     /// semantics must not drift between peer kinds. Catch-up is skipped while
     /// the current session is still initializing: a subscriber connecting
-    /// during startup has missed nothing and will observe the session
-    /// lifecycle live, so replaying it here would deliver duplicate
-    /// `SessionStarted`/`SessionAgentLoaded` announcements.
+    /// during startup observes the session lifecycle live, so replaying it
+    /// here would deliver duplicate `SessionStarted` announcements. Durable
+    /// history a resumed session carries is delivered to those early
+    /// subscribers by [`Self::catch_up_subscribers_after_session_init`] once
+    /// init completes.
     pub(crate) fn complete_subscription(
         &mut self,
         connection_id: &str,
@@ -68,7 +76,18 @@ impl Harness {
                 HarnessOutputMessage::deliver(session_started),
             );
         }
+        self.replay_session_history(client_id, selectors);
+    }
 
+    /// Catches one subscriber up on the bound session's content: the
+    /// loaded-agent roster, each agent's durable transcript facts as
+    /// replay-marked frames, and currently queued prompts.
+    ///
+    /// Called from two places: subscribe-time catch-up (after the
+    /// `SessionStarted` snapshot above) and session-init completion, where
+    /// peers that subscribed before init already saw `SessionStarted` live
+    /// and only need the history.
+    fn replay_session_history(&mut self, client_id: &str, selectors: &[EventSelector]) {
         let loaded_agents: Vec<tau_proto::AgentId> = {
             match self.store.load_session(self.current_session_id.as_str()) {
                 Ok(Some(membership)) => membership.loaded_agents().into_iter().cloned().collect(),
@@ -117,6 +136,34 @@ impl Harness {
             }
         }
         self.replay_active_queued_prompts(client_id, selectors);
+    }
+
+    /// Catches up every already-subscribed peer when session init completes.
+    ///
+    /// Peers that subscribed before init were skipped by
+    /// [`Self::complete_subscription`] — correct for a fresh session, where
+    /// everything arrives live. A resumed session's durable history predates
+    /// the process and is never published live, so it is replayed here;
+    /// otherwise a peer's view would depend on whether it subscribed before
+    /// or after init. The `SessionStarted` snapshot is not resent: these
+    /// peers just saw it live from `start_session_init`. For fresh sessions
+    /// this pass is a no-op (no agents loaded yet).
+    pub(crate) fn catch_up_subscribers_after_session_init(&mut self) {
+        let subscribers: Vec<(String, Vec<EventSelector>)> = self
+            .bus
+            .connections()
+            .into_iter()
+            .filter_map(|meta| {
+                let selectors = self.bus.subscriptions(meta.id.as_str())?;
+                if selectors.is_empty() {
+                    return None;
+                }
+                Some((meta.id.to_string(), selectors.to_vec()))
+            })
+            .collect();
+        for (client_id, selectors) in subscribers {
+            self.replay_session_history(&client_id, &selectors);
+        }
     }
 
     fn send_replay_error(&mut self, client_id: &str, message: &str) {
