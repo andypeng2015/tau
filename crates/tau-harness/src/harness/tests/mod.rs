@@ -1,5 +1,5 @@
-//! Test suite for the harness. Split by concern to mirror the
-//! production module layout (interception, replay, skill_tool, dispatch, …).
+//! Test suite for the harness. Split by concern around major harness behaviors
+//! such as interception, replay, dispatch, lifecycle, and tool handling.
 //!
 //! The shared helpers and imports live here so each submodule can
 //! pull them in with `use super::*;`.

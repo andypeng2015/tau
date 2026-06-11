@@ -163,10 +163,19 @@ Examples:
 Those cases still commit the assistant response and produce terminal error tool
 results.
 
-Structurally malformed provider output is different. Missing/empty call ids,
-duplicate call ids, invalid Tau-visible tool names, or output that cannot be
-correlated into valid transcript items must not commit as successful assistant
-responses. The transcript should remain at the previous stable node.
+Structurally malformed provider output is different, but Tau distinguishes
+recoverable call-id defects from unrecoverable transcript defects.
+
+Recoverable malformed tool-call ids include missing/empty ids, duplicate ids in
+one response, or reuse of a prior call id. Tau rewrites only those invalid calls
+to globally unique synthetic ids scoped by `agent_prompt_id` and item index,
+commits the assistant response with the repaired ids, and immediately emits
+matching model-visible terminal tool errors. Well-formed tool calls in the same
+response remain eligible for normal dispatch.
+
+Unrecoverable malformed output — for example output that cannot be correlated
+into valid transcript items after repair — must not commit as a successful
+assistant response. The transcript should remain at the previous stable node.
 
 ## Tool Result Identity
 

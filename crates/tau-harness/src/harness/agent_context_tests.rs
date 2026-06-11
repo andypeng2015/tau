@@ -164,3 +164,58 @@ fn different_agents_do_not_leak_context() {
         serde_json::json!(["agent-2"])
     );
 }
+
+/// Disconnect cleanup removes a contributor everywhere and prunes empty maps.
+#[test]
+fn remove_contributor_prunes_empty_agent_and_key_maps() {
+    let mut store = AgentContextStore::default();
+    publish(
+        &mut store,
+        "agent-1",
+        "skills",
+        "stale-ext",
+        "stale",
+        serde_json::json!(["old"]),
+    );
+    publish(
+        &mut store,
+        "agent-1",
+        "skills",
+        "live-ext",
+        "live",
+        serde_json::json!(["new"]),
+    );
+    publish(
+        &mut store,
+        "agent-2",
+        "project",
+        "stale-ext",
+        "stale",
+        serde_json::json!({"root": "/old"}),
+    );
+
+    store.remove_contributor(&tau_proto::ConnectionId::from("stale-ext"));
+
+    assert_eq!(
+        template_value(&store, "agent-1")["skills"],
+        serde_json::json!([{ "extension_name": "live", "value": ["new"] }])
+    );
+    assert_eq!(template_value(&store, "agent-2"), serde_json::json!({}));
+}
+
+#[test]
+fn clear_removes_all_contributions() {
+    let mut store = AgentContextStore::default();
+    publish(
+        &mut store,
+        "agent-1",
+        "skills",
+        "ext",
+        "ext",
+        serde_json::json!(["value"]),
+    );
+
+    store.clear();
+
+    assert_eq!(template_value(&store, "agent-1"), serde_json::json!({}));
+}

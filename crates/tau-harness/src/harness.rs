@@ -862,13 +862,14 @@ pub(crate) fn tool_calls_from_output_items(output_items: &[ContextItem]) -> Vec<
 }
 
 fn unique_synthetic_tool_call_id(
-    seen_tool_call_ids: &mut HashSet<ToolCallId>,
+    reserved_tool_call_ids: &mut HashSet<ToolCallId>,
+    prompt_id: &AgentPromptId,
     index: usize,
 ) -> ToolCallId {
     let mut suffix = index + 1;
     loop {
-        let candidate: ToolCallId = format!("invalid_tool_call_{suffix}").into();
-        if seen_tool_call_ids.insert(candidate.clone()) {
+        let candidate: ToolCallId = format!("invalid_tool_call_{}_{}", prompt_id, suffix).into();
+        if reserved_tool_call_ids.insert(candidate.clone()) {
             return candidate;
         }
         suffix += 1;
@@ -904,6 +905,8 @@ mod compaction_metadata_tests;
 #[cfg(test)]
 mod delegate_display_tests;
 #[cfg(test)]
+mod semantic_event_router_tests;
+#[cfg(test)]
 mod tests;
 
 mod agent_context;
@@ -915,8 +918,6 @@ mod interception;
 mod pending_notices;
 mod replay;
 mod semantic_event_router;
-#[allow(dead_code)]
-mod skill_tool;
 mod subagents_tool;
 
 /// Connection ID used for harness-owned tools and their side-query
@@ -1004,9 +1005,8 @@ pub struct Harness {
     /// one harness does not mint the same random candidate repeatedly.
     agent_id_rng: StdRng,
     /// `call_id` → owning agent for every tool call currently
-    /// in flight. Read by `session_id_for_event` (via the
-    /// conversation) to attribute incoming `ToolResult` / `ToolError`
-    /// / `ToolProgress` events back to the originating session.
+    /// in flight. Used to attribute incoming `ToolResult` / `ToolError`
+    /// / `ToolProgress` events back to the originating conversation.
     pub(crate) tool_agents: std::collections::HashMap<ToolCallId, AgentId>,
     /// `call_id` → pending tool metadata for in-flight calls. Used to
     /// enrich terminal runtime events before they are folded into
@@ -2068,32 +2068,6 @@ impl Harness {
         let _ = initialized_ack.send(());
     }
 
-    /// Session id for a loaded durable agent, or `None` if that agent is not
-    /// live.
-    #[allow(dead_code)]
-    fn session_id_for_durable_agent(&self, agent_id: &tau_proto::AgentId) -> Option<SessionId> {
-        self.agent_routes
-            .get(agent_id.as_ref())
-            .and_then(|cid| self.agents.get(cid))
-            .map(|agent| agent.session_id.clone())
-    }
-
-    /// Session id of the agent that owns a given in-flight
-    /// prompt, or `None` if the prompt id is unknown.
-    #[allow(dead_code)]
-    fn session_id_for_prompt(&self, spid: &AgentPromptId) -> Option<SessionId> {
-        let cid = self.prompt_agents.get(spid)?;
-        self.agents.get(cid).map(|c| c.session_id.clone())
-    }
-
-    /// Session id of the agent that owns a given in-flight
-    /// tool call, or `None` if the call id is unknown.
-    #[allow(dead_code)]
-    fn session_id_for_tool_call(&self, call_id: &ToolCallId) -> Option<SessionId> {
-        let cid = self.tool_agents.get(call_id)?;
-        self.agents.get(cid).map(|c| c.session_id.clone())
-    }
-
     /// Agent id that owns a given in-flight prompt, if any.
     fn agent_id_for_prompt(&self, spid: &AgentPromptId) -> Option<AgentId> {
         self.prompt_agents.get(spid).cloned()
@@ -2541,7 +2515,7 @@ impl Harness {
                     // agent's last fold; syncing to it after a
                     // non-folding event (e.g. `ProviderResponseFinished` with
                     // only tool calls) would graft this agent's next
-                    // tool tool request onto the wrong branch and produce orphan
+                    // tool request onto the wrong branch and produce orphan
                     // ToolUse blocks downstream.
                     c.head = Some(node_id);
                     // Keep the dedup map's "built for" cursor in lockstep with
@@ -2554,8 +2528,8 @@ impl Harness {
                     //
                     // We pass *every* fold through this hook, including ones
                     // that didn't touch the dedup map (a user message from
-                    // session re-init, a message projection, a `ToolRequest`
-                    // node). [`ResultDedupMap::note_head_advanced_to`] guards
+                    // session re-init or a message projection).
+                    // [`ResultDedupMap::note_head_advanced_to`] guards
                     // against the dangerous case — `built_for == None` plus a
                     // non-dedup-eligible fold — by skipping the bump, so the
                     // rebuild still triggers on the next dedup intake. Don't
@@ -2872,97 +2846,6 @@ impl Harness {
                 .and_then(|conv| conv.agent_id.as_ref())
                 .cloned()
                 .map(crate::parse_agent_id),
-            _ => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn session_id_for_event(&self, event: &Event) -> Option<SessionId> {
-        self.ui_session_id_for_event(event)
-            .or_else(|| self.session_event_session_id(event))
-            .or_else(|| self.provider_event_session_id(event))
-            .or_else(|| self.tool_event_session_id(event))
-            .or_else(|| self.extension_event_session_id(event))
-    }
-
-    #[allow(dead_code)]
-    fn ui_session_id_for_event(&self, event: &Event) -> Option<SessionId> {
-        match event {
-            Event::UiPromptSubmitted(prompt) => Some(prompt.session_id.clone()),
-            Event::UiShellCommand(command) => Some(command.session_id.clone()),
-            Event::UiSwitchSession(req) => Some(req.new_session_id.clone()),
-            Event::UiCreateAgent(req) => Some(req.session_id.clone()),
-            Event::UiTreeRequest(req) => Some(req.session_id.clone()),
-            Event::UiNavigateTree(req) => Some(req.session_id.clone()),
-            Event::UiCompactRequest(req) => Some(req.session_id.clone()),
-            Event::UiCancelPrompt(req) => Some(req.session_id.clone()),
-            Event::UiRecallQueuedPrompt(req) => Some(req.session_id.clone()),
-            Event::UiSetAgentDisplayName(req) => Some(req.session_id.clone()),
-            _ => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn session_event_session_id(&self, event: &Event) -> Option<SessionId> {
-        match event {
-            Event::SessionStarted(started) => Some(started.session_id.clone()),
-            Event::SessionShutdown(shutdown) => Some(shutdown.session_id.clone()),
-            Event::SessionAgentLoaded(loaded) => Some(loaded.session_id.clone()),
-            Event::SessionAgentUnloaded(unloaded) => Some(unloaded.session_id.clone()),
-            Event::ShellCommandFinished(finished) => Some(finished.session_id.clone()),
-            _ => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn provider_event_session_id(&self, event: &Event) -> Option<SessionId> {
-        match event {
-            Event::ProviderPromptSubmitted(submitted) => {
-                self.session_id_for_prompt(&submitted.agent_prompt_id)
-            }
-            Event::ProviderResponseUpdated(updated) => {
-                self.session_id_for_prompt(&updated.agent_prompt_id)
-            }
-            Event::ProviderResponseFinished(finished) => {
-                self.session_id_for_prompt(&finished.agent_prompt_id)
-            }
-            _ => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn tool_event_session_id(&self, event: &Event) -> Option<SessionId> {
-        match event {
-            Event::ToolRequest(request) => self.session_id_for_tool_call(&request.call_id),
-            Event::ToolStarted(started) => self.session_id_for_tool_call(&started.call_id),
-            Event::ToolRejected(rejected) => self.session_id_for_tool_call(&rejected.call_id),
-            Event::ToolResult(result) | Event::ProviderToolResult(result) => {
-                self.session_id_for_tool_call(&result.call_id)
-            }
-            Event::ToolError(error) | Event::ProviderToolError(error) => {
-                self.session_id_for_tool_call(&error.call_id)
-            }
-            Event::ToolBackgroundResult(result) => self.session_id_for_tool_call(&result.call_id),
-            Event::ToolBackgroundError(error) => self.session_id_for_tool_call(&error.call_id),
-            Event::ToolCancelled(cancelled) => self.session_id_for_tool_call(&cancelled.call_id),
-            Event::ToolProgress(progress) => self.session_id_for_tool_call(&progress.call_id),
-            Event::ToolDelegateProgress(progress) => {
-                self.session_id_for_tool_call(&progress.call_id)
-            }
-            _ => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn extension_event_session_id(&self, event: &Event) -> Option<SessionId> {
-        match event {
-            Event::ExtAgentsMdAvailable(_) | Event::ExtensionContextReady(_) => {
-                Some(self.current_session_id.clone())
-            }
-            Event::ExtAgentContextPublish(publish) => {
-                self.session_id_for_durable_agent(&publish.agent_id)
-            }
-            Event::ExtensionEvent(event) => event.session_id.clone(),
             _ => None,
         }
     }
@@ -3857,17 +3740,13 @@ impl Harness {
                 self.publish_event(Some(source_id), Event::ToolUnregister(unregister));
             }
             Event::ToolRequest(request) => {
-                // Track the owning agent before publishing so semantic
-                // persistence can fold the tool request onto the right
-                // transcript branch and later terminal events can be enriched.
-                self.track_tool_request_session(&request);
-                // Stamp the publish with the owning agent so
-                // the fold lands on its branch. Without this, after
-                // Phase 4 of the interception refactor (no global
-                // head-bouncing), a sibling conversation that
-                // recently appended would leave `tree.head` on its
-                // own tip, and the tool-request node would fold
-                // there instead.
+                // Track extension-originated runtime metadata before
+                // publishing so terminal events can be attributed and enriched.
+                self.track_extension_tool_request_metadata(&request);
+                // Publish with the owning agent when known so live observers
+                // and runtime delivery see the same agent attribution used for
+                // later terminal tool facts. `ToolRequest` itself remains a
+                // runtime routing intent, not an agent-transcript fold.
                 let owning_cid = self.tool_agents.get(&request.call_id).cloned();
                 if let Some(cid) = owning_cid.as_ref()
                     && !self.pending_tools.contains_key(&request.call_id)
@@ -3887,10 +3766,10 @@ impl Harness {
                     Some(cid) => self.publish_event_for_agent(cid, Some(source_id), event),
                     None => self.publish_event(Some(source_id), event),
                 }
-                // `ToolRequest` is the persisted pre-routing intent.
-                // `route_tool_request` resolves it. On success we
-                // publish durable `ToolStarted`; subscribed tool
-                // extensions see that event and the owner starts work. On
+                // `ToolRequest` is the runtime pre-routing intent.
+                // `route_tool_request` resolves it. On success we publish
+                // `ToolStarted`; subscribed tool extensions see that event and
+                // the owner starts work. On
                 // failure we publish `ToolRejected` and the terminal
                 // `ToolError` for model-facing completion.
                 match self.registry.route_tool_request(request.clone()) {
@@ -5013,25 +4892,40 @@ impl Harness {
         self.try_advance_queue();
     }
 
-    fn handle_disconnect(&mut self, connection_id: &str) {
-        self.extensions.activation_staging.remove(connection_id);
-        self.remove_discovered_context(connection_id);
-        self.interceptors.remove_connection(connection_id);
-        self.fail_pending_intercept_for_disconnect(connection_id);
-        self.maybe_complete_session_init_for_disconnect(connection_id);
+    fn remove_extension_context_for_connection(&mut self, connection_id: &str) {
         let disconnected = tau_proto::ConnectionId::from(connection_id);
+        self.extension_prompt_fragments.remove(&disconnected);
+        self.agent_context.remove_contributor(&disconnected);
         self.agent_context_providers.remove(&disconnected);
         self.pending_agent_context_ready.retain(|_, waiting_on| {
             waiting_on.remove(&disconnected);
             !waiting_on.is_empty()
         });
-        self.try_advance_queue();
-        self.set_extension_state(connection_id, ExtensionState::Disconnected);
+    }
 
+    fn clear_session_agent_context(&mut self) {
+        self.agent_context.clear();
+        self.pending_agent_context_ready.clear();
+    }
+
+    fn handle_disconnect(&mut self, connection_id: &str) {
         let meta = self.bus.connection(connection_id).cloned();
         let is_extension = meta.as_ref().is_some_and(|meta| {
             meta.origin == ConnectionOrigin::Supervised || meta.origin == ConnectionOrigin::InMemory
         });
+        if is_extension {
+            // Mark the extension non-blocking before any cleanup can advance
+            // session init or prompt dispatch.
+            self.set_extension_state(connection_id, ExtensionState::Disconnected);
+        }
+        self.extensions.activation_staging.remove(connection_id);
+        self.remove_discovered_context(connection_id);
+        self.interceptors.remove_connection(connection_id);
+        self.fail_pending_intercept_for_disconnect(connection_id);
+        self.maybe_complete_session_init_for_disconnect(connection_id);
+        self.remove_extension_context_for_connection(connection_id);
+        self.try_advance_queue();
+
         if is_extension {
             self.unregister_connection_tools_for_disconnect(connection_id);
             self.action_registry.unregister_connection(connection_id);
@@ -5536,18 +5430,15 @@ impl Harness {
     // Tool-call session bookkeeping
     // -----------------------------------------------------------------------
     //
-    // Persistence of tool activity into the agent transcript is handled
-    // automatically by the publish path: every published `ToolRequest`
-    // / `ToolResult` / `ToolError` flows through
-    // `persist_semantic_event`, which writes transcript facts to the
-    // owning agent log and folds them into the in-memory agent tree.
-    // The helpers below only maintain the runtime maps that attribute
-    // incoming results back to the originating agent.
+    // Terminal tool facts (`ToolResult` / `ToolError` and provider variants)
+    // are persisted into the owning agent transcript. `ToolRequest` itself is a
+    // runtime routing intent; these helpers maintain maps that attribute later
+    // terminal events back to the originating agent or extension request.
 
-    /// Records bookkeeping for an extension-originated `ToolRequest` that does
-    /// not have an owning agent. Agent-owned tool calls are tracked through the
-    /// prompt/tool routing path instead.
-    fn track_tool_request_session(&mut self, request: &ToolRequest) {
+    /// Records runtime bookkeeping for an extension-originated `ToolRequest`
+    /// that does not have an owning agent. Agent-owned tool calls are tracked
+    /// through the prompt/tool routing path instead.
+    fn track_extension_tool_request_metadata(&mut self, request: &ToolRequest) {
         self.pending_tools.insert(
             request.call_id.clone(),
             PendingTool {
@@ -5558,10 +5449,10 @@ impl Harness {
         );
     }
 
-    /// Releases the conversation/name/provider mappings for a
-    /// completed tool call. Must run *after* the result/error event
-    /// has been published, otherwise `session_id_for_event` would no
-    /// longer be able to attribute the durable record.
+    /// Releases the conversation/name/provider mappings for a completed tool
+    /// call. Must run *after* the result/error event has been published so
+    /// terminal-event enrichment and transcript attribution can still read the
+    /// runtime metadata.
     pub(crate) fn clear_tool_call_tracking(&mut self, call_id: &str) {
         self.completed_tool_calls.insert(call_id.into());
         self.tool_agents.remove(call_id);
@@ -7048,6 +6939,7 @@ impl Harness {
         self.pending_notices.tool_availability.clear();
         self.pending_notices.unavailable_tools_delivered.clear();
         self.pending_start_agent_requests.clear();
+        self.clear_session_agent_context();
         self.subagents = SubagentToolState::default();
 
         // Token and context accounting are session-scoped. Reset them
@@ -8764,33 +8656,41 @@ impl Harness {
         let mut normalized_calls: Vec<(AgentToolCall, BackgroundSupport)> = Vec::new();
         if requested_tool_calls {
             let mut seen_tool_call_ids = HashSet::new();
+            let mut reserved_tool_call_ids = self.known_tool_call_ids();
             normalized_calls = tool_calls
                 .iter()
                 .enumerate()
                 .map(|(index, call)| {
                     let mut call = call.clone();
-                    if call.id.as_str().is_empty() {
-                        call.id = unique_synthetic_tool_call_id(&mut seen_tool_call_ids, index);
-                        invalid_tool_call_errors.insert(
-                            call.id.clone(),
-                            format!(
-                                "provider emitted tool call `{}` with an empty call_id; refusing to execute it",
-                                call.name
-                            ),
-                        );
+                    let invalid_message = if call.id.as_str().is_empty() {
+                        Some(format!(
+                            "provider emitted tool call `{}` with an empty call_id; refusing to execute it",
+                            call.name
+                        ))
                     } else if !seen_tool_call_ids.insert(call.id.clone()) {
-                        let duplicate_call_id = call.id.clone();
-                        call.id = unique_synthetic_tool_call_id(&mut seen_tool_call_ids, index);
-                        invalid_tool_call_errors.insert(
-                            call.id.clone(),
-                            format!(
-                                "provider emitted duplicate tool call_id `{duplicate_call_id}` for tool `{}`; refusing to execute the duplicate",
-                                call.name
-                            ),
+                        Some(format!(
+                            "provider emitted duplicate tool call_id `{}` for tool `{}`; refusing to execute the duplicate",
+                            call.id, call.name
+                        ))
+                    } else if reserved_tool_call_ids.contains(&call.id) {
+                        Some(format!(
+                            "provider reused prior tool call_id `{}` for tool `{}`; refusing to execute it",
+                            call.id, call.name
+                        ))
+                    } else {
+                        reserved_tool_call_ids.insert(call.id.clone());
+                        None
+                    };
+                    if let Some(message) = invalid_message {
+                        call.id = unique_synthetic_tool_call_id(
+                            &mut reserved_tool_call_ids,
+                            &response.agent_prompt_id,
+                            index,
                         );
+                        seen_tool_call_ids.insert(call.id.clone());
+                        invalid_tool_call_errors.insert(call.id.clone(), message);
                     }
-                    let background_support =
-                        self.resolve_tool_background_support(call.name.as_str());
+                    let background_support = self.resolve_tool_background_support(call.name.as_str());
                     (call, background_support)
                 })
                 .collect();
@@ -8987,6 +8887,15 @@ impl Harness {
         }
 
         Ok(())
+    }
+
+    fn known_tool_call_ids(&self) -> HashSet<ToolCallId> {
+        self.tool_agents
+            .keys()
+            .chain(self.pending_tools.keys())
+            .chain(self.completed_tool_calls.iter())
+            .cloned()
+            .collect()
     }
 
     /// Update one agent's `context_input_tokens` /
@@ -9710,9 +9619,9 @@ impl Harness {
         let owner_agent_id = self.tool_owner_agent_id(cid);
         let owner_originator = self.tool_owner_originator(cid);
 
-        // Track conversation attribution before publishing — the
-        // publish path persists the `ToolRequest` into the session
-        // log and folds it into the AgentTree via `apply_event`.
+        // Track conversation attribution before publishing the runtime
+        // `ToolRequest`; terminal tool facts use this metadata to fold into the
+        // owning agent transcript.
         self.tool_agents.insert(call_id.clone(), cid.clone());
         self.pending_tools.insert(
             call_id.clone(),

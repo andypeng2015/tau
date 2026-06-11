@@ -48,6 +48,22 @@ impl AgentContextStore {
             );
     }
 
+    /// Remove every contribution published by one extension connection.
+    pub(crate) fn remove_contributor(&mut self, contributor: &tau_proto::ConnectionId) {
+        self.by_agent.retain(|_, keys| {
+            keys.retain(|_, contributions| {
+                contributions.remove(contributor);
+                !contributions.is_empty()
+            });
+            !keys.is_empty()
+        });
+    }
+
+    /// Remove all session-scoped context contributions.
+    pub(crate) fn clear(&mut self) {
+        self.by_agent.clear();
+    }
+
     /// Return the Handlebars-visible `agent_context` object for one agent.
     pub(crate) fn template_value(
         &self,

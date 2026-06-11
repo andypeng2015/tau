@@ -258,7 +258,12 @@ Intent:
 
 - valid assistant tool calls to unavailable or denied tools still commit and
   later receive terminal error results
-- malformed provider output does not commit as a successful assistant response
+- recoverable malformed call ids (empty, duplicate within the response, or
+  reused from a prior tool call) are repaired to synthetic ids and commit with
+  matching terminal error results so the next prompt has paired tool-call/error
+  items
+- unrecoverable malformed provider output does not commit as a successful
+  assistant response
 
 ## Compaction Rules
 

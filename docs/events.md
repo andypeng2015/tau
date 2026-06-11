@@ -266,9 +266,11 @@ commands) in response to a `ui.shell_command`.
 - **`shell.command_progress`** — A chunk of stdout/stderr from a running
   user-initiated shell command, correlated by `command_id`. Transient.
 - **`shell.command_finished`** — A user-initiated shell command exited
-  or was cancelled. Echoes session id, command, and `include_in_context`
-  flag from the originating request, plus the truncated combined
-  output, exit code, and `cancelled` flag.
+  or was cancelled. Echoes session id, command, optional target agent id,
+  and `include_in_context` flag from the originating request, plus the
+  truncated combined output, exit code, and `cancelled` flag. When
+  `include_in_context` is set, the harness injects the output only into the
+  validated target agent for that session.
 
 ## Term (terminal-output side effects)
 

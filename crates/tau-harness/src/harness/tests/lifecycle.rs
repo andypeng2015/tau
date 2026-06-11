@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 use crate::agent::PendingPrompt;
 use crate::extension::{ExtensionConnectCommand, ExtensionEntry, ExtensionState, spawn_in_process};
 use crate::harness::{
-    PendingTool, extension_disconnected_tool_call_error_message,
+    PendingTool, PromptFragmentSource, extension_disconnected_tool_call_error_message,
     tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
     unavailable_tool_error_message, validate_protocol_version,
 };
@@ -2482,7 +2482,7 @@ fn empty_tool_call_id_becomes_model_visible_tool_error() {
     }
     assert_eq!(
         assistant_call_ids,
-        vec!["invalid_tool_call_1", "invalid_tool_call_2"]
+        vec!["invalid_tool_call_sp-x_1", "invalid_tool_call_sp-x_2"]
     );
     assert_eq!(tool_error_ids, assistant_call_ids);
 
@@ -2554,8 +2554,71 @@ fn duplicate_tool_call_id_becomes_model_visible_tool_error() {
             _ => {}
         }
     }
-    assert_eq!(assistant_call_ids, vec!["dup", "invalid_tool_call_2"]);
-    assert_eq!(duplicate_error_ids, vec!["invalid_tool_call_2"]);
+    assert_eq!(assistant_call_ids, vec!["dup", "invalid_tool_call_sp-x_2"]);
+    assert_eq!(duplicate_error_ids, vec!["invalid_tool_call_sp-x_2"]);
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Ensures a provider cannot reuse a call id from an earlier completed turn.
+#[test]
+fn reused_prior_tool_call_id_becomes_model_visible_tool_error() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+
+    let cid = ensure_test_user_agent(&mut h);
+    seed_agent_thinking(&mut h, &cid, "sp-y");
+    h.prompt_agents.insert("sp-y".into(), cid.clone());
+    h.completed_tool_calls.insert("old-call".into());
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        agent_prompt_id: "sp-y".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "old-call".into(),
+            name: ToolName::new("not_a_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        error: None,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("reused prior call id should not wedge the harness");
+
+    assert!(h.tool_turn.is_empty());
+    let mut assistant_call_ids = Vec::new();
+    let mut reused_error_ids = Vec::new();
+    for node in default_agent_tree(&h).nodes() {
+        match &node.entry {
+            AgentEntry::AssistantResponse { output_items, .. } => {
+                assistant_call_ids.extend(output_items.iter().filter_map(|item| match item {
+                    ContextItem::ToolCall(call) => Some(call.call_id.to_string()),
+                    _ => None,
+                }));
+            }
+            AgentEntry::ToolResults { items } => {
+                reused_error_ids.extend(items.iter().filter_map(|item| match &item.status {
+                    ToolResultStatus::Error { message }
+                        if message.contains("reused prior tool call_id") =>
+                    {
+                        Some(item.call_id.to_string())
+                    }
+                    _ => None,
+                }));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(assistant_call_ids, vec!["invalid_tool_call_sp-y_1"]);
+    assert_eq!(reused_error_ids, assistant_call_ids);
 
     h.shutdown().expect("shutdown");
 }
@@ -2743,7 +2806,7 @@ fn duplicate_tool_result_is_discarded() {
 
     let mut h = echo_harness(&sp).expect("start");
 
-    // Fabricate a tool result for a call_id that is not in pending_tool_sessions.
+    // Fabricate a tool result for a call_id with no pending runtime metadata.
     let result = h.handle_extension_event(
         "fake-ext",
         TestProtocolItem::Event(Event::ToolResult(ToolResult {
@@ -2842,4 +2905,97 @@ fn client_hello_protocol_mismatch_disconnects_only_client() {
         )),
         "expected disconnect for stale UI, got: {events:?}"
     );
+}
+
+#[test]
+fn disconnect_removes_extension_prompt_and_agent_context() {
+    let tmp = TempDir::new().expect("temp dir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    connect_test_tool(&mut h, "ctx-ext");
+    let contributor = tau_proto::ConnectionId::from("ctx-ext");
+    let agent_id = crate::parse_agent_id("agent-1");
+
+    h.publish_extension_prompt_fragment(
+        "ctx-ext",
+        tau_proto::ExtPromptFragmentPublish {
+            fragment: tau_proto::PromptFragment::new(
+                "ctx-fragment",
+                tau_proto::PromptPriority::new(100),
+                "stale fragment",
+            ),
+        },
+    );
+    h.publish_agent_context_publish(
+        "ctx-ext",
+        tau_proto::ExtAgentContextPublish {
+            agent_id: agent_id.clone(),
+            key: tau_proto::AgentContextKey::from("skills"),
+            value: tau_proto::AgentContextValue(serde_json::json!(["stale"])),
+        },
+    );
+    h.agent_context_providers.insert(contributor.clone());
+    h.pending_agent_context_ready
+        .insert(agent_id.clone(), HashSet::from([contributor.clone()]));
+
+    h.handle_disconnect("ctx-ext");
+
+    assert!(!h.extension_prompt_fragments.contains_key(&contributor));
+    assert_eq!(
+        h.agent_context.template_value(Some(&agent_id)),
+        serde_json::json!({})
+    );
+    assert!(!h.agent_context_providers.contains(&contributor));
+    assert!(!h.pending_agent_context_ready.contains_key(&agent_id));
+}
+
+#[test]
+fn switch_session_clears_session_scoped_extension_context() {
+    let tmp = TempDir::new().expect("temp dir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    connect_test_tool(&mut h, "ctx-ext");
+    let contributor = tau_proto::ConnectionId::from("ctx-ext");
+    let agent_id = crate::parse_agent_id("agent-1");
+
+    h.publish_extension_prompt_fragment(
+        "ctx-ext",
+        tau_proto::ExtPromptFragmentPublish {
+            fragment: tau_proto::PromptFragment::new(
+                "ctx-fragment",
+                tau_proto::PromptPriority::new(100),
+                "old session fragment",
+            ),
+        },
+    );
+    h.publish_agent_context_publish(
+        "ctx-ext",
+        tau_proto::ExtAgentContextPublish {
+            agent_id: agent_id.clone(),
+            key: tau_proto::AgentContextKey::from("skills"),
+            value: tau_proto::AgentContextValue(serde_json::json!(["old session"])),
+        },
+    );
+    h.agent_context_providers.insert(contributor.clone());
+    h.pending_agent_context_ready
+        .insert(agent_id.clone(), HashSet::from([contributor.clone()]));
+
+    h.switch_session("s2".into(), tau_proto::SessionStartReason::New)
+        .expect("switch session");
+
+    assert!(h.extension_prompt_fragments.contains_key(&contributor));
+    let (fragments, tool_fragments) = h.gather_sourced_prompt_fragment_groups(&h.selected_role);
+    assert!(tool_fragments.is_empty());
+    assert!(fragments.iter().any(|sourced| {
+        sourced.fragment.name == "ctx-fragment"
+            && matches!(
+                sourced.source,
+                PromptFragmentSource::Extension { ref connection_id }
+                    if connection_id == &contributor
+            )
+    }));
+    assert_eq!(
+        h.agent_context.template_value(Some(&agent_id)),
+        serde_json::json!({})
+    );
+    assert!(h.pending_agent_context_ready.is_empty());
+    assert!(h.agent_context_providers.contains(&contributor));
 }
