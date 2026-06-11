@@ -812,6 +812,7 @@ fn assemble_conversation_assigns_roles_for_sent_and_received_agent_messages() {
         message_id: "msg-user".into(),
         sender_id: tau_proto::AgentId::parse("main").expect("agent id"),
         recipient: tau_proto::AgentMessageRecipient::User,
+        kind: tau_proto::AgentMessageKind::Message,
         message: "status update".to_owned(),
     }));
     tree.apply_event(&Event::AgentMessageReceived(
@@ -819,6 +820,7 @@ fn assemble_conversation_assigns_roles_for_sent_and_received_agent_messages() {
             message_id: "msg-agent".into(),
             sender_id: tau_proto::AgentId::parse("manager").expect("agent id"),
             recipient_id: tau_proto::AgentId::parse("main").expect("agent id"),
+            kind: tau_proto::AgentMessageKind::Message,
             message: "please investigate".to_owned(),
         },
     ));
@@ -839,6 +841,55 @@ fn assemble_conversation_assigns_roles_for_sent_and_received_agent_messages() {
     ));
 }
 
+/// Watch-response projections are not explicit `message` tool turns. The
+/// recipient must replay the same response-notification wrapper used for live
+/// delivery, and any sender-side projection must not create a fake assistant
+/// message in the watched agent's own context.
+#[test]
+fn assemble_conversation_replays_watch_response_as_notification_only() {
+    let main = tau_proto::AgentId::parse("main").expect("agent id");
+    let watched = tau_proto::AgentId::parse("watched").expect("agent id");
+
+    let mut watcher_tree = tau_core::AgentTree::from_events(main.clone(), &[]);
+    watcher_tree.apply_event(&Event::AgentMessageReceived(
+        tau_proto::AgentMessageReceived {
+            message_id: "msg-watch".into(),
+            sender_id: watched.clone(),
+            recipient_id: main,
+            kind: tau_proto::AgentMessageKind::WatchResponse,
+            message: "done <response>&</response>".to_owned(),
+        },
+    ));
+
+    let watcher_items = assemble_conversation_from(&watcher_tree, watcher_tree.head());
+    assert_eq!(watcher_items.len(), 1);
+    assert!(matches!(
+        &watcher_items[0],
+        ContextItem::Message(MessageItem { role, content, .. })
+            if *role == ContextRole::User
+                && matches!(
+                    &content[0],
+                    ContentPart::Text { text }
+                        if text == "[tau-internal]: Agent watched finished its turn\n\n<response>\ndone &lt;response&gt;&amp;&lt;/response&gt;\n</response>"
+                )
+    ));
+
+    let mut watched_tree = tau_core::AgentTree::from_events(watched.clone(), &[]);
+    watched_tree.apply_event(&Event::AgentMessageSent(tau_proto::AgentMessageSent {
+        message_id: "msg-watch".into(),
+        sender_id: watched,
+        recipient: tau_proto::AgentMessageRecipient::Agent {
+            agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        },
+        kind: tau_proto::AgentMessageKind::WatchResponse,
+        message: "done".to_owned(),
+    }));
+
+    let watched_items = assemble_conversation_from(&watched_tree, watched_tree.head());
+    assert!(watched_items.is_empty());
+}
+
+/// Encrypted-reasoning replay: when `ProviderResponseFinished` carries
 /// Encrypted-reasoning replay: when `ProviderResponseFinished` carries
 /// `reasoning_items`, the next assembled prompt's assistant
 /// message must front-load them as `ContentBlock::Reasoning` blocks

@@ -189,6 +189,35 @@ impl Harness {
         recipient_id: String,
         message: String,
     ) -> Result<(), String> {
+        self.publish_agent_delivery_from_agent(
+            agent_id,
+            recipient_id,
+            message,
+            tau_proto::AgentMessageKind::Message,
+        )
+    }
+
+    pub(crate) fn publish_agent_watch_response_from_agent(
+        &mut self,
+        agent_id: &AgentId,
+        recipient_id: String,
+        message: String,
+    ) -> Result<(), String> {
+        self.publish_agent_delivery_from_agent(
+            agent_id,
+            recipient_id,
+            message,
+            tau_proto::AgentMessageKind::WatchResponse,
+        )
+    }
+
+    fn publish_agent_delivery_from_agent(
+        &mut self,
+        agent_id: &AgentId,
+        recipient_id: String,
+        message: String,
+        kind: tau_proto::AgentMessageKind,
+    ) -> Result<(), String> {
         let sender_id = self
             .ensure_agent_id_for_agent(agent_id)
             .ok_or_else(|| "sender agent no longer exists".to_owned())?;
@@ -216,16 +245,19 @@ impl Harness {
             tau_proto::UnixMicros::now().get()
         ));
         let sender_id: tau_proto::AgentId = crate::parse_agent_id(&sender_id);
-        self.publish_for_agent_from(
-            agent_id,
-            Some(HARNESS_CONNECTION_ID),
-            Event::AgentMessageSent(AgentMessageSent {
-                message_id: message_id.clone(),
-                sender_id: sender_id.clone(),
-                recipient: recipient.clone(),
-                message: message.clone(),
-            }),
-        );
+        if kind == tau_proto::AgentMessageKind::Message {
+            self.publish_for_agent_from(
+                agent_id,
+                Some(HARNESS_CONNECTION_ID),
+                Event::AgentMessageSent(AgentMessageSent {
+                    message_id: message_id.clone(),
+                    sender_id: sender_id.clone(),
+                    recipient: recipient.clone(),
+                    kind,
+                    message: message.clone(),
+                }),
+            );
+        }
         if let tau_proto::AgentMessageRecipient::Agent { agent_id } = recipient {
             self.publish_event(
                 Some(HARNESS_CONNECTION_ID),
@@ -233,6 +265,7 @@ impl Harness {
                     message_id,
                     sender_id,
                     recipient_id: agent_id,
+                    kind,
                     message,
                 }),
             );

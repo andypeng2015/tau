@@ -1546,6 +1546,23 @@ pub enum AgentMessageRecipient {
     User,
 }
 
+/// Source semantics for an agent-to-agent delivery.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageKind {
+    /// An explicit `message` tool invocation.
+    #[default]
+    Message,
+    /// An automatic `agent_watch` response notification.
+    WatchResponse,
+}
+
+impl AgentMessageKind {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A harness-authored durable sender-side projection of a message sent by one
 /// agent to another agent or to the user.
 ///
@@ -1561,6 +1578,9 @@ pub struct AgentMessageSent {
     pub sender_id: AgentId,
     /// Recipient agent or the human user.
     pub recipient: AgentMessageRecipient,
+    /// Delivery source semantics.
+    #[serde(default, skip_serializing_if = "AgentMessageKind::is_default")]
+    pub kind: AgentMessageKind,
     /// Message body.
     pub message: String,
 }
@@ -1580,6 +1600,9 @@ pub struct AgentMessageReceived {
     pub sender_id: AgentId,
     /// Recipient agent id that received the message.
     pub recipient_id: AgentId,
+    /// Delivery source semantics.
+    #[serde(default, skip_serializing_if = "AgentMessageKind::is_default")]
+    pub kind: AgentMessageKind,
     /// Message body.
     pub message: String,
 }

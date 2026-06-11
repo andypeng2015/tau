@@ -386,17 +386,18 @@ notifications disabled; users can opt in to prompt-submit sounds, final-response
 sounds, idle desktop notifications after `delay_seconds` of inactivity, and idle
 summaries via `agent_summary: true`.
 
-### Harness-owned `agent_start` / `wait` / `message` — multi-agent workflows
+### Harness-owned `agent_start` / `agent_watch` / `wait` / `message` — multi-agent workflows
 
 The harness exposes an `agent_start` tool that spawns an isolated side conversation
-and returns its result to the caller, plus a `wait` tool for collecting
-background tool results. Long-running background-capable tool calls return an
-immediate placeholder, stay visible in the UI, and deliver their real result or
-error later so the main turn can keep making progress. Unless the `agent_start`
-call supplies `role`, delegated sub-agents default to the `senior-engineer` role. The
-delegate placeholder and final result include `self_agent_id` and
-`sub_agent_id`; pass `sub_agent_id` to the `message` tool for live
-coordination after the first final response.
+and automatically subscribes the caller to its responses, an `agent_watch` tool
+that subscribes the calling agent to async notifications when another agent
+responds, plus a `wait` tool for collecting background tool results. Long-running background-capable tool
+calls return an immediate placeholder, stay visible in the UI, and deliver their
+real result or error later so the main turn can keep making progress. Unless the
+`agent_start` call supplies `role`, delegated sub-agents default to the
+`senior-engineer` role. The `agent_start` placeholder and final result include
+`self_agent_id` and `sub_agent_id`; sub-agent responses arrive through distinct
+`agent_watch` async response notifications until the caller disables the watch.
 
 When `role` is supplied, or when the default `senior-engineer` role is used, the
 sub-agent runs with that role's resolved model, model parameters, system prompt,

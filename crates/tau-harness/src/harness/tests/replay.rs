@@ -332,6 +332,7 @@ fn late_joining_ui_client_receives_replayed_agent_message_exact_selector() {
                 message_id: "test-message".into(),
                 sender_id: crate::parse_agent_id("agent-1"),
                 recipient: tau_proto::AgentMessageRecipient::User,
+                kind: tau_proto::AgentMessageKind::Message,
                 message: "persisted hello".to_owned(),
             }),
         )

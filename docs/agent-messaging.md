@@ -33,7 +33,7 @@ Message sent
 
 ## Send to another agent
 
-Start the other agent with `agent_start`. The instant background placeholder includes `self_agent_id` and `sub_agent_id` headers. The final delegate result carries the same ids alongside the sub-agent `output`:
+Start the other agent with `agent_start`. The instant background placeholder includes `self_agent_id` and `sub_agent_id` headers. The final `agent_start` result carries the same ids, while the sub-agent's response text arrives through the `agent_watch` async response-notification path:
 
 ```text
 tau_internal: true
@@ -50,6 +50,33 @@ message({"recipient_id":"engineer_b","message":"Please also inspect crates/tau-c
 ```
 
 The UI may display, summarize, or hide agent-to-agent messages depending on `/set show-messages`. The recipient agent also receives a hidden internal prompt with the message body XML-escaped inside a `<message>` wrapper.
+
+## Watch another agent's responses
+
+Use `agent_watch` to enable or disable hidden async notifications when another
+agent produces a response:
+
+```text
+agent_watch({"agent_id":"engineer_b","enable":true})
+```
+
+`agent_start` automatically enables watching for the sub-agent it creates. A watch notification is delivered to the watching agent as a hidden internal prompt that is distinct from an explicit `message` tool delivery:
+
+```text
+[tau-internal]: Agent engineer_b finished its turn
+
+<response>
+Task result text.
+</response>
+```
+
+The `agent_start` tool result only confirms metadata such as `self_agent_id` and `sub_agent_id`; response text arrives through watch notifications. Disable watching explicitly when later responses are no longer wanted.
+
+Disable watching with:
+
+```text
+agent_watch({"agent_id":"engineer_b","enable":false})
+```
 
 ## Invalid recipients and arguments
 

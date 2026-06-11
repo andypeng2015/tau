@@ -161,6 +161,9 @@ When asked to verify the `agent_start` tool, also verify delayed `message` deliv
 
 Also verify the active-`wait` variant of the same scenario. Use a delegate prompt that starts a long backgroundable tool, then calls `wait` on that tool call ID before it completes. While the delegate is blocked in `wait`, send `message` to the delegate `sub_agent_id` with a nonce. Expected: `Message sent`, the delegate's `wait` returns promptly with a `tau_internal: true` interruption result saying new input is queued, and the delegate receives the hidden message prompt without waiting for the original background tool to complete. If event logs are available, confirm the wait `ToolResult` appears before the message-driven follow-up `AgentPromptCreated`.
 
+Because `agent_start` enables a persistent watch, these message-delivery probes can produce later watch notifications if the child leaves an earlier background tool running. For example, after an active-`wait` interruption, the original sleep may complete later, queue a normal background-completion prompt in the child, and the child may answer something like `Received.`. That is not a duplicate watch notification by itself; it is a later child turn caused by the delayed inner completion. If the verifier no longer wants notifications from that child after the success nonce, explicitly call `agent_watch({"agent_id":"<sub_agent_id>","enable":false})`.
+
+A completed background result is consumed by the first successful `wait`. Later waits for the same id should fail with an already-consumed error. Parallel duplicate waits on the same id race; at most one should receive the result, and the rest should fail. Parallel duplicate no-arg waits in the same conversation should also fail clearly because only one waiter can consume the next completion. The exact error depends on timing: an in-progress duplicate-wait error, an already-consumed error, or another clear race-related error can be acceptable if only one wait receives the result.
 A completed background result is consumed by the first successful `wait`. Later waits for the same id should fail with an already-consumed error. Parallel duplicate waits on the same id race; at most one should receive the result, and the rest should fail. Parallel duplicate no-arg waits in the same conversation should also fail clearly because only one waiter can consume the next completion. The exact error depends on timing: an in-progress duplicate-wait error, an already-consumed error, or another clear race-related error can be acceptable if only one wait receives the result.
 
 
@@ -536,7 +539,8 @@ Procedure:
 1. Start a long shell command: `sleep 30`.
 2. After Tau returns the background placeholder for that shell call, immediately request another shell command: `sleep 5`.
 3. If you receive any inbound `[tau-internal]` message from the parent, respond to `user` exactly: `QUEUED-TOOL MESSAGE RECEIVED nonce=queued-tool-message-001` plus the exact inbound message text and visible sender id.
-4. If no inbound message arrives, final answer exactly: `UNEXPECTED queued-tool message missing`.
+4. After sending the user message, final answer exactly: `FINAL queued-tool message probe reported to user`.
+5. If no inbound message arrives, final answer exactly: `UNEXPECTED queued-tool message missing`.
 
 Do not invent messages. Do not finish before checking for the parent message.
 ```
@@ -637,6 +641,61 @@ Report concise but complete findings:
 * Include whether errors distinguish completed recipients from unknown recipients. Current behavior may use the same unknown-recipient error for both.
 * Include whether parent recipient ID discovery was clear from `self_agent_id` or still had to be inferred from sub-agent logs.
 * Include whether the delivered wrapper XML-escaped payloads containing literal `<message>` tags and ampersands.
+
+
+### Agent watch tool verification plan
+
+Use this plan when asked to verify the `agent_watch` tool. The goal is to prove that watch subscriptions deliver response notifications from the watched agent, that `agent_start` auto-watches its child, and that disabling a watch stops delivery without hiding errors.
+
+Watch notifications must be distinguishable from explicit `message` tool deliveries in the model-visible prompt. Explicit messages use a “received a message from ...” wrapper with a `<message>` block. Watch response notifications should instead look like a turn-finished notification, for example:
+
+```text
+[tau-internal]: Agent engineer-aSSq finished its turn
+
+<response>
+The task is complete.
+</response>
+```
+
+If the watching agent repeats the same notification text in a commentary/final response, that is the agent echoing the notification, not a second watch delivery. When checking for duplicate delivery, count actual message events/results, not streamed echoes of text the model chose to repeat.
+
+A watch notification that arrives while the watcher is blocked in `wait` may interrupt the wait with a `tau_internal: true` result saying new input is queued. Treat that as expected: it is the same active-wait interruption behavior used for ordinary agent messages.
+
+Messages sent by a sub-agent to `user` are user-recipient messages. They are not model-visible to the parent agent unless the sub-agent also sends a message to the parent or includes the information in a watched response/final answer. Do not use `message` to `user` as the only proof that the parent observed a notification.
+
+#### What to verify
+
+Record all of these observations:
+
+* `agent_start` automatically watches the returned `sub_agent_id` for the starting agent.
+* Watch notifications are model-visible as “Agent <id> finished its turn” with a `<response>` block, not as “received a message” with a `<message>` block.
+* The watched agent's final responses arrive as async response notifications from the sub-agent to the watcher until disabled.
+* The `agent_start` final tool result contains metadata such as `self_agent_id` and `sub_agent_id`, but does not duplicate the sub-agent response text as `output`.
+* `agent_watch({"agent_id": id, "enable": false})` disables notifications for that watcher.
+* Re-enabling with `enable: true` restores notifications for later responses.
+* Unknown, empty, or self `agent_id` values fail clearly. Stopped but known agents can still be watched or unwatched.
+* Mid-turn tool-call responses do not notify early; notifications should correspond to final response semantics.
+* If a watched sub-agent errors or is canceled and the starter receives the watch message, the `agent_start` tool error may be the generic watch-delivered error. If the starter disabled watch or delivery failed, the original error, such as `Tool call canceled`, must remain visible in the tool error.
+
+#### Suggested procedure
+
+1. Start a sub-agent with `agent_start` whose prompt final-answers a nonce, for example `WATCH auto final nonce=watch-auto-001`. Do not ask the sub-agent to also `message` the user with the same nonce in this phase.
+2. Confirm the starter receives an async `[tau-internal]` response notification from the `sub_agent_id` containing that nonce, using an “Agent <id> finished its turn” wrapper and a `<response>` block. It must not use the explicit-message “received a message from ...” wrapper or a `<message>` block. Avoid echoing the full notification text in commentary; summarize it when reporting.
+3. Confirm the `agent_start` result exposes `self_agent_id` and `sub_agent_id` without returning the nonce as duplicated tool output.
+4. Start a long-lived sub-agent. Disable watching it with `agent_watch({"agent_id":"<sub_agent_id>","enable":false})`, then cause or wait for a later response. Confirm no watch message is delivered to the starter for that response.
+5. Re-enable the watch and cause another response. Confirm a watch message is delivered again.
+6. Exercise validation: watch self, watch an empty id, watch an unknown id, and watch a stopped completed sub-agent. Unknown, empty, and self ids should error; the stopped but known sub-agent should be accepted. Record exact tool results or errors.
+7. Cancel a watched long-running `agent_start`. Confirm cancellation still reports a useful error. If watch delivery reached the starter, generic watch-delivered wording is acceptable; otherwise the original `Tool call canceled` must be preserved.
+
+#### Reporting format for `agent_watch` verification
+
+Report concise but complete findings:
+
+* List each tested route and whether it passed: auto-watch, disable, re-enable, validation errors, cancellation/error fallback, and no duplicated `agent_start` output.
+* Include exact notification text, tool results, and unexpected errors. Call out any watch notification that is formatted like an explicit `message` tool delivery.
+* Mention duplicate notifications, missed notifications, premature mid-turn notifications, or unclear sender/recipient IDs. If a sub-agent was instructed to both `message` the user and final-answer with the same text, record those as two expected delivery paths rather than an `agent_watch` duplicate. If the watching agent repeats a received `[tau-internal]` notification in its own commentary/final response, record that as model echo unless event logs show multiple received deliveries. If a watched child produces a later response after an unfinished background tool completes, record it as a later child turn unless the same response event was delivered more than once.
+* Include whether `wait` was interrupted by a watch notification while waiting; this is expected if it reports that new input is queued.
+* Include whether `self_agent_id` and `sub_agent_id` made the watcher and watched IDs clear enough.
 
 
 ### Verification procedure

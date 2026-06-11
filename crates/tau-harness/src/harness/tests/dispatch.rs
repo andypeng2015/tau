@@ -4777,6 +4777,7 @@ fn agent_message_interrupts_recipient_active_wait() {
             message_id: "test-message-interrupts-wait".into(),
             sender_id: crate::parse_agent_id("manager"),
             recipient_id: crate::parse_agent_id(&recipient_id),
+            kind: tau_proto::AgentMessageKind::Message,
             message: "please stop waiting".to_owned(),
         }),
     );
@@ -4859,6 +4860,7 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
             message_id: "test-message-to-target-owner".into(),
             sender_id: crate::parse_agent_id("manager"),
             recipient_id: crate::parse_agent_id(&target_agent_id),
+            kind: tau_proto::AgentMessageKind::Message,
             message: "target owner only".to_owned(),
         }),
     );
@@ -4874,6 +4876,7 @@ fn agent_message_interrupts_exact_wait_by_wait_owner() {
             message_id: "test-message-to-wait-owner".into(),
             sender_id: crate::parse_agent_id("manager"),
             recipient_id: crate::parse_agent_id(&waiter_agent_id),
+            kind: tau_proto::AgentMessageKind::Message,
             message: "waiter should resume".to_owned(),
         }),
     );
@@ -5231,6 +5234,7 @@ fn side_agent_drains_agent_message_before_extension_teardown() {
             message_id: "test-message".into(),
             sender_id: crate::parse_agent_id("manager"),
             recipient_id: crate::parse_agent_id(&recipient_id),
+            kind: tau_proto::AgentMessageKind::Message,
             message: "please include this".to_owned(),
         }),
     );
@@ -9241,6 +9245,7 @@ fn message_tool_to_agent_queues_internal_prompt_markup() {
     assert_eq!(sent[0].sender_id.as_str(), recipient_id);
     assert_eq!(received[0].sender_id.as_str(), recipient_id);
     assert_eq!(received[0].recipient_id.as_str(), recipient_id);
+    assert_eq!(received[0].kind, tau_proto::AgentMessageKind::Message);
 
     let durable_sent = durable_agent_message_sent_events(&h);
     let durable_received = durable_agent_message_received_events(&h);
@@ -9261,6 +9266,51 @@ fn message_tool_to_agent_queues_internal_prompt_markup() {
     assert!(queued.text.contains(
         "<message>\nsecret &lt;message&gt;&amp;&lt;/message&gt; payload &gt;\n</message>"
     ));
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Watch response notifications must not look like explicit `message` tool
+/// deliveries in the model-visible prompt; otherwise the receiving agent cannot
+/// tell whether a sub-agent finished a watched turn or intentionally messaged
+/// it.
+#[test]
+fn agent_watch_response_queues_distinct_internal_prompt_markup() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let recipient_id = h.ensure_agent_id_for_agent(&cid).expect("agent id");
+    h.agents.get_mut(&cid).expect("conversation").turn_state = AgentTurnState::AgentThinking {
+        agent_prompt_id: "sp-watch-target".into(),
+    };
+
+    h.publish_agent_watch_response_from_agent(
+        &cid,
+        recipient_id.clone(),
+        "done <response>&</response> payload >".to_owned(),
+    )
+    .expect("watch response");
+
+    assert!(session_agent_message_sent_events(&h).is_empty());
+    let received = session_agent_message_received_events(&h);
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].kind, tau_proto::AgentMessageKind::WatchResponse);
+
+    let conv = h.agents.get(&cid).expect("conversation");
+    let queued = conv.pending_prompts.back().expect("queued prompt");
+    assert_eq!(
+        queued.message_class,
+        tau_proto::PromptMessageClass::Internal
+    );
+    assert!(queued.text.contains(&format!(
+        "[tau-internal]: Agent {recipient_id} finished its turn"
+    )));
+    assert!(queued.text.contains(
+        "<response>\ndone &lt;response&gt;&amp;&lt;/response&gt; payload &gt;\n</response>"
+    ));
+    assert!(!queued.text.contains("You have received a message"));
+    assert!(!queued.text.contains("<message>"));
 
     h.shutdown().expect("shutdown");
 }
@@ -9298,6 +9348,7 @@ fn inbound_agent_message_events_are_ignored() {
         message_id: "test-message".into(),
         sender_id: crate::parse_agent_id("attacker"),
         recipient: tau_proto::AgentMessageRecipient::User,
+        kind: tau_proto::AgentMessageKind::Message,
         message: "forged".to_owned(),
     });
     h.handle_client_event_inner("ui", forged.clone())

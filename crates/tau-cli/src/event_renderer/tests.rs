@@ -13,6 +13,7 @@ fn agent_message(sender_id: &str, recipient: &str, message: &str) -> tau_proto::
                 agent_id: agent_id(recipient),
             }
         },
+        kind: tau_proto::AgentMessageKind::Message,
         message: message.to_owned(),
     })
 }

@@ -2925,11 +2925,28 @@ impl EventRenderer {
 
     fn agent_message_summary(event: &Event) -> String {
         match event {
+            Event::AgentMessageSent(message)
+                if message.kind == tau_proto::AgentMessageKind::WatchResponse =>
+            {
+                format!(
+                    "Response from {} to {}",
+                    message.sender_id,
+                    Self::agent_message_sent_recipient_label(message)
+                )
+            }
             Event::AgentMessageSent(message) => format!(
                 "Message from {} to {}",
                 message.sender_id,
                 Self::agent_message_sent_recipient_label(message)
             ),
+            Event::AgentMessageReceived(message)
+                if message.kind == tau_proto::AgentMessageKind::WatchResponse =>
+            {
+                format!(
+                    "Response from {} to {}",
+                    message.sender_id, message.recipient_id
+                )
+            }
             Event::AgentMessageReceived(message) => format!(
                 "Message from {} to {}",
                 message.sender_id, message.recipient_id

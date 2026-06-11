@@ -3241,11 +3241,17 @@ impl Harness {
     }
 
     fn deliver_agent_message(&mut self, message: &tau_proto::AgentMessageReceived) {
-        let text = format!(
-            "[tau-internal]: You have received a message from {}\n\n<message>\n{}\n</message>",
-            message.sender_id,
-            escape_agent_message_for_prompt(&message.message)
-        );
+        let escaped_message = escape_agent_message_for_prompt(&message.message);
+        let text = match message.kind {
+            tau_proto::AgentMessageKind::Message => format!(
+                "[tau-internal]: You have received a message from {}\n\n<message>\n{}\n</message>",
+                message.sender_id, escaped_message
+            ),
+            tau_proto::AgentMessageKind::WatchResponse => format!(
+                "[tau-internal]: Agent {} finished its turn\n\n<response>\n{}\n</response>",
+                message.sender_id, escaped_message
+            ),
+        };
         if let Some(cid) = self
             .agent_routes
             .get(message.recipient_id.as_str())

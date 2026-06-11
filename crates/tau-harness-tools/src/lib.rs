@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use tau_harness::internal_tools::{InternalSkill, InternalSkillSource};
 use tau_harness::{AgentId, AgentToolCall, HarnessError, InternalToolHandler, InternalToolHost};
 use tau_proto::{
-    BackgroundSupport, CborValue, Event, PromptOriginator, StartAgentRequest, ToolCallId,
-    ToolError, ToolName, ToolResult, ToolResultKind, ToolSpec, ToolStarted, ToolType, ToolUseState,
-    ToolUseStats, ToolUseStatus,
+    BackgroundSupport, CborValue, ContentPart, ContextItem, ContextRole, Event, PromptOriginator,
+    ProviderResponseFinished, StartAgentRequest, ToolCallId, ToolError, ToolName, ToolResult,
+    ToolResultKind, ToolSpec, ToolStarted, ToolType, ToolUseState, ToolUseStats, ToolUseStatus,
 };
 
 const SKILL_TOOL_NAME: &str = "skill";
@@ -28,6 +28,7 @@ const AGENT_START_TOOL_NAME: &str = "agent_start";
 const WAIT_TOOL_NAME: &str = "wait";
 const CANCEL_TOOL_NAME: &str = "cancel";
 const MESSAGE_TOOL_NAME: &str = "message";
+const AGENT_WATCH_TOOL_NAME: &str = "agent_watch";
 const SLOW_DELEGATE_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 
 /// Return handlers for Tau's built-in harness-process tools.
@@ -46,9 +47,19 @@ struct BuiltinState {
     cancel_requested: HashSet<ToolCallId>,
     in_progress_tool_names: HashMap<ToolCallId, ToolName>,
     next_delegate_query_id: u64,
+    agent_watchers: HashMap<String, HashSet<String>>,
 }
 
 impl BuiltinState {
+    fn remove_agent_watcher(&mut self, agent_id: &str, watcher_id: &str) {
+        if let Some(watchers) = self.agent_watchers.get_mut(agent_id) {
+            watchers.remove(watcher_id);
+            if watchers.is_empty() {
+                self.agent_watchers.remove(agent_id);
+            }
+        }
+    }
+
     fn record_tool_started(&mut self, call_id: ToolCallId, tool_name: ToolName) {
         self.in_progress_tool_names.insert(call_id, tool_name);
     }
@@ -116,6 +127,13 @@ impl BuiltinState {
                 Ok(parsed) => (parsed.recipient_id, tau_proto::PROGRESS_INDICATOR_TEXT),
                 Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
             },
+            AGENT_WATCH_TOOL_NAME => match parse_agent_watch_args(&call.arguments) {
+                Ok(parsed) => (
+                    agent_watch_display_args(&parsed),
+                    tau_proto::PROGRESS_INDICATOR_TEXT,
+                ),
+                Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
+            },
             CANCEL_TOOL_NAME => match parse_cancel_args(&call.arguments) {
                 Ok(target) => (target.to_string(), tau_proto::PROGRESS_INDICATOR_TEXT),
                 Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT),
@@ -156,6 +174,7 @@ impl InternalToolHandler for BuiltinTools {
             wait_tool_spec(),
             cancel_tool_spec(),
             message_tool_spec(),
+            agent_watch_tool_spec(),
         ]
     }
 
@@ -167,6 +186,7 @@ impl InternalToolHandler for BuiltinTools {
                 | WAIT_TOOL_NAME
                 | CANCEL_TOOL_NAME
                 | MESSAGE_TOOL_NAME
+                | AGENT_WATCH_TOOL_NAME
         )
     }
 
@@ -210,6 +230,12 @@ impl InternalToolHandler for BuiltinTools {
                     MESSAGE_TOOL_NAME => {
                         handle_message_tool_call(host, &conversation_id, &call, visible_tool_name)
                     }
+                    AGENT_WATCH_TOOL_NAME => self.handle_agent_watch_tool_call(
+                        host,
+                        &conversation_id,
+                        &call,
+                        visible_tool_name,
+                    ),
                     CANCEL_TOOL_NAME => self.handle_cancel_tool_call(
                         host,
                         &conversation_id,
@@ -220,6 +246,9 @@ impl InternalToolHandler for BuiltinTools {
                 }
             }
             Event::StartAgentResult(result) => self.handle_start_agent_result(host, result),
+            Event::ProviderResponseFinished(response) => {
+                self.handle_agent_response_finished(host, response)
+            }
             Event::ToolCancelRequest(request) => {
                 self.handle_tool_cancel_request(host, &request.target_call_id)
             }
@@ -300,11 +329,14 @@ impl BuiltinTools {
                 return Ok(());
             }
         };
-        self.state
-            .lock()
-            .expect("builtin tool state poisoned")
-            .pending_delegates
-            .insert(
+        {
+            let mut state = self.state.lock().expect("builtin tool state poisoned");
+            state
+                .agent_watchers
+                .entry(agent_id.clone())
+                .or_default()
+                .insert(self_agent_id.clone());
+            state.pending_delegates.insert(
                 query_id,
                 PendingDelegate {
                     call_id: call_id.clone(),
@@ -316,6 +348,7 @@ impl BuiltinTools {
                     input_stats,
                 },
             );
+        }
         host.background_tool_call(
             &call_id,
             CborValue::Text(delegate_background_placeholder(
@@ -362,19 +395,30 @@ impl BuiltinTools {
             return Ok(());
         };
         let duration_seconds = delegate_duration_seconds(pending.started_at.elapsed());
-        if let Some(message) = result.error.clone() {
+        let delivered_watch_message =
+            start_agent_watch_notification_message(&pending.agent_id, result).is_some_and(
+                |message| {
+                    self.notify_agent_watchers(host, &pending.agent_id, message)
+                        .contains(&pending.self_agent_id)
+                },
+            );
+        if let Some(error) = result.error.clone() {
             let display = delegate_final_display(
                 &pending.task_name,
                 &result.text,
                 pending.input_stats,
                 ToolUseStatus::Error,
-                &message,
+                &error,
             );
             host.finish_prebuilt_tool_error(ToolError {
                 call_id: pending.call_id,
                 tool_name: pending.tool_name,
                 tool_type: ToolType::Function,
-                message,
+                message: if delivered_watch_message {
+                    "Agent response error delivered via agent_watch".to_owned()
+                } else {
+                    error
+                },
                 details: delegate_error_details(
                     duration_seconds,
                     Some(&pending.self_agent_id),
@@ -396,7 +440,7 @@ impl BuiltinTools {
                 tool_name: pending.tool_name,
                 tool_type: ToolType::Function,
                 result: delegate_result_value(
-                    result.text.clone(),
+                    None,
                     duration_seconds,
                     Some(&pending.self_agent_id),
                     Some(&pending.agent_id),
@@ -407,6 +451,118 @@ impl BuiltinTools {
             });
         }
         Ok(())
+    }
+    fn handle_agent_watch_tool_call(
+        &self,
+        host: &mut InternalToolHost<'_>,
+        conversation_id: &AgentId,
+        call: &AgentToolCall,
+        visible_tool_name: ToolName,
+    ) -> Result<(), HarnessError> {
+        let call_id = call.id.clone();
+        host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
+        let result = parse_agent_watch_args(&call.arguments).and_then(|parsed| {
+            let self_agent_id = host
+                .ensure_agent_id_for_agent(conversation_id)
+                .ok_or_else(|| "sender conversation no longer exists".to_owned())?;
+            if parsed.agent_id == self_agent_id {
+                return Err("`agent_id` must identify another agent".to_owned());
+            }
+            if !host.is_known_agent_id(&parsed.agent_id) {
+                return Err(format!("unknown agent: `{}`", parsed.agent_id));
+            }
+            let mut state = self.state.lock().expect("builtin tool state poisoned");
+            if parsed.enable {
+                state
+                    .agent_watchers
+                    .entry(parsed.agent_id.clone())
+                    .or_default()
+                    .insert(self_agent_id);
+                Ok(format!("Watching agent `{}`", parsed.agent_id))
+            } else {
+                state.remove_agent_watcher(&parsed.agent_id, &self_agent_id);
+                Ok(format!("Stopped watching agent `{}`", parsed.agent_id))
+            }
+        });
+        match result {
+            Ok(message) => host.finish_tool_with_result(
+                conversation_id,
+                call_id,
+                visible_tool_name,
+                call.tool_type,
+                message,
+                None,
+            ),
+            Err(message) => host.finish_tool_with_error(
+                conversation_id,
+                call_id,
+                visible_tool_name,
+                call.tool_type,
+                message,
+                Some(call.arguments.clone()),
+            ),
+        }
+        Ok(())
+    }
+
+    fn handle_agent_response_finished(
+        &self,
+        host: &mut InternalToolHost<'_>,
+        response: &ProviderResponseFinished,
+    ) -> Result<(), HarnessError> {
+        let Some(message) = agent_watch_response_should_notify(response) else {
+            return Ok(());
+        };
+        let sender_id = response.agent_id.to_string();
+        self.notify_agent_watchers(host, &sender_id, message);
+        Ok(())
+    }
+
+    fn notify_agent_watchers(
+        &self,
+        host: &mut InternalToolHost<'_>,
+        sender_id: &str,
+        message: String,
+    ) -> HashSet<String> {
+        let watchers = self
+            .state
+            .lock()
+            .expect("builtin tool state poisoned")
+            .agent_watchers
+            .get(sender_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut delivered_watchers = HashSet::new();
+        let mut failed_watchers = Vec::new();
+        for watcher_id in watchers {
+            if watcher_id == sender_id {
+                continue;
+            }
+            if host
+                .publish_agent_watch_response_from_agent_ids(
+                    sender_id,
+                    watcher_id.clone(),
+                    message.clone(),
+                )
+                .is_err()
+            {
+                failed_watchers.push(watcher_id);
+            } else {
+                delivered_watchers.insert(watcher_id);
+            }
+        }
+        if !failed_watchers.is_empty() {
+            let mut state = self.state.lock().expect("builtin tool state poisoned");
+            if let Some(watchers) = state.agent_watchers.get_mut(sender_id) {
+                for watcher_id in failed_watchers {
+                    watchers.remove(&watcher_id);
+                }
+                if watchers.is_empty() {
+                    state.agent_watchers.remove(sender_id);
+                }
+            }
+        }
+        delivered_watchers
     }
 }
 
@@ -1008,6 +1164,99 @@ fn parse_message_args(arguments: &CborValue) -> Result<MessageArgs, String> {
         message,
     })
 }
+#[derive(Debug)]
+struct AgentWatchArgs {
+    agent_id: String,
+    enable: bool,
+}
+
+fn parse_agent_watch_args(arguments: &CborValue) -> Result<AgentWatchArgs, String> {
+    let CborValue::Map(entries) = arguments else {
+        return Err("arguments must be an object".to_owned());
+    };
+    let mut agent_id = None;
+    let mut enable = None;
+    for (k, v) in entries {
+        let CborValue::Text(name) = k else { continue };
+        match name.as_str() {
+            "agent_id" => match v {
+                CborValue::Text(text) => agent_id = Some(text.clone()),
+                _ => return Err("`agent_id` must be a string".to_owned()),
+            },
+            "enable" => match v {
+                CborValue::Bool(value) => enable = Some(*value),
+                _ => return Err("`enable` must be a boolean".to_owned()),
+            },
+            _ => {}
+        }
+    }
+    let agent_id = agent_id.ok_or_else(|| "`agent_id` is required".to_owned())?;
+    if agent_id.trim().is_empty() {
+        return Err("`agent_id` must not be empty".to_owned());
+    }
+    let enable = enable.ok_or_else(|| "`enable` is required".to_owned())?;
+    Ok(AgentWatchArgs { agent_id, enable })
+}
+
+fn agent_watch_display_args(parsed: &AgentWatchArgs) -> String {
+    let action = if parsed.enable { "on" } else { "off" };
+    format!("{} {action}", parsed.agent_id)
+}
+
+fn agent_watch_response_should_notify(response: &ProviderResponseFinished) -> Option<String> {
+    if !response.originator.is_user() || response.stop_reason.requests_tool_calls() {
+        return None;
+    }
+    agent_watch_notification_message(response)
+}
+
+fn start_agent_watch_notification_message(
+    _agent_id: &str,
+    result: &tau_proto::StartAgentResult,
+) -> Option<String> {
+    if let Some(error) = result.error.as_deref()
+        && !error.trim().is_empty()
+    {
+        return Some(error.to_owned());
+    }
+    (!result.text.trim().is_empty()).then(|| result.text.clone())
+}
+
+fn agent_watch_notification_message(response: &ProviderResponseFinished) -> Option<String> {
+    if let Some(error) = response.error.as_deref()
+        && !error.trim().is_empty()
+    {
+        return Some(error.to_owned());
+    }
+    assistant_text_from_output_items(&response.output_items)
+}
+
+fn assistant_text_from_output_items(output_items: &[ContextItem]) -> Option<String> {
+    let text = output_items
+        .iter()
+        .filter_map(assistant_text_from_context_item)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn assistant_text_from_context_item(item: &ContextItem) -> Option<String> {
+    let ContextItem::Message(message) = item else {
+        return None;
+    };
+    if message.role != ContextRole::Assistant {
+        return None;
+    }
+    let text = message
+        .content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text { text } => text.as_str(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
 
 #[derive(Debug)]
 struct DelegateArgs {
@@ -1132,16 +1381,16 @@ fn format_tool_use_bytes(bytes: u64) -> String {
 }
 
 fn delegate_result_value(
-    text: String,
+    text: Option<String>,
     duration_seconds: Option<u64>,
     self_agent_id: Option<&str>,
     agent_id: Option<&str>,
 ) -> CborValue {
     if duration_seconds.is_none() && self_agent_id.is_none() && agent_id.is_none() {
-        return CborValue::Text(text);
+        return CborValue::Text(text.unwrap_or_default());
     }
     CborValue::Map(delegate_detail_entries(
-        Some(text),
+        text,
         duration_seconds,
         self_agent_id,
         agent_id,
@@ -1229,11 +1478,15 @@ fn skill_tool_spec() -> ToolSpec {
 }
 
 fn agent_start_tool_spec() -> ToolSpec {
-    ToolSpec { name: ToolName::new(AGENT_START_TOOL_NAME), model_visible_name: None, description: Some("Start a self-contained sub-task in a new sub-agent, and return its final response. The `prompt` must contain all information the sub-agent needs to complete the task. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short user-visible label for the sub-task (a few words)."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
+    ToolSpec { name: ToolName::new(AGENT_START_TOOL_NAME), model_visible_name: None, description: Some("Start a self-contained sub-task in a new sub-agent. The `prompt` must contain all information the sub-agent needs to complete the task. The sub-agent's responses are delivered asynchronously via `agent_watch` notifications until the caller disables the watch. The instant background placeholder and final result include `self_agent_id` and `sub_agent_id` metadata.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"task_name":{"type":"string","description":"Short user-visible label for the sub-task (a few words)."},"prompt":{"type":"string","description":"Self-contained task for the sub-agent."},"role":{"type":"string","description":"Optional sub-agent role to use."}},"required":["task_name","prompt"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn message_tool_spec() -> ToolSpec {
     ToolSpec { name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Send an async message to another agent, or the user. Use recipient_id `user`, or a `sub_agent_id` returned by `agent_start`. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient agent_id, or the special value `user`."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
+}
+
+fn agent_watch_tool_spec() -> ToolSpec {
+    ToolSpec { name: ToolName::new(AGENT_WATCH_TOOL_NAME), model_visible_name: None, description: Some("Enable or disable persistent async notifications when another agent produces a response. `agent_start` automatically enables a watch for the started sub-agent; call `agent_watch` with `enable: false` to stop watching. Requires `agent_id` and `enable`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"agent_id":{"type":"string","description":"Agent id to watch or stop watching."},"enable":{"type":"boolean","description":"True to enable watching, false to disable it."}},"required":["agent_id","enable"],"additionalProperties":false})), format: None, enabled_by_default: true, background_support: Some(BackgroundSupport::Never) }
 }
 
 fn cancel_tool_spec() -> ToolSpec {

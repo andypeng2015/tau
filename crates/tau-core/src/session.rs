@@ -13,9 +13,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tau_proto::{
-    AgentHeadMoved, AgentId, AgentMessageId, AgentMessageReceived, AgentMessageRecipient,
-    AgentMessageSent, ConnectionId, ContentPart, ContextItem, ContextRole, Event, MessageItem,
-    PromptOriginator, ProviderBackend, ProviderTokenUsage, ToolBackgroundError,
+    AgentHeadMoved, AgentId, AgentMessageId, AgentMessageKind, AgentMessageReceived,
+    AgentMessageRecipient, AgentMessageSent, ConnectionId, ContentPart, ContextItem, ContextRole,
+    Event, MessageItem, PromptOriginator, ProviderBackend, ProviderTokenUsage, ToolBackgroundError,
     ToolBackgroundResult, ToolCallId, ToolCallItem, ToolName, ToolResultItem, ToolResultKind,
     ToolResultStatus, ToolType, UnixMicros,
 };
@@ -125,6 +125,8 @@ pub enum AgentEntry {
         sender_id: AgentId,
         /// Recipient agent or user.
         recipient: AgentMessageRecipient,
+        /// Delivery source semantics.
+        kind: AgentMessageKind,
         /// Message body.
         message: String,
     },
@@ -747,6 +749,7 @@ impl AgentTree {
             direction: AgentMessageDirection::Outbound,
             sender_id: message.sender_id.clone(),
             recipient: message.recipient.clone(),
+            kind: message.kind,
             message: message.message.clone(),
         })
     }
@@ -762,6 +765,7 @@ impl AgentTree {
             recipient: AgentMessageRecipient::Agent {
                 agent_id: message.recipient_id.clone(),
             },
+            kind: message.kind,
             message: message.message.clone(),
         })
     }

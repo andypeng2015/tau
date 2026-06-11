@@ -658,27 +658,51 @@ pub(crate) fn assemble_prompt_context_from(
                 ));
             }
             AgentEntry::AgentMessage {
-                direction, message, ..
-            } => {
-                blocks.push(tau_proto::ContextBlock::UserInput(
-                    tau_proto::UserInputBlock {
-                        items: vec![ContextItem::Message(tau_proto::MessageItem {
-                            role: match direction {
-                                tau_core::AgentMessageDirection::Outbound => {
-                                    tau_proto::ContextRole::Assistant
-                                }
-                                tau_core::AgentMessageDirection::Inbound => {
-                                    tau_proto::ContextRole::User
-                                }
+                direction,
+                sender_id,
+                kind,
+                message,
+                ..
+            } => match kind {
+                tau_proto::AgentMessageKind::Message => {
+                    blocks.push(tau_proto::ContextBlock::UserInput(
+                        tau_proto::UserInputBlock {
+                            items: vec![ContextItem::Message(tau_proto::MessageItem {
+                                role: match direction {
+                                    tau_core::AgentMessageDirection::Outbound => {
+                                        tau_proto::ContextRole::Assistant
+                                    }
+                                    tau_core::AgentMessageDirection::Inbound => {
+                                        tau_proto::ContextRole::User
+                                    }
+                                },
+                                content: vec![tau_proto::ContentPart::Text {
+                                    text: message.clone(),
+                                }],
+                                phase: None,
+                            })],
+                        },
+                    ));
+                }
+                tau_proto::AgentMessageKind::WatchResponse => {
+                    if *direction == tau_core::AgentMessageDirection::Inbound {
+                        blocks.push(tau_proto::ContextBlock::UserInput(
+                            tau_proto::UserInputBlock {
+                                items: vec![ContextItem::Message(tau_proto::MessageItem {
+                                    role: tau_proto::ContextRole::User,
+                                    content: vec![tau_proto::ContentPart::Text {
+                                        text: format!(
+                                            "[tau-internal]: Agent {sender_id} finished its turn\n\n<response>\n{}\n</response>",
+                                            xml_escape(message)
+                                        ),
+                                    }],
+                                    phase: None,
+                                })],
                             },
-                            content: vec![tau_proto::ContentPart::Text {
-                                text: message.clone(),
-                            }],
-                            phase: None,
-                        })],
-                    },
-                ));
-            }
+                        ));
+                    }
+                }
+            },
         }
     }
 

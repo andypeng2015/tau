@@ -81,6 +81,130 @@ fn agent_start_spec_advertises_only_current_tool_name() {
     assert!(!names.iter().any(|name| name == "delegate"));
     assert!(tools.handles(&ToolName::new(AGENT_START_TOOL_NAME)));
     assert!(!tools.handles(&ToolName::new("delegate")));
+    let description = agent_start_tool_spec()
+        .description
+        .expect("agent_start description");
+    assert!(description.contains("delivered asynchronously via `agent_watch`"));
+    assert!(description.contains("until the caller disables the watch"));
+    assert!(description.contains("metadata"));
+    assert!(!description.contains("return its final response"));
+}
+
+#[test]
+fn agent_watch_spec_is_advertised_and_requires_agent_id_and_enable() {
+    let spec = agent_watch_tool_spec();
+    assert_eq!(spec.name.as_str(), AGENT_WATCH_TOOL_NAME);
+    let params = spec.parameters.expect("agent_watch schema");
+    let required = params
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .expect("required fields")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+
+    let description = agent_watch_tool_spec()
+        .description
+        .expect("agent_watch description");
+    assert!(description.contains("persistent async notifications"));
+    assert!(description.contains("automatically enables a watch"));
+    assert!(description.contains("enable: false"));
+    assert_eq!(required, vec!["agent_id", "enable"]);
+}
+
+#[test]
+fn agent_watch_args_require_non_empty_agent_id_and_bool_enable() {
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("agent_id".to_owned()),
+            CborValue::Text("agent-a".to_owned()),
+        ),
+        (CborValue::Text("enable".to_owned()), CborValue::Bool(true)),
+    ]);
+    let parsed = parse_agent_watch_args(&args).expect("valid watch args");
+    assert_eq!(parsed.agent_id, "agent-a");
+    assert!(parsed.enable);
+    assert_eq!(agent_watch_display_args(&parsed), "agent-a on");
+
+    let err = parse_agent_watch_args(&CborValue::Map(vec![
+        (
+            CborValue::Text("agent_id".to_owned()),
+            CborValue::Text("".to_owned()),
+        ),
+        (CborValue::Text("enable".to_owned()), CborValue::Bool(true)),
+    ]))
+    .expect_err("empty agent_id should fail");
+    assert_eq!(err, "`agent_id` must not be empty");
+
+    let err = parse_agent_watch_args(&CborValue::Map(vec![
+        (
+            CborValue::Text("agent_id".to_owned()),
+            CborValue::Text("agent-a".to_owned()),
+        ),
+        (
+            CborValue::Text("enable".to_owned()),
+            CborValue::Text("true".to_owned()),
+        ),
+    ]))
+    .expect_err("non-bool enable should fail");
+    assert_eq!(err, "`enable` must be a boolean");
+}
+
+#[test]
+fn agent_watch_notification_extracts_assistant_response_text() {
+    let response = ProviderResponseFinished {
+        agent_prompt_id: "sp-watch".into(),
+        agent_id: tau_proto::AgentId::parse("agent-a").expect("agent id"),
+        output_items: vec![ContextItem::Message(tau_proto::MessageItem {
+            role: ContextRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: "done".to_owned(),
+            }],
+            phase: None,
+        })],
+        stop_reason: tau_proto::ProviderStopReason::EndTurn,
+        error: None,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    };
+
+    assert_eq!(
+        agent_watch_notification_message(&response),
+        Some("done".to_owned())
+    );
+}
+
+#[test]
+fn agent_watch_ignores_mid_turn_tool_call_responses() {
+    // Tool-call stops are mid-turn: the final response is only known after the
+    // requested tools run and the provider completes a later turn.
+    let response = ProviderResponseFinished {
+        agent_prompt_id: "sp-watch".into(),
+        agent_id: tau_proto::AgentId::parse("agent-a").expect("agent id"),
+        output_items: vec![ContextItem::Message(tau_proto::MessageItem {
+            role: ContextRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: "working".to_owned(),
+            }],
+            phase: None,
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        error: None,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    };
+
+    assert!(agent_watch_response_should_notify(&response).is_none());
 }
 
 #[test]
@@ -124,30 +248,27 @@ fn wait_initial_display_tracks_only_running_or_backgrounded_tools() {
 #[test]
 fn delegate_instruction_names_parent_and_message_followup_path() {
     // Delegated agents get a fresh context, so their injected instruction
-    // must explicitly name the parent and explain that only the first final
-    // response flows back through the agent_start tool result.
+    // must explicitly name the parent and explain that responses flow back
+    // through the unified agent_watch notification path while the watch is enabled.
     let instruction = delegate_instruction("engineer_parent", "inspect the change");
 
     assert!(
         instruction
             .contains("You were started by agent `engineer_parent` using `agent_start` tool")
     );
-    assert!(instruction.contains("Only your first final response"));
-    assert!(
-        instruction
-            .contains("you can use `message` tool to communicate with any agent at any time")
-    );
+    assert!(instruction.contains("automatically watching this conversation"));
+    assert!(instruction.contains("async `agent_watch` notifications"));
+    assert!(instruction.contains("while that watch remains enabled"));
+    assert!(instruction.contains("the `message` tool to communicate with any agent at any time"));
     assert!(instruction.contains("### Task\n\ninspect the change"));
 }
 
 #[test]
 fn delegate_result_includes_only_caller_and_sub_agent_ids() {
-    let value = delegate_result_value(
-        "done".to_owned(),
-        None,
-        Some("engineer_parent"),
-        Some("engineer_child"),
-    );
+    // `agent_start` no longer returns the sub-agent's first final text as tool
+    // output. That content is delivered through the unified `agent_watch`
+    // notification path, while the tool result keeps routing metadata.
+    let value = delegate_result_value(None, None, Some("engineer_parent"), Some("engineer_child"));
 
     assert_eq!(
         cbor_map_text(&value, "self_agent_id"),
@@ -158,7 +279,7 @@ fn delegate_result_includes_only_caller_and_sub_agent_ids() {
         Some("engineer_child")
     );
     assert_eq!(cbor_map_text(&value, "agent_id"), None);
-    assert_eq!(cbor_map_text(&value, "output"), Some("done"));
+    assert_eq!(cbor_map_text(&value, "output"), None);
 }
 
 #[test]

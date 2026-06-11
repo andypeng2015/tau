@@ -138,12 +138,14 @@ fn representative_events() -> Vec<Event> {
             message_id: "msg-1".into(),
             sender_id: agent_id("engineer_abcd1234"),
             recipient: AgentMessageRecipient::User,
+            kind: AgentMessageKind::Message,
             message: "hello".to_owned(),
         }),
         Event::AgentMessageReceived(AgentMessageReceived {
             message_id: "msg-2".into(),
             sender_id: agent_id("engineer_abcd1234"),
             recipient_id: agent_id("reviewer_efgh5678"),
+            kind: AgentMessageKind::Message,
             message: "hello back".to_owned(),
         }),
         Event::SessionStarted(SessionStarted {
@@ -468,6 +470,7 @@ fn agent_message_events_have_names_and_persistence_defaults() {
         message_id: "msg-1".into(),
         sender_id: agent_id("engineer_abcd1234"),
         recipient: AgentMessageRecipient::User,
+        kind: AgentMessageKind::Message,
         message: "hello".to_owned(),
     });
     assert_eq!(sent.name(), EventName::AGENT_MESSAGE_SENT);
@@ -478,11 +481,41 @@ fn agent_message_events_have_names_and_persistence_defaults() {
         message_id: "msg-2".into(),
         sender_id: agent_id("engineer_abcd1234"),
         recipient_id: agent_id("reviewer_efgh5678"),
+        kind: AgentMessageKind::Message,
         message: "hello back".to_owned(),
     });
     assert_eq!(received.name(), EventName::AGENT_MESSAGE_RECEIVED);
     assert_eq!(received.name().to_string(), "agent.message_received");
     assert!(!received.defaults_to_transient());
+}
+
+#[test]
+fn agent_message_kind_defaults_and_serializes_only_when_non_default() {
+    let legacy: AgentMessageReceived = serde_json::from_value(serde_json::json!({
+        "message_id": "msg-legacy",
+        "sender_id": "engineer_abcd1234",
+        "recipient_id": "reviewer_efgh5678",
+        "message": "hello"
+    }))
+    .expect("legacy message without kind decodes");
+    assert_eq!(legacy.kind, AgentMessageKind::Message);
+
+    let explicit_message = AgentMessageReceived {
+        message_id: "msg-message".into(),
+        sender_id: agent_id("engineer_abcd1234"),
+        recipient_id: agent_id("reviewer_efgh5678"),
+        kind: AgentMessageKind::Message,
+        message: "hello".to_owned(),
+    };
+    let message_json = serde_json::to_value(&explicit_message).expect("serialize message");
+    assert_eq!(message_json.get("kind"), None);
+
+    let watch_response = AgentMessageReceived {
+        kind: AgentMessageKind::WatchResponse,
+        ..explicit_message
+    };
+    let watch_json = serde_json::to_value(&watch_response).expect("serialize watch response");
+    assert_eq!(watch_json["kind"], serde_json::json!("watch_response"));
 }
 
 #[test]

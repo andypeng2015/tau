@@ -372,6 +372,48 @@ impl<'a> InternalToolHost<'a> {
         self.harness
             .publish_agent_message_from_agent(conversation_id, recipient_id, message)
     }
+
+    /// Publish an agent-to-agent message by public sender and recipient ids.
+    pub fn publish_agent_message_from_agent_ids(
+        &mut self,
+        sender_agent_id: &str,
+        recipient_id: String,
+        message: String,
+    ) -> Result<(), String> {
+        let sender_cid = self.sender_conversation_id(sender_agent_id)?;
+        self.harness
+            .publish_agent_message_from_agent(&sender_cid, recipient_id, message)
+    }
+
+    /// Publish an `agent_watch` response notification by public sender and
+    /// recipient ids.
+    pub fn publish_agent_watch_response_from_agent_ids(
+        &mut self,
+        sender_agent_id: &str,
+        recipient_id: String,
+        message: String,
+    ) -> Result<(), String> {
+        let sender_cid = self.sender_conversation_id(sender_agent_id)?;
+        self.harness
+            .publish_agent_watch_response_from_agent(&sender_cid, recipient_id, message)
+    }
+
+    fn sender_conversation_id(&self, sender_agent_id: &str) -> Result<AgentId, String> {
+        self.harness
+            .agent_routes
+            .get(sender_agent_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown message sender: `{sender_agent_id}`"))
+    }
+
+    /// Return true when a public agent id is known to this harness, even if
+    /// stopped.
+    pub fn is_known_agent_id(&self, agent_id: &str) -> bool {
+        !matches!(
+            self.harness.agent_message_recipient_status(agent_id),
+            crate::harness::AgentMessageRecipientStatus::Unknown
+        )
+    }
 }
 
 impl Harness {
