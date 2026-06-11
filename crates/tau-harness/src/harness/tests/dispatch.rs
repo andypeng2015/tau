@@ -5345,7 +5345,7 @@ fn start_agent_request_conversation_id_is_public_agent_id() {
     h.selected_model = Some("test/model".into());
     for conn_id in ["conn-delegate-a", "conn-delegate-b"] {
         let connection_id: tau_proto::ConnectionId = conn_id.into();
-        h.extensions.insert(
+        h.extensions.entries.insert(
             connection_id.clone(),
             crate::extension::ExtensionEntry {
                 name: "delegate-ext".to_owned(),
@@ -5360,7 +5360,7 @@ fn start_agent_request_conversation_id_is_public_agent_id() {
                 state: crate::extension::ExtensionState::Ready,
             },
         );
-        h.extension_order.push(connection_id);
+        h.extensions.order.push(connection_id);
     }
     h.handle_start_agent_request("conn-delegate-a", ext_query("q-named"))
         .expect("query");

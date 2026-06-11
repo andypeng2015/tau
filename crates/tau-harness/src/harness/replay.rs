@@ -271,9 +271,10 @@ impl Harness {
         }
 
         let extension_events: Vec<_> = self
-            .extension_order
+            .extensions
+            .order
             .iter()
-            .filter_map(|connection_id| self.extensions.get(connection_id))
+            .filter_map(|connection_id| self.extensions.entries.get(connection_id))
             .map(|entry| match entry.state {
                 ExtensionState::Spawning | ExtensionState::Handshaking => {
                     Event::ExtensionStarting(tau_proto::ExtensionStarting {

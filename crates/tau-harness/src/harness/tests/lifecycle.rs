@@ -158,7 +158,7 @@ fn connect_handshaking_extension(
 ) -> Arc<Mutex<Vec<RoutedFrame>>> {
     let sink = connect_test_client(h, conn_id, kind.clone());
     let connection_id: tau_proto::ConnectionId = conn_id.into();
-    h.extensions.insert(
+    h.extensions.entries.insert(
         connection_id.clone(),
         ExtensionEntry {
             name: conn_id.to_owned(),
@@ -173,7 +173,7 @@ fn connect_handshaking_extension(
             state: ExtensionState::Handshaking,
         },
     );
-    h.extension_order.push(connection_id);
+    h.extensions.order.push(connection_id);
     sink
 }
 
@@ -246,6 +246,7 @@ fn configure_includes_only_resolved_extension_secrets() {
     let mut h = quiet_provider_harness(&sp).expect("start");
     let sink = connect_handshaking_tool(&mut h, "std-email");
     h.extensions
+        .entries
         .get_mut("std-email")
         .expect("extension entry")
         .secrets
@@ -1321,7 +1322,7 @@ fn disconnect_before_ready_drops_all_staged_state() {
     h.handle_disconnect(conn_id);
     h.publish_event(None, draft_event("after disconnect"));
 
-    assert!(!h.extension_activation_staging.contains_key(conn_id));
+    assert!(!h.extensions.activation_staging.contains_key(conn_id));
     assert!(h.registry.providers_for("dropped_tool").is_empty());
     assert!(!h.available_models.contains(&model_id));
     assert!(!h.provider_model_routes.contains_key(&model_id));
@@ -1919,7 +1920,7 @@ fn extension_connect_command_installs_state_before_reader_ack() {
     .expect("queue connect command");
 
     assert!(h.bus.connection(&conn_id).is_none());
-    assert!(!h.extensions.contains_key(&conn_id));
+    assert!(!h.extensions.entries.contains_key(&conn_id));
 
     let event =
         h.rx.recv_timeout(Duration::from_secs(1))
@@ -1932,7 +1933,7 @@ fn extension_connect_command_installs_state_before_reader_ack() {
     }
 
     assert!(h.bus.connection(&conn_id).is_some());
-    assert!(h.extensions.contains_key(&conn_id));
+    assert!(h.extensions.entries.contains_key(&conn_id));
     assert!(
         h.lifecycle_messages
             .iter()
@@ -2151,7 +2152,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         file_path: PathBuf::from("/repo/AGENTS.md"),
         content: format!("# Root\n- {marker}\n"),
     });
-    h.pending_restore_notice_sessions.insert("s1".into(), None);
+    h.pending_notices.restore_sessions.insert("s1".into(), None);
     h.turn_state = TurnState::InitializingSession {
         session_id: "s1".into(),
         reason: tau_proto::SessionStartReason::Resume,
@@ -2171,7 +2172,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
     assert!(matches!(h.turn_state, TurnState::Idle));
     assert_eq!(count_marker_injections(&h), 1);
     assert!(
-        h.pending_restore_notice_sessions.contains_key("s1"),
+        h.pending_notices.restore_sessions.contains_key("s1"),
         "restore notice queue should be independent from AGENTS.md injection"
     );
 

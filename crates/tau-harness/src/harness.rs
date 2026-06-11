@@ -24,10 +24,10 @@ use tau_proto::{
     HarnessAgentContextUsageChanged, HarnessContextUsageChanged, HarnessInputMessage,
     HarnessOutputMessage, HarnessRoleSelected, Hello, MessageItem, ModelId, PROTOCOL_VERSION,
     PromptFragment, PromptOriginator, ProviderModelInfo, ProviderResponseFinished,
-    ProviderStopReason, ProviderTokenUsage, SecretValue, SessionId, TokenUsageStats,
-    ToolBackgroundError, ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled,
-    ToolDefinition, ToolError, ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult,
-    ToolResultKind, ToolType, UiCancelPrompt,
+    ProviderStopReason, ProviderTokenUsage, SecretValue, SessionId, ToolBackgroundError,
+    ToolBackgroundResult, ToolCallId, ToolCallItem, ToolCancelled, ToolDefinition, ToolError,
+    ToolName, ToolRegister, ToolRejected, ToolRequest, ToolResult, ToolResultKind, ToolType,
+    UiCancelPrompt,
 };
 
 use crate::agent::{Agent, AgentTurnState, PendingCancel, PendingPrompt};
@@ -52,9 +52,25 @@ use crate::extension::{
     spawn_supervised,
 };
 use crate::format::{format_tool_progress, render_entry_preview};
+use crate::harness::current_session::CurrentSessionState;
+use crate::harness::extension_data::{
+    ExtensionDataError, run_extension_data_append_file, run_extension_data_create_file,
+    run_extension_data_delete_file, run_extension_data_list_files, run_extension_data_read_file,
+    run_extension_data_rename_file, run_extension_data_write_file,
+};
+#[cfg(test)]
+use crate::harness::extension_data::{
+    append_extension_data_file, atomic_replace_extension_data_file, checked_extension_data_path,
+    create_extension_data_file, delete_extension_data_file, list_extension_data_entries,
+    rename_extension_data_file, sanitize_extension_data_path,
+};
+use crate::harness::extensions::{
+    ExtensionActivationStage, ExtensionRuntimeState, StagedExtensionPublish,
+};
 use crate::harness::interception::{
     ConversationHeadSync, DeferredPublish, InterceptorRegistry, PendingIntercept,
 };
+use crate::harness::pending_notices::{PendingPromptNoticeState, PendingToolAvailabilityNotice};
 use crate::harness::subagents_tool::SubagentToolState;
 use crate::internal_tools::InternalToolHandlers;
 use crate::model::{
@@ -96,501 +112,6 @@ fn session_dir_status_from_reason(
         }
         tau_proto::SessionStartReason::Resume => tau_proto::SessionDirStatus::Resumed,
     }
-}
-#[derive(Debug)]
-struct ExtensionDataError {
-    kind: tau_proto::ExtensionDataErrorKind,
-    message: String,
-}
-
-impl ExtensionDataError {
-    fn new(kind: tau_proto::ExtensionDataErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
-
-    fn io(message: impl Into<String>, error: std::io::Error) -> Self {
-        let kind = match error.kind() {
-            std::io::ErrorKind::NotFound => tau_proto::ExtensionDataErrorKind::NotFound,
-            std::io::ErrorKind::AlreadyExists => tau_proto::ExtensionDataErrorKind::AlreadyExists,
-            std::io::ErrorKind::PermissionDenied => tau_proto::ExtensionDataErrorKind::Permission,
-            _ => tau_proto::ExtensionDataErrorKind::Io,
-        };
-        Self::new(kind, format!("{}: {error}", message.into()))
-    }
-}
-
-fn sanitize_extension_data_path(
-    path: &str,
-    allow_empty: bool,
-) -> Result<PathBuf, ExtensionDataError> {
-    if path.is_empty() {
-        return if allow_empty {
-            Ok(PathBuf::new())
-        } else {
-            Err(ExtensionDataError::new(
-                tau_proto::ExtensionDataErrorKind::InvalidPath,
-                "path must not be empty",
-            ))
-        };
-    }
-    let input = Path::new(path);
-    if input.is_absolute() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::InvalidPath,
-            "path must be relative",
-        ));
-    }
-    let mut out = PathBuf::new();
-    for component in input.components() {
-        match component {
-            std::path::Component::Normal(part) => out.push(part),
-            std::path::Component::CurDir => {
-                return Err(ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::InvalidPath,
-                    "path must not contain `.`",
-                ));
-            }
-            std::path::Component::ParentDir => {
-                return Err(ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::InvalidPath,
-                    "path must not contain `..`",
-                ));
-            }
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                return Err(ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::InvalidPath,
-                    "path must be relative",
-                ));
-            }
-        }
-    }
-    if out.as_os_str().is_empty() && !allow_empty {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::InvalidPath,
-            "path must not be empty",
-        ));
-    }
-    Ok(out)
-}
-
-fn checked_extension_data_path(
-    root: &Path,
-    rel: &Path,
-    allow_missing_leaf: bool,
-) -> Result<PathBuf, ExtensionDataError> {
-    std::fs::create_dir_all(root)
-        .map_err(|error| ExtensionDataError::io("failed to create extension data root", error))?;
-    let root_metadata = std::fs::symlink_metadata(root)
-        .map_err(|error| ExtensionDataError::io("failed to stat extension data root", error))?;
-    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotDir,
-            "extension data root is not a real directory",
-        ));
-    }
-    set_private_dir_permissions(root)
-        .map_err(|error| ExtensionDataError::io("failed to chmod extension data root", error))?;
-    reject_symlink_ancestors(root, rel)?;
-    let full = root.join(rel);
-    match std::fs::symlink_metadata(&full) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::InvalidPath,
-            format!("path `{}` is a symlink", rel.display()),
-        )),
-        Ok(metadata) if metadata.is_dir() || metadata.is_file() => Ok(full),
-        Ok(_) => Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("path `{}` is not a file or directory", rel.display()),
-        )),
-        Err(error) if allow_missing_leaf && error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(full)
-        }
-        Err(error) => Err(ExtensionDataError::io(
-            format!("failed to stat `{}`", rel.display()),
-            error,
-        )),
-    }
-}
-
-fn reject_symlink_ancestors(root: &Path, rel: &Path) -> Result<(), ExtensionDataError> {
-    let mut current = root.to_path_buf();
-    let mut components = rel.components().peekable();
-    while let Some(component) = components.next() {
-        if components.peek().is_none() {
-            break;
-        }
-        current.push(component.as_os_str());
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::InvalidPath,
-                    format!("path `{}` crosses a symlink", rel.display()),
-                ));
-            }
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => {
-                return Err(ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::NotDir,
-                    format!("path ancestor `{}` is not a directory", current.display()),
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(ExtensionDataError::io(
-                    format!("failed to stat `{}`", current.display()),
-                    error,
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn list_extension_data_entries(
-    root: &Path,
-    dir: &Path,
-) -> Result<Vec<tau_proto::ExtensionDataEntry>, ExtensionDataError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| {
-        ExtensionDataError::io(format!("failed to list `{}`", dir.display()), error)
-    })?;
-    let mut out = Vec::new();
-    for entry in entries {
-        let entry = entry
-            .map_err(|error| ExtensionDataError::io("failed to read directory entry", error))?;
-        let file_type = entry.file_type().map_err(|error| {
-            ExtensionDataError::io(
-                format!("failed to stat `{}`", entry.path().display()),
-                error,
-            )
-        })?;
-        if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
-            continue;
-        }
-        let metadata = entry.metadata().map_err(|error| {
-            ExtensionDataError::io(
-                format!("failed to stat `{}`", entry.path().display()),
-                error,
-            )
-        })?;
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|error| {
-                ExtensionDataError::new(
-                    tau_proto::ExtensionDataErrorKind::Io,
-                    format!("failed to relativize listed entry: {error}"),
-                )
-            })?
-            .to_string_lossy()
-            .into_owned();
-        out.push(tau_proto::ExtensionDataEntry {
-            path: rel,
-            is_dir: metadata.is_dir(),
-            len: metadata.is_file().then_some(metadata.len()),
-        });
-    }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(out)
-}
-
-fn create_private_dir_all(path: &Path) -> Result<(), std::io::Error> {
-    std::fs::create_dir_all(path)?;
-    set_private_dir_permissions(path)
-}
-
-#[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_private_create_new(path: &Path) -> Result<std::fs::File, std::io::Error> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_private_create_new(path: &Path) -> Result<std::fs::File, std::io::Error> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-}
-
-fn write_file_sync(mut file: std::fs::File, contents: &[u8]) -> Result<(), std::io::Error> {
-    use std::io::Write as _;
-    file.write_all(contents)?;
-    file.sync_all()
-}
-
-fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
-}
-
-fn extension_data_temp_path(path: &Path) -> std::path::PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("file");
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    parent.join(format!(".{name}.tmp-{}-{nonce}", std::process::id()))
-}
-
-fn create_extension_data_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        create_private_dir_all(parent)?;
-    }
-    let tmp = extension_data_temp_path(path);
-    let mut linked = false;
-    let result = (|| {
-        let file = open_private_create_new(&tmp)?;
-        write_file_sync(file, contents)?;
-        std::fs::hard_link(&tmp, path)?;
-        linked = true;
-        std::fs::remove_file(&tmp)?;
-        sync_parent_dir(path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        if linked {
-            let _ = std::fs::remove_file(path);
-            let _ = sync_parent_dir(path);
-        }
-    }
-    result
-}
-
-fn append_extension_data_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        create_private_dir_all(parent)?;
-    }
-    let existed = path.exists();
-    #[cfg(unix)]
-    let file = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .mode(0o600)
-            .open(path)?
-    };
-    #[cfg(not(unix))]
-    let file = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)?;
-    write_file_sync(file, contents)?;
-    if !existed {
-        sync_parent_dir(path)?;
-    }
-    Ok(())
-}
-
-fn atomic_replace_extension_data_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        create_private_dir_all(parent)?;
-    }
-    let tmp = extension_data_temp_path(path);
-    let result = (|| {
-        let file = open_private_create_new(&tmp)?;
-        write_file_sync(file, contents)?;
-        std::fs::rename(&tmp, path)?;
-        sync_parent_dir(path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-fn rename_extension_data_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
-    if let Some(parent) = to.parent() {
-        create_private_dir_all(parent)?;
-    }
-    std::fs::rename(from, to)?;
-    sync_parent_dir(to)?;
-    sync_parent_dir(from)
-}
-
-fn delete_extension_data_file(path: &Path) -> Result<(), std::io::Error> {
-    std::fs::remove_file(path)?;
-    sync_parent_dir(path)
-}
-
-fn run_extension_data_read_file(
-    root: &Path,
-    path: String,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, false)?;
-    let path = checked_extension_data_path(root, &rel, false)?;
-    if !path.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", rel.display()),
-        ));
-    }
-    let contents = std::fs::read(&path).map_err(|error| {
-        ExtensionDataError::io(format!("failed to read `{}`", rel.display()), error)
-    })?;
-    Ok(tau_proto::ExtensionDataValue::ReadFile { contents })
-}
-
-fn run_extension_data_write_file(
-    root: &Path,
-    path: String,
-    contents: Vec<u8>,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, false)?;
-    let path = checked_extension_data_path(root, &rel, true)?;
-    if path.exists() && !path.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", rel.display()),
-        ));
-    }
-    atomic_replace_extension_data_file(&path, &contents).map_err(|error| {
-        ExtensionDataError::io(format!("failed to write `{}`", rel.display()), error)
-    })?;
-    Ok(tau_proto::ExtensionDataValue::WriteFile)
-}
-
-fn run_extension_data_create_file(
-    root: &Path,
-    path: String,
-    contents: Vec<u8>,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, false)?;
-    let path = checked_extension_data_path(root, &rel, true)?;
-    if path.exists() && !path.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", rel.display()),
-        ));
-    }
-    create_extension_data_file(&path, &contents).map_err(|error| {
-        ExtensionDataError::io(format!("failed to create `{}`", rel.display()), error)
-    })?;
-    Ok(tau_proto::ExtensionDataValue::CreateFile)
-}
-
-fn run_extension_data_append_file(
-    root: &Path,
-    path: String,
-    contents: Vec<u8>,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, false)?;
-    let path = checked_extension_data_path(root, &rel, true)?;
-    if path.exists() && !path.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", rel.display()),
-        ));
-    }
-    append_extension_data_file(&path, &contents).map_err(|error| {
-        ExtensionDataError::io(format!("failed to append `{}`", rel.display()), error)
-    })?;
-    Ok(tau_proto::ExtensionDataValue::AppendFile)
-}
-
-fn run_extension_data_delete_file(
-    root: &Path,
-    path: String,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, false)?;
-    let path = checked_extension_data_path(root, &rel, true)?;
-    if path.exists() && !path.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", rel.display()),
-        ));
-    }
-    match delete_extension_data_file(&path) {
-        Ok(()) => Ok(tau_proto::ExtensionDataValue::DeleteFile),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(tau_proto::ExtensionDataValue::DeleteFile)
-        }
-        Err(error) => Err(ExtensionDataError::io(
-            format!("failed to delete `{}`", rel.display()),
-            error,
-        )),
-    }
-}
-
-fn run_extension_data_rename_file(
-    root: &Path,
-    from: String,
-    to: String,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let from_rel = sanitize_extension_data_path(&from, false)?;
-    let to_rel = sanitize_extension_data_path(&to, false)?;
-    let from = checked_extension_data_path(root, &from_rel, false)?;
-    let to = checked_extension_data_path(root, &to_rel, true)?;
-    if !from.is_file() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotFile,
-            format!("`{}` is not a file", from_rel.display()),
-        ));
-    }
-    if to.exists() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::AlreadyExists,
-            format!("`{}` already exists", to_rel.display()),
-        ));
-    }
-    rename_extension_data_file(&from, &to).map_err(|error| {
-        ExtensionDataError::io(
-            format!(
-                "failed to rename `{}` to `{}`",
-                from_rel.display(),
-                to_rel.display()
-            ),
-            error,
-        )
-    })?;
-    Ok(tau_proto::ExtensionDataValue::RenameFile)
-}
-
-fn run_extension_data_list_files(
-    root: &Path,
-    path: String,
-) -> Result<tau_proto::ExtensionDataValue, ExtensionDataError> {
-    let rel = sanitize_extension_data_path(&path, true)?;
-    let dir = checked_extension_data_path(root, &rel, true)?;
-    if !dir.exists() {
-        return Ok(tau_proto::ExtensionDataValue::ListFiles {
-            entries: Vec::new(),
-        });
-    }
-    if !dir.is_dir() {
-        return Err(ExtensionDataError::new(
-            tau_proto::ExtensionDataErrorKind::NotDir,
-            format!("`{}` is not a directory", rel.display()),
-        ));
-    }
-    let entries = list_extension_data_entries(root, &dir)?;
-    Ok(tau_proto::ExtensionDataValue::ListFiles { entries })
 }
 
 pub(crate) fn background_completion_prompt(call_id: &ToolCallId) -> String {
@@ -1440,8 +961,12 @@ fn validate_protocol_version(hello: &Hello) -> Result<(), HarnessError> {
 #[cfg(test)]
 mod tests;
 
+mod current_session;
 mod dispatch;
+mod extension_data;
+mod extensions;
 mod interception;
+mod pending_notices;
 mod replay;
 #[allow(dead_code)]
 mod skill_tool;
@@ -1450,22 +975,6 @@ mod subagents_tool;
 /// Connection ID used for harness-owned tools and their side-query
 /// [`PromptOriginator`] name (e.g. `skill`, `agent_start`, and `wait`).
 pub(crate) const HARNESS_CONNECTION_ID: &str = "__harness__";
-
-#[derive(Debug, Default)]
-pub(crate) struct CurrentSessionState {
-    /// Input tokens consumed by the most recent agent response, if
-    /// the provider reported it. `None` until the first usage report
-    /// for the current model.
-    pub(crate) context_input_tokens: Option<u64>,
-    /// Cached input tokens consumed by the most recent agent
-    /// response, if the provider reported them.
-    pub(crate) context_cached_tokens: Option<u64>,
-    /// Percentage of the selected model's context window currently
-    /// used. `None` when the model's context window is unknown.
-    pub(crate) context_percent_used: Option<u8>,
-    /// Current-session token usage totals.
-    pub(crate) token_usage: TokenUsageStats,
-}
 
 #[derive(Debug)]
 struct PendingStartAgentRequest {
@@ -1484,63 +993,6 @@ struct PendingActionInvocation {
     provider_connection_id: tau_proto::ConnectionId,
     requester_client_id: tau_proto::ConnectionId,
     action_id: String,
-}
-
-#[derive(Clone, Debug)]
-struct StagedExtensionPublish {
-    /// Event payload withheld until the source extension reaches `Ready`.
-    event: Event,
-    /// Whether the staged event should skip durable session history.
-    transient: bool,
-}
-
-#[derive(Clone, Debug, Default)]
-struct ExtensionActivationStage {
-    /// Tool registrations received before the extension finished its handshake.
-    tool_registrations: Vec<ToolRegister>,
-    /// Provider model snapshots received before `Ready`, in wire order.
-    provider_model_updates: Vec<tau_proto::ProviderModelsUpdated>,
-    /// Action schema received before `Ready`. Schema publishing is a
-    /// replacement, so only the latest staged schema matters.
-    action_schema: Option<tau_actions::ActionSchema>,
-    /// Skill announcements received before `Ready`, in wire order.
-    skill_announcements: Vec<tau_proto::ExtSkillAvailable>,
-    /// AGENTS.md announcements received before `Ready`, in wire order.
-    agents_files: Vec<tau_proto::ExtAgentsMdAvailable>,
-    /// Whether the extension registered as an agent context provider before
-    /// `Ready`.
-    agent_context_provider_registered: bool,
-    /// Agent context publishes received before `Ready`, in wire order.
-    agent_context_publishes: Vec<tau_proto::ExtAgentContextPublish>,
-    /// Extension-level prompt fragments received before `Ready`, keyed by name
-    /// so repeated publishes replace earlier staged content.
-    prompt_fragments: BTreeMap<String, PromptFragment>,
-    /// Interceptor registration received before `Ready`. Registration is a
-    /// replacement, so only the latest staged message matters.
-    intercept: Option<tau_proto::Intercept>,
-    /// Session-init acknowledgements received before `Ready`, in wire order.
-    context_ready_events: Vec<tau_proto::ExtensionContextReady>,
-    /// Extension-started agent queries received before `Ready`, in wire order.
-    agent_queries: Vec<tau_proto::StartAgentRequest>,
-    /// Generic extension emits/events withheld until `Ready`.
-    emitted_events: Vec<StagedExtensionPublish>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum PendingToolAvailabilityNotice {
-    Unavailable { visible_name: ToolName },
-    AvailableAgain { visible_name: ToolName },
-}
-
-impl PendingToolAvailabilityNotice {
-    fn prompt_text(&self) -> String {
-        match self {
-            Self::Unavailable { visible_name } => tool_unavailable_notice_prompt(visible_name),
-            Self::AvailableAgain { visible_name } => {
-                tool_available_again_notice_prompt(visible_name)
-            }
-        }
-    }
 }
 
 /// Message recipient state used to report precise tool errors.
@@ -1641,25 +1093,8 @@ pub struct Harness {
     /// log: a config parse failure must never be visible only in stderr or
     /// historical debug logs.
     pub(crate) replayable_harness_infos: Vec<tau_proto::HarnessInfo>,
-    /// Every spawned or in-process extension, keyed by current
-    /// `ConnectionId`. Supervises restart and shutdown. Lookups by
-    /// connection id (the hot per-event path — every `Hello`, `Ready`,
-    /// `Disconnected`) are O(1).
-    pub(crate) extensions: std::collections::HashMap<tau_proto::ConnectionId, ExtensionEntry>,
-    /// Extension-originated state announced during handshake and withheld until
-    /// the extension sends `Ready`. Activation happens in the main harness loop
-    /// so prompt assembly, routing, and subscribers see the full batch at once.
-    extension_activation_staging:
-        std::collections::HashMap<tau_proto::ConnectionId, ExtensionActivationStage>,
-    /// Spawn-order list of connection ids into `extensions`. Drives
-    /// the deterministic "start every extension" and shutdown loops
-    /// that a `HashMap` alone can't supply, and is updated in place
-    /// whenever a supervised extension respawns with a fresh id.
-    pub(crate) extension_order: Vec<tau_proto::ConnectionId>,
-    /// Number of queued extension connect commands not yet applied by
-    /// the harness loop. Startup waits on this before treating an empty
-    /// `extensions` map as ready.
-    pending_extension_connects: usize,
+    /// Extension process lifecycle and pre-`Ready` activation state.
+    pub(crate) extensions: ExtensionRuntimeState,
     /// Maps agent_prompt_id → owning agent for in-flight
     /// prompts. The conversation knows its `session_id`, so older
     /// `prompt_sessions[spid]` lookups become two hops:
@@ -1773,21 +1208,9 @@ pub struct Harness {
     pub(crate) system_prompt_templates: HashMap<String, String>,
     /// Sessions whose AGENTS/skill discovery has completed.
     pub(crate) initialized_sessions: std::collections::HashSet<SessionId>,
-    /// Resumed sessions that still need a one-shot internal restore notice
-    /// folded immediately before the next real user prompt, with the last
-    /// durable event timestamp seen before resume when available.
-    pub(crate) pending_restore_notice_sessions: HashMap<SessionId, Option<tau_proto::UnixMicros>>,
-    /// Per-background-tool restore notes that should be folded immediately
-    /// before the next real user prompt, not dispatched as standalone turns.
-    pub(crate) pending_restore_background_notices: HashMap<SessionId, Vec<String>>,
-    /// Tool availability notices waiting to be folded before the next real
-    /// user prompt on the target user agent, keyed by internal tool name for
-    /// deterministic delivery.
-    pending_tool_availability_notices: BTreeMap<String, PendingToolAvailabilityNotice>,
-    /// Tools whose unavailable notice has already been delivered and that are
-    /// still absent from the registry. A later registration uses this to queue
-    /// the matching available-again notice.
-    unavailable_tool_notices_delivered: BTreeMap<String, ToolName>,
+    /// Model-visible notices waiting to be folded into the next real user
+    /// prompt.
+    pub(crate) pending_notices: PendingPromptNoticeState,
     /// Pure scheduler state for queued and in-flight tool invocations.
     pub(crate) tool_turn: ToolTurnMachine,
     /// Backgrounded calls whose real completion should not enqueue an internal
@@ -2162,10 +1585,7 @@ impl Harness {
             startup_detach_requested: false,
             lifecycle_messages: Vec::new(),
             replayable_harness_infos: Vec::new(),
-            extensions: std::collections::HashMap::new(),
-            extension_activation_staging: std::collections::HashMap::new(),
-            extension_order: Vec::new(),
-            pending_extension_connects: 0,
+            extensions: ExtensionRuntimeState::default(),
             prompt_agents: std::collections::HashMap::new(),
             agents,
             agent_routes: HashMap::new(),
@@ -2201,10 +1621,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
-            pending_restore_notice_sessions: HashMap::new(),
-            pending_restore_background_notices: HashMap::new(),
-            pending_tool_availability_notices: BTreeMap::new(),
-            unavailable_tool_notices_delivered: BTreeMap::new(),
+            pending_notices: PendingPromptNoticeState::default(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
@@ -2368,10 +1785,7 @@ impl Harness {
             startup_detach_requested: false,
             lifecycle_messages: Vec::new(),
             replayable_harness_infos: Vec::new(),
-            extensions: std::collections::HashMap::new(),
-            extension_activation_staging: std::collections::HashMap::new(),
-            extension_order: Vec::new(),
-            pending_extension_connects: 0,
+            extensions: ExtensionRuntimeState::default(),
             prompt_agents: std::collections::HashMap::new(),
             agents,
             agent_routes: HashMap::new(),
@@ -2407,10 +1821,7 @@ impl Harness {
             extension_prompt_fragments: BTreeMap::new(),
             system_prompt_templates,
             initialized_sessions: std::collections::HashSet::new(),
-            pending_restore_notice_sessions: HashMap::new(),
-            pending_restore_background_notices: HashMap::new(),
-            pending_tool_availability_notices: BTreeMap::new(),
-            unavailable_tool_notices_delivered: BTreeMap::new(),
+            pending_notices: PendingPromptNoticeState::default(),
             tool_turn: ToolTurnMachine::default(),
             suppressed_background_completion_prompts: HashSet::new(),
             background_completion_targets: HashMap::new(),
@@ -2632,7 +2043,7 @@ impl Harness {
         &mut self,
         command: ExtensionConnectCommand,
     ) -> Result<(), HarnessError> {
-        self.pending_extension_connects += 1;
+        self.extensions.pending_connects += 1;
         if self
             .tx
             .send(HarnessEvent::Command(HarnessCommand::ConnectExtension(
@@ -2642,7 +2053,7 @@ impl Harness {
         {
             return Ok(());
         }
-        self.pending_extension_connects -= 1;
+        self.extensions.pending_connects -= 1;
         Err(HarnessError::Participant(
             "harness command channel closed".to_owned(),
         ))
@@ -2679,21 +2090,22 @@ impl Harness {
         debug_assert_eq!(connected_id, connection_id);
 
         if let Some(replaced) = replaces {
-            self.extensions.remove(&replaced);
-            self.extension_activation_staging.remove(&replaced);
-            if let Some(slot) = self.extension_order.iter_mut().find(|id| **id == replaced) {
+            self.extensions.entries.remove(&replaced);
+            self.extensions.activation_staging.remove(&replaced);
+            if let Some(slot) = self.extensions.order.iter_mut().find(|id| **id == replaced) {
                 *slot = connection_id.clone();
-            } else if !self.extension_order.iter().any(|id| id == &connection_id) {
-                self.extension_order.push(connection_id.clone());
+            } else if !self.extensions.order.iter().any(|id| id == &connection_id) {
+                self.extensions.order.push(connection_id.clone());
             }
-        } else if !self.extension_order.iter().any(|id| id == &connection_id) {
-            self.extension_order.push(connection_id.clone());
+        } else if !self.extensions.order.iter().any(|id| id == &connection_id) {
+            self.extensions.order.push(connection_id.clone());
         }
-        self.extension_activation_staging
+        self.extensions
+            .activation_staging
             .insert(connection_id.clone(), ExtensionActivationStage::default());
-        self.extensions.insert(connection_id, entry);
-        if 0 < self.pending_extension_connects {
-            self.pending_extension_connects -= 1;
+        self.extensions.entries.insert(connection_id, entry);
+        if 0 < self.extensions.pending_connects {
+            self.extensions.pending_connects -= 1;
         }
         self.emit_extension_starting(&name);
         let _ = initialized_ack.send(());
@@ -3594,11 +3006,11 @@ impl Harness {
     /// state transitions are tracked per-extension so the same predicate
     /// can also gate runtime dispatch in `dispatch_blocked_for`.
     fn wait_for_extensions_ready(&mut self) -> Result<(), HarnessError> {
-        if self.pending_extension_connects == 0 && self.extensions_all_ready() {
+        if self.extensions.pending_connects == 0 && self.extensions_all_ready() {
             return Ok(());
         }
         let started_at = Instant::now();
-        while self.pending_extension_connects != 0 || !self.extensions_all_ready() {
+        while self.extensions.pending_connects != 0 || !self.extensions_all_ready() {
             let remaining = STARTUP_TIMEOUT
                 .checked_sub(started_at.elapsed())
                 .unwrap_or(Duration::ZERO);
@@ -3891,6 +3303,7 @@ impl Harness {
     ) -> Result<PathBuf, String> {
         let name = self
             .extensions
+            .entries
             .get(connection_id)
             .map(|entry| entry.name.as_str())
             .ok_or_else(|| "unknown extension connection".to_owned())?;
@@ -3915,12 +3328,14 @@ impl Harness {
 
     fn should_stage_extension_capabilities(&self, source_id: &str) -> bool {
         self.extensions
+            .entries
             .get(source_id)
             .is_some_and(|entry| entry.state != ExtensionState::Ready)
     }
 
     fn extension_activation_stage_mut(&mut self, source_id: &str) -> &mut ExtensionActivationStage {
-        self.extension_activation_staging
+        self.extensions
+            .activation_staging
             .entry(source_id.into())
             .or_default()
     }
@@ -3932,7 +3347,7 @@ impl Harness {
     }
 
     fn remove_staged_tool_registration(&mut self, source_id: &str, tool_name: &ToolName) -> bool {
-        let Some(stage) = self.extension_activation_staging.get_mut(source_id) else {
+        let Some(stage) = self.extensions.activation_staging.get_mut(source_id) else {
             return false;
         };
         let before = stage.tool_registrations.len();
@@ -4150,7 +3565,7 @@ impl Harness {
         &self,
         source_id: &str,
     ) -> (ExtensionName, tau_proto::ExtensionInstanceId) {
-        if let Some(extension) = self.extensions.get(source_id) {
+        if let Some(extension) = self.extensions.entries.get(source_id) {
             return (
                 ExtensionName::from(extension.name.clone()),
                 extension.instance_id,
@@ -4202,6 +3617,7 @@ impl Harness {
         let contributor = tau_proto::ConnectionId::from(source_id);
         let extension_name = self
             .extensions
+            .entries
             .get(&contributor)
             .map(|entry| entry.name.clone())
             .unwrap_or_else(|| source_id.to_owned());
@@ -4231,7 +3647,7 @@ impl Harness {
         Vec<tau_proto::ExtensionContextReady>,
         Vec<tau_proto::StartAgentRequest>,
     ) {
-        let Some(stage) = self.extension_activation_staging.remove(source_id) else {
+        let Some(stage) = self.extensions.activation_staging.remove(source_id) else {
             return (Vec::new(), Vec::new());
         };
         if let Some(intercept) = stage.intercept {
@@ -4285,6 +3701,7 @@ impl Harness {
             HarnessInputMessage::ConfigError(err) => {
                 let name = self
                     .extensions
+                    .entries
                     .get(source_id)
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| "extension".to_owned());
@@ -5485,7 +4902,7 @@ impl Harness {
     }
 
     fn handle_disconnect(&mut self, connection_id: &str) {
-        self.extension_activation_staging.remove(connection_id);
+        self.extensions.activation_staging.remove(connection_id);
         self.remove_discovered_context(connection_id);
         self.interceptors.remove_connection(connection_id);
         self.fail_pending_intercept_for_disconnect(connection_id);
@@ -5570,6 +4987,7 @@ impl Harness {
 
     fn is_provider_extension(&self, connection_id: &str) -> bool {
         self.extensions
+            .entries
             .get(connection_id)
             .is_some_and(|entry| entry.kind == ClientKind::Provider)
     }
@@ -5929,7 +5347,7 @@ impl Harness {
         &mut self,
         connection_id: &str,
     ) -> Result<(), HarnessError> {
-        let Some(entry) = self.extensions.get_mut(connection_id) else {
+        let Some(entry) = self.extensions.entries.get_mut(connection_id) else {
             return Ok(());
         };
         let Some(config) = entry.supervised_config.clone() else {
@@ -6075,11 +5493,11 @@ impl Harness {
     // -----------------------------------------------------------------------
 
     fn find_extension_by_name(&self, name: &str) -> Option<&ExtensionEntry> {
-        self.extensions.values().find(|e| e.name == name)
+        self.extensions.entries.values().find(|e| e.name == name)
     }
 
     fn find_extension_by_connection(&self, connection_id: &str) -> Option<&ExtensionEntry> {
-        self.extensions.get(connection_id)
+        self.extensions.entries.get(connection_id)
     }
 
     fn publish_lifecycle_event(&mut self, event: Event) {
@@ -6186,7 +5604,7 @@ impl Harness {
     /// a `supervised_config` so they get the empty default — they
     /// already accept configuration via constructor parameters.
     fn send_lifecycle_configure(&mut self, source_id: &str) {
-        let Some(entry) = self.extensions.get(source_id) else {
+        let Some(entry) = self.extensions.entries.get(source_id) else {
             return;
         };
         let config_json = entry
@@ -6560,6 +5978,7 @@ impl Harness {
     ) -> Result<Option<PendingStartAgentRequest>, String> {
         let extension_name = self
             .extensions
+            .entries
             .get(source_id)
             .map(|e| e.name.clone())
             .unwrap_or_else(|| source_id.to_owned());
@@ -7512,10 +6931,10 @@ impl Harness {
         self.suppressed_background_completion_prompts.clear();
         self.background_completion_targets.clear();
         self.canceled_prompts.clear();
-        self.pending_restore_notice_sessions.clear();
-        self.pending_restore_background_notices.clear();
-        self.pending_tool_availability_notices.clear();
-        self.unavailable_tool_notices_delivered.clear();
+        self.pending_notices.restore_sessions.clear();
+        self.pending_notices.restore_background_notices.clear();
+        self.pending_notices.tool_availability.clear();
+        self.pending_notices.unavailable_tools_delivered.clear();
         self.pending_start_agent_requests.clear();
         self.subagents = SubagentToolState::default();
 
@@ -7628,11 +7047,12 @@ impl Harness {
             return;
         }
         if self.restore_notice_already_persisted(session_id) {
-            self.pending_restore_notice_sessions.remove(session_id);
+            self.pending_notices.restore_sessions.remove(session_id);
             return;
         }
         let last_recorded_at = self.last_recorded_session_event_at(session_id);
-        self.pending_restore_notice_sessions
+        self.pending_notices
+            .restore_sessions
             .insert(session_id.clone(), last_recorded_at);
     }
 
@@ -7659,9 +7079,12 @@ impl Harness {
             }
         }
         if notices.is_empty() {
-            self.pending_restore_background_notices.remove(session_id);
+            self.pending_notices
+                .restore_background_notices
+                .remove(session_id);
         } else {
-            self.pending_restore_background_notices
+            self.pending_notices
+                .restore_background_notices
                 .insert(session_id.clone(), notices);
         }
     }
@@ -7673,26 +7096,28 @@ impl Harness {
     ) {
         let internal_name = internal_name.into_string();
         if matches!(
-            self.pending_tool_availability_notices.get(&internal_name),
+            self.pending_notices.tool_availability.get(&internal_name),
             Some(PendingToolAvailabilityNotice::Unavailable { .. })
         ) {
             return;
         }
         if matches!(
-            self.pending_tool_availability_notices.get(&internal_name),
+            self.pending_notices.tool_availability.get(&internal_name),
             Some(PendingToolAvailabilityNotice::AvailableAgain { .. })
         ) {
-            self.pending_tool_availability_notices
+            self.pending_notices
+                .tool_availability
                 .remove(&internal_name);
             return;
         }
         if self
-            .unavailable_tool_notices_delivered
+            .pending_notices
+            .unavailable_tools_delivered
             .contains_key(&internal_name)
         {
             return;
         }
-        self.pending_tool_availability_notices.insert(
+        self.pending_notices.tool_availability.insert(
             internal_name,
             PendingToolAvailabilityNotice::Unavailable { visible_name },
         );
@@ -7701,18 +7126,20 @@ impl Harness {
     fn mark_tool_available_for_notice(&mut self, internal_name: ToolName, visible_name: ToolName) {
         let internal_name = internal_name.into_string();
         if matches!(
-            self.pending_tool_availability_notices.get(&internal_name),
+            self.pending_notices.tool_availability.get(&internal_name),
             Some(PendingToolAvailabilityNotice::Unavailable { .. })
         ) {
-            self.pending_tool_availability_notices
+            self.pending_notices
+                .tool_availability
                 .remove(&internal_name);
             return;
         }
         if self
-            .unavailable_tool_notices_delivered
+            .pending_notices
+            .unavailable_tools_delivered
             .contains_key(&internal_name)
         {
-            self.pending_tool_availability_notices.insert(
+            self.pending_notices.tool_availability.insert(
                 internal_name,
                 PendingToolAvailabilityNotice::AvailableAgain { visible_name },
             );
@@ -7720,16 +7147,18 @@ impl Harness {
     }
 
     fn take_pending_tool_availability_prompts_for_user_prompt(&mut self) -> Vec<PendingPrompt> {
-        let pending = std::mem::take(&mut self.pending_tool_availability_notices);
+        let pending = std::mem::take(&mut self.pending_notices.tool_availability);
         let mut prompts = Vec::new();
         for (internal_name, notice) in pending {
             match &notice {
                 PendingToolAvailabilityNotice::Unavailable { visible_name } => {
-                    self.unavailable_tool_notices_delivered
+                    self.pending_notices
+                        .unavailable_tools_delivered
                         .insert(internal_name, visible_name.clone());
                 }
                 PendingToolAvailabilityNotice::AvailableAgain { .. } => {
-                    self.unavailable_tool_notices_delivered
+                    self.pending_notices
+                        .unavailable_tools_delivered
                         .remove(&internal_name);
                 }
             }
@@ -7753,9 +7182,9 @@ impl Harness {
 
         let mut prompts = Vec::new();
         if self.restore_notice_already_persisted(&session_id) {
-            self.pending_restore_notice_sessions.remove(&session_id);
+            self.pending_notices.restore_sessions.remove(&session_id);
         } else if let Some(last_recorded_at) =
-            self.pending_restore_notice_sessions.remove(&session_id)
+            self.pending_notices.restore_sessions.remove(&session_id)
         {
             prompts.push(PendingPrompt::internal(restore_notice_prompt(
                 last_recorded_at,
@@ -7763,7 +7192,11 @@ impl Harness {
             )));
         }
 
-        if let Some(notices) = self.pending_restore_background_notices.remove(&session_id) {
+        if let Some(notices) = self
+            .pending_notices
+            .restore_background_notices
+            .remove(&session_id)
+        {
             for notice in notices {
                 if !self.internal_prompt_already_persisted(&session_id, &notice) {
                     prompts.push(PendingPrompt::internal(notice));
@@ -8934,7 +8367,7 @@ impl Harness {
         {
             return false;
         }
-        self.extension_activation_staging.values().any(|stage| {
+        self.extensions.activation_staging.values().any(|stage| {
             stage.tool_registrations.iter().any(|registration| {
                 self.is_registered_tool_enabled_for_role(registration, &role_name)
                     && (registration.tool.name == *requested_name
@@ -9492,7 +8925,7 @@ impl Harness {
     /// should not wedge fresh prompt dispatch. Provider disconnects are handled
     /// as fatal by the event loop before this predicate matters for new work.
     pub(crate) fn extensions_all_ready(&self) -> bool {
-        self.extensions.values().all(|e| {
+        self.extensions.entries.values().all(|e| {
             matches!(
                 e.state,
                 ExtensionState::Ready | ExtensionState::Disconnected
@@ -9503,7 +8936,7 @@ impl Harness {
     /// Update an extension's lifecycle state, looked up by connection id.
     /// No-op if no entry matches (e.g. for socket clients).
     fn set_extension_state(&mut self, connection_id: &str, new_state: ExtensionState) {
-        if let Some(entry) = self.extensions.get_mut(connection_id) {
+        if let Some(entry) = self.extensions.entries.get_mut(connection_id) {
             entry.state = new_state;
         }
     }
@@ -10456,16 +9889,16 @@ impl Harness {
         // Disconnect all extensions from the bus.  Dropping the
         // ChannelSink closes the writer channel, which triggers each
         // writer thread's shutdown sequence (send disconnect, close
-        // stdin, wait/kill child). Walk `extension_order` so shutdown
+        // stdin, wait/kill child). Walk extension spawn order so shutdown
         // honours spawn order.
-        for id in &self.extension_order {
+        for id in &self.extensions.order {
             let _ = self.bus.disconnect(id);
         }
 
         // Join in-process extension threads.
-        let order = self.extension_order.clone();
+        let order = self.extensions.order.clone();
         for id in &order {
-            let Some(entry) = self.extensions.get_mut(id) else {
+            let Some(entry) = self.extensions.entries.get_mut(id) else {
                 continue;
             };
             let name = entry.name.clone();
@@ -10483,6 +9916,7 @@ impl Harness {
     #[cfg(test)]
     fn extension_connection_id(&self, name: &str) -> Option<&str> {
         self.extensions
+            .entries
             .values()
             .find(|e| e.name == name)
             .map(|e| e.connection_id.as_str())
