@@ -10,5 +10,12 @@ advertise: true
 
 # Tau Rust coding style
 
-* Ensure that public methods and all fields in datastructures have informative docstrings.
-* When writting tests, especially regression test document well why is this test introduced, and what behavior we're trying to ensure.
+## Proper code documentation
+
+Every struct, every public method and all fields in all datastructures MUST have informative docstrings documenting what they do.
+
+Every test must have a docstring explaining: what it is trying to ensure/prevent and justify its existance in a meaningful way.
+
+## Code structure
+
+Rust modules should focus around a single struct.
