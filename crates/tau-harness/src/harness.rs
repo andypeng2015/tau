@@ -4928,7 +4928,6 @@ impl Harness {
         self.fail_pending_intercept_for_disconnect(connection_id);
         self.maybe_complete_session_init_for_disconnect(connection_id);
         self.remove_extension_context_for_connection(connection_id);
-        self.try_advance_queue();
 
         if is_extension {
             self.unregister_connection_tools_for_disconnect(connection_id);
@@ -4948,6 +4947,7 @@ impl Harness {
         {
             self.refresh_provider_models_and_publish_state();
         }
+        self.try_advance_queue();
         let Some(meta) = self.bus.disconnect(connection_id).or(meta) else {
             return;
         };
@@ -8668,6 +8668,10 @@ impl Harness {
             ));
             requested_tool_calls = false;
         }
+        let tool_calls_with_non_tool_stop = !requested_tool_calls && !tool_calls.is_empty();
+        if tool_calls_with_non_tool_stop {
+            requested_tool_calls = true;
+        }
         let is_non_tool_ext_query = self.agents.get(&cid).is_some_and(|conv| {
             matches!(
                 conv.originator,
@@ -8699,6 +8703,16 @@ impl Harness {
                         Some(format!(
                             "provider reused prior tool call_id `{}` for tool `{}`; refusing to execute it",
                             call.id, call.name
+                        ))
+                    } else if is_non_tool_ext_query {
+                        Some(format!(
+                            "non-tool extension query attempted to call tool `{}`; refusing to execute it",
+                            call.name
+                        ))
+                    } else if tool_calls_with_non_tool_stop {
+                        Some(format!(
+                            "provider emitted tool call `{}` with stop_reason {:?}; refusing to execute it",
+                            call.name, response.stop_reason
                         ))
                     } else {
                         reserved_tool_call_ids.insert(call.id.clone());
@@ -8819,6 +8833,36 @@ impl Harness {
                          dropping",
                     query_id, name
                 ));
+            }
+            if requested_tool_calls {
+                let remaining_calls: Vec<ToolCallId> = normalized_calls
+                    .iter()
+                    .map(|(call, _)| call.id.clone())
+                    .collect();
+                for (call, _) in &normalized_calls {
+                    self.pending_tools.insert(
+                        call.id.clone(),
+                        PendingTool {
+                            name: call.name.clone(),
+                            internal_name: call.name.clone(),
+                            tool_type: call.tool_type,
+                        },
+                    );
+                }
+                self.set_agent_turn_state(&cid, AgentTurnState::ToolsRunning { remaining_calls });
+                for (call, _) in &normalized_calls {
+                    let message = invalid_tool_call_errors
+                        .remove(&call.id)
+                        .unwrap_or_else(|| {
+                            format!("refusing to execute tool call `{}`", call.name)
+                        });
+                    self.reject_agent_tool_call_before_dispatch(
+                        &cid,
+                        call,
+                        call.name.clone(),
+                        message,
+                    );
+                }
             }
             let completed_agent_id = self.agents.get(&cid).and_then(|conv| conv.agent_id.clone());
             let keep_tool_backed_conversation = self

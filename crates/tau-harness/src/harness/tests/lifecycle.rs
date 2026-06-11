@@ -3117,6 +3117,144 @@ fn resumed_historical_tool_call_id_reuse_becomes_model_visible_tool_error() {
 }
 
 #[test]
+fn disconnect_unregisters_tools_before_advancing_queued_prompt() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    connect_test_tool(&mut h, "drop-ext");
+    h.registry.register(
+        "drop-ext",
+        ToolSpec {
+            name: ToolName::new("stale_tool"),
+            model_visible_name: None,
+            description: Some("stale".to_owned()),
+            parameters: None,
+            tool_type: tau_proto::ToolType::Function,
+            format: None,
+            enabled_by_default: true,
+            background_support: None,
+        },
+    );
+    let cid = ensure_test_user_agent(&mut h);
+    h.agents
+        .get_mut(&cid)
+        .expect("agent")
+        .pending_prompts
+        .push_back(PendingPrompt::user("run".to_owned()));
+
+    h.handle_disconnect("drop-ext");
+
+    let prompts: Vec<_> = event_log_events(&h)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::AgentPromptCreated(prompt) => Some(prompt),
+            _ => None,
+        })
+        .collect();
+    let prompt = prompts.last().expect("queued prompt dispatched");
+    assert!(!prompt_has_tool(prompt, "stale_tool"));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn non_tool_extension_query_tool_call_gets_terminal_error_before_teardown() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let durable_agent_id = durable_agent_id_for_conversation(&h, &cid);
+    {
+        let conv = h.agents.get_mut(&cid).expect("agent");
+        conv.originator = tau_proto::PromptOriginator::Extension {
+            name: "query-ext".into(),
+            query_id: "query-1".into(),
+        };
+        conv.source_connection = Some("query-ext".into());
+        conv.parent_tool_call_id = None;
+    }
+    seed_agent_thinking(&mut h, &cid, "sp-query");
+    h.prompt_agents.insert("sp-query".into(), cid.clone());
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        agent_prompt_id: "sp-query".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "query-call".into(),
+            name: ToolName::new("not_a_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::ToolCalls,
+        error: None,
+        usage: None,
+        originator: tau_proto::PromptOriginator::Extension {
+            name: "query-ext".into(),
+            query_id: "query-1".into(),
+        },
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("non-tool query tool call terminalized");
+
+    let tree = h
+        .agent_store
+        .agent(durable_agent_id.as_str())
+        .expect("removed agent tree remains");
+    assert!(tree.nodes().iter().any(|node| matches!(
+        &node.entry,
+        AgentEntry::ToolResults { items }
+            if items.iter().any(|item| item.call_id == "invalid_tool_call_sp-query_1"
+                && matches!(item.status, ToolResultStatus::Error { .. }))
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
+fn non_tool_stop_reason_tool_call_gets_terminal_error() {
+    let td = TempDir::new().expect("tempdir");
+    let sp = td.path().join("state");
+    let mut h = echo_harness(&sp).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    seed_agent_thinking(&mut h, &cid, "sp-length");
+    h.prompt_agents.insert("sp-length".into(), cid.clone());
+
+    h.handle_provider_response_finished(ProviderResponseFinished {
+        agent_prompt_id: "sp-length".into(),
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        output_items: vec![ContextItem::ToolCall(ToolCallItem {
+            call_id: "length-call".into(),
+            name: ToolName::new("not_a_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            arguments: CborValue::Map(Vec::new()),
+        })],
+        stop_reason: tau_proto::ProviderStopReason::Length,
+        error: None,
+        usage: None,
+        originator: tau_proto::PromptOriginator::User,
+        compaction_original_input_tokens: None,
+        compaction_compacted_input_tokens: None,
+        backend: None,
+        provider_response_id: None,
+        ws_pool_delta: None,
+    })
+    .expect("length stop tool call terminalized");
+
+    assert!(default_agent_tree(&h).nodes().iter().any(|node| matches!(
+        &node.entry,
+        AgentEntry::ToolResults { items }
+            if items.iter().any(|item| item.call_id == "invalid_tool_call_sp-length_1"
+                && matches!(item.status, ToolResultStatus::Error { .. }))
+    )));
+
+    h.shutdown().expect("shutdown");
+}
+
+#[test]
 fn disconnect_removes_extension_prompt_and_agent_context() {
     let tmp = TempDir::new().expect("temp dir");
     let mut h = echo_harness(tmp.path()).expect("harness");

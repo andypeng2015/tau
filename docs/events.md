@@ -124,9 +124,12 @@ the agent requests calls, and the harness orchestrates dispatch.
 - **`tool.request`** *(provider/extension)* — A runtime request to run a
   tool call by id, owner agent id, model-produced name, and CBOR arguments. It
   may come from an agent response or another extension, and can still be
-  rejected before any tool provider receives it. Transcript tool-call truth
-  comes from the provider response's `ContextItem::ToolCall`, not this routing
-  event.
+  rejected before any tool provider receives it. Extension-authored
+  `call_id`s must be non-empty and globally unique; empty ids or collisions
+  with any known live, completed, or durable transcript tool call are refused
+  with `harness.info` only, not a call-id-keyed terminal event. Transcript
+  tool-call truth comes from the provider response's `ContextItem::ToolCall`,
+  not this routing event.
 - **`tool.started`** *(harness)* — The harness accepted and routed a
   tool request. This runtime broadcast is the signal that the selected tool
   provider should start the call, and that UIs can show a generic pending tool
@@ -270,7 +273,10 @@ commands) in response to a `ui.shell_command`.
   and `include_in_context` flag from the originating request, plus the
   truncated combined output, exit code, and `cancelled` flag. When
   `include_in_context` is set, the harness injects the output only into the
-  validated target agent for that session.
+  validated target agent for that session. A wrong-session, unknown, or
+  non-live target is ignored; targetless output goes to the unambiguous current
+  user agent, creating one if needed, and ambiguous targetless candidates are
+  refused.
 
 ## Term (terminal-output side effects)
 
