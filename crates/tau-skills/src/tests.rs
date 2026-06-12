@@ -440,8 +440,20 @@ fn discover_nonexistent_dir() {
 
 // -- Multi-directory loading --------------------------------------------
 
+fn set_skill_mtime(path: &Path, seconds_since_epoch: u64) {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open skill file");
+    let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds_since_epoch);
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .expect("set modified time");
+}
+
+/// Ensures duplicate skills across configured roots select the newest file, so
+/// root order does not hide a fresher local skill.
 #[test]
-fn load_from_dirs_dedup() {
+fn load_from_dirs_collision_winner_is_newest_modified() {
     let dir1 = tempfile::tempdir().expect("tempdir");
     let dir2 = tempfile::tempdir().expect("tempdir");
 
@@ -452,6 +464,7 @@ fn load_from_dirs_dedup() {
         "---\nname: my-skill\ndescription: First\n---\n",
     )
     .expect("write");
+    set_skill_mtime(&s1.join("SKILL.md"), 1_700_000_000);
 
     let s2 = dir2.path().join("my-skill");
     fs::create_dir_all(&s2).expect("mkdir");
@@ -460,10 +473,11 @@ fn load_from_dirs_dedup() {
         "---\nname: my-skill\ndescription: Second\n---\n",
     )
     .expect("write");
+    set_skill_mtime(&s2.join("SKILL.md"), 1_700_000_100);
 
     let result = load_skills_from_dirs(&[dir1.path().to_owned(), dir2.path().to_owned()]);
     assert_eq!(result.skills.len(), 1);
-    assert_eq!(result.skills[0].description, "First");
+    assert_eq!(result.skills[0].description, "Second");
     assert!(
         result
             .diagnostics
@@ -472,10 +486,12 @@ fn load_from_dirs_dedup() {
     );
 }
 
+/// Ensures duplicate skills discovered in one root use modified time rather
+/// than path sorting as the winner heuristic.
 #[test]
-fn load_from_dir_collision_winner_is_path_sorted() {
+fn load_from_dir_collision_newest_beats_path_sort() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    for (dir, description) in [("z-skill", "Second"), ("a-skill", "First")] {
+    for (dir, description) in [("a-skill", "First"), ("z-skill", "Second")] {
         let skill_dir = tmp.path().join(dir);
         fs::create_dir_all(&skill_dir).expect("mkdir");
         fs::write(
@@ -483,11 +499,17 @@ fn load_from_dir_collision_winner_is_path_sorted() {
             format!("---\nname: same-name\ndescription: {description}\n---\n"),
         )
         .expect("write");
+        let mtime = if description == "First" {
+            1_700_000_000
+        } else {
+            1_700_000_100
+        };
+        set_skill_mtime(&skill_dir.join("SKILL.md"), mtime);
     }
 
     let result = load_skills_from_dirs(&[tmp.path().to_owned()]);
     assert_eq!(result.skills.len(), 1);
-    assert_eq!(result.skills[0].description, "First");
+    assert_eq!(result.skills[0].description, "Second");
 }
 
 #[test]

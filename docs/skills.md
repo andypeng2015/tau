@@ -13,7 +13,7 @@ Tau scans skills in priority order:
 4. `~/.config/agents/skills`
 5. `~/.config/agents.local/skills`
 
-The first skill with a given name wins. Later duplicates are ignored and reported as collisions.
+When multiple skills use the same name, Tau keeps the candidate with the newest available modification time and reports the conflict as a collision. Skills with readable timestamps beat skills without timestamps. If timestamps are equal or unavailable, the earlier discovered candidate stays selected. Built-in skills use the harness binary build time as their timestamp, falling back to the executable file mtime when build metadata is unavailable.
 
 Preferred layout:
 

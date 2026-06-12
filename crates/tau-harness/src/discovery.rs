@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Where a discovered skill's Markdown source lives.
 #[derive(Clone)]
@@ -38,6 +39,7 @@ pub(crate) struct DiscoveredSkill {
     pub(crate) description: String,
     pub(crate) source: DiscoveredSkillSource,
     pub(crate) add_to_prompt: bool,
+    pub(crate) modified: Option<SystemTime>,
 }
 
 /// One AGENTS.md file discovered by an extension.

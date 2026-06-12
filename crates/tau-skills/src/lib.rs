@@ -10,9 +10,11 @@
 //! - All scalars are stringified before being returned. `BTreeMap<String,
 //!   String>` is the contract callers see.
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_yaml_ng::Value as YamlValue;
 
@@ -644,14 +646,43 @@ fn scan_symlink_dir_once(path: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+struct SelectedSkill {
+    skill: Skill,
+    modified: Option<SystemTime>,
+}
+
+fn skill_modified_time(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
+
+fn compare_skill_modified(a: Option<SystemTime>, b: Option<SystemTime>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn collision_message(name: &str, kept_path: &Path, ignored_path: &Path, reason: &str) -> String {
+    format!(
+        "name \"{name}\" collision — keeping {} over {} ({reason})",
+        kept_path.display(),
+        ignored_path.display()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Multi-directory loading
 // ---------------------------------------------------------------------------
 
 /// Load skills from multiple directories, deduplicating by name.
 ///
-/// The first skill with a given name wins; collisions produce a diagnostic.
-/// Output skills are sorted by name so successive runs see the same order.
+/// The newest skill file with a given name wins; collisions produce a
+/// diagnostic. Output skills are sorted by name so successive runs see the same
+/// order.
 pub fn load_skills_from_dirs(dirs: &[PathBuf]) -> LoadSkillsResult {
     let dirs = dirs
         .iter()
@@ -670,7 +701,7 @@ pub fn load_skills_from_dirs(dirs: &[PathBuf]) -> LoadSkillsResult {
 /// useful for project-local skills that are likely relevant to the
 /// current repository.
 pub fn load_skills_from_skill_dirs(dirs: &[SkillDir]) -> LoadSkillsResult {
-    let mut skills_by_name: BTreeMap<String, Skill> = BTreeMap::new();
+    let mut skills_by_name: BTreeMap<String, SelectedSkill> = BTreeMap::new();
     let mut all_diagnostics = Vec::new();
 
     for dir in dirs {
@@ -695,25 +726,51 @@ pub fn load_skills_from_skill_dirs(dirs: &[SkillDir]) -> LoadSkillsResult {
                 if !skill.add_to_prompt_explicit {
                     skill.add_to_prompt |= dir.add_to_prompt_by_default;
                 }
-                if let Some(existing) = skills_by_name.get(&skill.name) {
-                    all_diagnostics.push(SkillDiagnostic {
-                        path: skill.file_path.clone(),
-                        kind: DiagnosticKind::Collision,
-                        message: format!(
-                            "name \"{}\" collision — keeping {}",
-                            skill.name,
-                            existing.file_path.display()
-                        ),
-                    });
+                let modified = skill_modified_time(&skill.file_path);
+                if let Some(existing) = skills_by_name.get_mut(&skill.name) {
+                    let ordering = compare_skill_modified(modified, existing.modified);
+                    if ordering == Ordering::Greater {
+                        let message = collision_message(
+                            &skill.name,
+                            &skill.file_path,
+                            &existing.skill.file_path,
+                            "newer modified time",
+                        );
+                        all_diagnostics.push(SkillDiagnostic {
+                            path: existing.skill.file_path.clone(),
+                            kind: DiagnosticKind::Collision,
+                            message,
+                        });
+                        *existing = SelectedSkill { skill, modified };
+                    } else {
+                        let reason = if ordering == Ordering::Equal {
+                            "same or unavailable modified time"
+                        } else {
+                            "newer modified time"
+                        };
+                        all_diagnostics.push(SkillDiagnostic {
+                            path: skill.file_path.clone(),
+                            kind: DiagnosticKind::Collision,
+                            message: collision_message(
+                                &skill.name,
+                                &existing.skill.file_path,
+                                &skill.file_path,
+                                reason,
+                            ),
+                        });
+                    }
                 } else {
-                    skills_by_name.insert(skill.name.clone(), skill);
+                    skills_by_name.insert(skill.name.clone(), SelectedSkill { skill, modified });
                 }
             }
         }
     }
 
     LoadSkillsResult {
-        skills: skills_by_name.into_values().collect(),
+        skills: skills_by_name
+            .into_values()
+            .map(|selected| selected.skill)
+            .collect(),
         diagnostics: all_diagnostics,
     }
 }

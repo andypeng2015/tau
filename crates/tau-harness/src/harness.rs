@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::SeedableRng as _;
 use rand::rngs::StdRng;
@@ -768,6 +768,7 @@ fn mint_agent_id_for_role(role: &str) -> String {
 }
 
 fn built_in_discovered_skills() -> HashMap<tau_proto::SkillName, DiscoveredSkill> {
+    let modified = built_in_skill_modified_time();
     tau_skills::built_in_skills()
         .into_iter()
         .map(|skill| {
@@ -779,10 +780,99 @@ fn built_in_discovered_skills() -> HashMap<tau_proto::SkillName, DiscoveredSkill
                     description: skill.description,
                     source: DiscoveredSkillSource::BuiltIn { content },
                     add_to_prompt: skill.add_to_prompt,
+                    modified,
                 },
             )
         })
         .collect()
+}
+
+fn built_in_skill_modified_time() -> Option<SystemTime> {
+    crate::version::build_last_modified()
+        .as_deref()
+        .and_then(parse_build_last_modified)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| skill_file_modified_time(&path))
+        })
+}
+
+fn parse_build_last_modified(value: &str) -> Option<SystemTime> {
+    let bytes = value.as_bytes();
+    if bytes.len() != "YYYY-MM-DD HH:MM".len() {
+        return None;
+    }
+    let year = parse_ascii_i64(value.get(0..4)?)?;
+    let month = parse_ascii_i64(value.get(5..7)?)?;
+    let day = parse_ascii_i64(value.get(8..10)?)?;
+    let hour = parse_ascii_u64(value.get(11..13)?)?;
+    let minute = parse_ascii_u64(value.get(14..16)?)?;
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b' '
+        || bytes[13] != b':'
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || 24 <= hour
+        || 60 <= minute
+    {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    if days < 0 {
+        return None;
+    }
+    let seconds = (days as u64)
+        .saturating_mul(24 * 60 * 60)
+        .saturating_add(hour.saturating_mul(60 * 60))
+        .saturating_add(minute.saturating_mul(60));
+    Some(UNIX_EPOCH + Duration::from_secs(seconds))
+}
+
+fn parse_ascii_i64(value: &str) -> Option<i64> {
+    value.parse().ok()
+}
+
+fn parse_ascii_u64(value: &str) -> Option<u64> {
+    value.parse().ok()
+}
+
+// Howard Hinnant's civil-calendar conversion: returns days since Unix epoch
+// for a proleptic Gregorian date without pulling in a time dependency here.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if 0 <= year { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = month + if 2 < month { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn skill_file_modified_time(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
+
+fn compare_skill_modified(a: Option<SystemTime>, b: Option<SystemTime>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn selected_skill_candidate(candidates: &[DiscoveredSkill]) -> Option<&DiscoveredSkill> {
+    let mut selected = candidates.first()?;
+    for candidate in &candidates[1..] {
+        if compare_skill_modified(selected.modified, candidate.modified).is_lt() {
+            selected = candidate;
+        }
+    }
+    Some(selected)
 }
 
 fn render_built_in_self_knowledge_content(
@@ -1144,8 +1234,12 @@ pub struct Harness {
     /// attribute the corresponding finished response even if the user
     /// switches models while it is in flight.
     pub(crate) prompt_models: std::collections::HashMap<AgentPromptId, ModelId>,
-    /// Skills discovered by extensions, keyed by name.
+    /// Selected skill winners, keyed by name.
     pub(crate) discovered_skills: std::collections::HashMap<tau_proto::SkillName, DiscoveredSkill>,
+    /// All discovered skill candidates, keyed by name, so removing the winner
+    /// can restore the next-best candidate.
+    pub(crate) discovered_skill_candidates:
+        std::collections::HashMap<tau_proto::SkillName, Vec<DiscoveredSkill>>,
     /// AGENTS.md files discovered by extensions, in delivery order.
     pub(crate) discovered_agents_files: Vec<DiscoveredAgentsFile>,
     /// Session-scoped JSON context contributions published by extensions.
@@ -1457,6 +1551,11 @@ impl Harness {
     }
 
     fn from_base_parts(parts: HarnessBaseParts) -> Self {
+        let discovered_skills = built_in_discovered_skills();
+        let discovered_skill_candidates = discovered_skills
+            .iter()
+            .map(|(name, skill)| (name.clone(), vec![skill.clone()]))
+            .collect();
         Self {
             tx: parts.tx,
             rx: parts.rx,
@@ -1508,7 +1607,8 @@ impl Harness {
             selected_model: parts.selected_model,
             current_session_state: CurrentSessionState::default(),
             prompt_models: HashMap::new(),
-            discovered_skills: built_in_discovered_skills(),
+            discovered_skills,
+            discovered_skill_candidates,
             discovered_agents_files: Vec::new(),
             agent_context: AgentContextStore::default(),
             agent_working_directories: HashMap::new(),
@@ -5794,12 +5894,37 @@ impl Harness {
     }
 
     fn remove_discovered_context(&mut self, source_id: &str) {
-        self.discovered_skills.retain(|_, skill| {
-            matches!(skill.source, DiscoveredSkillSource::BuiltIn { .. })
-                || skill.source_id != source_id
-        });
+        let affected_names = self
+            .discovered_skill_candidates
+            .iter_mut()
+            .filter_map(|(name, candidates)| {
+                let old_len = candidates.len();
+                candidates.retain(|skill| {
+                    matches!(skill.source, DiscoveredSkillSource::BuiltIn { .. })
+                        || skill.source_id != source_id
+                });
+                (candidates.len() != old_len).then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        self.discovered_skill_candidates
+            .retain(|_, candidates| !candidates.is_empty());
+        for name in affected_names {
+            self.recompute_discovered_skill_winner(&name);
+        }
         self.discovered_agents_files
             .retain(|file| file.source_id != source_id);
+    }
+
+    fn recompute_discovered_skill_winner(&mut self, name: &tau_proto::SkillName) {
+        let winner = self
+            .discovered_skill_candidates
+            .get(name)
+            .and_then(|candidates| selected_skill_candidate(candidates).cloned());
+        if let Some(winner) = winner {
+            self.discovered_skills.insert(name.clone(), winner);
+        } else {
+            self.discovered_skills.remove(name);
+        }
     }
 
     fn record_discovered_skill(&mut self, source_id: &str, skill: &tau_proto::ExtSkillAvailable) {
@@ -5826,32 +5951,67 @@ impl Harness {
             skill.description.clone()
         };
 
-        let collision = self
-            .discovered_skills
-            .get(&skill.name)
-            .filter(|existing| existing.source_id != source_id)
-            .map(|existing| (existing.source_id.clone(), existing.source.label()));
+        let modified = skill_file_modified_time(&skill.file_path);
+        let candidate = DiscoveredSkill {
+            source_id: source_id.into(),
+            description,
+            source: DiscoveredSkillSource::File(std::path::PathBuf::from(&skill.file_path)),
+            add_to_prompt: skill.add_to_prompt,
+            modified,
+        };
+        let previous_winner = self.discovered_skills.get(&skill.name).cloned();
+        let candidates = self
+            .discovered_skill_candidates
+            .entry(skill.name.clone())
+            .or_default();
+        if let Some(existing) = candidates
+            .iter_mut()
+            .find(|existing| existing.source_id == source_id)
+        {
+            *existing = candidate;
+        } else {
+            candidates.push(candidate);
+        }
+        self.recompute_discovered_skill_winner(&skill.name);
 
-        if let Some((existing_source, existing_label)) = collision {
+        if let Some(previous_winner) = previous_winner
+            && previous_winner.source_id != source_id
+            && let Some(current_winner) = self.discovered_skills.get(&skill.name).cloned()
+        {
+            self.emit_skill_collision_info(skill, source_id, &previous_winner, &current_winner);
+        }
+    }
+
+    fn emit_skill_collision_info(
+        &mut self,
+        skill: &tau_proto::ExtSkillAvailable,
+        source_id: &str,
+        previous_winner: &DiscoveredSkill,
+        current_winner: &DiscoveredSkill,
+    ) {
+        if current_winner.source_id == source_id {
             self.emit_info_important(&format!(
-                "skill collision: {} from {} ignored; keeping {} from {}",
+                "skill collision: {} from {} replaces {} from {} (newer modified time)",
                 skill.name,
                 skill.file_path.display(),
-                existing_label,
-                existing_source,
+                previous_winner.source.label(),
+                previous_winner.source_id,
             ));
             return;
         }
-
-        self.discovered_skills.insert(
-            skill.name.clone(),
-            DiscoveredSkill {
-                source_id: source_id.into(),
-                description,
-                source: DiscoveredSkillSource::File(std::path::PathBuf::from(&skill.file_path)),
-                add_to_prompt: skill.add_to_prompt,
-            },
-        );
+        let modified = skill_file_modified_time(&skill.file_path);
+        let reason = if compare_skill_modified(modified, current_winner.modified).is_eq() {
+            "same or unavailable modified time"
+        } else {
+            "newer modified time"
+        };
+        self.emit_info_important(&format!(
+            "skill collision: {} from {} ignored; keeping {} from {} ({reason})",
+            skill.name,
+            skill.file_path.display(),
+            current_winner.source.label(),
+            current_winner.source_id,
+        ));
     }
 
     fn session_init_provider_ids(&self) -> std::collections::HashSet<tau_proto::ConnectionId> {

@@ -34,6 +34,7 @@ fn discovered_skill(description: &str, add_to_prompt: bool) -> DiscoveredSkill {
             content: std::borrow::Cow::Borrowed(""),
         },
         add_to_prompt,
+        modified: None,
     }
 }
 

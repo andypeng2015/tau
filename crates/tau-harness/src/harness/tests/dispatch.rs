@@ -3635,6 +3635,7 @@ fn system_prompt_drift_invalidates_chain_anchor() {
                 "/tmp/late-loaded.md",
             )),
             add_to_prompt: true,
+            modified: None,
         },
     );
 

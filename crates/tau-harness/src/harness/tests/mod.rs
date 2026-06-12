@@ -38,7 +38,7 @@ use crate::daemon::{
     get_daemon_rendered_tool_definitions, run_daemon_with_echo, run_embedded_message_with_echo,
     send_daemon_message, send_daemon_message_with_trace,
 };
-use crate::discovery::DiscoveredAgentsFile;
+use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill, DiscoveredSkillSource};
 use crate::error::HarnessError;
 use crate::event::HarnessEvent;
 use crate::model::{
@@ -248,6 +248,155 @@ fn assert_agent_id_chars(agent_id: &str) {
 
 fn assert_role_hex_agent_id(agent_id: &str, _role: &str) {
     assert_agent_id_chars(agent_id);
+}
+
+fn test_discovered_skill(
+    source_id: &str,
+    description: &str,
+    modified_secs: u64,
+) -> DiscoveredSkill {
+    DiscoveredSkill {
+        source_id: source_id.into(),
+        description: description.to_owned(),
+        source: DiscoveredSkillSource::File(PathBuf::from(format!("/tmp/{description}.md"))),
+        add_to_prompt: false,
+        modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(modified_secs)),
+    }
+}
+
+fn write_skill_file(dir: &Path, name: &str, description: &str, mtime: Option<u64>) -> PathBuf {
+    let path = dir.join(format!("{description}.md"));
+    std::fs::write(
+        &path,
+        format!("---\nname: {name}\ndescription: {description}\n---\n"),
+    )
+    .expect("write skill file");
+    if let Some(mtime) = mtime {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open skill file");
+        let modified = std::time::UNIX_EPOCH + Duration::from_secs(mtime);
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("set skill mtime");
+    }
+    path
+}
+
+/// Ensures build timestamps used for built-in skill freshness parse to exact
+/// instants and reject malformed inputs before collision comparison.
+#[test]
+fn build_last_modified_parser_validates_packaged_format() {
+    assert_eq!(
+        super::parse_build_last_modified("1970-01-01 00:00"),
+        Some(std::time::UNIX_EPOCH)
+    );
+    assert_eq!(
+        super::parse_build_last_modified("2024-06-12 09:30"),
+        Some(std::time::UNIX_EPOCH + Duration::from_secs(1_718_184_600))
+    );
+    assert!(super::parse_build_last_modified("2024/06/12 09:30").is_none());
+    assert!(super::parse_build_last_modified("2024-1x-12 09:30").is_none());
+    assert!(super::parse_build_last_modified("2024-06-aa 09:30").is_none());
+    assert!(super::parse_build_last_modified("2024-13-12 09:30").is_none());
+    assert!(super::parse_build_last_modified("2024-06-12 24:00").is_none());
+}
+
+/// Ensures skill candidate selection chooses the newest timestamp and keeps the
+/// earlier candidate when timestamps tie.
+#[test]
+fn selected_skill_candidate_prefers_newest_with_stable_tie_break() {
+    let first = test_discovered_skill("first", "first", 100);
+    let newer = test_discovered_skill("newer", "newer", 200);
+    let same_as_first = test_discovered_skill("same", "same", 100);
+
+    let candidates = [first.clone(), newer];
+    let selected = super::selected_skill_candidate(&candidates).expect("selected newest");
+    assert_eq!(selected.description, "newer");
+
+    let candidates = [first, same_as_first];
+    let selected = super::selected_skill_candidate(&candidates).expect("selected tie");
+    assert_eq!(selected.description, "first");
+}
+
+/// Ensures the harness keeps fallback candidates so disconnecting the newest
+/// skill provider restores the next-best skill instead of losing the name.
+#[test]
+fn skill_winner_disconnect_restores_next_best_candidate() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    let name = tau_proto::SkillName::new("same-skill");
+    let older = test_discovered_skill("old-ext", "older", 100);
+    let newer = test_discovered_skill("new-ext", "newer", 200);
+
+    h.discovered_skill_candidates
+        .insert(name.clone(), vec![older, newer]);
+    h.recompute_discovered_skill_winner(&name);
+    assert_eq!(h.discovered_skills[&name].description, "newer");
+
+    h.remove_discovered_context("new-ext");
+    assert_eq!(h.discovered_skills[&name].description, "older");
+
+    h.shutdown().expect("shutdown");
+}
+
+/// Ensures cross-source skill collisions emit useful Important diagnostics for
+/// both replacement by newer mtimes and ignoring equal/unavailable timestamps.
+#[test]
+fn skill_collision_diagnostics_describe_replaced_and_ignored_candidates() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    let old_path = write_skill_file(tmp.path(), "collision-skill", "old", Some(100));
+    let new_path = write_skill_file(tmp.path(), "collision-skill", "new", Some(200));
+    let tie_path = write_skill_file(tmp.path(), "collision-skill", "tie", Some(200));
+
+    h.record_discovered_skill(
+        "old-ext",
+        &tau_proto::ExtSkillAvailable {
+            name: "collision-skill".into(),
+            description: "old".to_owned(),
+            file_path: old_path,
+            add_to_prompt: false,
+        },
+    );
+    h.record_discovered_skill(
+        "new-ext",
+        &tau_proto::ExtSkillAvailable {
+            name: "collision-skill".into(),
+            description: "new".to_owned(),
+            file_path: new_path,
+            add_to_prompt: false,
+        },
+    );
+    h.record_discovered_skill(
+        "tie-ext",
+        &tau_proto::ExtSkillAvailable {
+            name: "collision-skill".into(),
+            description: "tie".to_owned(),
+            file_path: tie_path,
+            add_to_prompt: false,
+        },
+    );
+
+    let infos = event_log_events(&h)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::HarnessInfo(info) => Some(info.message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(infos.iter().any(|message| {
+        message.contains("skill collision: collision-skill")
+            && message.contains("replaces")
+            && message.contains("newer modified time")
+    }));
+    assert!(infos.iter().any(|message| {
+        message.contains("skill collision: collision-skill")
+            && message.contains("ignored")
+            && message.contains("same or unavailable modified time")
+    }));
+
+    h.shutdown().expect("shutdown");
 }
 
 #[test]
