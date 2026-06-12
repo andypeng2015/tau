@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
+use std::{fmt, io};
 
-use tau_config::settings::CliTheme;
+use tau_config::settings::{CliTheme, TauDirs};
 use tau_themes::{SpanTree, ThemedText};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,17 +90,38 @@ fn prompt_marker_role_style(role: &str) -> String {
     format!("{}.{}", tau_themes::names::PROMPT_MARKER, role)
 }
 
-pub(crate) fn select_theme(mode: CliTheme) -> tau_themes::Theme {
+pub(crate) fn select_theme(
+    dirs: &TauDirs,
+    mode: CliTheme,
+) -> Result<tau_themes::Theme, ThemeError> {
     let mode = env_theme_override().unwrap_or(mode);
 
     match mode {
-        CliTheme::Dark => tau_themes::Theme::builtin_dark(),
-        CliTheme::Light => tau_themes::Theme::builtin_light(),
-        CliTheme::Auto => match detect_terminal_shade() {
+        CliTheme::Dark => Ok(tau_themes::Theme::builtin_dark()),
+        CliTheme::Light => Ok(tau_themes::Theme::builtin_light()),
+        CliTheme::Auto => Ok(match detect_terminal_shade() {
             Some(TerminalShade::Light) => tau_themes::Theme::builtin_light(),
             Some(TerminalShade::Dark) | None => tau_themes::Theme::builtin_dark(),
-        },
+        }),
+        CliTheme::Named(name) => select_named_theme(dirs, &name),
     }
+}
+
+fn select_named_theme(dirs: &TauDirs, name: &str) -> Result<tau_themes::Theme, ThemeError> {
+    match name {
+        "tau" => return Ok(tau_themes::Theme::builtin_dark()),
+        "tau-light" => return Ok(tau_themes::Theme::builtin_light()),
+        _ => {}
+    }
+
+    validate_external_theme_name(name)?;
+    let Some(config_dir) = &dirs.config_dir else {
+        return Err(ThemeError::NoConfigDir {
+            name: name.to_owned(),
+        });
+    };
+    let path = external_theme_path(config_dir, name);
+    tau_themes::Theme::load(&path).map_err(|source| ThemeError::Load { path, source })
 }
 
 fn env_theme_override() -> Option<CliTheme> {
@@ -108,13 +130,68 @@ fn env_theme_override() -> Option<CliTheme> {
 }
 
 fn parse_theme_name(value: &str) -> Option<CliTheme> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "auto" => Some(CliTheme::Auto),
-        "dark" => Some(CliTheme::Dark),
-        "light" => Some(CliTheme::Light),
-        _ => None,
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(CliTheme::parse_name(trimmed))
+}
+
+fn external_theme_path(config_dir: &Path, name: &str) -> PathBuf {
+    config_dir.join("themes").join(format!("{name}.json5"))
+}
+
+fn validate_external_theme_name(name: &str) -> Result<(), ThemeError> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(ThemeError::InvalidName(name.to_owned()));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) enum ThemeError {
+    InvalidName(String),
+    NoConfigDir {
+        name: String,
+    },
+    Load {
+        path: PathBuf,
+        source: tau_themes::theme::ThemeLoadError,
+    },
+}
+
+impl fmt::Display for ThemeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(
+                f,
+                "invalid theme name `{name}`: external themes must be named by a single path component"
+            ),
+            Self::NoConfigDir { name } => write!(
+                f,
+                "theme `{name}` is not a built-in theme and no Tau config directory is available"
+            ),
+            Self::Load { path, source } => {
+                if matches!(source, tau_themes::theme::ThemeLoadError::Io(_, err) if err.kind() == io::ErrorKind::NotFound)
+                {
+                    write!(
+                        f,
+                        "theme file not found: {} (built-ins: auto, dark, light, tau, tau-light)",
+                        path.display()
+                    )
+                } else {
+                    write!(f, "failed to load theme from {}: {source}", path.display())
+                }
+            }
+        }
     }
 }
+
+impl std::error::Error for ThemeError {}
 
 fn detect_terminal_shade() -> Option<TerminalShade> {
     colorfgbg_terminal_shade()

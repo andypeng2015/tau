@@ -796,7 +796,9 @@ pub(crate) fn run_chat(
     // start the TUI instead.
     let settings = tau_config::settings::load_cli_settings()
         .map_err(|error| CliError::Participant(format!("cli.yaml failed to parse:\n{error}")))?;
-    let theme = crate::theme::select_theme(settings.theme);
+    let dirs = tau_config::settings::TauDirs::default();
+    let theme = crate::theme::select_theme(&dirs, settings.theme.clone())
+        .map_err(|error| CliError::Participant(format!("cli theme failed to load:\n{error}")))?;
     let prompt = crate::theme::active_prompt_marker(&theme, &settings.prompt_symbol, None);
     let cwd = std::env::current_dir()?;
     let home_dir = dirs::home_dir();
@@ -820,7 +822,6 @@ pub(crate) fn run_chat(
         .bind
         .iter()
         .map(|(key, action)| (key.clone(), encode_binding_action(action)));
-    let dirs = tau_config::settings::TauDirs::default();
     let cli_state =
         tau_config::settings::CliState::load_with_default(&dirs, settings.default_state());
     let prompt_history = PromptHistoryStore::new(&dirs);

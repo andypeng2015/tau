@@ -1,11 +1,74 @@
 use super::*;
 
+/// Ensures CLI and environment theme names share the same normalization path,
+/// including external names that must not be rejected during parsing.
 #[test]
 fn parses_theme_env_values() {
     assert_eq!(parse_theme_name("auto"), Some(CliTheme::Auto));
     assert_eq!(parse_theme_name("DARK"), Some(CliTheme::Dark));
     assert_eq!(parse_theme_name(" light "), Some(CliTheme::Light));
-    assert_eq!(parse_theme_name("solarized"), None);
+    assert_eq!(
+        parse_theme_name("solarized"),
+        Some(CliTheme::Named("solarized".to_owned()))
+    );
+    assert_eq!(parse_theme_name("   "), None);
+}
+
+/// Ensures built-in theme file names remain selectable in addition to the
+/// legacy dark/light aliases documented before external theme support.
+#[test]
+fn selected_named_builtin_theme() {
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: None,
+        state_dir: None,
+    };
+
+    let theme = select_theme(&dirs, CliTheme::Named("tau-light".to_owned()))
+        .expect("built-in theme loads without config dir");
+    let prompt = cwd_right_prompt(&theme, Path::new("/tmp/project"), None);
+
+    assert_eq!(
+        prompt.spans()[0].style.fg,
+        Some(tau_cli_term::Color::DarkBlue)
+    );
+}
+
+/// Ensures external theme names resolve to `themes/<name>.json5` under Tau's
+/// config directory and affect normal terminal style resolution.
+#[test]
+fn selected_external_theme_from_config_themes_dir() {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let themes = temp.path().join("themes");
+    std::fs::create_dir(&themes).expect("themes dir");
+    std::fs::write(
+        themes.join("custom.json5"),
+        r##"{ styles: { "prompt.cwd": { fg: "red", bold: true } } }"##,
+    )
+    .expect("write theme");
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(temp.path().to_owned()),
+        state_dir: None,
+    };
+
+    let theme = select_theme(&dirs, CliTheme::Named("custom".to_owned())).expect("theme loads");
+    let prompt = cwd_right_prompt(&theme, Path::new("/tmp/project"), None);
+
+    assert_eq!(prompt.spans()[0].style.fg, Some(tau_cli_term::Color::Red));
+    assert!(prompt.spans()[0].style.bold);
+}
+
+/// Ensures invalid external names fail visibly instead of escaping the themes
+/// directory or silently falling back to a built-in theme.
+#[test]
+fn selected_external_theme_rejects_path_components() {
+    let dirs = tau_config::settings::TauDirs {
+        config_dir: Some(Path::new("/tmp/tau-test").to_owned()),
+        state_dir: None,
+    };
+
+    let err = select_theme(&dirs, CliTheme::Named("../bad".to_owned())).expect_err("rejects name");
+
+    assert!(err.to_string().contains("invalid theme name"));
 }
 
 #[test]

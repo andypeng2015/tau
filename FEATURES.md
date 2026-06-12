@@ -659,11 +659,14 @@ avoid full repaints on each token.
 ### Theming
 
 The UI ships with built-in dark and light "tau" themes. `cli.yaml` can set
-`theme: dark`, `theme: light`, or `theme: auto`; `TAU_THEME=dark|light|auto`
-overrides config for one process. Auto currently uses terminal background hints
-such as `COLORFGBG` and falls back to dark. Themes map semantic style names
-(`prompt.marker`, `prompt.cwd`, `banner.accent`, `system.info`, diff hunks,
-reasoning blocks, …) to terminal attributes. See
+`theme: dark`, `theme: light`, `theme: auto`, `theme: tau`, `theme: tau-light`,
+or a custom theme name; `TAU_THEME` accepts the same names and overrides config
+for one process. Auto currently uses terminal background hints such as
+`COLORFGBG` and falls back to dark. Custom themes load from
+`~/.config/tau/themes/<name>.json5` (or the active Tau config directory) and
+Tau fails visibly if a configured theme is missing or malformed. Themes map
+semantic style names (`prompt.marker`, `prompt.cwd`, `banner.accent`,
+`system.info`, diff hunks, reasoning blocks, …) to terminal attributes. See
 `crates/tau-themes/themes/tau.json5` and `tau-light.json5` for the full style
 key list.
 

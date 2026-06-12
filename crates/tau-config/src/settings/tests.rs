@@ -60,6 +60,18 @@ fn cli_settings_theme_override() {
     assert_eq!(s.theme, CliTheme::Light);
 }
 
+/// Ensures arbitrary non-empty theme names survive config parsing so the CLI
+/// can resolve them to external files under the user's `themes` directory.
+#[test]
+fn cli_settings_external_theme_name_override() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(dir.join("cli.yaml"), r#"{ theme: "solarized" }"#).expect("write");
+
+    let s = load_cli_settings_in(&dirs_with_config(dir)).expect("load");
+    assert_eq!(s.theme, CliTheme::Named("solarized".to_owned()));
+}
+
 #[test]
 fn cli_settings_user_binding_keeps_built_in_chords() {
     let td = TempDir::new().expect("tempdir");

@@ -231,18 +231,66 @@ pub struct CliState {
     /// Controlled by `/set show-status <all|minimal>`.
     pub show_status: ShowStatus,
 }
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CliTheme {
     /// Choose a built-in theme from terminal background hints when available.
     #[default]
-    #[serde(rename = "auto")]
     Auto,
     /// Use the built-in dark-background theme.
-    #[serde(rename = "dark")]
     Dark,
     /// Use the built-in light-background theme.
-    #[serde(rename = "light")]
     Light,
+    /// Load a named built-in theme or an external theme from
+    /// `themes/<name>.json5`.
+    Named(String),
+}
+
+impl CliTheme {
+    /// Parses a user-authored theme name from `cli.yaml` or `TAU_THEME`.
+    #[must_use]
+    pub fn parse_name(value: &str) -> Self {
+        let trimmed = value.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "dark" => Self::Dark,
+            "light" => Self::Light,
+            _ => Self::Named(trimmed.to_owned()),
+        }
+    }
+
+    /// Returns the normalized name used for serialization and diagnostics.
+    #[must_use]
+    pub fn as_name(&self) -> &str {
+        match self {
+            Self::Auto => "auto",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Named(name) => name,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CliTheme {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(D::Error::custom("theme name must not be empty"));
+        }
+        Ok(Self::parse_name(trimmed))
+    }
+}
+
+impl Serialize for CliTheme {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_name())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
