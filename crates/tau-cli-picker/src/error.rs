@@ -1,10 +1,15 @@
 use std::{fmt, io};
 
+/// Errors returned while rendering or driving an interactive picker.
 #[derive(Debug)]
 pub enum PickerError {
+    /// Underlying terminal or stream I/O failed.
     Io(io::Error),
+    /// The picker was invoked with no items.
     Empty,
+    /// The picker had items, but none were selectable.
     NoEnabledItems,
+    /// The user cancelled the picker with Escape, Ctrl-C, or Ctrl-D.
     Cancelled,
 }
 

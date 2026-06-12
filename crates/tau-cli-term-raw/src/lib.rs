@@ -34,9 +34,12 @@ use tau_term_screen::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Cursor shape requested for the prompt while Tau owns raw mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorShape {
+    /// Thin vertical cursor bar.
     Bar,
+    /// Solid block cursor.
     Block,
 }
 
@@ -82,7 +85,9 @@ where
 /// Read-only snapshot of the completion menu state.
 #[derive(Clone, Debug)]
 pub struct CompletionView {
+    /// Candidates currently displayed in menu order.
     pub candidates: Vec<Candidate>,
+    /// Candidate currently previewed in the input buffer, if any.
     pub selected: Option<usize>,
 }
 
@@ -1174,9 +1179,13 @@ impl TermHandle {
 
 /// Raw terminal events from the crossterm reader thread.
 pub enum RawEvent {
+    /// A decoded key press from crossterm.
     Key(KeyEvent),
+    /// Terminal resize event with width and height in cells.
     Resize(u16, u16),
+    /// Terminal focus changed.
     FocusChanged {
+        /// True when focus was gained; false when it was lost.
         focused: bool,
     },
     /// One bracketed paste. The whole pasted string is delivered
@@ -1553,12 +1562,41 @@ impl Term {
     ///
     /// No reader-thread coordination is needed — the only reader is
     /// the main thread, which is the same thread that drives the
-    /// external program via `Command::status`, so it can't be in
-    /// `event::read()` at the same time.
+    /// external program to completion, so it can't be in `event::read()` at the
+    /// same time.
+    ///
+    /// # Errors
+    ///
+    /// Returns terminal I/O errors from releasing raw-mode features or clearing
+    /// the screen. On failure, Tau attempts to roll terminal ownership back via
+    /// [`Self::resume_after_external`], which also unmutes redraws and
+    /// invalidates the next frame.
     pub fn pause_for_external(&self) -> io::Result<()> {
         if !self.owns_raw_mode {
             return Ok(());
         }
+        self.pause_for_external_with_release(|| {
+            crossterm::execute!(
+                io::stdout(),
+                PopKeyboardEnhancementFlags,
+                crossterm::event::DisableBracketedPaste,
+                SetCursorStyle::DefaultUserShape,
+            )?;
+            terminal::disable_raw_mode()?;
+            crossterm::execute!(
+                io::stdout(),
+                crossterm::style::ResetColor,
+                crossterm::cursor::MoveTo(0, 0),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+            )?;
+            Ok(())
+        })
+    }
+
+    fn pause_for_external_with_release(
+        &self,
+        release_terminal: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         {
             let mut st = self.handle.lock();
             st.external_paused = true;
@@ -1567,19 +1605,11 @@ impl Term {
         // check has finished writing before releasing the terminal to an
         // external program.
         self.handle.redraw_sync();
-        let _ = crossterm::execute!(
-            io::stdout(),
-            PopKeyboardEnhancementFlags,
-            crossterm::event::DisableBracketedPaste,
-            SetCursorStyle::DefaultUserShape,
-        );
-        terminal::disable_raw_mode()?;
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::style::ResetColor,
-            crossterm::cursor::MoveTo(0, 0),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
-        );
+
+        if let Err(error) = release_terminal() {
+            let _ = self.resume_after_external();
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1588,24 +1618,39 @@ impl Term {
     /// next render repaints from scratch; without this, the cache
     /// would diff against what we *thought* was on screen and skip
     /// drawing anything since the editor exited.
+    ///
+    /// # Errors
+    ///
+    /// Returns terminal I/O errors from re-enabling raw-mode features or
+    /// clearing the screen. Even on failure, the redraw pause is cleared, the
+    /// tracked terminal size is refreshed, and the next frame is invalidated.
     pub fn resume_after_external(&self) -> io::Result<()> {
         if !self.owns_raw_mode {
+            self.finish_external_resume();
             return Ok(());
         }
-        terminal::enable_raw_mode()?;
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::event::EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-            self.cursor_shape.crossterm_style()
-        );
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-            crossterm::cursor::MoveTo(0, 0)
-        );
+        let result = (|| -> io::Result<()> {
+            terminal::enable_raw_mode()?;
+            crossterm::execute!(
+                io::stdout(),
+                crossterm::event::EnableBracketedPaste,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+                self.cursor_shape.crossterm_style()
+            )?;
+            crossterm::execute!(
+                io::stdout(),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
+            Ok(())
+        })();
+        self.finish_external_resume();
+        result
+    }
+
+    fn finish_external_resume(&self) {
+        let (width, height) = term_size();
         {
-            let (width, height) = term_size();
             let mut st = self.handle.lock();
             st.width = width;
             st.height = height;
@@ -1613,7 +1658,6 @@ impl Term {
             st.invalidate_screen = true;
         }
         self.handle.redraw();
-        Ok(())
     }
 
     /// Records the current prompt as an undo snapshot without changing
@@ -3207,12 +3251,6 @@ fn redraw_loop(
     }
 }
 
-/// Full re-render: clear screen + scrollback, output all logical lines, and
-/// position cursor. Used on resize and after invalidation. Callers should pass
-/// a no-rubber plan so a full repaint drops rubber instead of preserving
-/// temporary blank space. Overflow rebuilds terminal scrollback naturally.
-/// After rendering, Screen tracks the visible viewport for subsequent
-/// differential updates.
 fn changed_line_in_range(
     prev_all_lines: &[Vec<Cell>],
     all_lines: &[Vec<Cell>],
@@ -3311,6 +3349,12 @@ fn hidden_lines_changed(
     (0..prev_visible_start).any(|idx| prev_all_lines.get(idx) != all_lines.get(idx))
 }
 
+/// Full re-render: clear screen + scrollback, output all logical lines, and
+/// position cursor. Used on resize and after invalidation. Callers should pass
+/// a no-rubber plan so a full repaint drops rubber instead of preserving
+/// temporary blank space. Overflow rebuilds terminal scrollback naturally.
+/// After rendering, Screen tracks the visible viewport for subsequent
+/// differential updates.
 fn full_render(
     stdout: &mut impl Write,
     screen: &mut Screen,

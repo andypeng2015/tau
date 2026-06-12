@@ -4220,3 +4220,27 @@ fn hidden_lines_changed_detects_removed_scrollback_line() {
 
     assert!(hidden_lines_changed(&prev, &next, 1));
 }
+
+/// Protects the external-program pause invariant: if releasing the terminal
+/// fails after redraws are paused, production rollback via
+/// `resume_after_external` must unmute redraws and invalidate the next frame.
+#[test]
+fn external_pause_failure_rolls_back_through_resume() {
+    let (term, _handle, _input_tx) =
+        Term::new_virtual(80, 24, "> ", Box::new(std::io::sink()), CursorShape::Bar);
+    let _redraw_guard = RedrawSuppressionGuard::new(&term.handle);
+    let release_called = std::cell::Cell::new(false);
+
+    let error = term
+        .pause_for_external_with_release(|| {
+            release_called.set(true);
+            Err(io::Error::other("simulated release failure"))
+        })
+        .expect_err("release failure should be returned");
+
+    assert!(release_called.get());
+    assert_eq!(error.to_string(), "simulated release failure");
+    let st = term.handle.lock();
+    assert!(!st.external_paused);
+    assert!(st.invalidate_screen);
+}

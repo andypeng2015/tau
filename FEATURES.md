@@ -527,7 +527,9 @@ Examples:
 actions. Bindings are layered on top of built-ins; user entries with the
 same key replace the built-in binding.
 
-Supported actions:
+See [`docs/cli-keybindings.md`](docs/cli-keybindings.md) for the built-in key
+bindings and the full set of configurable prompt/application actions. Common
+actions include:
 
 - `submit-prompt`: submit the prompt, or accept a previewed completion without
   submitting.
@@ -536,21 +538,14 @@ Supported actions:
   command, then replace the prompt with the file contents on success.
 - `shell-prompt-insert`: run the shell command and insert its stdout at the
   cursor on success.
-- `fast-toggle`: toggle Fast mode directly. For example:
-  `{ action: "fast-toggle" }`.
-- `cycle-role`: cycle roles within the current role group. For example:
-  `{ action: "cycle-role" }`.
-- `cycle-role-group`: cycle to the first role in the next configured role group. For example:
-  `{ action: "cycle-role-group" }`.
-- `agent-previous` / `agent-next`: switch between active agent transcripts. For example:
-  `{ action: "agent-next" }`.
 - `prompt-history-search`: feed indexed prompt-history rows to a picker command,
   expose original prompts under `$TAU_PROMPT_HISTORY_DIR/<index>` for previews,
-  then replace the prompt with the selected original prompt. The draft active
-  when the picker opens is saved for prompt undo.
+  then replace the prompt with the selected original prompt.
 
 Command environment:
 
+- `TAU_EDITOR`: resolved editor command that Tau exposes to prompt shell
+  actions, including built-in prompt-edit bindings.
 - `TAU_PROMPT_PATH`: tempfile containing the current prompt.
 - `TAU_PROMPT_ROW` / `TAU_PROMPT_COLUMN`: 1-indexed cursor position for
   editor commands that support `file:row:column` syntax. Multi-line row
@@ -558,46 +553,16 @@ Command environment:
 - `TAU_PROMPT_HISTORY_DIR`: for `prompt-history-search`, a temporary directory
   containing original prompt text files named by row index.
 
-Default bindings:
+Tau resolves that editor from `$EDITOR`, then `$VISUAL`, then `hx`, `vim`,
+`vi`, and `nano` if found on `$PATH`.
 
-```json5
-bind: {
-  Enter: { action: "submit-prompt" },
-  "C-Enter": { action: "submit-prompt" },
-  "C-f": {
-    action: "shell-prompt-insert",
-    command: "rg --files --hidden --glob '!.git' | fzf --height=100% --preview 'cat -- {}' --preview-window 'right,60%,wrap'",
-    trim: true,
-  },
-  "C-k": { action: "agent-previous" },
-  "C-j": { action: "agent-next" },
-  Tab: { action: "cycle-role" },
-  BackTab: { action: "cycle-role-group" },
-  "C-r": {
-    action: "prompt-history-search",
-    command: "fzf --height=100% --delimiter='\\t' --with-nth=2 --no-hscroll --preview 'cat \"$TAU_PROMPT_HISTORY_DIR\"/{1}' --preview-window 'right,60%,wrap' | cut -f1",
-    trim: true,
-  },
-  "C-t": {
-    action: "shell-prompt-insert",
-    command: "RG_PREFIX='rg --line-number --column --no-heading --color=always --smart-case'; fzf --height=100% --ansi --disabled --bind \"change:reload:$RG_PREFIX {q} || true\" --delimiter : --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1} 2>/dev/null || awk -v line={2} '\\''line - 4 <= NR && NR <= line + 4 { printf \"%6d  %s\\n\", NR, $0 }'\\'' -- {1}' --preview-window '+{2}/2' | cut -d: -f1",
-    trim: true,
-  },
-  "C-y": {
-    action: "shell-prompt-insert",
-    command: "if command -v jj >/dev/null 2>&1 && jj root --ignore-working-copy >/dev/null 2>&1; then jj log -r '::@' --no-graph -T 'change_id.shortest(8) ++ \"\\t\" ++ description.first_line() ++ \"\\n\"' | awk 'BEGIN { OFS=\"\\t\" } { id=$0; sub(/\\t.*/, \"\", id); title=$0; sub(/^[^\\t]*\\t?/, \"\", title); if (title == \"\") title=\"(no description set)\"; if (length(title) < 81) short=title; else short=substr(title, 1, 77) \"...\"; print id, short }' | fzf --height=100% --delimiter='\\t' --with-nth=2 --preview 'jj show --color=always {1}' --preview-window 'right,50%,wrap' | cut -f1; elif command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git log --format='%h%x09%s' | awk 'BEGIN { OFS=\"\\t\" } { id=$0; sub(/\\t.*/, \"\", id); title=$0; sub(/^[^\\t]*\\t?/, \"\", title); if (title == \"\") title=\"(no description set)\"; if (length(title) < 81) short=title; else short=substr(title, 1, 77) \"...\"; print id, short }' | fzf --height=100% --delimiter='\\t' --with-nth=2 --preview 'git show --color=always {1}' --preview-window 'right,50%,wrap' | cut -f1; fi",
-    trim: true,
-  },
-  "C-o": {
-    action: "shell-prompt-edit",
-    command: "${VISUAL:-${EDITOR:-}} \"$TAU_PROMPT_PATH\"",
-  },
-  "C-g": {
-    action: "shell-prompt-edit",
-    command: "${VISUAL:-${EDITOR:-}} \"$TAU_PROMPT_PATH\"",
-  },
-},
-```
+Prompt shell actions capture at most 1 MiB of stdout, discard stderr, and time
+out after 1 hour. Completion commands from `complete_with_command` capture at
+most 256 KiB of stdout, discard stderr, and time out after 10 seconds. Failures
+are shown as local prompt/completion notices.
+
+Default bindings are documented in
+[`docs/cli-keybindings.md`](docs/cli-keybindings.md#built-in-bindings).
 
 A Helix override:
 
@@ -619,9 +584,9 @@ newline you do not want inserted into the prompt.
 
 ### `Ctrl+O` — edit prompt in your editor
 
-The default `C-o` binding suspends the UI, opens the prompt in `$EDITOR`, and
-replaces the buffer with whatever you save. Redraws are paused while the
-editor owns the terminal.
+The default `C-o` binding suspends the UI, opens the prompt with Tau's resolved
+editor via `$TAU_EDITOR`, and replaces the buffer with whatever you save.
+Redraws are paused while the editor owns the terminal.
 
 The editor file also includes a Markdown trailer after:
 

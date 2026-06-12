@@ -1,6 +1,11 @@
 # CLI keybindings
 
-Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.yaml`, prompt-local action handling in `crates/tau-cli-term/src/lib.rs`, and application action handling in `crates/tau-cli/src/chat.rs`.
+Keep this document in sync with
+`crates/tau-config/config/built-in.cli-bindings.yaml`, prompt-local action
+handling in `crates/tau-cli-term/src/lib.rs`, application action handling in
+`crates/tau-cli/src/chat.rs`, built-in completion triggers in
+`crates/tau-cli-term/src/completion.rs` (`CompletionRules::built_in()`), and the
+sample `config/cli.yaml`.
 
 
 ## Built-in bindings
@@ -30,15 +35,16 @@ Keep this document in sync with `crates/tau-config/config/built-in.cli-bindings.
 | `C-n`, `C-Down` | `prompt-next` | Move to the next prompt/history entry. |
 | `C-z` | `prompt-undo` | Undo the last edit in the current prompt/history entry. |
 | `C-y` | `shell-prompt-insert` | Pick a jj change or git commit with `fzf` and insert its id at the cursor. |
-| `C-o`, `C-g` | `shell-prompt-edit` | Edit the current prompt in `$TAU_EDITOR`. |
+| `C-o`, `C-g` | `shell-prompt-edit` | Edit the current prompt with `$TAU_EDITOR`, falling back through `$EDITOR`, `$VISUAL`, `hx`, `vim`, `vi`, then `nano`. |
 ## Built-in file completion triggers
 
 Typing any of the following prefixes at the prompt triggers inline path completion:
 
 | Prefix | Behavior |
 | --- | --- |
-| `./` | Fuzzy search git-tracked and unignored files in the current repository with `nucleo-matcher`; falls back to directory prefix matching outside git repos or when nothing fuzzy-matches. |
+| `./` | Directory prefix matching in the current directory. Configure `complete_path_fuzzy` to prefer fuzzy git-tracked/unignored file matches for this prefix. |
 | `../` | Directory prefix matching in the parent directory. |
+| `/` | Filesystem-root path completion when the token is not the first non-whitespace prompt token; leading `/...` still opens slash/action completion. |
 | `~`, `~/` | Directory prefix matching in the home directory. |
 
 `@...` is intentionally not a file completion trigger; it remains reserved for
@@ -55,7 +61,7 @@ These keys are handled by named actions in the default binding file, with raw fa
 | `C-Enter` | Submit the prompt. |
 | `Shift-Enter`, `Alt-Enter` | Insert a newline. |
 | `C-d` on an empty prompt | Exit Tau when no agent/session work is in progress; otherwise print a notice to use `/quit` and keep the session running. |
-| `C-c` on an empty prompt | Print `Use Ctrl+D to exit`; does not exit. |
+| `C-c` on an empty prompt | Arm cancellation and print `Press Ctrl-C again to cancel the current response; use Ctrl-D to exit`; a second consecutive `C-c` cancels. |
 | `C-c` on a non-empty prompt | Clear the prompt; undoable with `prompt-undo`. |
 | `C-a` / `Home` | Move to the beginning of the prompt. |
 | `C-e` / `End` | Move to the end of the prompt. |
@@ -96,6 +102,16 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
 - `cycle-role-group` — cycle to the first role in the next role group.
 - `agent-previous` — switch to the previous active agent.
 - `agent-next` — switch to the next active agent.
-- `prompt-history-search` — feed indexed prompt-history rows (`<index>\t<single-line summary>`) to `command`; original prompts are also written under `$TAU_PROMPT_HISTORY_DIR/<index>` for picker previews. Replace the prompt with the selected row's original prompt. The current draft is recorded for `prompt-undo` before the picker opens.
+- `prompt-history-search` — feed indexed prompt-history rows
+  (`<index>\t<single-line summary>`) to `command`; original prompts are also
+  written under `$TAU_PROMPT_HISTORY_DIR/<index>` for picker previews. Replace
+  the prompt with the selected row's original prompt. The current draft is
+  recorded for `prompt-undo` before the picker opens.
 - `shell-prompt-insert` — run `command` and insert stdout at the cursor.
-- `shell-prompt-edit` — run `command` with the current prompt in `$TAU_PROMPT_PATH` and replace the prompt with the edited file content.
+- `shell-prompt-edit` — run `command` with the current prompt in
+  `$TAU_PROMPT_PATH` and replace the prompt with the edited file content.
+
+Shell prompt actions capture at most 1 MiB of stdout, discard stderr, and time
+out after 1 hour. `complete_with_command` completion commands capture at most
+256 KiB of stdout, discard stderr, and time out after 10 seconds. Failures are
+shown as local prompt/completion notices rather than submitted to the agent.

@@ -46,10 +46,23 @@ The longest matching word prefix wins, except `/` as the first non-whitespace ch
 
 Available completers:
 
-- `complete_agents` — complete active agent mentions, preserving the trigger prefix.
+- `complete_agents` — complete active agent mentions, preserving the trigger
+  prefix.
 - `complete_path` — plain filesystem directory-prefix completion.
-- `complete_path_fuzzy` — fuzzy git-tracked path completion for `./<partial>`, falling back to directory-prefix completion.
-- `complete_actions` — complete slash/action command names; useful for future or custom non-leading command triggers.
-- `complete_with_command <argv...>` — run the command when the trigger token is typed exactly, release the terminal while it runs, trim stdout, and replace the trigger token with stdout. Arguments are currently split on whitespace; use a wrapper script for complex shell snippets or argv entries containing spaces.
+- `complete_path_fuzzy` — fuzzy git-tracked path completion for `./<partial>`,
+  falling back to directory-prefix completion.
+- `complete_actions` — complete slash/action command names; useful for future or
+  custom non-leading command triggers.
+- `complete_with_command <argv...>` — run the command when the trigger token is
+  typed exactly, release the terminal while it runs, trim stdout, and replace the
+  trigger token with stdout. These commands run with foreground terminal
+  ownership while Tau is paused, capture at most 256 KiB of stdout, discard
+  stderr, time out after 10 seconds, and show failures as local completion
+  notices. Arguments are currently split on whitespace; use a wrapper
+  script for complex shell snippets or argv entries containing spaces.
 
-The shipped defaults use plain path completion. Configure `./: complete_path_fuzzy` to opt into fuzzy git path completion for `./<partial>`.
+Prompt shell actions capture at most 1 MiB of stdout, discard stderr, time out
+after 1 hour, and show failures as local prompt notices.
+
+The shipped defaults use plain path completion. Configure `./: complete_path_fuzzy`
+to opt into fuzzy git path completion for `./<partial>`.

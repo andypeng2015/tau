@@ -28,12 +28,18 @@ mod git_files;
 pub struct CommandName(String);
 
 impl CommandName {
+    /// Creates a command name and asserts it starts with `/`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `name` does not start with `/`.
     pub fn new(name: impl Into<String>) -> Self {
         let s = name.into();
         assert!(s.starts_with('/'), "CommandName must start with '/'");
         Self(s)
     }
 
+    /// Returns the command name as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -48,11 +54,18 @@ impl fmt::Display for CommandName {
 /// A slash command with its name and description.
 #[derive(Clone, Debug)]
 pub struct SlashCommand {
+    /// Slash command token typed by the user, including the leading `/`.
     pub name: CommandName,
+    /// Human-readable description shown in the completion menu.
     pub description: String,
 }
 
 impl SlashCommand {
+    /// Creates a slash command with a display description for completion menus.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `name` does not start with `/`.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             name: CommandName::new(name),
@@ -64,11 +77,14 @@ impl SlashCommand {
 /// A single argument completion candidate.
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
+    /// Text inserted into the prompt when this completion is accepted.
     pub value: String,
+    /// Human-readable description shown beside the value in the menu.
     pub description: String,
 }
 
 impl CompletionItem {
+    /// Creates an argument completion with a menu description.
     pub fn new(value: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -76,6 +92,7 @@ impl CompletionItem {
         }
     }
 
+    /// Creates an argument completion with no menu description.
     pub fn plain(value: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -114,6 +131,7 @@ pub struct CompletionData {
 }
 
 impl CompletionData {
+    /// Creates empty, shareable dynamic completion storage.
     pub fn new() -> Self {
         Self::default()
     }

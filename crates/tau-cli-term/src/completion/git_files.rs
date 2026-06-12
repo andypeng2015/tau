@@ -4,20 +4,27 @@
 //! files in the current repository without teaching the terminal input layer
 //! about git or fuzzy-matching details.
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const MAX_CANDIDATES: usize = 100;
+const GIT_STDOUT_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+const NEGATIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 struct GitFileCache {
     cwd: PathBuf,
-    repo_root: PathBuf,
-    files: Vec<String>,
+    result: Option<(PathBuf, Vec<String>)>,
+    cached_at: std::time::Instant,
 }
 
 static CACHE: Mutex<Option<GitFileCache>> = Mutex::new(None);
-
+#[cfg(test)]
+static ENUMERATE_GIT_FILES_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 /// Returns the git repository root and tracked/unignored files for `cwd`.
 ///
 /// The file list is cached per current working directory so each keystroke in a
@@ -27,45 +34,62 @@ pub(crate) fn git_repo_files(cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
     if let Ok(cache) = CACHE.lock()
         && let Some(cached) = cache.as_ref()
         && cached.cwd == cwd
+        && (cached.result.is_some() || cached.cached_at.elapsed() < NEGATIVE_CACHE_TTL)
     {
-        return Some((cached.repo_root.clone(), cached.files.clone()));
+        return cached.result.clone();
     }
 
     let result = enumerate_git_files(cwd);
     if let Ok(mut cache) = CACHE.lock() {
-        *cache = result.as_ref().map(|(repo_root, files)| GitFileCache {
+        *cache = Some(GitFileCache {
             cwd: cwd.to_path_buf(),
-            repo_root: repo_root.clone(),
-            files: files.clone(),
+            result: result.clone(),
+            cached_at: std::time::Instant::now(),
         });
     }
     result
 }
 
 fn enumerate_git_files(cwd: &Path) -> Option<(PathBuf, Vec<String>)> {
-    let output = std::process::Command::new("git")
+    #[cfg(test)]
+    ENUMERATE_GIT_FILES_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut rev_parse = std::process::Command::new("git");
+    rev_parse
         .arg("-C")
         .arg(cwd)
         .args(["rev-parse", "--show-toplevel"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let output = crate::run_with_bounded_stdout(
+        &mut rev_parse,
+        None,
+        GIT_STDOUT_LIMIT_BYTES,
+        crate::COMPLETION_COMMAND_TIMEOUT,
+        crate::ProcessOwnership::ProcessGroup,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
     let repo_root = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
 
-    let output = std::process::Command::new("git")
+    let mut ls_files = std::process::Command::new("git");
+    ls_files
         .arg("-C")
         .arg(&repo_root)
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let output = crate::run_with_bounded_stdout(
+        &mut ls_files,
+        None,
+        GIT_STDOUT_LIMIT_BYTES,
+        crate::COMPLETION_COMMAND_TIMEOUT,
+        crate::ProcessOwnership::ProcessGroup,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -137,40 +161,4 @@ fn relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
         result.push(component);
     }
     (!result.as_os_str().is_empty()).then_some(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fuzzy_match_git_files_ranks_path_matches() {
-        let files = vec![
-            "crates/tau-cli-term/src/completion.rs".to_owned(),
-            "README.md".to_owned(),
-            "crates/tau/src/main.rs".to_owned(),
-        ];
-
-        let matches = fuzzy_match_git_files("completion", &files);
-
-        assert_eq!(
-            matches.first(),
-            Some(&"crates/tau-cli-term/src/completion.rs")
-        );
-    }
-
-    #[test]
-    fn dotslash_display_path_keeps_local_prefix_and_allows_parent_paths() {
-        let root = PathBuf::from("/repo");
-        let cwd = root.join("crates/tau-cli-term");
-
-        assert_eq!(
-            dotslash_display_path("crates/tau-cli-term/src/lib.rs", &root, &cwd),
-            "./src/lib.rs"
-        );
-        assert_eq!(
-            dotslash_display_path("Cargo.toml", &root, &cwd),
-            "../../Cargo.toml"
-        );
-    }
 }

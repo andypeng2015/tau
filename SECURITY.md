@@ -29,6 +29,27 @@ checks protect selected harness-owned facts from integrity loss, but they are no
 confidentiality boundaries: do not expose sensitive event streams to interceptors
 you do not trust.
 
+## CLI terminal UI
+
+The terminal UI executes trusted local configuration and environment-derived
+commands, including key-binding shell snippets, completion commands, `$EDITOR`,
+and `$VISUAL`. Treat `cli.yaml`, inherited environment variables, and PATH as
+local code execution inputs rather than untrusted data.
+
+Prompt completion may read the local filesystem and query `git` for tracked and
+unignored files. These operations should stay bounded and best-effort: failures
+or quota/size limits should disable the completion source or surface a local
+notice, not wedge the prompt.
+
+Raw terminal mode is a process-local ownership boundary. Before spawning editors
+or pickers, Tau must pause redraws, release raw-mode features, and always clear
+that paused state when setup or resume fails so the UI cannot remain permanently
+muted. Abort paths for terminal-releasing shell actions should terminate the
+owned process group before Tau resumes raw-mode/redraw ownership. Redraw and
+input coordination assumes a single foreground reader thread; background
+renderer threads must not write while the terminal is released to an external
+program.
+
 ## Reporting guidance
 
 When reporting a vulnerability, include:

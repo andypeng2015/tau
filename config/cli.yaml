@@ -9,6 +9,7 @@
 # completions:
 #   "@": complete_agents
 #   "./": complete_path
+#   "../": complete_path
 #   "/": complete_path
 #   "~": complete_path
 #   "~/": complete_path
@@ -16,7 +17,7 @@
 
 # Optional keybinding overrides. Merge on top of built-in defaults.
 # bind:
-#   ctrl-g:
+#   C-g:
 #     action: shell-prompt-insert
 #     command: git status --short
 #     trim: true

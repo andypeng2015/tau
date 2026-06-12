@@ -8,14 +8,16 @@
 //! the prompt). It also handles `$EDITOR` integration, which doesn't
 //! belong in the raw layer.
 
+mod bounded_command;
 pub mod completion;
 pub mod resolve;
 #[cfg(test)]
 mod tests;
 
-use std::io::{self, Write as _};
+use std::io;
 use std::sync::{Arc, Mutex};
 
+use bounded_command::{ProcessOwnership, run_with_bounded_stdout};
 pub use completion::{
     ArgCompleter, CommandName, CompletionData, CompletionItem, CompletionRule, CompletionRules,
     SlashCommand,
@@ -31,7 +33,12 @@ use tau_themes::Theme;
 
 const PROMPT_TRAILER_MARKER: &str =
     "<!-- TAU trailer: everything after this line will be ignored -->";
-
+// Keep user-facing command limit docs in FEATURES.md and
+// docs/cli-keybindings.md in sync with these values.
+const PROMPT_COMMAND_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
+const COMPLETION_COMMAND_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
+const COMPLETION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const PROMPT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 /// High-level events surfaced to the caller.
 pub enum Event {
     /// The user submitted a line (pressed Enter by default, Ctrl-Enter,
@@ -65,7 +72,7 @@ pub struct HighTerm {
     theme: Theme,
     editor_context: Arc<Mutex<EditorContext>>,
     /// Editor command resolved once at startup: `$EDITOR`, else
-    /// `$VISUAL`, else the first of `vim`/`vi`/`nano` found on
+    /// `$VISUAL`, else the first of `hx`/`vim`/`vi`/`nano` found on
     /// `$PATH`. Passed to shell actions as `$TAU_EDITOR`.
     external_editor: Option<String>,
     /// Block id for the completion menu, allocated lazily on first
@@ -527,17 +534,25 @@ fn run_completion_command(
     struct ResumeGuard<'a>(&'a tau_cli_term_raw::Term);
     impl Drop for ResumeGuard<'_> {
         fn drop(&mut self) {
-            let _ = self.0.resume_after_external();
+            if let Err(error) = self.0.resume_after_external() {
+                tracing::warn!(target: "tau_cli::input", %error, "failed to resume terminal after completion command");
+            }
         }
     }
     let _guard = ResumeGuard(term);
-    let output = std::process::Command::new(program)
+    let mut command_builder = std::process::Command::new(program);
+    command_builder
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not spawn command: {e}"))?;
+        .stderr(std::process::Stdio::null());
+    let output = run_with_bounded_stdout(
+        &mut command_builder,
+        None,
+        COMPLETION_COMMAND_OUTPUT_LIMIT_BYTES,
+        COMPLETION_COMMAND_TIMEOUT,
+        ProcessOwnership::ForegroundProcessGroup,
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -569,6 +584,8 @@ enum PromptShellAction {
     InsertNewline,
 }
 
+/// Read-only conversation context appended below the prompt trailer when the
+/// user edits the prompt in an external editor.
 #[derive(Clone, Default)]
 pub struct EditorContext {
     /// Response text currently streaming or otherwise in progress, included as
@@ -714,7 +731,9 @@ fn run_prompt_shell_action(
     struct ResumeGuard<'a>(&'a tau_cli_term_raw::Term);
     impl Drop for ResumeGuard<'_> {
         fn drop(&mut self) {
-            let _ = self.0.resume_after_external();
+            if let Err(error) = self.0.resume_after_external() {
+                tracing::warn!(target: "tau_cli::input", %error, "failed to resume terminal after prompt action");
+            }
         }
     }
     let _guard = ResumeGuard(term);
@@ -735,23 +754,17 @@ fn run_prompt_shell_action(
     } else {
         std::process::Stdio::null()
     });
-    let mut child = command_builder
+    command_builder
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not spawn shell: {e}"))?;
-    if let Some((input, _prompt_dir)) = &history_picker
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        match stdin.write_all(input.as_bytes()) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-            Err(error) => return Err(format!("could not write prompt history to shell: {error}")),
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("could not wait for shell: {e}"))?;
+        .stderr(std::process::Stdio::null());
+    let stdin_input = history_picker.as_ref().map(|(input, _)| input.as_bytes());
+    let output = run_with_bounded_stdout(
+        &mut command_builder,
+        stdin_input,
+        PROMPT_COMMAND_OUTPUT_LIMIT_BYTES,
+        PROMPT_COMMAND_TIMEOUT,
+        ProcessOwnership::ForegroundProcessGroup,
+    )?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -895,8 +908,9 @@ fn push_markdown_quote(out: &mut String, text: &str) {
     }
 }
 
-/// Resolves the external editor once at startup: `$EDITOR`, then
-/// `$VISUAL`, then the first of `vim`/`vi`/`nano` found on `$PATH`.
+/// Resolves the external editor once at startup: `$EDITOR`, then `$VISUAL`,
+/// then the first of `hx`/`vim`/`vi`/`nano` found on `$PATH`. The resolved
+/// command is exposed to prompt shell actions as `$TAU_EDITOR`.
 fn resolve_external_editor() -> Option<String> {
     for var in ["EDITOR", "VISUAL"] {
         if let Some(val) = std::env::var_os(var) {
