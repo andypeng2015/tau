@@ -9,6 +9,10 @@
       url = "github:rustshop/flakebox?rev=cf89db7a3ac6b1431693d17276225ba352e48a5c";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    dpc-public-skills = {
+      url = "git+https://radicle.dpc.pw/z2HR882B4c4mTdAgdt4SozpdeTuMf.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     selfci = {
       url = "github:dpc/selfci";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -24,6 +28,7 @@
       nixpkgs,
       flake-utils,
       flakebox,
+      dpc-public-skills,
       selfci,
       ...
     }@inputs:
@@ -482,6 +487,9 @@
             pkgs.taplo
             selfciPkg
           ];
+          shellHook = ''
+            ${dpc-public-skills.packages.${system}.install}/bin/install-dpc-public-skills
+          '';
         };
       }
     );
