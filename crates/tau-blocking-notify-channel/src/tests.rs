@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::*;
 
+/// Ensures a single notification is delivered to a blocking receive.
 #[test]
 fn single_notify_wakes_receiver() {
     let (tx, rx) = channel();
@@ -10,6 +11,8 @@ fn single_notify_wakes_receiver() {
     assert_eq!(rx.recv(), Ok(()));
 }
 
+/// Ensures burst notifications coalesce into one pending wakeup instead of
+/// queuing.
 #[test]
 fn multiple_notifies_coalesce() {
     let (tx, rx) = channel();
@@ -20,12 +23,15 @@ fn multiple_notifies_coalesce() {
     assert_eq!(rx.try_recv(), Ok(false));
 }
 
+/// Ensures `try_recv` reports an idle connected channel without blocking.
 #[test]
 fn try_recv_returns_false_when_not_notified() {
     let (_tx, rx) = channel();
     assert_eq!(rx.try_recv(), Ok(false));
 }
 
+/// Ensures `try_recv` consumes exactly one pending notification and resets the
+/// flag.
 #[test]
 fn try_recv_returns_true_and_resets() {
     let (tx, rx) = channel();
@@ -34,6 +40,17 @@ fn try_recv_returns_true_and_resets() {
     assert_eq!(rx.try_recv(), Ok(false));
 }
 
+/// Ensures `Receiver` remains movable to another thread despite being
+/// intentionally non-`Sync`.
+#[test]
+fn receiver_is_send() {
+    let (tx, rx) = channel();
+    tx.notify();
+    let handle = thread::spawn(move || rx.recv());
+    assert_eq!(handle.join().expect("receiver thread panicked"), Ok(()));
+}
+
+/// Ensures `recv` waits for a later notification rather than returning early.
 #[test]
 fn recv_blocks_until_notified() {
     let (tx, rx) = channel();
@@ -45,6 +62,8 @@ fn recv_blocks_until_notified() {
     handle.join().expect("sender thread panicked");
 }
 
+/// Ensures cloned senders can notify concurrently and disconnect after the last
+/// clone drops.
 #[test]
 fn multiple_senders() {
     let (tx, rx) = channel();
@@ -65,6 +84,7 @@ fn multiple_senders() {
     assert_eq!(rx.try_recv(), Err(Disconnected));
 }
 
+/// Ensures repeated notify/receive cycles reset state consistently over time.
 #[test]
 fn repeated_send_recv_cycles() {
     let (tx, rx) = channel();
@@ -75,6 +95,7 @@ fn repeated_send_recv_cycles() {
     }
 }
 
+/// Ensures `recv` reports disconnect once the original sender is dropped.
 #[test]
 fn disconnect_after_all_senders_dropped() {
     let (tx, rx) = channel();
@@ -82,6 +103,7 @@ fn disconnect_after_all_senders_dropped() {
     assert_eq!(rx.recv(), Err(Disconnected));
 }
 
+/// Ensures the channel remains connected until every sender clone is dropped.
 #[test]
 fn disconnect_after_last_clone_dropped() {
     let (tx, rx) = channel();
@@ -93,6 +115,8 @@ fn disconnect_after_last_clone_dropped() {
     assert_eq!(rx.recv(), Err(Disconnected));
 }
 
+/// Ensures `try_recv` reports disconnect without blocking after all senders
+/// drop.
 #[test]
 fn try_recv_reports_disconnect() {
     let (tx, rx) = channel();
@@ -100,6 +124,18 @@ fn try_recv_reports_disconnect() {
     assert_eq!(rx.try_recv(), Err(Disconnected));
 }
 
+/// Ensures `try_recv` drains a pending notification before reporting
+/// disconnect.
+#[test]
+fn try_recv_delivers_pending_notification_before_disconnect() {
+    let (tx, rx) = channel();
+    tx.notify();
+    drop(tx);
+    assert_eq!(rx.try_recv(), Ok(true));
+    assert_eq!(rx.try_recv(), Err(Disconnected));
+}
+
+/// Ensures `recv` delivers a pending notification before reporting disconnect.
 #[test]
 fn notification_takes_priority_over_disconnect() {
     let (tx, rx) = channel();
@@ -111,6 +147,8 @@ fn notification_takes_priority_over_disconnect() {
     assert_eq!(rx.recv(), Err(Disconnected));
 }
 
+/// Ensures a blocked `recv` wakes and reports disconnect when the last sender
+/// drops.
 #[test]
 fn recv_unblocks_on_disconnect() {
     let (tx, rx) = channel();

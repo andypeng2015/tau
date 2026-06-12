@@ -19,6 +19,8 @@
 //! observable disconnect — is small enough that a direct `Mutex` + `Condvar`
 //! implementation is the simplest fit.
 
+use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -36,7 +38,10 @@ pub fn channel() -> (Sender, Receiver) {
         Sender {
             shared: Arc::clone(&shared),
         },
-        Receiver { shared },
+        Receiver {
+            shared,
+            single_consumer: PhantomData,
+        },
     )
 }
 
@@ -105,6 +110,10 @@ impl std::fmt::Debug for Sender {
 impl Sender {
     /// Signal the receiver. If the flag is already set, this is a no-op
     /// (coalescing).
+    ///
+    /// # Panics
+    ///
+    /// Panics if another thread panicked while holding the channel mutex.
     pub fn notify(&self) {
         let mut state = self.shared.lock();
         if state.notified {
@@ -116,8 +125,22 @@ impl Sender {
 }
 
 /// Receiving half of a notify channel. Not cloneable — single consumer.
+///
+/// `Receiver` is intentionally [`Send`] but not [`Sync`], so safe code cannot
+/// share a receiver between multiple blocking consumers.
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use std::thread;
+///
+/// let (_tx, rx) = tau_blocking_notify_channel::channel();
+/// let rx = Arc::new(rx);
+/// let worker_rx = Arc::clone(&rx);
+/// thread::spawn(move || worker_rx.recv()).join().unwrap();
+/// ```
 pub struct Receiver {
     shared: Arc<Shared>,
+    single_consumer: PhantomData<Cell<()>>,
 }
 
 impl std::fmt::Debug for Receiver {
@@ -131,6 +154,10 @@ impl Receiver {
     ///
     /// Returns `Err(Disconnected)` when all senders have been dropped **and**
     /// no pending notification remains.
+    ///
+    /// # Panics
+    ///
+    /// Panics if another thread panicked while holding the channel mutex.
     pub fn recv(&self) -> Result<(), Disconnected> {
         let mut state = self.shared.lock();
         loop {
@@ -154,6 +181,10 @@ impl Receiver {
     /// Returns `Ok(true)` if a notification was pending (and resets it),
     /// `Ok(false)` if nothing was pending, or `Err(Disconnected)` when all
     /// senders have been dropped and no notification remains.
+    ///
+    /// # Panics
+    ///
+    /// Panics if another thread panicked while holding the channel mutex.
     #[must_use = "discarding the result drops a pending notification"]
     pub fn try_recv(&self) -> Result<bool, Disconnected> {
         let mut state = self.shared.lock();
