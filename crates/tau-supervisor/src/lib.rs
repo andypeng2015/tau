@@ -170,6 +170,9 @@ impl std::error::Error for SupervisionError {
 ///
 /// The child is owned by this value. Callers should prefer explicit graceful
 /// protocol shutdown or `terminate`; `Drop` only performs best-effort cleanup.
+/// Child stdout is handed through a bounded buffer, so callers supervising a
+/// child that can emit during shutdown must continue calling `recv_timeout` or
+/// otherwise drain stdout before waiting indefinitely for exit.
 pub struct SupervisedChild {
     command: ExtensionCommand,
     child: Child,
