@@ -142,8 +142,9 @@ fn recv_timeout_reports_partial_frame_as_decode_error() {
 /// Ensures the stdout reader can drain a burst of child messages without loss.
 #[test]
 fn stdout_reader_handles_message_burst_without_loss() {
+    let flood_message_count = FLOOD_MESSAGE_COUNT.to_string();
     let mut child =
-        SupervisedChild::spawn(test_command(&["--flood", &FLOOD_MESSAGE_COUNT.to_string()]))
+        SupervisedChild::spawn(test_command(&["--flood", flood_message_count.as_str()]))
             .expect("child should spawn");
 
     for index in 0..FLOOD_MESSAGE_COUNT {
