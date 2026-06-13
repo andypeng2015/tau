@@ -1824,6 +1824,48 @@ fn extension_state_dir_rejects_unsafe_extension_names() {
 }
 
 #[test]
+fn harness_settings_reject_invalid_extension_names() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+extensions:
+  ../evil:
+    command: [evil]
+"#,
+    )
+    .expect("write");
+
+    let error = load_harness_settings_in(&dirs_with_config(dir)).expect_err("invalid extension");
+
+    assert!(
+        error.to_string().contains("../evil"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn harness_config_cli_overrides_reject_invalid_extension_names() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    let overrides =
+        [
+            HarnessConfigCliOverride::from_str(r#"extensions={"../evil": {command: [evil]}}"#)
+                .expect("override"),
+        ];
+
+    let error =
+        load_harness_settings_with_cli_overrides_in(&dirs_with_config(dir), &[], &overrides)
+            .expect_err("invalid extension");
+
+    assert!(
+        error.to_string().contains("../evil"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn harness_extension_secrets_parse_with_required_default() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();

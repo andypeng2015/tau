@@ -559,6 +559,9 @@ impl<'de> Deserialize<'de> for HarnessSettings {
         D: serde::Deserializer<'de>,
     {
         let wire = HarnessSettingsWire::deserialize(deserializer)?;
+        for extension_name in wire.extensions.keys() {
+            validate_extension_name(extension_name).map_err(D::Error::custom)?;
+        }
         let mut settings = Self {
             session_retention_days: wire.session_retention_days,
             extensions: wire.extensions,
