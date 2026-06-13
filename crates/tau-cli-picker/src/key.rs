@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use std::io;
 
 /// High-level picker event produced by an input reader.
@@ -135,6 +138,3 @@ fn read_escape_sequence(reader: &mut impl io::Read) -> io::Result<LogicalKey> {
         _ => LogicalKey::Unknown,
     })
 }
-
-#[cfg(test)]
-mod tests;
