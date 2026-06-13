@@ -139,10 +139,9 @@ fn recv_timeout_reports_partial_frame_as_decode_error() {
         .expect("child should exit");
 }
 
-/// Ensures the stdout reader can drain a child message burst larger than its
-/// bounded buffer without losing messages.
+/// Ensures the stdout reader can drain a burst of child messages without loss.
 #[test]
-fn stdout_reader_handles_flood_without_unbounded_queueing() {
+fn stdout_reader_handles_message_burst_without_loss() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--flood".to_owned()]))
         .expect("child should spawn");
 
