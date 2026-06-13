@@ -9,7 +9,8 @@ do not build an unbounded queue.
 
 When every sender is dropped, the channel becomes disconnected. A pending
 notification is still delivered before `recv` or `try_recv` reports
-`Disconnected`.
+`Disconnected`. Non-blocking receives use `TryRecvStatus::Notified` and
+`TryRecvStatus::Empty` to describe the connected channel state.
 
 The receiving half may be moved to another thread, but it is intentionally not
 `Sync`: clone `Sender` for multiple producers rather than sharing one receiver
@@ -26,11 +27,13 @@ preserve coalescing and could grow under burst load.
 ## Example
 
 ```rust
+use tau_blocking_notify_channel::TryRecvStatus;
+
 let (tx, rx) = tau_blocking_notify_channel::channel();
 
 tx.notify();
 assert_eq!(rx.recv(), Ok(()));
-assert_eq!(rx.try_recv(), Ok(false));
+assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
 
 drop(tx);
 assert!(rx.recv().is_err());

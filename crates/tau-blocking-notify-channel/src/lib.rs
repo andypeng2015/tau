@@ -17,7 +17,10 @@
 //!
 //! tx.notify();
 //! assert_eq!(rx.recv(), Ok(()));
-//! assert_eq!(rx.try_recv(), Ok(false));
+//! assert_eq!(
+//!     rx.try_recv(),
+//!     Ok(tau_blocking_notify_channel::TryRecvStatus::Empty)
+//! );
 //!
 //! drop(tx);
 //! assert!(rx.recv().is_err());
@@ -74,6 +77,16 @@ impl std::fmt::Display for Disconnected {
 }
 
 impl std::error::Error for Disconnected {}
+
+/// Result status returned by [`Receiver::try_recv`] when the channel is still
+/// connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryRecvStatus {
+    /// A notification was pending and has been consumed.
+    Notified,
+    /// No notification was pending.
+    Empty,
+}
 
 struct State {
     // Whether a notification is currently pending for the receiver.
@@ -219,23 +232,24 @@ impl Receiver {
 
     /// Attempts to receive a pending notification without blocking.
     ///
-    /// Returns `Ok(true)` if a notification was pending (and resets it),
-    /// `Ok(false)` if nothing was pending, or `Err(Disconnected)` when all
-    /// senders have been dropped and no notification remains.
+    /// Returns [`TryRecvStatus::Notified`] if a notification was pending (and
+    /// resets it), [`TryRecvStatus::Empty`] if nothing was pending, or
+    /// `Err(Disconnected)` when all senders have been dropped and no
+    /// notification remains.
     ///
     /// # Panics
     ///
     /// Panics if another thread panicked while holding the channel mutex.
     #[must_use = "discarding the result drops a pending notification"]
-    pub fn try_recv(&self) -> Result<bool, Disconnected> {
+    pub fn try_recv(&self) -> Result<TryRecvStatus, Disconnected> {
         let mut state = self.shared.lock();
         if state.notified {
             state.notified = false;
-            return Ok(true);
+            return Ok(TryRecvStatus::Notified);
         }
         if state.disconnected {
             return Err(Disconnected);
         }
-        Ok(false)
+        Ok(TryRecvStatus::Empty)
     }
 }

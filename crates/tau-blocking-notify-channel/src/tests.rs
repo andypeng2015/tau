@@ -33,24 +33,24 @@ fn multiple_notifies_coalesce() {
     tx.notify();
     tx.notify();
     assert_eq!(rx.recv(), Ok(()));
-    assert_eq!(rx.try_recv(), Ok(false));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
 }
 
 /// Ensures `try_recv` reports an idle connected channel without blocking.
 #[test]
-fn try_recv_returns_false_when_not_notified() {
+fn try_recv_returns_empty_when_not_notified() {
     let (_tx, rx) = channel();
-    assert_eq!(rx.try_recv(), Ok(false));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
 }
 
-/// Ensures `try_recv` consumes exactly one pending notification and resets the
-/// flag.
+/// Ensures `try_recv` reports and consumes exactly one pending notification,
+/// then resets the flag.
 #[test]
-fn try_recv_returns_true_and_resets() {
+fn try_recv_returns_notified_and_resets() {
     let (tx, rx) = channel();
     tx.notify();
-    assert_eq!(rx.try_recv(), Ok(true));
-    assert_eq!(rx.try_recv(), Ok(false));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Notified));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
 }
 
 /// Ensures `Receiver` remains movable to another thread despite being
@@ -122,7 +122,7 @@ fn repeated_send_recv_cycles() {
     for _ in 0..100 {
         tx.notify();
         assert_eq!(rx.recv(), Ok(()));
-        assert_eq!(rx.try_recv(), Ok(false));
+        assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
     }
 }
 
@@ -141,7 +141,7 @@ fn disconnect_after_last_clone_dropped() {
     let tx2 = tx.clone();
     drop(tx);
     // Still one sender alive.
-    assert_eq!(rx.try_recv(), Ok(false));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Empty));
     drop(tx2);
     assert_eq!(rx.recv(), Err(Disconnected));
 }
@@ -162,7 +162,7 @@ fn try_recv_delivers_pending_notification_before_disconnect() {
     let (tx, rx) = channel();
     tx.notify();
     drop(tx);
-    assert_eq!(rx.try_recv(), Ok(true));
+    assert_eq!(rx.try_recv(), Ok(TryRecvStatus::Notified));
     assert_eq!(rx.try_recv(), Err(Disconnected));
 }
 
