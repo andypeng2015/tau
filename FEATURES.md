@@ -17,6 +17,10 @@ philosophy and motivation see [README.md](README.md); for design notes see
   information while keeping reads, writes, approvals, and logs explicit.
 - **Safe shell/filesystem access:** mutating shell and file tools acquire update
   locks so concurrent agents do not trample the same working tree.
+- **Trusted Rhai automation:** disabled-by-default local Rhai scripts can subscribe
+  to raw events, intercept events, register agent-invokable tools, handle owned
+  `tool.started` calls, and use direct async `ShellJob` host shell execution
+  outside ext-shell locks.
 - **Daily-driver terminal UX:** slash commands, role/model controls, prompt
   history, fzf insertion, editor integration, diffs, thinking blocks, and status
   telemetry are built into the terminal UI.
@@ -80,11 +84,28 @@ See [`docs/interceptors.md`](docs/interceptors.md) and
 
 ### Rhai scripting extension
 
-Tau ships a disabled `std-rhai` prototype extension for trusted local event hooks.
-A configured Rhai script can subscribe to event selectors, handle delivered events,
-intercept matching events, and emit JSON-shaped Tau events through a small host API.
+Tau ships a disabled `std-rhai` extension for trusted local automation. A
+configured Rhai script can subscribe to event selectors, handle delivered events,
+intercept matching events, and emit JSON-shaped Tau events through host APIs.
+
+During `init`, scripts can imperatively register tool groups and
+agent-invokable tools. The extension emits those registrations before `Ready`;
+when the harness later delivers a live owned `tool.started` for a registered
+name, the Rhai handler receives JSON/CBOR-compatible arguments plus `call_info`
+and produces `tool.result` or `tool.error`. Replayed owned starts are ignored so
+catch-up history cannot re-run tool side effects.
+
+Trusted scripts can also call `shell_spawn` directly in `tau-ext-rhai`. The call
+returns a `ShellJob` and runs asynchronously while the extension continues
+processing harness messages. Tool handlers can return a `ShellJob` to defer tool
+completion until the shell exits; a completion callback's return value becomes
+the deferred result, and callback errors become tool errors. This shell path is
+for trusted local host automation and intentionally bypasses `tau-ext-shell` and
+its directory-update locks.
+
 The Rust extension owns protocol framing and script failures are reported as
-transient `harness.info` diagnostics instead of crashing the process.
+transient `harness.info` diagnostics or tool errors instead of crashing the
+process.
 
 ### Remote extensions over SSH
 

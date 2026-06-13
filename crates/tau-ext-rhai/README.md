@@ -66,13 +66,51 @@ fn on_intercept(event, transient) {
 
 ## Host functions
 
+- `register_tool_group(name, spec)` — during `init` only, stage a tool group. Group names use Tau's validated tool-group identifier syntax.
+- `register_tool(name, spec, handler)` — during `init` only, stage an agent-invokable tool. `handler` is a Rhai function pointer such as `Fn("project_status")`; Tau calls it as `handler(args, call_info)` for live owned `tool.started` events. The `spec` map supports `description`, `parameters`, `model_visible_name`, `enabled_by_default`, and `group`.
+- `shell_spawn(command, opts)` — start a trusted host shell command asynchronously and return a `ShellJob`. `opts` supports `timeout`, `cwd`, `on_complete`, and `tag`. The completion callback is called as `on_complete(result, job)`.
 - `tau_emit(event)` — emit a durable Tau event map.
 - `tau_emit_transient(event)` — emit a transient Tau event map.
 - `tau_info(message)` / `tau_info(message, level)` — emit transient `harness.info`; `level` is `"normal"` or `"important"`.
 - `tau_log(level, message)` — write to extension logs only.
 
-Host functions are available to `start`, `on_event`, and `on_intercept`, but not during `init`. This keeps broken init scripts inert.
+`register_tool*` are available only during `init`. Other side-effecting host functions are available to `start`, raw event/intercept callbacks, tool handlers, and shell completion callbacks, but not during `init`. This keeps broken init scripts inert.
+
+Tool handlers complete the call with their normal return value, fail it if they throw, or defer completion by returning a `ShellJob`. If a deferred shell job has an `on_complete` callback, that callback's return value becomes the tool result and a thrown callback becomes `tool.error`; without a callback, the full shell result map is returned.
+
+`call_info` contains `call_id`, `tool_name`, `agent_id`, `originator`, and `tool_type`. `register_tool_group` requires an empty spec map in v1. If a tool references an undeclared group, the registration auto-creates an empty group for that tool.
+
+Shell results include `success`, `status`, `signal`, `timed_out`, `duration_seconds`, `termination_reason`, `output`, `truncated`, optional `total_lines`, optional `total_bytes`, and `valid_utf8`. The default timeout is 120 seconds, at most 32 shell jobs may be pending per extension, stdout is captured before stderr with stderr appended under `[stderr]`, and captured output is capped/truncated. Shell commands run directly in `tau-ext-rhai`; on Unix each command gets its own process group so timeout can kill descendants.
+
+Owned `tool.started` dispatch is name-based because the current Tau event carries no provider/extension owner identity; this relies on the harness-routed visible tool name being the available ownership signal.
+
+Example:
+
+```rhai
+fn init(config) {
+    register_tool_group("host", #{});
+    register_tool("project_status", #{
+        group: "host",
+        description: "Get project status",
+        parameters: #{ type: "object", additionalProperties: false },
+    }, Fn("project_status"));
+}
+
+fn project_status(args, call_info) {
+    return shell_spawn("git status --short", #{
+        timeout: 30,
+        on_complete: Fn("project_status_done"),
+    });
+}
+
+fn project_status_done(result, job) {
+    if !result.success {
+        throw `git status failed: ${result.output}`;
+    }
+    return result.output;
+}
+```
 
 ## Limitations
 
-Scripts are trusted local code. Rhai does not expose filesystem, network, or process APIs unless Tau registers them, and this prototype does not. Event conversion supports the JSON-compatible subset of Tau payloads; arbitrary CBOR bytes, tags, and non-string map keys are not faithfully represented yet. This prototype does not register tools or actions.
+Scripts are trusted local code. Rhai can expose agent-invokable tools and can execute host shell commands through `shell_spawn`; do not run scripts you would not run as local code. Shell execution is direct in `tau-ext-rhai` and intentionally does not use ext-shell locking. Event conversion supports the JSON-compatible subset of Tau payloads; arbitrary CBOR bytes, tags, and non-string map keys are not faithfully represented yet.

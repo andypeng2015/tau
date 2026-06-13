@@ -21,6 +21,15 @@ usage across many files, sandbox arbitrary extension code, or prevent protocol
 payloads from being deserialized before the harness validates an operation. Run
 only extensions you trust to execute on your machine.
 
+## Rhai scripting extension
+
+`std-rhai` / `tau-ext-rhai` scripts are trusted local code. A Rhai script can
+register agent-invokable tools, handle model-originated tool calls, emit raw Tau
+events, and execute host shell commands directly through the Rhai extension.
+These shell commands intentionally do not route through `tau-ext-shell` and do
+not participate in ext-shell directory-update locks; only enable scripts you
+would be comfortable running as local programs.
+
 ## Interception boundary
 
 Interceptors are privileged local extensions. They can see, modify, or drop most

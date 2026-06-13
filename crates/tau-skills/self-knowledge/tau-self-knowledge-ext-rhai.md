@@ -72,7 +72,7 @@ fn on_intercept(event, transient) {
 
 `start(config)` is optional and runs once after `init` succeeds, subscriptions/intercepts are sent, `Ready` is sent, and host functions are registered. Use it for startup side effects such as `tau_info`; callback errors are reported as transient important `harness.info` diagnostics without disabling the extension.
 
-`on_event(event, meta)` is optional and is called for delivered subscribed events. `meta.seq` and `meta.recorded_at` are present when the harness supplies them. Sequenced deliveries are acknowledged after the callback attempt, even if the script errors, so a bad script cannot wedge delivery.
+`on_event(event, meta)` is optional and is called for delivered subscribed events. `meta.replay` is true for subscribe-time catch-up history, and `meta.recorded_at` is present when the harness supplies the event timestamp. Scripts with external side effects should skip replayed events.
 
 `on_intercept(event, transient)` is optional and returns one of:
 
@@ -85,8 +85,12 @@ On script errors or invalid intercept returns, Tau reports a transient important
 
 ## Host functions
 
-Host functions are registered only after `init` succeeds. They are available to `start`, `on_event`, and `on_intercept`, not during `init`:
+`register_tool_group(name, spec)` and `register_tool(name, spec, handler)` are available during `init` only. Group specs must be empty in v1. Tool specs support `description`, `parameters`, `model_visible_name`, `enabled_by_default`, and `group`; undeclared groups referenced by a tool are auto-created as empty groups. Handlers are Rhai function pointers such as `Fn("my_tool")` and are called as `handler(args, call_info)` for live owned `tool.started` events. `call_info` contains `call_id`, `tool_name`, `agent_id`, `originator`, and `tool_type`. Replayed owned starts are ignored and owned starts are not also sent to raw `on_event`. Ownership is inferred from the harness-routed tool name because `tool.started` currently has no provider/extension owner field.
 
+Shell results include `success`, `status`, `signal`, `timed_out`, `duration_seconds`, `termination_reason`, `output`, `truncated`, optional `total_lines`, optional `total_bytes`, and `valid_utf8`. Default timeout is 120 seconds and each extension may have at most 32 pending shell jobs.
+Other host functions are available after `init` succeeds:
+
+- `shell_spawn(command, opts)` executes a trusted host shell command asynchronously and returns a `ShellJob`. `opts` supports `timeout`, `cwd`, `on_complete`, and `tag`. Completion callbacks receive `(result, job)`. A tool handler returning `ShellJob` defers the tool result until the shell finishes; callback return values become `tool.result`, callback throws become `tool.error`, and no callback returns the full shell result map.
 - `tau_emit(event)` emits a durable Tau event map.
 - `tau_emit_transient(event)` emits a transient Tau event map.
 - `tau_info(message)` and `tau_info(message, level)` emit transient `harness.info`; `level` is `normal` or `important`.
@@ -95,6 +99,6 @@ Host functions are registered only after `init` succeeds. They are available to 
 
 ## Safety and limitations
 
-`std-rhai` runs trusted local scripts. Tau does not register filesystem, network, or process APIs for Rhai in this prototype, but scripts can still affect Tau by emitting or intercepting events. Execution limits include `limits.max_operations`, `limits.max_call_levels`, and `limits.max_expr_depth`.
+`std-rhai` runs trusted local scripts. Scripts can expose tools to agents and execute host shell commands through `shell_spawn`; shell execution is direct in `tau-ext-rhai` and intentionally does not use `tau-ext-shell` or its directory locks. Execution limits include `limits.max_operations`, `limits.max_call_levels`, and `limits.max_expr_depth`.
 
-Event conversion supports the JSON-compatible subset of Tau payloads. Arbitrary CBOR bytes, tags, and non-string map keys are not faithfully represented yet. The prototype does not register model tools or slash actions from Rhai scripts.
+Event conversion supports the JSON-compatible subset of Tau payloads. Arbitrary CBOR bytes, tags, and non-string map keys are not faithfully represented yet.

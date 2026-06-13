@@ -70,6 +70,15 @@ fn prompt_event(text: &str) -> Event {
     })
 }
 
+fn tool_started(tool_name: &str, args: CborValue) -> Event {
+    Event::ToolStarted(tau_proto::ToolStarted {
+        call_id: tau_proto::ToolCallId::new("call_1"),
+        tool_name: tau_proto::ToolName::new(tool_name),
+        arguments: args,
+        agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
+        originator: tau_proto::PromptOriginator::User,
+    })
+}
 fn run_frames(input_frames: &[HarnessOutputMessage]) -> Vec<HarnessInputMessage> {
     let mut input = Vec::new();
     let mut writer = HarnessOutputWriter::new(&mut input);
@@ -176,6 +185,40 @@ fn init_host_emit_failure_is_inert() {
         emitted_event(frame),
         Some(Event::HarnessInfo(info)) if info.message.contains("should not leak")
     )));
+}
+
+#[test]
+fn shell_spawn_is_unavailable_during_init_and_has_no_side_effect() {
+    // Init must remain an inert staging phase: a script that tries to spawn a
+    // trusted shell command during init gets ConfigError and cannot leak host
+    // side effects before failing configuration.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("marker");
+    let script = write_script(
+        &dir,
+        &format!(
+            r#"
+                fn init(config) {{
+                    shell_spawn("touch {}", #{{ timeout: 5 }});
+                }}
+            "#,
+            marker.display()
+        ),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script)]);
+
+    assert!(
+        frames
+            .iter()
+            .any(|frame| matches!(frame, HarnessInputMessage::ConfigError(_)))
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| !matches!(emitted_event(frame), Some(Event::ToolRegister(_))))
+    );
+    assert!(!marker.exists());
 }
 #[test]
 fn start_runs_after_ready_with_host_functions() {
@@ -495,4 +538,276 @@ fn intercept_callback_can_return_replacement_event() {
         replacement,
         Some(Event::AgentPromptSubmitted(prompt)) if prompt.text == "changed"
     ));
+}
+
+#[test]
+fn register_tool_emits_registration_before_ready() {
+    // Tool registrations are staged during init and emitted before Ready so
+    // the harness can route later calls only after the script is configured.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) {
+                register_tool_group("host", #{});
+                register_tool("project_status", #{
+                    group: "host",
+                    description: "Get project status",
+                    parameters: #{ type: "object", additionalProperties: false },
+                }, Fn("project_status"));
+            }
+            fn project_status(args, c) { return "ok"; }
+        "#,
+    );
+
+    let frames = run_frames(&[configure_with_script(&script)]);
+
+    let register_pos = frames
+        .iter()
+        .position(|frame| matches!(emitted_event(frame), Some(Event::ToolRegister(_))))
+        .expect("tool.register");
+    let ready_pos = frames
+        .iter()
+        .position(|frame| matches!(frame, HarnessInputMessage::Ready(_)))
+        .expect("ready");
+    assert!(register_pos < ready_pos);
+    let Some(Event::ToolRegister(register)) = emitted_event(&frames[register_pos]) else {
+        panic!("expected tool.register");
+    };
+    assert_eq!(register.tool.name.as_str(), "project_status");
+    assert_eq!(
+        register.tool_group.as_ref().map(|g| g.name.as_str()),
+        Some("host")
+    );
+}
+
+#[test]
+fn live_owned_tool_started_invokes_handler_and_replay_is_ignored() {
+    // Owned live tool.started events are consumed by the tool dispatcher and
+    // produce terminal tool results, while replayed history is ignored to avoid
+    // re-running script side effects.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) {
+                register_tool("echo_args", #{ description: "Echo args" }, Fn("echo_args"));
+            }
+            fn echo_args(args, c) { return `saw ${args.text} via ${c.tool_name}`; }
+            fn on_event(event, meta) { tau_info("raw should not see owned tool"); }
+        "#,
+    );
+    let live = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started(
+            "echo_args",
+            CborValue::Map(vec![(
+                CborValue::Text("text".to_owned()),
+                CborValue::Text("hello".to_owned()),
+            )]),
+        ),
+    );
+    let replay = HarnessOutputMessage::deliver_replay(
+        UnixMicros::new(2),
+        tool_started("echo_args", CborValue::Map(Vec::new())),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), live, replay]);
+
+    let results: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| match emitted_event(frame) {
+            Some(Event::ToolResult(result)) => Some(result),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].result,
+        CborValue::Text("saw hello via echo_args".to_owned())
+    );
+    assert!(frames.iter().all(|frame| !matches!(
+        emitted_event(frame),
+        Some(Event::HarnessInfo(info)) if info.message.contains("raw should not see")
+    )));
+}
+
+#[test]
+fn tool_handler_throw_emits_tool_error_and_keeps_running() {
+    // Handler exceptions fail only the current tool call and do not disable the
+    // extension, so a subsequent call can still complete.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) { register_tool("maybe", #{}, Fn("maybe")); }
+            fn maybe(args, c) {
+                if args.fail { throw "boom"; }
+                return "ok";
+            }
+        "#,
+    );
+    let fail = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started(
+            "maybe",
+            CborValue::Map(vec![(
+                CborValue::Text("fail".to_owned()),
+                CborValue::Bool(true),
+            )]),
+        ),
+    );
+    let ok = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(2),
+        tool_started(
+            "maybe",
+            CborValue::Map(vec![(
+                CborValue::Text("fail".to_owned()),
+                CborValue::Bool(false),
+            )]),
+        ),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), fail, ok]);
+
+    assert!(
+        frames
+            .iter()
+            .any(|frame| matches!(emitted_event(frame), Some(Event::ToolError(_))))
+    );
+    assert!(frames.iter().any(|frame| matches!(
+        emitted_event(frame),
+        Some(Event::ToolResult(result)) if result.result == CborValue::Text("ok".to_owned())
+    )));
+}
+
+#[test]
+fn shell_job_returned_by_tool_defers_until_completion_callback() {
+    // Returning ShellJob from a tool handler defers ToolResult emission until
+    // the async command completes; the completion callback's value becomes the
+    // final tool result.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) { register_tool("host_echo", #{}, Fn("host_echo")); }
+            fn host_echo(args, c) {
+                return shell_spawn("printf shell-ok", #{ timeout: 5, on_complete: Fn("done") });
+            }
+            fn done(result, job) {
+                if !result.success { throw result.output; }
+                return result.output;
+            }
+        "#,
+    );
+    let started = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started("host_echo", CborValue::Map(Vec::new())),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), started]);
+
+    assert!(frames.iter().any(|frame| matches!(
+        emitted_event(frame),
+        Some(Event::ToolResult(result)) if result.result == CborValue::Text("shell-ok".to_owned())
+    )));
+}
+
+#[test]
+fn shell_completion_callback_throw_emits_tool_error() {
+    // A shell completion callback exception maps to ToolError for the deferred
+    // call instead of silently dropping the failure.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) { register_tool("bad_shell", #{}, Fn("bad_shell")); }
+            fn bad_shell(args, c) {
+                return shell_spawn("printf shell-ok", #{ timeout: 5, on_complete: Fn("done") });
+            }
+            fn done(result, job) { throw "callback boom"; }
+        "#,
+    );
+    let started = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started("bad_shell", CborValue::Map(Vec::new())),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), started]);
+
+    assert!(frames.iter().any(|frame| matches!(
+        emitted_event(frame),
+        Some(Event::ToolError(error)) if error.message.contains("callback boom")
+    )));
+}
+
+#[test]
+fn shell_timeout_kills_process_group_and_returns_result() {
+    // Timeout cleanup must kill descendants that inherit stdout/stderr so pipe
+    // reader joins cannot wedge the extension after the shell parent exits.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) { register_tool("timeout_shell", #{}, Fn("timeout_shell")); }
+            fn timeout_shell(args, c) {
+                return shell_spawn("sh -c 'sleep 60 & wait'", #{ timeout: 1 });
+            }
+        "#,
+    );
+    let started = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started("timeout_shell", CborValue::Map(Vec::new())),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), started]);
+
+    let result = frames
+        .iter()
+        .find_map(|frame| match emitted_event(frame) {
+            Some(Event::ToolResult(result)) => Some(&result.result),
+            _ => None,
+        })
+        .expect("tool result");
+    let CborValue::Map(fields) = result else {
+        panic!("result map");
+    };
+    assert!(fields.iter().any(|(key, value)| matches!(
+        (key, value),
+        (CborValue::Text(key), CborValue::Bool(true)) if key == "timed_out"
+    )));
+    assert!(fields.iter().any(|(key, value)| matches!(
+        (key, value),
+        (CborValue::Text(key), CborValue::Text(reason)) if key == "termination_reason" && reason == "timeout"
+    )));
+}
+
+#[test]
+fn shell_spawn_admission_cap_fails_deterministically() {
+    // The pending-job cap should reject excess shell work as a tool error while
+    // keeping the extension responsive instead of spawning unbounded threads.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_script(
+        &dir,
+        r#"
+            fn init(config) { register_tool("saturate_shell", #{}, Fn("saturate_shell")); }
+            fn saturate_shell(args, c) {
+                for n in 0..33 {
+                    shell_spawn("sleep 1", #{ timeout: 5 });
+                }
+                return "unexpected";
+            }
+        "#,
+    );
+    let started = HarnessOutputMessage::deliver_live(
+        UnixMicros::new(1),
+        tool_started("saturate_shell", CborValue::Map(Vec::new())),
+    );
+
+    let frames = run_frames(&[configure_with_script(&script), started]);
+
+    assert!(frames.iter().any(|frame| matches!(
+        emitted_event(frame),
+        Some(Event::ToolError(error)) if error.message.contains("too many pending shell jobs")
+    )));
 }

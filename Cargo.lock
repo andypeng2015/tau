@@ -2773,6 +2773,7 @@ dependencies = [
 name = "tau-ext-rhai"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rhai",
  "serde",
  "serde_json",

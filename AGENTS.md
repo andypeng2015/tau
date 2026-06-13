@@ -10,6 +10,7 @@
 - `crates/tau-core` — event bus, routing, state, sessions, policy, and tool registry
 - `crates/tau-ext-std-notifications` — built-in notification extension
 - `crates/tau-ext-shell` — shell- and filesystem-oriented extension
+- `crates/tau-ext-rhai` — disabled-by-default trusted local Rhai scripting extension for event hooks, tool registration, and direct shell automation
 - `crates/tau-ext-test-dummy` — test-only dummy extension
 - `crates/tau-ext-websearch` — built-in generic web search extension (Exa default plus opt-in Parallel.ai tools)
 - `crates/tau-extension` — extension-side protocol/runtime helpers
@@ -35,6 +36,7 @@
   extension/harness boundaries, tools, or other security/reliability-sensitive code
 - `docs/` — focused design and feature notes
 - `crates/*/README.md` — crate-specific documentation where present
+- `crates/*/ARCHITECTURE.md` — crate-specific architecture notes where present; MUST read before changing that crate
 - `crates/*/AGENTS.md` — crate-specific agent instructions - MUST read these (if exists) before modifing code in a given crate
 
 ## Common commands
