@@ -175,6 +175,7 @@ enum WaitKind {
 pub(crate) enum LockAcquireError {
     Cancelled,
     Abandoned(AbandonedLock),
+    SelfConflict { dir: PathBuf },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -227,6 +228,11 @@ impl DirLockManager {
         let dirs = normalize_lock_dirs(dirs);
         let mut on_wait = Some(on_wait);
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
+        if !state.manual_covers(&owner, &dirs)
+            && let Some(dir) = state.manual_lock_owned_overlapping(&owner, &dirs)
+        {
+            return Err(LockAcquireError::SelfConflict { dir });
+        }
         if state.can_grant_now(&owner, &dirs, WaitKind::Automatic) {
             let id = state.add_auto(owner, dirs);
             return Ok(AutoDirLockGuard {

@@ -940,6 +940,17 @@ fn dispatch_locked_tool_invoke(
             send_tool_failure(invoke, lock.tool_failure(), tx);
             return;
         }
+        Err(crate::dir_lock::LockAcquireError::SelfConflict { dir }) => {
+            send_tool_failure(
+                invoke,
+                crate::display::ToolFailure::new(format!(
+                    "automatic directory lock is outside your manual lock coverage: {}",
+                    dir.display()
+                )),
+                tx,
+            );
+            return;
+        }
     };
 
     let lock_wait_duration_seconds =

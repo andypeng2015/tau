@@ -215,18 +215,30 @@ fn same_owner_auto_must_be_covered_by_manual_lock_to_reenter() {
         )
         .expect("manual lock");
 
-    let waiter = std::thread::spawn({
-        let manager = manager.clone();
-        move || {
-            manager.acquire_auto(
-                "auto-ancestor".into(),
-                agent_id("agent-a"),
-                vec![path("/repo/a")],
-                || {},
-            )
+    let err = manager
+        .acquire_auto(
+            "auto-ancestor".into(),
+            agent_id("agent-a"),
+            vec![path("/repo/a")],
+            || panic!("self-conflict should fail before waiting"),
+        )
+        .expect_err("uncovered same-owner auto should fail fast");
+
+    assert_eq!(
+        err,
+        LockAcquireError::SelfConflict {
+            dir: path("/repo/a/child")
         }
-    });
-    wait_until(|| manager.inner.state.lock().expect("state").waiters.len() == 1);
+    );
+    assert!(
+        manager
+            .inner
+            .state
+            .lock()
+            .expect("state")
+            .waiters
+            .is_empty()
+    );
     assert!(
         manager
             .inner
@@ -234,18 +246,8 @@ fn same_owner_auto_must_be_covered_by_manual_lock_to_reenter() {
             .lock()
             .expect("state")
             .automatic
-            .is_empty(),
-        "same-owner automatic lock outside manual coverage should not be granted"
+            .is_empty()
     );
-
-    manager
-        .unlock_manual(&agent_id("agent-a"), Path::new("/repo/a/child"))
-        .expect("unlock");
-    let guard = waiter
-        .join()
-        .expect("waiter")
-        .expect("auto acquired after unlock");
-    drop(guard);
 }
 
 #[cfg(unix)]
