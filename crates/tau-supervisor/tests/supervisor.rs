@@ -139,8 +139,8 @@ fn recv_timeout_reports_partial_frame_as_decode_error() {
         .expect("child should exit");
 }
 
-/// Ensures the bounded stdout reader can drain a child message burst without
-/// loss.
+/// Ensures the stdout reader can drain a child message burst larger than its
+/// bounded buffer without losing messages.
 #[test]
 fn stdout_reader_handles_flood_without_unbounded_queueing() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--flood".to_owned()]))
@@ -205,6 +205,22 @@ fn terminate_kills_long_running_child() {
         .terminate(Duration::from_secs(2))
         .expect("child should terminate");
     assert!(exit.exit_code.is_none() || exit.exit_code != Some(0));
+}
+
+/// Ensures the null stderr policy still permits normal child supervision.
+#[test]
+fn spawn_accepts_null_stderr_policy() {
+    let mut command = test_command(Vec::new());
+    command.stderr = StderrPolicy::Null;
+    let mut child = SupervisedChild::spawn(command).expect("child should spawn");
+
+    let register = expect_child_startup(&mut child);
+    assert_eq!(register.tool.name, tau_proto::ToolName::new("echo"));
+    disconnect_child(&mut child, "done");
+    let exit = child
+        .wait_for_exit(Duration::from_secs(2))
+        .expect("child should exit");
+    assert_eq!(exit.exit_code, Some(0));
 }
 
 /// Ensures supervised children do not inherit parent `TAU_SECRET_*` values.
