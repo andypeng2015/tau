@@ -654,34 +654,6 @@ fn dir_lock_config_re_registers_tool_disabled_when_config_false() {
 }
 
 #[test]
-fn dir_lock_dispatch_uses_exec_capacity_for_non_update_calls() {
-    // Only `dir_lock update` is allowed to wait on directory-lock capacity;
-    // unlock and malformed calls are bounded by normal worker capacity instead
-    // of spawning unbounded helper threads.
-    let available_exec = Arc::new(Semaphore::new(1));
-    let saturated_exec = Arc::new(Semaphore::new(0));
-    let available_wait = Arc::new(Semaphore::new(1));
-    let saturated_wait = Arc::new(Semaphore::new(0));
-    let update_args = cbor_text_map(vec![("command", "update"), ("directory", "/tmp")]);
-    let unlock_args = cbor_text_map(vec![("command", "unlock"), ("directory", "/tmp")]);
-    let malformed_args = cbor_text_map(vec![("directory", "/tmp")]);
-
-    assert!(
-        acquire_dir_lock_dispatch_permit(&update_args, &available_exec, &saturated_wait).is_none()
-    );
-    assert!(
-        acquire_dir_lock_dispatch_permit(&unlock_args, &saturated_exec, &available_wait).is_none()
-    );
-    assert!(
-        acquire_dir_lock_dispatch_permit(&malformed_args, &saturated_exec, &available_wait)
-            .is_none()
-    );
-    assert!(
-        acquire_dir_lock_dispatch_permit(&unlock_args, &available_exec, &available_wait).is_some()
-    );
-}
-
-#[test]
 fn dir_lock_tool_can_be_disabled_by_config() {
     let tempdir = TempDir::new().expect("tempdir");
     let (mut reader, mut writer) = spawn_extension();
@@ -5115,33 +5087,6 @@ fn lock_wait_duration_header_extends_tool_error_details() {
         Some(7)
     );
     assert_eq!(cbor_map_text(&details, "output"), Some("start failed"));
-}
-
-#[test]
-fn saturated_worker_error_preserves_slow_lock_wait_duration() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let Event::ToolStarted(invoke) = tool_started(
-        "call-lock-wait-saturated",
-        EDIT_TOOL_NAME,
-        cbor_text_map(vec![("path", "/tmp/file.txt")]),
-        "agent-a",
-    ) else {
-        panic!("expected tool started");
-    };
-
-    send_worker_saturated_failure_with_lock_wait(invoke, &tx, Some(8));
-
-    let HarnessInputMessage::Emit(emit) = rx.recv().expect("event") else {
-        panic!("expected emitted event");
-    };
-    let Event::ToolError(error) = *emit.event else {
-        panic!("expected tool error");
-    };
-    let details = error.details.expect("error details");
-    assert_eq!(
-        cbor_int_field(&details, LOCK_WAIT_DURATION_SECONDS_HEADER),
-        Some(8)
-    );
 }
 
 #[test]

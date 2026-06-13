@@ -29,7 +29,7 @@ mod diff;
 mod dir_lock;
 mod display;
 mod isolation;
-mod semaphore;
+mod scheduler;
 mod tools;
 mod truncate;
 
@@ -39,7 +39,7 @@ mod tests;
 use crate::agents::{ancestor_dirs, discover_session_agents_files};
 use crate::config::{ExtConfig, ShellConfig};
 use crate::dir_lock::{DIR_LOCK_TOOL_NAME, DirLockManager};
-use crate::semaphore::{OwnedPermit, Semaphore};
+use crate::scheduler::{WorkMeta, WorkPriority, WorkScheduler};
 #[cfg(any(test, feature = "echo-agent"))]
 use crate::tools::ECHO_TOOL_NAME;
 use crate::tools::{
@@ -491,8 +491,7 @@ where
     // Response channel: worker threads send protocol messages here; writer
     // thread drains them onto the wire.
     let (tx, rx) = mpsc::channel::<HarnessInputMessage>();
-    let sem = Arc::new(Semaphore::new(16));
-    let dir_lock_wait_sem = Arc::new(Semaphore::new(64));
+    let scheduler = WorkScheduler::new(tx.clone(), Default::default());
     let running_shells = Arc::new(Mutex::new(
         HashMap::<tau_proto::ToolCallId, mpsc::Sender<()>>::new(),
     ));
@@ -572,95 +571,15 @@ where
                         if !is_shell_tool(invoke.tool_name.as_str()) {
                             continue;
                         }
-                        let tx = tx.clone();
-                        let shell_config = config.shell.clone();
-                        let enforce_ro_mode = config.enforce_ro_mode;
-                        let running_shells = Arc::clone(&running_shells);
-                        if invoke.tool_name == DIR_LOCK_TOOL_NAME {
-                            let Some(permit) = acquire_dir_lock_dispatch_permit(
-                                &invoke.arguments,
-                                &sem,
-                                &dir_lock_wait_sem,
-                            ) else {
-                                send_worker_saturated_failure(invoke, &tx);
-                                continue;
-                            };
-                            let lock_manager = lock_manager.clone();
-                            let enabled = config.dir_lock.enable;
-                            std::thread::spawn(move || {
-                                let _permit = permit;
-                                crate::dir_lock::dispatch_dir_lock_tool(
-                                    invoke,
-                                    &lock_manager,
-                                    enabled,
-                                    &tx,
-                                );
-                            });
-                        } else if config.dir_lock.enable
-                            && is_dir_lock_update_tool(invoke.tool_name.as_str())
-                        {
-                            match crate::dir_lock::automatic_lock_dirs_for_tool(
-                                invoke.tool_name.as_str(),
-                                &invoke.arguments,
-                            ) {
-                                Ok(None) => {
-                                    let Some(permit) = sem.try_acquire() else {
-                                        send_worker_saturated_failure(invoke, &tx);
-                                        continue;
-                                    };
-                                    std::thread::spawn(move || {
-                                        let _permit = permit;
-                                        dispatch_tool_invoke(
-                                            invoke,
-                                            shell_config,
-                                            &tx,
-                                            &running_shells,
-                                            None,
-                                            enforce_ro_mode,
-                                        );
-                                    });
-                                    continue;
-                                }
-                                Ok(Some(_)) => {}
-                                Err(error) => {
-                                    send_tool_failure(invoke, error, &tx);
-                                    continue;
-                                }
-                            }
-                            let Some(wait_permit) = dir_lock_wait_sem.try_acquire() else {
-                                send_worker_saturated_failure(invoke, &tx);
-                                continue;
-                            };
-                            let exec_sem = Arc::clone(&sem);
-                            let lock_manager = lock_manager.clone();
-                            std::thread::spawn(move || {
-                                dispatch_locked_tool_invoke(
-                                    invoke,
-                                    shell_config,
-                                    &tx,
-                                    &running_shells,
-                                    &lock_manager,
-                                    exec_sem,
-                                    wait_permit,
-                                    enforce_ro_mode,
-                                );
-                            });
-                        } else {
-                            let Some(permit) = sem.try_acquire() else {
-                                send_worker_saturated_failure(invoke, &tx);
-                                continue;
-                            };
-                            std::thread::spawn(move || {
-                                let _permit = permit;
-                                dispatch_tool_invoke(
-                                    invoke,
-                                    shell_config,
-                                    &tx,
-                                    &running_shells,
-                                    None,
-                                    enforce_ro_mode,
-                                );
-                            });
+                        if let Err((invoke, failure)) = schedule_tool_started(
+                            invoke,
+                            &scheduler,
+                            &tx,
+                            config.clone(),
+                            lock_manager.clone(),
+                            Arc::clone(&running_shells),
+                        ) {
+                            send_tool_failure(invoke, failure, &tx);
                         }
                     }
                     Event::SessionStarted(started) => {
@@ -671,10 +590,12 @@ where
                     }
                     Event::SessionAgentUnloaded(unloaded) => {
                         lock_manager.release_agent(&unloaded.agent_id);
+                        scheduler.cancel_agent(&unloaded.agent_id);
                         start_agent_owners.retain(|_, agent_id| agent_id != &unloaded.agent_id);
                     }
                     Event::SessionShutdown(_) => {
                         lock_manager.release_all_manual();
+                        scheduler.cancel_all_queued();
                         start_agent_owners.clear();
                     }
                     Event::StartAgentAccepted(accepted) => {
@@ -683,6 +604,7 @@ where
                     Event::StartAgentResult(result) => {
                         if let Some(agent_id) = start_agent_owners.remove(&result.query_id) {
                             lock_manager.release_agent(&agent_id);
+                            scheduler.cancel_agent(&agent_id);
                         }
                     }
                     Event::ActionInvoke(invoke) => {
@@ -692,6 +614,10 @@ where
                         )))?;
                     }
                     Event::ToolCancelRequest(request) => {
+                        if scheduler.cancel_queued_call(&request.target_call_id) {
+                            debug!(call_id = %request.target_call_id, "cancellation requested for queued shell work");
+                            continue;
+                        }
                         let cancel_tx = running_shells
                             .lock()
                             .expect("running shell registry lock poisoned")
@@ -709,22 +635,11 @@ where
                         }
                     }
                     Event::UiShellCommand(cmd) => {
-                        // User-initiated `!`/`!!` — run on a worker thread and
-                        // stream chunks out via the same tx writer.
-                        let Some(permit) = sem.try_acquire() else {
-                            send_ui_shell_saturated_failure(cmd, &tx);
-                            continue;
-                        };
-                        let tx = tx.clone();
-                        let shell_config = config.shell.clone();
-                        std::thread::spawn(move || {
-                            let _permit = permit;
-                            crate::tools::shell::dispatch_user_shell_command(
-                                cmd,
-                                shell_config,
-                                &tx,
-                            );
-                        });
+                        if let Err((cmd, message)) =
+                            schedule_ui_shell_command(cmd, &scheduler, &tx, config.shell.clone())
+                        {
+                            send_ui_shell_saturated_failure(cmd, message, &tx);
+                        }
                     }
                     _ => {}
                 }
@@ -734,6 +649,8 @@ where
         }
     }
 
+    scheduler.cancel_all_queued();
+    drop(scheduler);
     // Drop the sender so the writer thread exits.
     drop(tx);
     writer_handle
@@ -874,14 +791,113 @@ fn action_error(invoke: ActionInvoke, message: String) -> Event {
     })
 }
 
+fn schedule_tool_started(
+    invoke: tau_proto::ToolStarted,
+    scheduler: &WorkScheduler,
+    tx: &mpsc::Sender<HarnessInputMessage>,
+    config: ExtConfig,
+    lock_manager: DirLockManager,
+    running_shells: Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
+) -> Result<(), (tau_proto::ToolStarted, crate::display::ToolFailure)> {
+    let priority = priority_for_tool(&invoke, &config);
+    let meta = WorkMeta {
+        call_id: Some(invoke.call_id.clone()),
+        tool_name: Some(invoke.tool_name.clone()),
+        agent_id: Some(invoke.agent_id.clone()),
+        queued_bytes: approximate_tool_bytes(&invoke),
+    };
+    let tx_for_job = tx.clone();
+    let invoke_for_error = invoke.clone();
+    scheduler
+        .enqueue(priority, meta, move || {
+            if invoke.tool_name == DIR_LOCK_TOOL_NAME {
+                crate::dir_lock::dispatch_dir_lock_tool(
+                    invoke,
+                    &lock_manager,
+                    config.dir_lock.enable,
+                    &tx_for_job,
+                );
+            } else if config.dir_lock.enable && is_dir_lock_update_tool(invoke.tool_name.as_str()) {
+                dispatch_locked_tool_invoke(
+                    invoke,
+                    config.shell,
+                    &tx_for_job,
+                    &running_shells,
+                    &lock_manager,
+                    config.enforce_ro_mode,
+                );
+            } else {
+                dispatch_tool_invoke(
+                    invoke,
+                    config.shell,
+                    &tx_for_job,
+                    &running_shells,
+                    None,
+                    config.enforce_ro_mode,
+                );
+            }
+        })
+        .map_err(|error| {
+            (
+                invoke_for_error,
+                crate::display::ToolFailure::new(error.message),
+            )
+        })
+}
+
+fn schedule_ui_shell_command(
+    cmd: tau_proto::UiShellCommand,
+    scheduler: &WorkScheduler,
+    tx: &mpsc::Sender<HarnessInputMessage>,
+    shell_config: ShellConfig,
+) -> Result<(), (tau_proto::UiShellCommand, String)> {
+    let meta = WorkMeta {
+        call_id: None,
+        tool_name: None,
+        agent_id: cmd.target_agent_id.clone(),
+        queued_bytes: cmd.command.len(),
+    };
+    let tx_for_job = tx.clone();
+    let cmd_for_error = cmd.clone();
+    scheduler
+        .enqueue(WorkPriority::User, meta, move || {
+            crate::tools::shell::dispatch_user_shell_command(cmd, shell_config, &tx_for_job);
+        })
+        .map_err(|error| (cmd_for_error, error.message))
+}
+
+fn priority_for_tool(invoke: &tau_proto::ToolStarted, config: &ExtConfig) -> WorkPriority {
+    if invoke.tool_name == DIR_LOCK_TOOL_NAME {
+        if is_dir_lock_update_invocation(&invoke.arguments) {
+            return WorkPriority::Bulk;
+        }
+        return WorkPriority::Control;
+    }
+    if matches!(
+        invoke.tool_name.as_str(),
+        READ_TOOL_NAME | GREP_TOOL_NAME | FIND_TOOL_NAME | LS_TOOL_NAME
+    ) {
+        return WorkPriority::Cheap;
+    }
+    if config.dir_lock.enable && is_dir_lock_update_tool(invoke.tool_name.as_str()) {
+        return WorkPriority::Bulk;
+    }
+    WorkPriority::Bulk
+}
+
+fn approximate_tool_bytes(invoke: &tau_proto::ToolStarted) -> usize {
+    invoke.call_id.as_str().len()
+        + invoke.tool_name.as_str().len()
+        + invoke.agent_id.as_str().len()
+        + format!("{:?}", invoke.arguments).len()
+}
+
 fn dispatch_locked_tool_invoke(
     invoke: tau_proto::ToolStarted,
     shell_config: ShellConfig,
     tx: &mpsc::Sender<HarnessInputMessage>,
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
     lock_manager: &DirLockManager,
-    exec_sem: Arc<Semaphore>,
-    wait_permit: OwnedPermit,
     enforce_ro_mode: bool,
 ) {
     let dirs = match crate::dir_lock::automatic_lock_dirs_for_tool(
@@ -890,11 +906,6 @@ fn dispatch_locked_tool_invoke(
     ) {
         Ok(Some(dirs)) => crate::dir_lock::normalize_lock_dirs(dirs),
         Ok(None) => {
-            let Some(_permit) = exec_sem.try_acquire() else {
-                drop(wait_permit);
-                send_worker_saturated_failure(invoke, tx);
-                return;
-            };
             dispatch_tool_invoke(
                 invoke,
                 shell_config,
@@ -955,11 +966,6 @@ fn dispatch_locked_tool_invoke(
 
     let lock_wait_duration_seconds =
         reported_lock_wait_duration_seconds(lock_wait_started.elapsed());
-    drop(wait_permit);
-    let Some(_permit) = exec_sem.try_acquire() else {
-        send_worker_saturated_failure_with_lock_wait(invoke, tx, lock_wait_duration_seconds);
-        return;
-    };
     dispatch_tool_invoke(
         invoke,
         shell_config,
@@ -973,6 +979,7 @@ fn dispatch_locked_tool_invoke(
 
 fn send_ui_shell_saturated_failure(
     cmd: tau_proto::UiShellCommand,
+    message: String,
     tx: &mpsc::Sender<HarnessInputMessage>,
 ) {
     let _ = tx.send(HarnessInputMessage::emit(Event::ShellCommandFinished(
@@ -982,31 +989,11 @@ fn send_ui_shell_saturated_failure(
             command: cmd.command,
             include_in_context: cmd.include_in_context,
             target_agent_id: cmd.target_agent_id,
-            output: "too many concurrent shell commands; try again later".to_owned(),
+            output: message,
             exit_code: None,
             cancelled: false,
         },
     )));
-}
-
-fn send_worker_saturated_failure(
-    invoke: tau_proto::ToolStarted,
-    tx: &mpsc::Sender<HarnessInputMessage>,
-) {
-    send_worker_saturated_failure_with_lock_wait(invoke, tx, None);
-}
-
-fn send_worker_saturated_failure_with_lock_wait(
-    invoke: tau_proto::ToolStarted,
-    tx: &mpsc::Sender<HarnessInputMessage>,
-    lock_wait_duration_seconds: Option<u64>,
-) {
-    let mut failure =
-        crate::display::ToolFailure::new("too many concurrent shell tool calls; try again later");
-    if let Some(seconds) = lock_wait_duration_seconds {
-        failure = failure.with_details(CborValue::Map(vec![lock_wait_duration_entry(seconds)]));
-    }
-    send_tool_failure(invoke, failure, tx);
 }
 
 fn send_tool_failure(
@@ -1304,18 +1291,6 @@ fn is_shell_tool(name: &str) -> bool {
             | GPT_SHELL_TOOL_NAME
             | DIR_LOCK_TOOL_NAME
     ) || is_echo_tool(name)
-}
-
-fn acquire_dir_lock_dispatch_permit(
-    arguments: &CborValue,
-    exec_sem: &Arc<Semaphore>,
-    dir_lock_wait_sem: &Arc<Semaphore>,
-) -> Option<OwnedPermit> {
-    if is_dir_lock_update_invocation(arguments) {
-        dir_lock_wait_sem.try_acquire()
-    } else {
-        exec_sem.try_acquire()
-    }
 }
 
 fn is_dir_lock_update_invocation(arguments: &CborValue) -> bool {
