@@ -36,7 +36,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(FLOOD_ARG) => {
             let message_count = args
                 .next()
-                .unwrap_or_else(|| "128".to_owned())
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing flood count")
+                })?
                 .parse::<usize>()?;
             let stdout = std::io::stdout();
             let mut writer = PeerOutputWriter::new(BufWriter::new(stdout.lock()));
