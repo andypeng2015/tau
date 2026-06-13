@@ -138,14 +138,6 @@ pub(crate) fn truncate_tail(input: &str) -> Truncated {
     truncate_line_oriented(input)
 }
 
-/// Truncate a single line by marker, skipping line content.
-pub(crate) fn truncate_line(line: &str, max: usize) -> String {
-    if line.len() <= max {
-        return line.to_owned();
-    }
-    mark_line(line, "truncated")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

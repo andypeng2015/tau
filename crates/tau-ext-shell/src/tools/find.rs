@@ -9,7 +9,7 @@ use tau_proto::CborValue;
 
 use crate::argument::{argument_text, optional_argument_int_strict, optional_argument_text};
 use crate::display::{ToolFailure, ToolOutput, text_stats};
-use crate::truncate::truncate_line_oriented;
+use crate::truncate::{MAX_OUTPUT_BYTES, truncate_line_oriented};
 
 pub(crate) const DEFAULT_FIND_LIMIT: usize = 1000;
 
@@ -111,11 +111,8 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
     if truncated.was_truncated {
         notices.push("50KB/2000 line output limit reached.".to_owned());
     }
-    if !notices.is_empty() {
-        output_text.push_str("\n\n[");
-        output_text.push_str(&notices.join(" "));
-        output_text.push(']');
-    }
+
+    output_text = append_notices_within_cap(output_text, &notices);
 
     let mut display = crate::display::ok_display(display_args);
     display.stats = text_stats(&output_text);
@@ -132,6 +129,26 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         ]),
         display,
     })
+}
+
+fn append_notices_within_cap(mut output_text: String, notices: &[String]) -> String {
+    if notices.is_empty() {
+        return output_text;
+    }
+    let notice = format!("\n\n[{}]", notices.join(" "));
+    if output_text.len().saturating_add(notice.len()) <= MAX_OUTPUT_BYTES {
+        output_text.push_str(&notice);
+        return output_text;
+    }
+    let Some(budget) = MAX_OUTPUT_BYTES.checked_sub(notice.len()) else {
+        return notice.chars().take(MAX_OUTPUT_BYTES).collect();
+    };
+    output_text.truncate(budget.min(output_text.len()));
+    while !output_text.is_char_boundary(output_text.len()) {
+        output_text.pop();
+    }
+    output_text.push_str(&notice);
+    output_text
 }
 
 fn compile_find_glob(pattern: &str) -> Result<GlobSet, String> {
@@ -179,5 +196,17 @@ mod tests {
             .expect_err("zero limit should be rejected");
 
         assert_eq!(err.message, "limit must be >= 1");
+    }
+    /// Ensures find notices are included without exceeding the documented 50KB
+    /// output budget.
+    #[test]
+    fn find_notices_stay_within_output_cap() {
+        let output = append_notices_within_cap(
+            "x".repeat(MAX_OUTPUT_BYTES),
+            &["50KB/2000 line output limit reached.".to_owned()],
+        );
+
+        assert!(output.len() <= MAX_OUTPUT_BYTES);
+        assert!(output.contains("50KB/2000 line output limit reached."));
     }
 }

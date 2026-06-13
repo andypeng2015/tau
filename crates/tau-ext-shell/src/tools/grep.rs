@@ -11,7 +11,7 @@ use crate::argument::{
 };
 use crate::display::{ToolFailure, ToolOutput, text_stats};
 use crate::isolation::apply_command_isolation;
-use crate::truncate::{truncate_head, truncate_line};
+use crate::truncate::{MAX_OUTPUT_BYTES, truncate_head};
 
 pub(crate) const DEFAULT_GREP_LIMIT: usize = 100;
 pub(crate) const GREP_MAX_LINE_LENGTH: usize = 500;
@@ -165,11 +165,7 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         ));
     }
 
-    if !notices.is_empty() {
-        output_text.push_str("\n\n[");
-        output_text.push_str(&notices.join(" "));
-        output_text.push(']');
-    }
+    output_text = append_notices_within_cap(output_text, &notices);
 
     let mut display = crate::display::ok_display(display_args);
     display.stats = text_stats(&output_text);
@@ -334,13 +330,11 @@ fn read_grep_json<R: Read>(stdout: R, limit: usize) -> GrepStreamResult {
                     }
                 }
                 let sep = if is_match { ':' } else { '-' };
-                let rendered = format!("{path}{sep}{lineno}{sep}{text}");
-                if rendered.len() > GREP_MAX_LINE_LENGTH {
-                    result_lines.push(truncate_line(&rendered, GREP_MAX_LINE_LENGTH));
+                let (rendered, truncated) = render_grep_line(&path, lineno, sep, &text);
+                if truncated {
                     lines_truncated = true;
-                } else {
-                    result_lines.push(rendered);
                 }
+                result_lines.push(rendered);
             }
             _ => {}
         }
@@ -394,6 +388,44 @@ pub(crate) fn grep_result_map(
     ])
 }
 
+fn render_grep_line(path: &str, lineno: u64, sep: char, text: &str) -> (String, bool) {
+    let prefix = format!("{path}{sep}{lineno}{sep}");
+    let rendered = format!("{prefix}{text}");
+    if rendered.len() <= GREP_MAX_LINE_LENGTH {
+        return (rendered, false);
+    }
+
+    let ellipsis = "…";
+    let Some(text_budget) = GREP_MAX_LINE_LENGTH.checked_sub(prefix.len() + ellipsis.len()) else {
+        return (format!("{prefix}(truncated)"), true);
+    };
+    let mut end = text_budget.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{prefix}{}{}", &text[..end], ellipsis), true)
+}
+
+fn append_notices_within_cap(mut output_text: String, notices: &[String]) -> String {
+    if notices.is_empty() {
+        return output_text;
+    }
+    let notice = format!("\n\n[{}]", notices.join(" "));
+    if output_text.len().saturating_add(notice.len()) <= MAX_OUTPUT_BYTES {
+        output_text.push_str(&notice);
+        return output_text;
+    }
+    let Some(budget) = MAX_OUTPUT_BYTES.checked_sub(notice.len()) else {
+        return notice.chars().take(MAX_OUTPUT_BYTES).collect();
+    };
+    output_text.truncate(budget.min(output_text.len()));
+    while !output_text.is_char_boundary(output_text.len()) {
+        output_text.pop();
+    }
+    output_text.push_str(&notice);
+    output_text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +468,32 @@ mod tests {
             .expect_err("zero limit should be rejected");
 
         assert_eq!(err.message, "limit must be >= 1");
+    }
+    /// Ensures grep long-line shortening preserves the path and line number
+    /// prefix instead of replacing the whole rendered match with a marker.
+    #[test]
+    fn grep_long_line_truncation_preserves_location_prefix() {
+        let (line, truncated) = render_grep_line("path/to/file.txt", 42, ':', &"x".repeat(1000));
+
+        assert!(truncated);
+        assert!(
+            line.starts_with("path/to/file.txt:42:"),
+            "line was {line:?}"
+        );
+        assert!(line.ends_with('…'));
+        assert!(line.len() <= GREP_MAX_LINE_LENGTH);
+    }
+
+    /// Ensures grep notices are included without exceeding the documented 50KB
+    /// output budget.
+    #[test]
+    fn grep_notices_stay_within_output_cap() {
+        let output = append_notices_within_cap(
+            "x".repeat(MAX_OUTPUT_BYTES),
+            &["50KB output limit reached.".to_owned()],
+        );
+
+        assert!(output.len() <= MAX_OUTPUT_BYTES);
+        assert!(output.contains("50KB output limit reached."));
     }
 }
