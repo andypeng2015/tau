@@ -90,6 +90,13 @@ fn terminal_key_to_logical(key: crossterm::event::KeyEvent) -> LogicalKey {
         KeyCode::Esc => LogicalKey::Esc,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => LogicalKey::CtrlC,
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => LogicalKey::CtrlD,
+        KeyCode::Char(_)
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            LogicalKey::Unknown
+        }
         KeyCode::Char(c) => LogicalKey::Char(c),
         _ => LogicalKey::Unknown,
     }

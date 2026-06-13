@@ -33,3 +33,16 @@ fn terminal_control_chars_decode_to_logical_cancellation_keys() {
     assert_eq!(terminal_key_to_logical(ctrl_c), LogicalKey::CtrlC);
     assert_eq!(terminal_key_to_logical(ctrl_d), LogicalKey::CtrlD);
 }
+
+/// Ensures only documented plain character shortcuts are honored; unrelated
+/// Ctrl/Alt modified characters should not navigate or cancel the picker.
+#[test]
+fn terminal_modified_character_shortcuts_are_ignored() {
+    for key in ['j', 'k', 'q'] {
+        let ctrl_key = KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL);
+        let alt_key = KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT);
+
+        assert_eq!(terminal_key_to_logical(ctrl_key), LogicalKey::Unknown);
+        assert_eq!(terminal_key_to_logical(alt_key), LogicalKey::Unknown);
+    }
+}
