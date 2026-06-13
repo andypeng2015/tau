@@ -485,25 +485,37 @@ fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
         unique_temp_suffix()
     ));
 
+    atomic_write_file_to_temp(&target, &temp_path, bytes)
+}
+
+fn atomic_write_file_to_temp(target: &Path, temp_path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = target.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path has no parent: {}", target.display()),
+        )
+    })?;
+    let mut created_temp = false;
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&temp_path)?;
-        if let Ok(metadata) = std::fs::metadata(&target) {
+            .open(temp_path)?;
+        created_temp = true;
+        if let Ok(metadata) = std::fs::metadata(target) {
             file.set_permissions(metadata.permissions())?;
         }
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temp_path, &target)?;
+        std::fs::rename(temp_path, target)?;
         if let Ok(dir) = std::fs::File::open(parent) {
             let _ = dir.sync_all();
         }
         Ok(())
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
+    if result.is_err() && created_temp {
+        let _ = std::fs::remove_file(temp_path);
     }
     result
 }
@@ -850,6 +862,30 @@ mod tests {
                 .expect("link metadata")
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    /// Ensures cleanup after atomic write failure does not delete a colliding
+    /// temp path that this call failed to create.
+    #[test]
+    fn atomic_write_temp_collision_preserves_existing_temp() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let target = tempdir.path().join("target.txt");
+        let colliding_temp = tempdir.path().join(".target.txt.tmp-collision");
+        std::fs::write(&target, "old\n").expect("write target");
+        std::fs::write(&colliding_temp, "someone else\n").expect("write temp");
+
+        let err = atomic_write_file_to_temp(&target, &colliding_temp, b"new\n")
+            .expect_err("temp collision should fail");
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&colliding_temp).expect("read temp"),
+            "someone else\n"
         );
     }
 
