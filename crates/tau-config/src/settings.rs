@@ -4,7 +4,7 @@
 //! - `cli.yaml` — CLI display preferences
 //! - `harness.yaml` — harness settings, extensions, and roles
 //!
-//! Uses the `config` crate for layered JSON5/YAML loading.
+//! Uses the `config` crate for layered YAML loading.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -20,7 +20,7 @@ use tau_proto::{ModelId, PromptContent, PromptPriority, ToolName};
 // ---------------------------------------------------------------------------
 // Built-in configs
 //
-// Tau ships its baseline `cli.yaml`, `cli-bindings.json5` and
+// Tau ships its baseline `cli.yaml`, `cli-bindings.yaml` and
 // `harness.yaml` as ordinary source files under
 // `crates/tau-config/config/`, embedded via `include_str!`. They are layered
 // underneath user files, with a small role-merge pass for role metadata whose
