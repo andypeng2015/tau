@@ -11,6 +11,9 @@ use tau_supervisor::{
     ExtensionCommand, ReceiveOutcome, StderrPolicy, SupervisedChild, SupervisionError,
 };
 
+const SECRET_ENV_SUBPROCESS: &str = "TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS";
+const STDERR_POLICY_SUBPROCESS: &str = "TAU_SUPERVISOR_STDERR_POLICY_SUBPROCESS";
+
 fn test_command(args: &[&str]) -> ExtensionCommand {
     ExtensionCommand {
         name: "test-child".into(),
@@ -242,7 +245,7 @@ fn terminate_kills_long_running_child() {
 /// Ensures the null stderr policy discards child stderr output.
 #[test]
 fn stderr_policy_null_discards_child_stderr() {
-    if std::env::var_os("TAU_SUPERVISOR_STDERR_POLICY_SUBPROCESS").is_some() {
+    if std::env::var_os(STDERR_POLICY_SUBPROCESS).is_some() {
         let mut command = test_command(&["--stderr-marker"]);
         command.stderr = StderrPolicy::Null;
         let mut child = SupervisedChild::spawn(command).expect("child should spawn");
@@ -265,7 +268,7 @@ fn stderr_policy_null_discards_child_stderr() {
         .arg("--exact")
         .arg("stderr_policy_null_discards_child_stderr")
         .arg("--nocapture")
-        .env("TAU_SUPERVISOR_STDERR_POLICY_SUBPROCESS", "1")
+        .env(STDERR_POLICY_SUBPROCESS, "1")
         .output()
         .expect("stderr regression subprocess should run");
     assert!(output.status.success());
@@ -275,7 +278,7 @@ fn stderr_policy_null_discards_child_stderr() {
 /// Ensures supervised children do not inherit parent `TAU_SECRET_*` values.
 #[test]
 fn spawned_child_does_not_inherit_tau_secret_env() {
-    if std::env::var_os("TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS").is_some() {
+    if std::env::var_os(SECRET_ENV_SUBPROCESS).is_some() {
         let mut child = SupervisedChild::spawn(test_command(&["--report-secret-env"]))
             .expect("child should spawn");
         assert_eq!(
@@ -296,7 +299,7 @@ fn spawned_child_does_not_inherit_tau_secret_env() {
         .arg("--exact")
         .arg("spawned_child_does_not_inherit_tau_secret_env")
         .arg("--nocapture")
-        .env("TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS", "1")
+        .env(SECRET_ENV_SUBPROCESS, "1")
         .env("TAU_SECRET_REGRESSION", "must-not-leak")
         .status()
         .expect("env regression subprocess should run");
