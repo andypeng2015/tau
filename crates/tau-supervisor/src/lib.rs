@@ -22,8 +22,11 @@ const STDOUT_FRAME_BUFFER: usize = 64;
 /// One configured supervised extension command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtensionCommand {
+    /// Stable extension identity used in lifecycle events.
     pub name: ExtensionName,
+    /// Executable path passed to `Command::new` when spawning the child.
     pub program: PathBuf,
+    /// Command-line arguments passed to the child after `program`.
     pub args: Vec<String>,
 }
 
@@ -55,7 +58,9 @@ impl ExtensionCommand {
 /// One detected child-process exit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildExit {
+    /// Numeric process exit code when the platform reports normal exit.
     pub exit_code: Option<i32>,
+    /// Unix signal number when the process was terminated by signal.
     pub signal: Option<i32>,
 }
 
@@ -82,15 +87,27 @@ pub enum ReceiveOutcome {
 /// Errors produced by the supervised stdio transport.
 #[derive(Debug)]
 pub enum SupervisionError {
+    /// The child process could not be spawned.
     Spawn(io::Error),
+    /// The spawned child did not provide a piped stdin handle.
     MissingStdin,
+    /// The spawned child did not provide a piped stdout handle.
     MissingStdout,
+    /// A harness-to-extension protocol message could not be encoded.
     Encode(tau_proto::EncodeError),
+    /// The child stdin writer could not be flushed after sending a message.
     Flush(io::Error),
+    /// The child stdout reader observed corrupt or truncated protocol data.
     Decode(DecodeError),
+    /// The child process could not be killed during hard termination.
     Kill(io::Error),
+    /// Waiting for child process status failed.
     Wait(io::Error),
-    Timeout { duration: Duration },
+    /// The child did not exit before the requested timeout elapsed.
+    Timeout {
+        /// Timeout duration requested by the caller.
+        duration: Duration,
+    },
 }
 
 impl fmt::Display for SupervisionError {
@@ -128,6 +145,9 @@ impl std::error::Error for SupervisionError {
 }
 
 /// One supervised child process connected over stdin/stdout.
+///
+/// The child is owned by this value. Callers should prefer explicit graceful
+/// protocol shutdown or `terminate`; `Drop` only performs best-effort cleanup.
 pub struct SupervisedChild {
     command: ExtensionCommand,
     child: Child,

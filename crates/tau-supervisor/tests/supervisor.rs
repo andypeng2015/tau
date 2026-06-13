@@ -79,6 +79,8 @@ fn disconnect_child(child: &mut SupervisedChild, reason: &str) {
         .expect("disconnect should be sent");
 }
 
+/// Ensures receive timeout is observable without treating the child as
+/// disconnected.
 #[test]
 fn recv_timeout_reports_timeout_without_conflating_disconnect() {
     let mut child = SupervisedChild::spawn(test_command(Vec::new())).expect("child should spawn");
@@ -97,6 +99,8 @@ fn recv_timeout_reports_timeout_without_conflating_disconnect() {
         .expect("child should exit");
 }
 
+/// Ensures clean stdout EOF is reported separately from timeout and decode
+/// failure.
 #[test]
 fn recv_timeout_reports_clean_stdout_close() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--exit-immediately".to_owned()]))
@@ -114,6 +118,8 @@ fn recv_timeout_reports_clean_stdout_close() {
     assert_eq!(exit.exit_code, Some(0));
 }
 
+/// Ensures truncated protocol data remains a decode error instead of a clean
+/// close.
 #[test]
 fn recv_timeout_reports_partial_frame_as_decode_error() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--partial-frame".to_owned()]))
@@ -128,6 +134,8 @@ fn recv_timeout_reports_partial_frame_as_decode_error() {
         .expect("child should exit");
 }
 
+/// Ensures the bounded stdout reader can drain a child message burst without
+/// loss.
 #[test]
 fn stdout_reader_handles_flood_without_unbounded_queueing() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--flood".to_owned()]))
@@ -155,6 +163,8 @@ fn stdout_reader_handles_flood_without_unbounded_queueing() {
     assert_eq!(exit.exit_code, Some(0));
 }
 
+/// Ensures explicit hard termination can clean up a child that ignores protocol
+/// shutdown.
 #[test]
 fn terminate_kills_long_running_child() {
     let mut child = SupervisedChild::spawn(test_command(vec!["--sleep".to_owned()]))
@@ -166,6 +176,7 @@ fn terminate_kills_long_running_child() {
     assert!(exit.exit_code.is_none() || exit.exit_code != Some(0));
 }
 
+/// Ensures supervised children do not inherit parent `TAU_SECRET_*` values.
 #[test]
 fn spawned_child_does_not_inherit_tau_secret_env() {
     if std::env::var_os("TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS").is_some() {
@@ -196,6 +207,7 @@ fn spawned_child_does_not_inherit_tau_secret_env() {
         .expect("env regression subprocess should run");
     assert!(status.success());
 }
+/// Ensures the supervisor exchanges lifecycle and tool events over child stdio.
 #[test]
 fn supervised_child_exchanges_protocol_events_over_stdio() {
     let command = ExtensionCommand {
@@ -284,6 +296,8 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
     );
 }
 
+/// Ensures a restarted child can emit the same tool registration after prior
+/// exit.
 #[test]
 fn restarted_child_can_reregister_after_exit() {
     let command = ExtensionCommand {
