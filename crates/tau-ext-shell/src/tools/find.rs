@@ -143,10 +143,11 @@ fn append_notices_within_cap(mut output_text: String, notices: &[String]) -> Str
     let Some(budget) = MAX_OUTPUT_BYTES.checked_sub(notice.len()) else {
         return notice.chars().take(MAX_OUTPUT_BYTES).collect();
     };
-    output_text.truncate(budget.min(output_text.len()));
-    while !output_text.is_char_boundary(output_text.len()) {
-        output_text.pop();
+    let mut end = budget.min(output_text.len());
+    while !output_text.is_char_boundary(end) {
+        end -= 1;
     }
+    output_text.truncate(end);
     output_text.push_str(&notice);
     output_text
 }
@@ -201,12 +202,14 @@ mod tests {
     /// output budget.
     #[test]
     fn find_notices_stay_within_output_cap() {
+        let notice = "50KB/2000 line output limit reached.".to_owned();
+        let suffix_len = format!("\n\n[{notice}]").len();
         let output = append_notices_within_cap(
-            "x".repeat(MAX_OUTPUT_BYTES),
-            &["50KB/2000 line output limit reached.".to_owned()],
+            format!("{}étail", "x".repeat(MAX_OUTPUT_BYTES - suffix_len - 1)),
+            &[notice.clone()],
         );
 
         assert!(output.len() <= MAX_OUTPUT_BYTES);
-        assert!(output.contains("50KB/2000 line output limit reached."));
+        assert!(output.contains(&notice));
     }
 }
