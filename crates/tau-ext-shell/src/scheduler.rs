@@ -55,15 +55,26 @@ struct WorkItem {
 /// Tunable hard bounds for scheduler queues and workers.
 #[derive(Clone, Debug)]
 pub(crate) struct SchedulerConfig {
+    /// Maximum number of queued items across all lanes.
     pub(crate) total_limit: usize,
+    /// Maximum queued control-lane items such as non-update `dir_lock` calls.
     pub(crate) control_limit: usize,
+    /// Maximum queued user-shell items from `!` / `!!`.
     pub(crate) user_limit: usize,
+    /// Maximum queued cheap/read-only model-visible tool items.
     pub(crate) cheap_limit: usize,
+    /// Maximum queued bulk model work, including mutating tools and model
+    /// shells.
     pub(crate) bulk_limit: usize,
+    /// Approximate aggregate byte budget for queued call arguments.
     pub(crate) queued_bytes_limit: usize,
+    /// Dedicated workers that only run control-lane work.
     pub(crate) control_workers: usize,
+    /// Dedicated workers that run control or user-shell work.
     pub(crate) user_workers: usize,
+    /// Dedicated workers that run control, user, or cheap/read-only work.
     pub(crate) cheap_workers: usize,
+    /// General workers that can run any scheduler lane, including bulk work.
     pub(crate) general_workers: usize,
 }
 
