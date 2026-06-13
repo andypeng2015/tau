@@ -101,7 +101,8 @@ where
                  Files over 10 MiB are rejected by an input safety cap before output truncation. \
                  Prefer one full read. Pass inclusive `start_line`/`end_line` only to \
                  fetch one specific known slice, or `ranges` for up to 100 slices; \
-                 range chunks are separated by one empty line and may overlap. `start_line` past EOF errors, \
+                 range chunks are separated by one empty line and may overlap, but large overlapping \
+                 multi-range expansions can be rejected before rendering to keep memory bounded. `start_line` past EOF errors, \
                  while `end_line` past EOF returns available lines. Returned content lines are prefixed \
                  by their 1-based line number and a space; \
                  CRLF, CR, and missing final line endings are marked after the number, e.g. \
@@ -131,7 +132,7 @@ where
                     },
                     "ranges": {
                         "type": "array",
-                        "description": "Optional list of inclusive line ranges to read. Cannot be combined with top-level start_line or end_line. Each chunk is separated by one empty line in the output, and overlapping ranges are returned redundantly.",
+                        "description": "Optional list of inclusive line ranges to read. Cannot be combined with top-level start_line or end_line. Each chunk is separated by one empty line in the output, and overlapping ranges are returned redundantly. Requests whose overlapping ranges would expand into too much rendered content are rejected before rendering.",
                         "minItems": 1,
                         "maxItems": 100,
                         "items": {
