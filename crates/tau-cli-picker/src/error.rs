@@ -9,7 +9,8 @@ pub enum PickerError {
     Empty,
     /// The picker had items, but none were selectable.
     NoEnabledItems,
-    /// The user cancelled the picker with Escape, Ctrl-C, or Ctrl-D.
+    /// The user or input stream cancelled with Escape, Ctrl-C, Ctrl-D/EOF, or
+    /// `q`.
     Cancelled,
 }
 
