@@ -2605,10 +2605,32 @@ fn extension_apply_patch_failure_after_partial_success_leaves_changes() {
     };
     assert_eq!(error.tool_name, APPLY_PATCH_TOOL_NAME);
     assert!(error.message.contains("Failed to read file to update"));
-    assert!(
-        error.details.is_none(),
-        "apply_patch errors should not echo patch text"
-    );
+    let details = error.details.expect("partial changes details");
+    let CborValue::Map(entries) = details else {
+        panic!("expected structured partial change details");
+    };
+    let partial_changes = entries
+        .iter()
+        .find_map(|(key, value)| match (key, value) {
+            (CborValue::Text(key), CborValue::Array(changes)) if key == "partial_changes" => {
+                Some(changes)
+            }
+            _ => None,
+        })
+        .expect("partial_changes detail");
+    assert_eq!(partial_changes.len(), 1);
+    let CborValue::Map(change) = &partial_changes[0] else {
+        panic!("expected partial change map");
+    };
+    assert!(change.iter().any(|(key, value)| matches!(
+        (key, value),
+        (CborValue::Text(key), CborValue::Text(value)) if key == "status" && value == "A"
+    )));
+    assert!(change.iter().any(|(key, value)| matches!(
+        (key, value),
+        (CborValue::Text(key), CborValue::Text(value))
+            if key == "path" && value == &created_path.display().to_string()
+    )));
     let display = error.display.expect("error display");
     let Some(ToolUsePayload::Diff(diff)) = display.payload else {
         panic!("expected structured diff payload for partial apply_patch failure");

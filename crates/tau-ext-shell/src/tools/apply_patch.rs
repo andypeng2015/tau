@@ -23,8 +23,13 @@ pub(crate) fn apply_patch(
     let changes = match apply_hunks(&hunks, world) {
         Ok(changes) => changes,
         Err(failure) => {
-            return Err(ToolFailure::new(failure.message)
-                .with_payload(display_payload_for_failure(&failure.changes)));
+            let details = partial_changes_details(&failure.changes);
+            let mut tool_failure = ToolFailure::new(failure.message)
+                .with_payload(display_payload_for_failure(&failure.changes));
+            if let Some(details) = details {
+                tool_failure = tool_failure.with_details(details);
+            }
+            return Err(tool_failure);
         }
     };
 
@@ -351,6 +356,32 @@ fn display_payload_for_failure(changes: &[AppliedChange]) -> Option<ToolUsePaylo
 
     let summary = format_partial_summary(changes);
     display_payload_for_changes(changes, &summary)
+}
+
+fn partial_changes_details(changes: &[AppliedChange]) -> Option<CborValue> {
+    if changes.is_empty() {
+        return None;
+    }
+
+    let changes = changes
+        .iter()
+        .map(|change| {
+            CborValue::Map(vec![
+                (
+                    CborValue::Text("status".to_owned()),
+                    CborValue::Text(change.status.short_name().to_owned()),
+                ),
+                (
+                    CborValue::Text("path".to_owned()),
+                    CborValue::Text(change.display_path.clone()),
+                ),
+            ])
+        })
+        .collect();
+    Some(CborValue::Map(vec![(
+        CborValue::Text("partial_changes".to_owned()),
+        CborValue::Array(changes),
+    )]))
 }
 
 fn format_partial_summary(changes: &[AppliedChange]) -> String {
