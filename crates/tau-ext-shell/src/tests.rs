@@ -2569,14 +2569,17 @@ fn extension_apply_patch_failure_after_partial_success_leaves_changes() {
         "apply_patch errors should not echo patch text"
     );
     let display = error.display.expect("error display");
-    assert_eq!(
-        display.payload,
-        Some(ToolUsePayload::Text {
-            text: format!(
-                "Partial changes applied before failure:\nA {}",
-                created_path.display()
-            ),
-        })
+    let Some(ToolUsePayload::Diff(diff)) = display.payload else {
+        panic!("expected structured diff payload for partial apply_patch failure");
+    };
+    assert_eq!(diff.added, 1);
+    assert_eq!(diff.removed, 0);
+    assert!(
+        diff.hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| matches!(line, tau_proto::DiffLine::Add { text } if text == "hello")),
+        "partial add should be visible in structured diff"
     );
     assert_eq!(
         fs::read_to_string(&created_path).expect("created file should remain"),

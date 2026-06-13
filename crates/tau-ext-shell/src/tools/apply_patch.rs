@@ -345,6 +345,11 @@ fn display_payload_for_failure(changes: &[AppliedChange]) -> Option<ToolUsePaylo
         return None;
     }
 
+    let summary = format_partial_summary(changes);
+    display_payload_for_changes(changes, &summary)
+}
+
+fn format_partial_summary(changes: &[AppliedChange]) -> String {
     let mut lines = vec!["Partial changes applied before failure:".to_owned()];
     for status in [
         ChangeStatus::Add,
@@ -359,9 +364,7 @@ fn display_payload_for_failure(changes: &[AppliedChange]) -> Option<ToolUsePaylo
             ));
         }
     }
-    Some(ToolUsePayload::Text {
-        text: lines.join("\n"),
-    })
+    lines.join("\n")
 }
 
 fn format_summary(changes: &[AppliedChange]) -> String {
