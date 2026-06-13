@@ -345,6 +345,32 @@ fn reject_legacy_config_path(config: Option<&std::path::Path>) -> Result<(), Cli
     Ok(())
 }
 
+fn reject_attach_startup_overrides(
+    prompt_stdin: bool,
+    startup_role: Option<&str>,
+    role_cli_overrides: &[tau_config::settings::RoleCliOverride],
+    extension_cli_overrides: &[tau_config::settings::ExtensionCliOverride],
+) -> Result<(), CliError> {
+    if startup_role.is_some() && !prompt_stdin {
+        return Err(CliError::Participant(
+            "--attach cannot apply --role to an already-running interactive daemon; use --prompt-stdin if you want --role for the submitted prompt".to_owned(),
+        ));
+    }
+    if !role_cli_overrides.is_empty() {
+        return Err(CliError::Participant(
+            "--attach cannot apply role enable/disable overrides to an already-running daemon"
+                .to_owned(),
+        ));
+    }
+    if !extension_cli_overrides.is_empty() {
+        return Err(CliError::Participant(
+            "--attach cannot apply extension enable/disable overrides to an already-running daemon"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn required_harness_role<'a>(role: Option<&'a str>, command: &str) -> Result<&'a str, CliError> {
     role.ok_or_else(|| CliError::Participant(format!("tau dev {command} requires --role <role>")))
 }
@@ -519,6 +545,14 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 attach,
             }) => {
                 reject_legacy_config_path(config.as_deref())?;
+                if attach {
+                    reject_attach_startup_overrides(
+                        prompt_stdin,
+                        harness.role.as_deref(),
+                        &role_cli_overrides,
+                        &extension_cli_overrides,
+                    )?;
+                }
                 let (session_id, session_status) = if attach {
                     reject_harness_config_overrides(&harness_config_overrides, "--attach")?;
                     let cwd = std::env::current_dir()?;

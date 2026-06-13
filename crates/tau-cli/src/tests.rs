@@ -185,6 +185,43 @@ fn legacy_config_path_is_rejected() {
     );
 }
 
+/// Attach mode connects to an existing daemon, so startup role/extension
+/// overrides must fail instead of pretending to reconfigure that daemon.
+#[test]
+fn attach_rejects_startup_overrides_that_existing_daemon_cannot_apply() {
+    let role_overrides = [tau_config::settings::RoleCliOverride::Enable(
+        "manager".to_owned(),
+    )];
+    let extension_overrides = [tau_config::settings::ExtensionCliOverride::Disable(
+        "core-shell".to_owned(),
+    )];
+
+    let role_err = super::reject_attach_startup_overrides(false, Some("manager"), &[], &[])
+        .expect_err("interactive attach role should fail");
+    assert!(role_err.to_string().contains("cannot apply --role"));
+
+    let role_override_err =
+        super::reject_attach_startup_overrides(false, None, &role_overrides, &[])
+            .expect_err("attach role overrides should fail");
+    assert!(
+        role_override_err
+            .to_string()
+            .contains("role enable/disable")
+    );
+
+    let extension_override_err =
+        super::reject_attach_startup_overrides(false, None, &[], &extension_overrides)
+            .expect_err("attach extension overrides should fail");
+    assert!(
+        extension_override_err
+            .to_string()
+            .contains("extension enable/disable")
+    );
+
+    super::reject_attach_startup_overrides(true, Some("manager"), &[], &[])
+        .expect("prompt-stdin uses --role for the submitted prompt");
+}
+
 #[test]
 fn harness_config_flag_requires_key_value() {
     let err = match super::cli::Cli::try_parse_from(["tau", "--harness-config=missing-equals"]) {
