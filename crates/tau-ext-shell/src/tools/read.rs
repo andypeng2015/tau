@@ -7,10 +7,11 @@ use tau_proto::CborValue;
 use crate::argument::{argument_text, optional_argument_int_strict};
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
 use crate::tools::world::ShellWorld;
-use crate::truncate::truncate_line_oriented;
+use crate::truncate::{MAX_OUTPUT_BYTES, truncate_line_oriented};
 
 const MAX_READ_RANGES_PER_CALL: usize = 100;
 const MAX_READ_FILE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_READ_RANGE_RENDERED_BYTES: usize = MAX_OUTPUT_BYTES * 40;
 
 pub(crate) fn read_file(
     arguments: &CborValue,
@@ -26,6 +27,7 @@ pub(crate) fn read_file(
         .read_file_limited(&path_buf, MAX_READ_FILE_BYTES)
         .map_err(|error| ToolFailure::from(error.to_string()).with_args(display_args.clone()))?;
     let file_bytes = bytes.len();
+    validate_range_render_budget(&bytes, &request.ranges, &display_args)?;
     let sliced = slice_line_ranges(&bytes, &request.ranges);
     validate_ranges_with_total(&request.ranges, sliced.total_lines, &display_args)?;
     let total_lines = sliced.total_lines;
@@ -102,6 +104,89 @@ pub(crate) struct ReadSlice {
     /// Total lines in the source. For [`slice_line_ranges`] this is computed
     /// by scanning the whole file after collecting requested ranges.
     pub(crate) total_lines: usize,
+}
+
+fn validate_range_render_budget(
+    input: &[u8],
+    ranges: &[ReadLineRange],
+    display_args: &str,
+) -> Result<(), ToolFailure> {
+    if ranges.len() <= 1 {
+        return Ok(());
+    }
+    let estimated = estimate_rendered_range_bytes(input, ranges);
+    if MAX_READ_RANGE_RENDERED_BYTES < estimated {
+        return Err(ToolFailure::new(
+            "read ranges expand to too much rendered content; request fewer or smaller ranges",
+        )
+        .with_args(display_args.to_owned()));
+    }
+    Ok(())
+}
+
+fn estimate_rendered_range_bytes(input: &[u8], ranges: &[ReadLineRange]) -> usize {
+    let mut total = ranges.len().saturating_sub(1).saturating_mul(2);
+    let mut line_start = 0usize;
+    let mut index = 0usize;
+    let mut line_number = 0usize;
+    while index < input.len() {
+        match input[index] {
+            b'\r' => {
+                let is_crlf = index + 1 < input.len() && input[index + 1] == b'\n';
+                line_number += 1;
+                total = total.saturating_add(estimate_rendered_line_bytes(
+                    line_number,
+                    &input[line_start..index],
+                    ranges,
+                ));
+                index += if is_crlf { 2 } else { 1 };
+                line_start = index;
+            }
+            b'\n' => {
+                line_number += 1;
+                total = total.saturating_add(estimate_rendered_line_bytes(
+                    line_number,
+                    &input[line_start..index],
+                    ranges,
+                ));
+                index += 1;
+                line_start = index;
+            }
+            _ => index += 1,
+        }
+    }
+    if line_start < input.len() {
+        line_number += 1;
+        total = total.saturating_add(estimate_rendered_line_bytes(
+            line_number,
+            &input[line_start..],
+            ranges,
+        ));
+    }
+    total
+}
+
+fn estimate_rendered_line_bytes(
+    line_number: usize,
+    line: &[u8],
+    ranges: &[ReadLineRange],
+) -> usize {
+    let memberships = ranges
+        .iter()
+        .filter(|range| range.contains_line(line_number))
+        .count();
+    if memberships == 0 {
+        return 0;
+    }
+    let line_digits = line_number.ilog10() as usize + 1;
+    let marker_budget = 24usize;
+    let lossy_content_budget = line.len().saturating_mul(3);
+    let rendered_line_budget = line_digits
+        .saturating_add(marker_budget)
+        .saturating_add(1)
+        .saturating_add(lossy_content_budget)
+        .saturating_add(1);
+    memberships.saturating_mul(rendered_line_budget)
 }
 
 /// Render line ranges from already-loaded file bytes using `read` output rules.
@@ -497,6 +582,41 @@ mod tests {
 
         assert!(
             err.message.contains("file is too large to read safely"),
+            "unexpected error: {}",
+            err.message
+        );
+    }
+
+    /// Ensures overlapping multi-range reads cannot expand a modest input into
+    /// very large intermediate rendered strings before normal output
+    /// truncation.
+    #[test]
+    fn read_rejects_multi_range_render_expansion_over_cap() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("wide.txt");
+        std::fs::write(&path, "x".repeat(32 * 1024)).expect("write wide file");
+        let ranges = (0..100)
+            .map(|_| {
+                map(vec![
+                    ("start_line", CborValue::Integer(1.into())),
+                    ("end_line", CborValue::Integer(1.into())),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let mut world = ShellWorld::real();
+
+        let err = read_file(
+            &map(vec![
+                ("path", CborValue::Text(path.display().to_string())),
+                ("ranges", CborValue::Array(ranges)),
+            ]),
+            &mut world,
+        )
+        .expect_err("range expansion should be rejected");
+
+        assert!(
+            err.message
+                .contains("read ranges expand to too much rendered content"),
             "unexpected error: {}",
             err.message
         );
