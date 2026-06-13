@@ -263,7 +263,7 @@ fn bind_mount_read_only(cwd: &CStr) -> std::io::Result<()> {
             libc::SYS_mount_setattr,
             mounted_fd,
             c"".as_ptr(),
-            libc::AT_EMPTY_PATH,
+            read_only_mount_setattr_flags(),
             (&attr as *const libc::mount_attr).cast::<libc::c_void>(),
             std::mem::size_of::<libc::mount_attr>(),
         )
@@ -272,6 +272,11 @@ fn bind_mount_read_only(cwd: &CStr) -> std::io::Result<()> {
     setattr_result?;
     cvt(close_mounted)?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn read_only_mount_setattr_flags() -> libc::c_uint {
+    (libc::AT_EMPTY_PATH | libc::AT_RECURSIVE) as libc::c_uint
 }
 
 #[cfg(target_os = "linux")]

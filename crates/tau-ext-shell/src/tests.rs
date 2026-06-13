@@ -4527,6 +4527,16 @@ fn shell_tool_rejects_negative_timeout() {
         .expect_err("timeout");
     assert_eq!(error.message, "argument `timeout` must be non-negative");
 }
+#[cfg(target_os = "linux")]
+#[test]
+fn read_only_mount_setattr_flags_are_recursive() {
+    // Enforced read-only mode clones the cwd tree recursively, so the final
+    // mount_setattr call must also apply recursively; otherwise nested mounts
+    // could remain writable under a supposedly read-only cwd subtree.
+    let flags = crate::isolation::read_only_mount_setattr_flags();
+    assert_ne!(flags & (libc::AT_EMPTY_PATH as libc::c_uint), 0);
+    assert_ne!(flags & (libc::AT_RECURSIVE as libc::c_uint), 0);
+}
 
 #[cfg(target_os = "linux")]
 #[test]
