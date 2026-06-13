@@ -594,6 +594,34 @@ where
                         } else if config.dir_lock.enable
                             && is_dir_lock_update_tool(invoke.tool_name.as_str())
                         {
+                            match crate::dir_lock::automatic_lock_dirs_for_tool(
+                                invoke.tool_name.as_str(),
+                                &invoke.arguments,
+                            ) {
+                                Ok(None) => {
+                                    let Some(permit) = sem.try_acquire() else {
+                                        send_worker_saturated_failure(invoke, &tx);
+                                        continue;
+                                    };
+                                    std::thread::spawn(move || {
+                                        let _permit = permit;
+                                        dispatch_tool_invoke(
+                                            invoke,
+                                            shell_config,
+                                            &tx,
+                                            &running_shells,
+                                            None,
+                                            enforce_ro_mode,
+                                        );
+                                    });
+                                    continue;
+                                }
+                                Ok(Some(_)) => {}
+                                Err(error) => {
+                                    send_tool_failure(invoke, error, &tx);
+                                    continue;
+                                }
+                            }
                             let Some(wait_permit) = dir_lock_wait_sem.try_acquire() else {
                                 send_worker_saturated_failure(invoke, &tx);
                                 continue;
