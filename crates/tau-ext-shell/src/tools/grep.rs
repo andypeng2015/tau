@@ -11,6 +11,7 @@ use crate::argument::{
 };
 use crate::display::{ToolFailure, ToolOutput, text_stats};
 use crate::isolation::apply_command_isolation;
+use crate::tools::find::{escape_path_text, render_path_bytes};
 use crate::truncate::{MAX_OUTPUT_BYTES, truncate_head};
 
 pub(crate) const DEFAULT_GREP_LIMIT: usize = 100;
@@ -306,6 +307,29 @@ struct RgData {
 #[serde(default)]
 struct RgText {
     text: Option<String>,
+    bytes: Option<String>,
+}
+
+impl RgText {
+    fn render_path(&self) -> Option<String> {
+        if let Some(text) = &self.text {
+            return Some(escape_path_text(text));
+        }
+        self.decoded_bytes().map(|bytes| render_path_bytes(&bytes))
+    }
+
+    fn text_lossy(self) -> Option<String> {
+        if let Some(text) = self.text {
+            return Some(text);
+        }
+        self.decoded_bytes()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn decoded_bytes(&self) -> Option<Vec<u8>> {
+        let bytes = self.bytes.as_ref()?;
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, bytes).ok()
+    }
 }
 
 /// Stream rg's JSON Lines output, build the legacy
@@ -332,18 +356,22 @@ fn read_grep_json<R: Read>(stdout: R, limit: usize) -> GrepStreamResult {
         };
         match record.kind.as_str() {
             "begin" => {
-                current_path = record.data.path.and_then(|p| p.text);
+                current_path = record.data.path.as_ref().and_then(RgText::render_path);
             }
             "match" | "context" => {
                 let path = record
                     .data
                     .path
                     .as_ref()
-                    .and_then(|p| p.text.as_deref())
-                    .or(current_path.as_deref())
-                    .unwrap_or("");
+                    .and_then(RgText::render_path)
+                    .or_else(|| current_path.clone())
+                    .unwrap_or_default();
                 let lineno = record.data.line_number.unwrap_or(0);
-                let text = record.data.lines.and_then(|l| l.text).unwrap_or_default();
+                let text = record
+                    .data
+                    .lines
+                    .and_then(RgText::text_lossy)
+                    .unwrap_or_default();
                 let text = strip_eol(&text);
                 let is_match = record.kind == "match";
                 if is_match {
@@ -511,6 +539,47 @@ mod tests {
 
         assert_eq!(captured.len(), 32);
         assert!(captured.iter().all(|byte| *byte == b'x'));
+    }
+
+    /// Protects grep output from path line injection by escaping control
+    /// characters in ripgrep JSON path text before rendering records.
+    #[test]
+    fn grep_escapes_control_characters_in_paths() {
+        let json = serde_json::json!({
+            "type": "match",
+            "data": {
+                "path": { "text": "line\nbreak.txt" },
+                "lines": { "text": "needle\n" },
+                "line_number": 7
+            }
+        });
+        let output = read_grep_json(json.to_string().as_bytes(), 10);
+
+        assert_eq!(output.result_lines, vec!["line\\nbreak.txt:7:needle"]);
+    }
+
+    /// Ensures grep handles ripgrep byte paths without silently dropping the
+    /// record, marking invalid UTF-8 while preserving a lossy escaped path.
+    #[test]
+    fn grep_renders_invalid_utf8_byte_paths() {
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"bad\xffname.txt",
+        );
+        let json = serde_json::json!({
+            "type": "match",
+            "data": {
+                "path": { "bytes": encoded },
+                "lines": { "text": "needle\n" },
+                "line_number": 3
+            }
+        });
+        let output = read_grep_json(json.to_string().as_bytes(), 10);
+
+        assert_eq!(
+            output.result_lines,
+            vec!["(invalid-utf8) bad�name.txt:3:needle"]
+        );
     }
 
     /// Ensures grep long-line shortening preserves the path and line number

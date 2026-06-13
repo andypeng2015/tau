@@ -173,7 +173,44 @@ fn compile_find_glob(pattern: &str) -> Result<GlobSet, String> {
 }
 
 fn path_to_slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    render_path(path)
+}
+
+fn render_path(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        return render_path_bytes(path.as_os_str().as_bytes());
+    }
+    #[cfg(not(unix))]
+    {
+        escape_path_text(&path.to_string_lossy())
+    }
+}
+
+pub(crate) fn render_path_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => escape_path_text(text),
+        Err(_) => format!(
+            "(invalid-utf8) {}",
+            escape_path_text(&String::from_utf8_lossy(bytes))
+        ),
+    }
+}
+
+pub(crate) fn escape_path_text(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.extend(ch.escape_default()),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -268,6 +305,38 @@ mod tests {
         assert_eq!(matches, 1);
         assert!(limit_reached);
         assert!(output.contains("1 results limit reached"));
+    }
+
+    /// Protects find output from path line injection by escaping control
+    /// characters before rendering file names as one logical record per line.
+    #[test]
+    fn find_escapes_control_characters_in_paths() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(tempdir.path().join("line\nbreak.txt"), "x").expect("write file");
+        let args = CborValue::Map(vec![
+            (
+                CborValue::Text("pattern".to_owned()),
+                CborValue::Text("*.txt".to_owned()),
+            ),
+            (
+                CborValue::Text("path".to_owned()),
+                CborValue::Text(tempdir.path().display().to_string()),
+            ),
+        ]);
+
+        let result = run_find(&args).expect("find").result;
+        let CborValue::Map(entries) = result else {
+            panic!("expected result map");
+        };
+        let output = entries
+            .iter()
+            .find_map(|(key, value)| match (key, value) {
+                (CborValue::Text(key), CborValue::Text(value)) if key == "output" => Some(value),
+                _ => None,
+            })
+            .expect("output");
+
+        assert_eq!(output, "line\\nbreak.txt");
     }
     /// Ensures find notices are included without exceeding the documented 50KB
     /// output budget.
