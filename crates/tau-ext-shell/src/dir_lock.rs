@@ -436,10 +436,13 @@ impl DirLockManager {
     /// Release all manual locks owned by an unloaded agent.
     pub(crate) fn release_agent(&self, owner: &AgentId) -> usize {
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
-        let before = state.manual.len();
+        let before_manual = state.manual.len();
+        let before_waiters = state.waiters.len();
         state.manual.retain(|lock| &lock.owner != owner);
-        let removed = before - state.manual.len();
-        if 0 < removed {
+        state.waiters.retain(|waiter| &waiter.owner != owner);
+        let removed = before_manual - state.manual.len();
+        let cancelled = before_waiters - state.waiters.len();
+        if 0 < removed + cancelled {
             self.inner.changed.notify_all();
         }
         removed
@@ -449,8 +452,10 @@ impl DirLockManager {
     pub(crate) fn release_all_manual(&self) -> usize {
         let mut state = self.inner.state.lock().expect("dir lock state poisoned");
         let removed = state.manual.len();
+        let cancelled = state.waiters.len();
         state.manual.clear();
-        if 0 < removed {
+        state.waiters.clear();
+        if 0 < removed + cancelled {
             self.inner.changed.notify_all();
         }
         removed

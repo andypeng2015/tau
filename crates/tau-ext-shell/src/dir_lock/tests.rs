@@ -278,6 +278,59 @@ fn disable_releases_manual_locks_and_cancels_waiters() {
 }
 
 #[test]
+fn release_agent_cancels_queued_waiters() {
+    let manager = DirLockManager::default();
+    manager
+        .acquire_manual(
+            "manual-a".into(),
+            agent_id("agent-a"),
+            path("/repo/a"),
+            || {},
+        )
+        .expect("manual lock");
+
+    let waiter = std::thread::spawn({
+        let manager = manager.clone();
+        move || {
+            manager.acquire_manual(
+                "manual-b".into(),
+                agent_id("agent-b"),
+                path("/repo/a"),
+                || {},
+            )
+        }
+    });
+    wait_until(|| manager.inner.state.lock().expect("state").waiters.len() == 1);
+
+    assert_eq!(manager.release_agent(&agent_id("agent-b")), 0);
+    assert_eq!(
+        waiter.join().expect("waiter"),
+        Err(ManualLockAcquireError::Cancelled)
+    );
+    assert!(
+        manager
+            .inner
+            .state
+            .lock()
+            .expect("state")
+            .waiters
+            .is_empty()
+    );
+
+    manager
+        .unlock_manual(&agent_id("agent-a"), Path::new("/repo/a"))
+        .expect("unlock");
+    manager
+        .acquire_manual(
+            "manual-c".into(),
+            agent_id("agent-c"),
+            path("/repo/a"),
+            || {},
+        )
+        .expect("cancelled waiter should not leave stale queue state");
+}
+
+#[test]
 fn same_owner_automatic_locks_still_serialize_without_manual_lock() {
     let manager = DirLockManager::default();
     let guard = manager
