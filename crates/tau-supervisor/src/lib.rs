@@ -179,7 +179,9 @@ impl std::error::Error for SupervisionError {
 ///
 /// The child is owned by this value. Callers should prefer explicit graceful
 /// protocol shutdown or `terminate`; `Drop` only hard-kills live children,
-/// waits best-effort, and ignores cleanup errors.
+/// waits best-effort, and ignores cleanup errors. Cleanup targets only the
+/// owned direct child process, not a process group, process tree, or
+/// grandchildren.
 /// Child stdout is handed through a bounded buffer, so callers supervising a
 /// child that can emit during shutdown must continue calling `recv_timeout` or
 /// otherwise drain stdout before waiting indefinitely for exit.
@@ -357,7 +359,9 @@ impl SupervisedChild {
     /// Forcibly terminates the child process and waits for its exit.
     ///
     /// This is the explicit hard-shutdown API for callers that decide graceful
-    /// protocol shutdown is no longer possible or no longer desired.
+    /// protocol shutdown is no longer possible or no longer desired. It kills
+    /// only the owned direct child process, not a process group, process tree,
+    /// or grandchildren.
     ///
     /// # Errors
     ///
