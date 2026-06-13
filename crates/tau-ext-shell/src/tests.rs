@@ -2304,6 +2304,51 @@ fn extension_apply_patch_move_renames_file() {
     writer.flush().expect("flush");
 }
 
+/// Ensures apply_patch moves do not silently clobber an existing destination.
+/// Move patches must fail before mutating either path so accidental data loss
+/// is reported as a tool error instead of hidden in UI diff metadata.
+#[test]
+fn extension_apply_patch_move_rejects_existing_destination() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let src = tempdir.path().join("old.txt");
+    let dst = tempdir.path().join("new.txt");
+    fs::write(&src, "before\n").expect("write src");
+    fs::write(&dst, "existing\n").expect("write dst");
+
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n*** Move to: {}\n@@\n-before\n+after\n*** End Patch",
+        src.display(),
+        dst.display()
+    );
+    writer
+        .write_event(&Event::ToolStarted(ToolStarted {
+            call_id: "call-patch-move-existing".into(),
+            tool_name: tau_proto::ToolName::new(APPLY_PATCH_TOOL_NAME),
+            arguments: CborValue::Text(patch),
+            agent_id: tau_proto::AgentId::parse("agent-1").expect("agent id"),
+            originator: tau_proto::PromptOriginator::User,
+        }))
+        .expect("invoke");
+    writer.flush().expect("flush");
+
+    let error = reader.read_event().expect("read").expect("error");
+    let Event::ToolError(error) = error else {
+        panic!("expected tool error");
+    };
+    assert_eq!(error.tool_name, APPLY_PATCH_TOOL_NAME);
+    assert!(error.message.contains("Move destination already exists"));
+    assert_eq!(fs::read_to_string(&src).expect("read src"), "before\n");
+    assert_eq!(fs::read_to_string(&dst).expect("read dst"), "existing\n");
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
 #[test]
 fn extension_apply_patch_applies_multiple_operations() {
     let tempdir = TempDir::new().expect("tempdir");

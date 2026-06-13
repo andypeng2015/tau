@@ -235,8 +235,15 @@ fn apply_hunks(
 
                 let (change_path, display_path) = if let Some(move_path) = move_path {
                     let dest_abs = resolve_path(&cwd, move_path);
-                    let overwritten_move_content = read_optional_file(&dest_abs, world)
-                        .map_err(|message| ApplyPatchFailure::new(message, &changes))?;
+                    if read_optional_file(&dest_abs, world)
+                        .map_err(|message| ApplyPatchFailure::new(message, &changes))?
+                        .is_some()
+                    {
+                        return Err(ApplyPatchFailure::new(
+                            format!("Move destination already exists: {}", dest_abs.display()),
+                            &changes,
+                        ));
+                    }
                     write_file_creating_parent(&dest_abs, &new_content, world).map_err(
                         |error| {
                             ApplyPatchFailure::new(
@@ -250,7 +257,7 @@ fn apply_hunks(
                         display_path: move_path.display().to_string(),
                         path: dest_abs.clone(),
                         status: ChangeStatus::Add,
-                        old_content: overwritten_move_content.unwrap_or_default(),
+                        old_content: String::new(),
                         new_content: Some(new_content.clone()),
                     });
                     if world.is_dir(&abs).map_err(|_| {
