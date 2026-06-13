@@ -391,6 +391,8 @@ impl Drop for SupervisedChild {
     }
 }
 
+// Owns a partially initialized child during spawn and kills/waits it unless
+// `disarm` transfers ownership into `SupervisedChild`.
 struct SpawnedChildGuard {
     child: Option<Child>,
 }
