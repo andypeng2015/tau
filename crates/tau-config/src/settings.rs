@@ -1426,6 +1426,7 @@ fn normalize_role_config_keys(
     let serde_json::Value::Object(map) = value else {
         return Ok(());
     };
+    normalize_alias_key(map, "enabled", "enable", source, path)?;
     normalize_alias_key(map, "thinkingSummary", "thinking_summary", source, path)?;
     normalize_alias_key(map, "serviceTier", "service_tier", source, path)?;
     normalize_alias_key(map, "promptFragments", "prompt_fragments", source, path)?;

@@ -1571,6 +1571,27 @@ fn harness_role_enabled_alias_is_kept_for_old_config() {
 }
 
 #[test]
+fn harness_legacy_enabled_alias_overrides_built_in_enable() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+        role_groups:
+          engineer:
+            roles:
+              senior-engineer:
+                enabled: false
+        "#,
+    )
+    .expect("write");
+
+    let settings = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+
+    assert!(!settings.roles.contains_key("senior-engineer"));
+}
+
+#[test]
 fn harness_role_enable_can_be_reenabled_by_later_layers() {
     // Filtering happens after the complete domain merge, so a higher-priority
     // drop-in can re-enable a role disabled by the base user config.
