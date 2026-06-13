@@ -441,3 +441,25 @@ fn input_cleanup_failure_does_not_replace_input_error() {
         other => panic!("expected input IO error, got {other:?}"),
     }
 }
+
+/// Ensures successful selection reports cleanup failures instead of returning
+/// a selected index whose picker frame may not have been cleared.
+#[test]
+fn selection_cleanup_failure_is_reported() {
+    let it = items(&["one", "two"]);
+    let err = pick_with_event_reader(
+        "pick",
+        &it,
+        FailsAfterFirstFlush {
+            flushed_once: false,
+        },
+        || Ok(PickerEvent::Key(PickerKey::Enter)),
+        || (40, 5),
+    )
+    .expect_err("selection cleanup failure should be reported");
+
+    match err {
+        PickerError::Io(source) => assert_eq!(source.to_string(), "synthetic cleanup error"),
+        other => panic!("expected cleanup IO error, got {other:?}"),
+    }
+}
