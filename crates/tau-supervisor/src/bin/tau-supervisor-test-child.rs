@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 
 use tau_proto::{
     CborValue, ClientKind, Event, HarnessInputMessage, HarnessOutputMessage, Hello,
@@ -7,7 +7,18 @@ use tau_proto::{
     ToolResult, ToolSpec,
 };
 
+const EXIT_IMMEDIATELY_ARG: &str = "--exit-immediately";
+const PARTIAL_FRAME_ARG: &str = "--partial-frame";
+
 fn main() -> Result<(), Box<dyn Error>> {
+    match std::env::args().nth(1).as_deref() {
+        Some(EXIT_IMMEDIATELY_ARG) => return Ok(()),
+        Some(PARTIAL_FRAME_ARG) => {
+            std::io::stdout().write_all(&[0x81])?;
+            return Ok(());
+        }
+        _ => {}
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut reader = PeerInputReader::new(BufReader::new(stdin.lock()));

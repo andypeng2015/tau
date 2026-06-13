@@ -5,17 +5,33 @@ use tau_proto::{
     CborValue, ClientKind, Disconnect, Event, HarnessInputMessage, HarnessOutputMessage, Hello,
     PROTOCOL_VERSION, Ready, Subscribe, ToolRegister, ToolStarted,
 };
-use tau_supervisor::{ExtensionCommand, SupervisedChild};
+use tau_supervisor::{ExtensionCommand, ReceiveOutcome, SupervisedChild, SupervisionError};
+
+fn test_command(args: Vec<String>) -> ExtensionCommand {
+    ExtensionCommand {
+        name: "test-child".into(),
+        program: PathBuf::from(env!("CARGO_BIN_EXE_tau-supervisor-test-child")),
+        args,
+    }
+}
 
 fn test_child_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tau-supervisor-test-child"))
+    test_command(Vec::new()).program
+}
+
+fn expect_message(child: &mut SupervisedChild, label: &str) -> HarnessInputMessage {
+    match child
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_else(|error| panic!("{label} should decode: {error}"))
+    {
+        ReceiveOutcome::Message(message) => message,
+        ReceiveOutcome::Timeout => panic!("{label} should arrive before timeout"),
+        ReceiveOutcome::Closed => panic!("{label} should arrive before stdout closes"),
+    }
 }
 
 fn expect_child_startup(child: &mut SupervisedChild) -> ToolRegister {
-    let hello = child
-        .recv_timeout(Duration::from_secs(1))
-        .expect("hello should decode")
-        .expect("hello should arrive");
+    let hello = expect_message(child, "hello");
     assert_eq!(
         hello,
         HarnessInputMessage::Hello(Hello {
@@ -25,10 +41,7 @@ fn expect_child_startup(child: &mut SupervisedChild) -> ToolRegister {
         })
     );
 
-    let subscribe = child
-        .recv_timeout(Duration::from_secs(1))
-        .expect("subscribe should decode")
-        .expect("subscribe should arrive");
+    let subscribe = expect_message(child, "subscribe");
     assert_eq!(
         subscribe,
         HarnessInputMessage::Subscribe(Subscribe {
@@ -38,10 +51,7 @@ fn expect_child_startup(child: &mut SupervisedChild) -> ToolRegister {
         })
     );
 
-    let register = child
-        .recv_timeout(Duration::from_secs(1))
-        .expect("register should decode")
-        .expect("register should arrive");
+    let register = expect_message(child, "register");
     let HarnessInputMessage::Emit(emit) = register else {
         panic!("expected tool register emit");
     };
@@ -49,10 +59,7 @@ fn expect_child_startup(child: &mut SupervisedChild) -> ToolRegister {
         panic!("expected tool register event");
     };
 
-    let ready = child
-        .recv_timeout(Duration::from_secs(1))
-        .expect("ready should decode")
-        .expect("ready should arrive");
+    let ready = expect_message(child, "ready");
     assert_eq!(
         ready,
         HarnessInputMessage::Ready(Ready {
@@ -69,6 +76,55 @@ fn disconnect_child(child: &mut SupervisedChild, reason: &str) {
             reason: Some(reason.to_owned()),
         }))
         .expect("disconnect should be sent");
+}
+
+#[test]
+fn recv_timeout_reports_timeout_without_conflating_disconnect() {
+    let mut child = SupervisedChild::spawn(test_command(Vec::new())).expect("child should spawn");
+    let _register = expect_child_startup(&mut child);
+
+    assert_eq!(
+        child
+            .recv_timeout(Duration::from_millis(20))
+            .expect("timeout should not be an error"),
+        ReceiveOutcome::Timeout
+    );
+
+    disconnect_child(&mut child, "done");
+    let _exit = child
+        .wait_for_exit(Duration::from_secs(2))
+        .expect("child should exit");
+}
+
+#[test]
+fn recv_timeout_reports_clean_stdout_close() {
+    let mut child = SupervisedChild::spawn(test_command(vec!["--exit-immediately".to_owned()]))
+        .expect("child should spawn");
+
+    assert_eq!(
+        child
+            .recv_timeout(Duration::from_secs(1))
+            .expect("clean close should not be an error"),
+        ReceiveOutcome::Closed
+    );
+    let exit = child
+        .wait_for_exit(Duration::from_secs(2))
+        .expect("child should exit");
+    assert_eq!(exit.exit_code, Some(0));
+}
+
+#[test]
+fn recv_timeout_reports_partial_frame_as_decode_error() {
+    let mut child = SupervisedChild::spawn(test_command(vec!["--partial-frame".to_owned()]))
+        .expect("child should spawn");
+
+    let error = child
+        .recv_timeout(Duration::from_secs(1))
+        .expect_err("partial frame should be a decode error");
+    assert!(matches!(error, SupervisionError::Decode(_)));
+    let _exit = child
+        .wait_for_exit(Duration::from_secs(2))
+        .expect("child should exit");
 }
 #[test]
 fn supervised_child_exchanges_protocol_events_over_stdio() {
@@ -127,10 +183,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
             },
         )))
         .expect("tool should be sent");
-    let result = child
-        .recv_timeout(Duration::from_secs(1))
-        .expect("tool result should decode")
-        .expect("tool result should arrive");
+    let result = expect_message(&mut child, "tool result");
     assert_eq!(
         result,
         HarnessInputMessage::emit(Event::ToolResult(tau_proto::ToolResult {

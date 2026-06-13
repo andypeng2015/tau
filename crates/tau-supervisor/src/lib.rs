@@ -66,6 +66,17 @@ impl ChildExit {
     }
 }
 
+/// Outcome of a timed receive attempt from a supervised child's stdout.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReceiveOutcome {
+    /// A complete extension-to-harness protocol message was decoded.
+    Message(HarnessInputMessage),
+    /// No stdout message arrived before the requested timeout elapsed.
+    Timeout,
+    /// The child closed stdout cleanly at a protocol message boundary.
+    Closed,
+}
+
 /// Errors produced by the supervised stdio transport.
 #[derive(Debug)]
 pub enum SupervisionError {
@@ -116,7 +127,7 @@ pub struct SupervisedChild {
     command: ExtensionCommand,
     child: Child,
     stdin: HarnessOutputWriter<BufWriter<ChildStdin>>,
-    stdout_frames: Receiver<Result<HarnessInputMessage, DecodeError>>,
+    stdout_frames: Receiver<Result<StdoutFrame, DecodeError>>,
 }
 impl SupervisedChild {
     /// Spawns one supervised child process with piped stdin/stdout.
@@ -175,18 +186,18 @@ impl SupervisedChild {
         self.stdin.flush().map_err(SupervisionError::Flush)
     }
 
-    /// Reads one extension → harness protocol message from the child, or
-    /// returns `Ok(None)` on timeout.
-    pub fn recv_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<Option<HarnessInputMessage>, SupervisionError> {
+    /// Reads one extension → harness protocol message from the child.
+    ///
+    /// Timeouts, clean stdout closure, and decoded messages are returned as
+    /// distinct outcomes. Truncated or corrupt frames are reported as decode
+    /// errors.
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SupervisionError> {
         match self.stdout_frames.recv_timeout(timeout) {
-            Ok(Ok(frame)) => Ok(Some(frame)),
-            Ok(Err(error)) if is_unexpected_eof(&error) => Ok(None),
+            Ok(Ok(StdoutFrame::Message(frame))) => Ok(ReceiveOutcome::Message(frame)),
+            Ok(Ok(StdoutFrame::Closed)) => Ok(ReceiveOutcome::Closed),
             Ok(Err(error)) => Err(SupervisionError::Decode(error)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Ok(None),
+            Err(RecvTimeoutError::Timeout) => Ok(ReceiveOutcome::Timeout),
+            Err(RecvTimeoutError::Disconnected) => Ok(ReceiveOutcome::Closed),
         }
     }
 
@@ -243,20 +254,28 @@ impl Drop for SupervisedChild {
     }
 }
 
+enum StdoutFrame {
+    Message(HarnessInputMessage),
+    Closed,
+}
+
 fn spawn_stdout_reader(
     stdout: std::process::ChildStdout,
-) -> Receiver<Result<HarnessInputMessage, DecodeError>> {
+) -> Receiver<Result<StdoutFrame, DecodeError>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut reader = HarnessInputReader::new(BufReader::new(stdout));
         loop {
             match reader.read_message() {
                 Ok(Some(frame)) => {
-                    if sender.send(Ok(frame)).is_err() {
+                    if sender.send(Ok(StdoutFrame::Message(frame))).is_err() {
                         return;
                     }
                 }
-                Ok(None) => return,
+                Ok(None) => {
+                    let _ = sender.send(Ok(StdoutFrame::Closed));
+                    return;
+                }
                 Err(error) => {
                     let _ = sender.send(Err(error));
                     return;
@@ -265,13 +284,6 @@ fn spawn_stdout_reader(
         }
     });
     receiver
-}
-
-fn is_unexpected_eof(error: &DecodeError) -> bool {
-    match error {
-        DecodeError::Io(source) => source.kind() == io::ErrorKind::UnexpectedEof,
-        _ => false,
-    }
 }
 
 #[cfg(unix)]
