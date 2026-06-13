@@ -134,13 +134,15 @@ pub struct SupervisedChild {
 impl SupervisedChild {
     /// Spawns one supervised child process with piped stdin/stdout.
     pub fn spawn(command: ExtensionCommand) -> Result<Self, SupervisionError> {
-        let mut child = Command::new(&command.program)
+        let mut child_command = Command::new(&command.program);
+        child_command
             .args(&command.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(SupervisionError::Spawn)?;
+            .stderr(Stdio::inherit());
+        remove_secret_env(&mut child_command);
+
+        let mut child = child_command.spawn().map_err(SupervisionError::Spawn)?;
 
         let stdin = child.stdin.take().ok_or(SupervisionError::MissingStdin)?;
         let stdout = child.stdout.take().ok_or(SupervisionError::MissingStdout)?;
@@ -252,6 +254,14 @@ impl Drop for SupervisedChild {
                 let _ = self.child.wait();
             }
             Err(_) => {}
+        }
+    }
+}
+
+fn remove_secret_env(command: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("TAU_SECRET_") {
+            command.env_remove(key);
         }
     }
 }

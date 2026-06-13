@@ -10,6 +10,7 @@ use tau_proto::{
 const EXIT_IMMEDIATELY_ARG: &str = "--exit-immediately";
 const PARTIAL_FRAME_ARG: &str = "--partial-frame";
 const FLOOD_ARG: &str = "--flood";
+const REPORT_SECRET_ENV_ARG: &str = "--report-secret-env";
 
 fn main() -> Result<(), Box<dyn Error>> {
     match std::env::args().nth(1).as_deref() {
@@ -26,6 +27,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     message: Some(index.to_string()),
                 }))?;
             }
+            writer.flush()?;
+            return Ok(());
+        }
+        Some(REPORT_SECRET_ENV_ARG) => {
+            let stdout = std::io::stdout();
+            let mut writer = PeerOutputWriter::new(BufWriter::new(stdout.lock()));
+            let secret_visible = std::env::vars_os()
+                .any(|(key, _)| key.to_string_lossy().starts_with("TAU_SECRET_"));
+            writer.write_message(&HarnessInputMessage::Ready(Ready {
+                message: Some(if secret_visible { "present" } else { "absent" }.to_owned()),
+            }))?;
             writer.flush()?;
             return Ok(());
         }

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 use std::time::Duration;
 
 use tau_proto::{
@@ -152,6 +153,37 @@ fn stdout_reader_handles_flood_without_unbounded_queueing() {
         .wait_for_exit(Duration::from_secs(2))
         .expect("child should exit");
     assert_eq!(exit.exit_code, Some(0));
+}
+
+#[test]
+fn spawned_child_does_not_inherit_tau_secret_env() {
+    if std::env::var_os("TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS").is_some() {
+        let mut child =
+            SupervisedChild::spawn(test_command(vec!["--report-secret-env".to_owned()]))
+                .expect("child should spawn");
+        assert_eq!(
+            child
+                .recv_timeout(Duration::from_secs(1))
+                .expect("env report should decode"),
+            ReceiveOutcome::Message(HarnessInputMessage::Ready(Ready {
+                message: Some("absent".to_owned()),
+            }))
+        );
+        let _exit = child
+            .wait_for_exit(Duration::from_secs(2))
+            .expect("child should exit");
+        return;
+    }
+
+    let status = StdCommand::new(std::env::current_exe().expect("test binary path"))
+        .arg("--exact")
+        .arg("spawned_child_does_not_inherit_tau_secret_env")
+        .arg("--nocapture")
+        .env("TAU_SUPERVISOR_SECRET_ENV_SUBPROCESS", "1")
+        .env("TAU_SECRET_REGRESSION", "must-not-leak")
+        .status()
+        .expect("env regression subprocess should run");
+    assert!(status.success());
 }
 #[test]
 fn supervised_child_exchanges_protocol_events_over_stdio() {
