@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use tau_proto::CborValue;
 
-use crate::argument::{argument_text, cbor_map_int, optional_argument_int};
+use crate::argument::{argument_text, optional_argument_int_strict};
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
 use crate::tools::world::ShellWorld;
 use crate::truncate::truncate_line_oriented;
@@ -85,6 +85,8 @@ impl ReadLineRange {
         }
     }
 }
+
+#[derive(Debug)]
 
 struct ReadRequest {
     ranges: Vec<ReadLineRange>,
@@ -244,8 +246,10 @@ fn parse_read_request(arguments: &CborValue) -> Result<ReadRequest, ToolFailure>
         return parse_read_ranges(arguments, ranges);
     }
 
-    let start_line_arg = optional_argument_int(arguments, "start_line");
-    let end_line_arg = optional_argument_int(arguments, "end_line");
+    let start_line_arg =
+        optional_argument_int_strict(arguments, "start_line").map_err(ToolFailure::new)?;
+    let end_line_arg =
+        optional_argument_int_strict(arguments, "end_line").map_err(ToolFailure::new)?;
     let start_line = parse_read_start_line(start_line_arg)?;
     let end_line = parse_read_end_line(end_line_arg, start_line)?;
     Ok(ReadRequest {
@@ -329,7 +333,7 @@ fn has_argument(arguments: &CborValue, key: &str) -> bool {
 }
 
 fn parse_required_range_line(range: &CborValue, key: &str) -> Result<usize, ToolFailure> {
-    match cbor_map_int(range, key) {
+    match optional_argument_int_strict(range, key).map_err(ToolFailure::new)? {
         Some(value) if value < 1 => Err(ToolFailure::new(format!("{key} must be >= 1"))),
         Some(value) => {
             usize::try_from(value).map_err(|_| ToolFailure::new(format!("{key} is too large")))
@@ -434,5 +438,45 @@ pub(crate) fn slice_lines(input: &str, start_line: usize, end_line: Option<usize
         line_count: end_idx.saturating_sub(start_idx),
         valid_utf8: true,
         total_lines,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(entries: Vec<(&str, CborValue)>) -> CborValue {
+        CborValue::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| (CborValue::Text(key.to_owned()), value))
+                .collect(),
+        )
+    }
+
+    /// Ensures optional read line arguments reject wrong CBOR types instead of
+    /// silently falling back to the default range.
+    #[test]
+    fn read_rejects_wrong_type_optional_line_arguments() {
+        let err = parse_read_request(&map(vec![("start_line", CborValue::Text("2".to_owned()))]))
+            .expect_err("string start_line should be rejected");
+
+        assert_eq!(err.message, "argument `start_line` must be an integer");
+    }
+
+    /// Ensures range entries reject wrong CBOR line types instead of reporting
+    /// them as missing integer fields.
+    #[test]
+    fn read_ranges_reject_wrong_type_line_arguments() {
+        let err = parse_read_request(&map(vec![(
+            "ranges",
+            CborValue::Array(vec![map(vec![
+                ("start_line", CborValue::Text("1".to_owned())),
+                ("end_line", CborValue::Integer(2.into())),
+            ])]),
+        )]))
+        .expect_err("string range start_line should be rejected");
+
+        assert_eq!(err.message, "argument `start_line` must be an integer");
     }
 }

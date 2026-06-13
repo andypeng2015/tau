@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use tau_proto::CborValue;
 
-use crate::argument::{argument_text, optional_argument_int, optional_argument_text};
+use crate::argument::{argument_text, optional_argument_int_strict, optional_argument_text};
 use crate::display::{ToolFailure, ToolOutput, text_stats};
 use crate::truncate::truncate_line_oriented;
 
@@ -16,9 +16,13 @@ pub(crate) const DEFAULT_FIND_LIMIT: usize = 1000;
 pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     let pattern = argument_text(arguments, "pattern").map_err(ToolFailure::from)?;
     let path = optional_argument_text(arguments, "path").unwrap_or_else(|| ".".to_owned());
-    let limit = optional_argument_int(arguments, "limit")
-        .map(|v| v.max(1) as usize)
-        .unwrap_or(DEFAULT_FIND_LIMIT);
+    let limit = match optional_argument_int_strict(arguments, "limit").map_err(ToolFailure::from)? {
+        Some(value) if value < 1 => return Err(ToolFailure::new("limit must be >= 1")),
+        Some(value) => {
+            usize::try_from(value).map_err(|_| ToolFailure::new("limit is too large"))?
+        }
+        None => DEFAULT_FIND_LIMIT,
+    };
     let search_path = PathBuf::from(&path);
     let display_args = format!("{pattern} in {}", search_path.display());
     let with_args = |f: ToolFailure| f.with_args(display_args.clone());
@@ -141,4 +145,39 @@ fn compile_find_glob(pattern: &str) -> Result<GlobSet, String> {
 
 fn path_to_slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(limit: CborValue) -> CborValue {
+        CborValue::Map(vec![
+            (
+                CborValue::Text("pattern".to_owned()),
+                CborValue::Text("*".to_owned()),
+            ),
+            (CborValue::Text("limit".to_owned()), limit),
+        ])
+    }
+
+    /// Ensures find rejects wrong-typed limits instead of silently using the
+    /// default result cap.
+    #[test]
+    fn find_rejects_wrong_type_limit() {
+        let err = run_find(&args(CborValue::Text("10".to_owned())))
+            .expect_err("string limit should be rejected");
+
+        assert_eq!(err.message, "argument `limit` must be an integer");
+    }
+
+    /// Ensures find rejects non-positive limits instead of coercing them to a
+    /// surprising positive default.
+    #[test]
+    fn find_rejects_non_positive_limit() {
+        let err = run_find(&args(CborValue::Integer(0.into())))
+            .expect_err("zero limit should be rejected");
+
+        assert_eq!(err.message, "limit must be >= 1");
+    }
 }

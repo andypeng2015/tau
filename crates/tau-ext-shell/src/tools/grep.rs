@@ -7,7 +7,7 @@ use std::process::Command;
 use tau_proto::CborValue;
 
 use crate::argument::{
-    argument_text, optional_argument_bool, optional_argument_int, optional_argument_text,
+    argument_text, optional_argument_bool, optional_argument_int_strict, optional_argument_text,
 };
 use crate::display::{ToolFailure, ToolOutput, text_stats};
 use crate::isolation::apply_command_isolation;
@@ -31,10 +31,21 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
     let regex = optional_argument_bool(arguments, "regex")
         .map_err(ToolFailure::from)?
         .unwrap_or(false);
-    let context = optional_argument_int(arguments, "context").map(|v| v.max(0) as usize);
-    let limit = optional_argument_int(arguments, "limit")
-        .map(|v| v.max(1) as usize)
-        .unwrap_or(DEFAULT_GREP_LIMIT);
+    let context =
+        match optional_argument_int_strict(arguments, "context").map_err(ToolFailure::from)? {
+            Some(value) if value < 0 => return Err(ToolFailure::new("context must be >= 0")),
+            Some(value) => {
+                Some(usize::try_from(value).map_err(|_| ToolFailure::new("context is too large"))?)
+            }
+            None => None,
+        };
+    let limit = match optional_argument_int_strict(arguments, "limit").map_err(ToolFailure::from)? {
+        Some(value) if value < 1 => return Err(ToolFailure::new("limit must be >= 1")),
+        Some(value) => {
+            usize::try_from(value).map_err(|_| ToolFailure::new("limit is too large"))?
+        }
+        None => DEFAULT_GREP_LIMIT,
+    };
 
     let search_path = path.as_deref().unwrap_or(".");
 
@@ -381,4 +392,49 @@ pub(crate) fn grep_result_map(
             CborValue::Integer((output_text.len() as i64).into()),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(extra: (&str, CborValue)) -> CborValue {
+        CborValue::Map(vec![
+            (
+                CborValue::Text("pattern".to_owned()),
+                CborValue::Text("needle".to_owned()),
+            ),
+            (CborValue::Text(extra.0.to_owned()), extra.1),
+        ])
+    }
+
+    /// Ensures grep rejects wrong-typed optional integers before spawning rg,
+    /// giving callers an actionable argument error.
+    #[test]
+    fn grep_rejects_wrong_type_limit() {
+        let err = run_grep(&args(("limit", CborValue::Text("10".to_owned()))))
+            .expect_err("string limit should be rejected");
+
+        assert_eq!(err.message, "argument `limit` must be an integer");
+    }
+
+    /// Ensures grep rejects negative context instead of silently coercing it to
+    /// zero context lines.
+    #[test]
+    fn grep_rejects_negative_context() {
+        let err = run_grep(&args(("context", CborValue::Integer((-1).into()))))
+            .expect_err("negative context should be rejected");
+
+        assert_eq!(err.message, "context must be >= 0");
+    }
+
+    /// Ensures grep rejects zero limits instead of silently increasing them to
+    /// one match.
+    #[test]
+    fn grep_rejects_zero_limit() {
+        let err = run_grep(&args(("limit", CborValue::Integer(0.into()))))
+            .expect_err("zero limit should be rejected");
+
+        assert_eq!(err.message, "limit must be >= 1");
+    }
 }

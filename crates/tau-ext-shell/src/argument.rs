@@ -10,10 +10,6 @@ pub(crate) fn optional_argument_text(arguments: &CborValue, key: &str) -> Option
     cbor_map_text(arguments, key).map(str::to_owned)
 }
 
-pub(crate) fn optional_argument_int(arguments: &CborValue, key: &str) -> Option<i64> {
-    cbor_map_int(arguments, key)
-}
-
 pub(crate) fn optional_argument_int_strict(
     arguments: &CborValue,
     key: &str,
