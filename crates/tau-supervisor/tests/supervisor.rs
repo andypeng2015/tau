@@ -269,7 +269,7 @@ fn stderr_policy_null_discards_child_stderr() {
         .output()
         .expect("stderr regression subprocess should run");
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    assert!(output.stderr.is_empty());
 }
 
 /// Ensures supervised children do not inherit parent `TAU_SECRET_*` values.
