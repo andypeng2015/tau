@@ -136,7 +136,7 @@ fn prompt_input_placeholder_keeps_placeholder_style_around_role_style() {
             "##,
     )
     .expect("test theme parses");
-    let prompt = prompt_input_placeholder(&theme, Some("engineer"), None);
+    let prompt = prompt_input_placeholder(&theme, Some("engineer"), None, false);
     let spans = prompt.spans();
 
     assert_eq!(spans.len(), 3);
@@ -151,13 +151,32 @@ fn prompt_input_placeholder_keeps_placeholder_style_around_role_style() {
     assert_eq!(spans[2].style.fg, Some(tau_cli_term::Color::DarkGrey));
     assert!(spans[2].style.italic);
 
-    let prompt = prompt_input_placeholder(&theme, Some("engineer"), Some("engineer_abc"));
+    let prompt = prompt_input_placeholder(&theme, Some("engineer"), Some("engineer_abc"), false);
     let spans = prompt.spans();
     assert_eq!(spans[0].text, "Write a message to ");
     assert_eq!(spans[1].text, "engineer_abc");
     assert_eq!(spans[2].text, "...");
     assert_eq!(spans[2].style.fg, Some(tau_cli_term::Color::DarkGrey));
     assert!(spans[2].style.italic);
+}
+
+#[test]
+fn suspended_prompt_input_placeholder_explains_messages_are_blocked() {
+    // Regression coverage for the disabled-input copy shown while the selected
+    // agent is suspended. The text must make clear that users need to resume it
+    // before sending messages.
+    let theme = tau_themes::Theme::builtin();
+    let prompt = prompt_input_placeholder(&theme, Some("engineer"), Some("engineer_abc"), true);
+    let text: String = prompt
+        .spans()
+        .iter()
+        .map(|span| span.text.as_str())
+        .collect();
+
+    assert_eq!(
+        text,
+        "This agent is suspended. Use /resume before sending messages."
+    );
 }
 
 #[test]

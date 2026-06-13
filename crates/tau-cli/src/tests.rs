@@ -247,6 +247,8 @@ fn local_slash_commands_are_identified_for_history_rendering() {
     assert!(is_local_slash_command("/agent resume worker-1"));
     assert!(is_local_slash_command("/agent new"));
     assert!(is_local_slash_command("/new"));
+    assert!(is_local_slash_command("/suspend"));
+    assert!(is_local_slash_command("/resume"));
     assert!(is_local_slash_command("/new now"));
     assert!(is_local_slash_command("/session new"));
     assert!(is_local_slash_command("/version"));
@@ -269,7 +271,7 @@ fn suspended_agent_prompt_text_is_stable() {
     // suspended and the user tries to submit another message to it.
     assert_eq!(
         SUSPENDED_AGENT_PROMPT,
-        "This agent is suspended, use `/agent resume` to resume it."
+        "This agent is suspended. Use `/resume` to resume it before sending messages."
     );
 }
 
@@ -1056,6 +1058,42 @@ fn suspended_agent_stays_blocked_after_lifecycle_updates_until_resume() {
         .expect("suspended agents lock poisoned")
         .clone();
     assert!(agent_is_active_in_sets(&live, &suspended, "worker-1"));
+}
+
+#[test]
+fn selected_suspended_agent_placeholder_refreshes_until_resume() {
+    // Regression: suspending the currently selected agent must update the live
+    // input placeholder immediately, so the empty prompt itself explains why a
+    // normal message cannot be sent until `/resume` runs.
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+
+    renderer.handle(&Event::StartAgentAccepted(tau_proto::StartAgentAccepted {
+        query_id: "q-worker".to_owned(),
+        agent_id: agent_id("worker-1"),
+    }));
+    renderer.switch_agent("worker-1".to_owned());
+    sync(&handle);
+    assert!(vt.screen_contains(100, "Write a message to worker-1"));
+
+    renderer.suspend_agent("worker-1");
+    sync(&handle);
+    assert!(vt.screen_contains(
+        100,
+        "This agent is suspended. Use /resume before sending messages."
+    ));
+
+    renderer.resume_agent("worker-1".to_owned());
+    sync(&handle);
+    assert!(vt.screen_contains(100, "Write a message to worker-1"));
+    assert!(!vt.screen_contains(
+        100,
+        "This agent is suspended. Use /resume before sending messages."
+    ));
 }
 
 #[test]

@@ -85,6 +85,76 @@ fn agent_suspend_resume_updates_prompt_routing_state_synchronously() {
 }
 
 #[test]
+fn selected_agent_suspend_alias_dispatches_existing_suspend_flow() {
+    // `/suspend` is a no-argument alias for suspending the selected agent. This
+    // verifies the command path updates prompt-routing state immediately and
+    // emits the renderer command used by `/agent suspend`.
+    let known = Arc::new(Mutex::new(vec!["worker".to_owned()]));
+    let live = Arc::new(Mutex::new(std::collections::HashSet::from([
+        "worker".to_owned()
+    ])));
+    let suspended = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let routing = routing_state(known, live.clone(), suspended.clone());
+    routing.set_selected_agent(Some("worker".to_owned()));
+    let (renderer_tx, renderer_rx) = mpsc::channel();
+    let messages = Arc::new(Mutex::new(Vec::new()));
+
+    handle_agent_suspend_command(&routing, &renderer_tx, None, &|message| {
+        messages
+            .lock()
+            .expect("messages lock poisoned")
+            .push(message.to_owned());
+    });
+
+    assert!(messages.lock().expect("messages lock poisoned").is_empty());
+    assert!(!agent_is_active_in_sets(
+        &live.lock().expect("live agents lock poisoned"),
+        &suspended.lock().expect("suspended agents lock poisoned"),
+        "worker"
+    ));
+    match renderer_rx.try_recv().expect("renderer command") {
+        RendererCmd::SuspendAgent { agent_id } => assert_eq!(agent_id, "worker"),
+        _ => panic!("expected suspend renderer command"),
+    }
+}
+
+#[test]
+fn selected_agent_resume_alias_dispatches_existing_resume_flow() {
+    // `/resume` is a no-argument alias for resuming the selected suspended
+    // agent. This catches regressions where the alias updates state but forgets
+    // to notify the renderer, or vice versa.
+    let known = Arc::new(Mutex::new(vec!["worker".to_owned()]));
+    let live = Arc::new(Mutex::new(std::collections::HashSet::from([
+        "worker".to_owned()
+    ])));
+    let suspended = Arc::new(Mutex::new(std::collections::HashSet::from([
+        "worker".to_owned()
+    ])));
+    let routing = routing_state(known, live.clone(), suspended.clone());
+    routing.set_selected_agent(Some("worker".to_owned()));
+    let (renderer_tx, renderer_rx) = mpsc::channel();
+    let messages = Arc::new(Mutex::new(Vec::new()));
+
+    handle_agent_resume_command(&routing, &renderer_tx, None, &|message| {
+        messages
+            .lock()
+            .expect("messages lock poisoned")
+            .push(message.to_owned());
+    });
+
+    assert!(messages.lock().expect("messages lock poisoned").is_empty());
+    assert!(agent_is_active_in_sets(
+        &live.lock().expect("live agents lock poisoned"),
+        &suspended.lock().expect("suspended agents lock poisoned"),
+        "worker"
+    ));
+    match renderer_rx.try_recv().expect("renderer command") {
+        RendererCmd::ResumeAgent { agent_id } => assert_eq!(agent_id, "worker"),
+        _ => panic!("expected resume renderer command"),
+    }
+}
+
+#[test]
 fn agent_mention_completer_offers_only_active_agents() {
     // Prompt-text `@agent` completion is for routing to active agents. It
     // must not suggest suspended agents even though `/agent resume` does.

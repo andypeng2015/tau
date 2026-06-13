@@ -1187,11 +1187,18 @@ impl EventRenderer {
     }
 
     fn refresh_prompt_placeholder(&mut self) {
+        let current_agent_suspended = self.current_agent_id.as_deref().is_some_and(|agent_id| {
+            self.suspended_agents
+                .lock()
+                .map(|agents| agents.contains(agent_id))
+                .unwrap_or(false)
+        });
         self.handle
             .set_input_placeholder(crate::theme::prompt_input_placeholder(
                 &self.theme,
                 self.current_role.as_deref(),
                 self.current_agent_id.as_deref(),
+                current_agent_suspended,
             ));
     }
 
@@ -1319,7 +1326,11 @@ impl EventRenderer {
     }
 
     pub(crate) fn resume_agent(&mut self, agent_id: String) {
+        let resumed_current_agent = self.current_agent_id.as_deref() == Some(agent_id.as_str());
         self.mark_agent_live_and_unsuspended(agent_id);
+        if resumed_current_agent {
+            self.refresh_prompt_placeholder();
+        }
     }
 
     pub(crate) fn suspend_agent(&mut self, agent_id: &str) {
@@ -1332,6 +1343,9 @@ impl EventRenderer {
             agents.insert(agent_id.to_owned());
         }
         self.render_model_status_if_present();
+        if self.current_agent_id.as_deref() == Some(agent_id) {
+            self.refresh_prompt_placeholder();
+        }
     }
 
     fn render_model_status_if_present(&mut self) {

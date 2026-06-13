@@ -526,7 +526,7 @@ const DRAFT_DEBOUNCE: Duration = Duration::from_secs(1);
 const EOF_DURING_AGENT_NOTICE: &str =
     "An agent is still running; use /quit to terminate the session in progress.";
 pub(crate) const SUSPENDED_AGENT_PROMPT: &str =
-    "This agent is suspended, use `/agent resume` to resume it.";
+    "This agent is suspended. Use `/resume` to resume it before sending messages.";
 const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/quit", "Exit the chat session"),
     ("/cancel", "Cancel the current in-flight prompt"),
@@ -540,6 +540,8 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("/agent", "Manage visible/suspended agent transcripts"),
     ("/new", "Alias for /agent new"),
+    ("/suspend", "Alias for /agent suspend on the selected agent"),
+    ("/resume", "Alias for /agent resume on the selected agent"),
     ("/role", "Switch, create, edit, or delete an agent role"),
     (
         "/session",
@@ -1126,12 +1128,13 @@ enum RendererCmd {
     SwitchAgent {
         agent_id: String,
     },
-    /// `/agent suspend <agent_id>` — hide agent from active UI choices.
+    /// Suspend a loaded agent from active UI choices. Emitted by `/agent
+    /// suspend` and the selected-agent `/suspend` alias.
     SuspendAgent {
         agent_id: String,
     },
-    /// `/agent resume <agent_id>` — restore a suspended agent to active UI
-    /// choices.
+    /// Resume a suspended agent into active UI choices. Emitted by `/agent
+    /// resume` and the selected-agent `/resume` alias.
     ResumeAgent {
         agent_id: String,
     },
@@ -1280,6 +1283,56 @@ impl InputRoutingState {
     fn role_cycling_enabled(&self) -> bool {
         role_cycling_enabled(&self.current_agent_state)
     }
+}
+
+fn handle_agent_suspend_command(
+    routing: &InputRoutingState,
+    renderer_tx: &mpsc::Sender<RendererCmd>,
+    target: Option<&str>,
+    print_local: &impl Fn(&str),
+) {
+    let target = target
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| routing.selected_agent_id());
+    let Some(agent_id) = target else {
+        print_local("/agent suspend <agent_id>");
+        return;
+    };
+    if !routing.agent_is_known(&agent_id) {
+        print_local(&format!("unknown agent: {agent_id}"));
+        return;
+    }
+    routing.mark_suspended(&agent_id);
+    let _ = renderer_tx.send(RendererCmd::SuspendAgent { agent_id });
+}
+
+fn handle_agent_resume_command(
+    routing: &InputRoutingState,
+    renderer_tx: &mpsc::Sender<RendererCmd>,
+    target: Option<&str>,
+    print_local: &impl Fn(&str),
+) {
+    let target = target
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            routing
+                .selected_agent_id()
+                .filter(|agent_id| !routing.agent_is_active(agent_id))
+        });
+    let Some(agent_id) = target else {
+        print_local("/agent resume <agent_id>");
+        return;
+    };
+    if !routing.agent_is_known(&agent_id) {
+        print_local(&format!("unknown agent: {agent_id}"));
+        return;
+    }
+    routing.mark_resumed(&agent_id);
+    let _ = renderer_tx.send(RendererCmd::ResumeAgent { agent_id });
 }
 
 /// Local UI output used by the input thread while it holds `&mut HighTerm`.
@@ -1662,6 +1715,14 @@ impl<'a> TerminalInputSession<'a> {
             self.handle_new_alias(text);
             return true;
         }
+        if text == "/suspend" || text.starts_with("/suspend ") {
+            self.handle_suspend_alias(text);
+            return true;
+        }
+        if text == "/resume" || text.starts_with("/resume ") {
+            self.handle_resume_alias(text);
+            return true;
+        }
         if text == "/set" || text.starts_with("/set ") {
             let output = &self.output;
             handle_set_command(text, &self.ctx.renderer_tx, &|message| {
@@ -1760,6 +1821,22 @@ impl<'a> TerminalInputSession<'a> {
         self.handle_agent_new(None);
     }
 
+    fn handle_suspend_alias(&self, text: &str) {
+        if text.trim() != "/suspend" {
+            self.output.system_info("/suspend");
+            return;
+        }
+        self.handle_agent_suspend(None);
+    }
+
+    fn handle_resume_alias(&self, text: &str) {
+        if text.trim() != "/resume" {
+            self.output.system_info("/resume");
+            return;
+        }
+        self.handle_agent_resume(None);
+    }
+
     fn selected_agent_id(&self) -> Option<String> {
         self.ctx.routing.selected_agent_id()
     }
@@ -1803,50 +1880,25 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn handle_agent_suspend(&self, target: Option<&str>) {
-        let target = target
-            .map(str::trim)
-            .filter(|target| !target.is_empty())
-            .map(ToOwned::to_owned)
-            .or_else(|| self.selected_agent_id());
-        let Some(agent_id) = target else {
-            self.output.system_info("/agent suspend <agent_id>");
-            return;
-        };
-        if !self.agent_is_known(&agent_id) {
-            self.output
-                .system_info(&format!("unknown agent: {agent_id}"));
-            return;
-        }
-        self.ctx.routing.mark_suspended(&agent_id);
-        let _ = self
-            .ctx
-            .renderer_tx
-            .send(RendererCmd::SuspendAgent { agent_id });
+        handle_agent_suspend_command(
+            &self.ctx.routing,
+            &self.ctx.renderer_tx,
+            target,
+            &|message| {
+                self.output.system_info(message);
+            },
+        );
     }
 
     fn handle_agent_resume(&self, target: Option<&str>) {
-        let target = target
-            .map(str::trim)
-            .filter(|target| !target.is_empty())
-            .map(ToOwned::to_owned)
-            .or_else(|| {
-                self.selected_agent_id()
-                    .filter(|agent_id| !self.agent_is_active(agent_id))
-            });
-        let Some(agent_id) = target else {
-            self.output.system_info("/agent resume <agent_id>");
-            return;
-        };
-        if !self.agent_is_known(&agent_id) {
-            self.output
-                .system_info(&format!("unknown agent: {agent_id}"));
-            return;
-        }
-        self.ctx.routing.mark_resumed(&agent_id);
-        let _ = self
-            .ctx
-            .renderer_tx
-            .send(RendererCmd::ResumeAgent { agent_id });
+        handle_agent_resume_command(
+            &self.ctx.routing,
+            &self.ctx.renderer_tx,
+            target,
+            &|message| {
+                self.output.system_info(message);
+            },
+        );
     }
 
     fn agent_is_known(&self, agent_id: &str) -> bool {
@@ -2447,6 +2499,8 @@ pub(crate) fn is_local_slash_command(text: &str) -> bool {
             | "/provider-auth"
             | "/agent"
             | "/new"
+            | "/suspend"
+            | "/resume"
             | "/set"
             | "/role"
             | "/model"

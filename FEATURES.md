@@ -484,6 +484,7 @@ Type `/` for menu autocompletion. The built-in set:
 | `/agent switch <id>` | Switch this UI to an active loaded-agent transcript (`none` clears selection) |
 | `/agent suspend [id]` | Hide a loaded agent from this UI's active choices until resumed |
 | `/agent resume <id>` | Return a hidden loaded agent to this UI's active choices |
+| `/suspend` / `/resume` | Suspend or resume this UI's currently selected agent |
 | `/model <provider>/<model>` | Switch selected agent model                         |
 | `/role <role> ...`  | Switch, create, edit, or delete an agent role        |
 | `/fast`             | Toggle Codex Fast mode (`service_tier: fast`)        |
@@ -494,7 +495,8 @@ A session is an agent-membership container backed by a durable membership log.
 Starting a new session resets harness/UI session state; prompts create/load
 agents whose transcripts are stored under `<state_dir>/agents/<agent_id>/`. The
 "current agent" selection is local to each attached UI: `/agent new`, `/agent
-switch`, `/agent suspend`, and `/agent resume` do not synchronize selection or
+switch`, `/agent suspend`, `/agent resume`, `/suspend`, and `/resume` do not
+synchronize selection or
 hidden-agent preferences to other UIs.
 
 Available `/set` names include `show-diff` (expanded vs. compact diffs),
