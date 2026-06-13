@@ -563,9 +563,19 @@ where
                         let enforce_ro_mode = config.enforce_ro_mode;
                         let running_shells = Arc::clone(&running_shells);
                         if invoke.tool_name == DIR_LOCK_TOOL_NAME {
+                            let permit = if is_dir_lock_update_invocation(&invoke.arguments) {
+                                let Some(permit) = sem.try_acquire() else {
+                                    send_worker_saturated_failure(invoke, &tx);
+                                    continue;
+                                };
+                                Some(permit)
+                            } else {
+                                None
+                            };
                             let lock_manager = lock_manager.clone();
                             let enabled = config.dir_lock.enable;
                             std::thread::spawn(move || {
+                                let _permit = permit;
                                 crate::dir_lock::dispatch_dir_lock_tool(
                                     invoke,
                                     &lock_manager,
@@ -1196,6 +1206,10 @@ fn is_shell_tool(name: &str) -> bool {
             | GPT_SHELL_TOOL_NAME
             | DIR_LOCK_TOOL_NAME
     ) || is_echo_tool(name)
+}
+
+fn is_dir_lock_update_invocation(arguments: &CborValue) -> bool {
+    crate::argument::optional_argument_text(arguments, "command").as_deref() == Some("update")
 }
 
 fn is_dir_lock_update_tool(name: &str) -> bool {
