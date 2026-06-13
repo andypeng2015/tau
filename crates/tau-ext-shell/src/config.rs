@@ -125,12 +125,49 @@ impl ShellConfig {
             None
         };
         for (key, value) in &self.extra_env {
-            child_cmd.env(key, value);
+            if value.is_empty() {
+                child_cmd.env_remove(key);
+            } else {
+                child_cmd.env(key, value);
+            }
         }
         let child = child_cmd.spawn();
         if let Some(read_only_warning) = read_only_warning {
             read_only_warning.log_after_spawn();
         }
         child
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ensures empty extra_env values implement the documented clear-variable
+    /// semantics instead of passing an empty string through to the child.
+    #[test]
+    fn empty_extra_env_removes_child_variable() {
+        let mut extra_env = BTreeMap::new();
+        extra_env.insert("HOME".to_owned(), String::new());
+        let config = ShellConfig {
+            extra_env,
+            ..Default::default()
+        };
+
+        let output = config
+            .command_for("printf \"${HOME+set}\"")
+            .env_remove("HOME")
+            .output()
+            .expect("spawn shell");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+
+        let output = config
+            .spawn_isolated("printf \"${HOME+set}\"", None, false, false)
+            .expect("spawn isolated shell")
+            .wait_with_output()
+            .expect("wait shell");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     }
 }
