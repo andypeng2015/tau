@@ -3,11 +3,26 @@
 use tau_proto::CborValue;
 
 pub(crate) fn argument_text(arguments: &CborValue, key: &str) -> Result<String, String> {
-    optional_argument_text(arguments, key).ok_or_else(|| format!("missing string argument: {key}"))
+    optional_argument_text(arguments, key)?.ok_or_else(|| format!("missing string argument: {key}"))
 }
 
-pub(crate) fn optional_argument_text(arguments: &CborValue, key: &str) -> Option<String> {
-    cbor_map_text(arguments, key).map(str::to_owned)
+pub(crate) fn optional_argument_text(
+    arguments: &CborValue,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match arguments {
+        CborValue::Map(entries) => entries
+            .iter()
+            .find_map(|(k, v)| match k {
+                CborValue::Text(k) if k == key => Some(match v {
+                    CborValue::Text(value) => Ok(Some(value.clone())),
+                    _ => Err(format!("argument `{key}` must be a string")),
+                }),
+                _ => None,
+            })
+            .unwrap_or(Ok(None)),
+        _ => Ok(None),
+    }
 }
 
 pub(crate) fn optional_argument_int_strict(

@@ -16,7 +16,9 @@ const MAX_FIND_LIMIT: usize = MAX_OUTPUT_LINES;
 
 pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     let pattern = argument_text(arguments, "pattern").map_err(ToolFailure::from)?;
-    let path = optional_argument_text(arguments, "path").unwrap_or_else(|| ".".to_owned());
+    let path = optional_argument_text(arguments, "path")
+        .map_err(ToolFailure::from)?
+        .unwrap_or_else(|| ".".to_owned());
     let limit = match optional_argument_int_strict(arguments, "limit").map_err(ToolFailure::from)? {
         Some(value) if value < 1 => return Err(ToolFailure::new("limit must be >= 1")),
         Some(value) => {
@@ -251,6 +253,26 @@ mod tests {
             .expect_err("string limit should be rejected");
 
         assert_eq!(err.message, "argument `limit` must be an integer");
+    }
+
+    /// Ensures find rejects wrong-typed paths instead of searching the default
+    /// directory.
+    #[test]
+    fn find_rejects_wrong_type_path() {
+        let args = CborValue::Map(vec![
+            (
+                CborValue::Text("pattern".to_owned()),
+                CborValue::Text("*".to_owned()),
+            ),
+            (
+                CborValue::Text("path".to_owned()),
+                CborValue::Integer(1.into()),
+            ),
+        ]);
+
+        let err = run_find(&args).expect_err("integer path should be rejected");
+
+        assert_eq!(err.message, "argument `path` must be a string");
     }
 
     /// Ensures find rejects non-positive limits instead of coercing them to a

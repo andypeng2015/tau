@@ -117,7 +117,7 @@ pub(crate) fn run_command_live(
 ) -> Result<CommandOutcome, ToolFailure> {
     let access_mode = parse_access_mode(arguments).map_err(ToolFailure::from)?;
     let command = argument_text(arguments, "command").map_err(ToolFailure::from)?;
-    let cwd = optional_argument_text(arguments, "cwd");
+    let cwd = optional_argument_text(arguments, "cwd").map_err(ToolFailure::from)?;
     let display_mode = access_mode.display_label();
     let display_args = command_display_args(&command);
     let display_payload = command_display_payload(&command);

@@ -21,8 +21,8 @@ const MAX_GREP_CONTEXT: usize = 20;
 
 pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure> {
     let pattern = argument_text(arguments, "pattern")?;
-    let path = optional_argument_text(arguments, "path");
-    let glob = optional_argument_text(arguments, "glob");
+    let path = optional_argument_text(arguments, "path")?;
+    let glob = optional_argument_text(arguments, "glob")?;
     let ignore_case = optional_argument_bool(arguments, "ignoreCase")
         .map_err(ToolFailure::from)?
         .unwrap_or(false);
@@ -525,6 +525,19 @@ mod tests {
             ),
             (CborValue::Text(extra.0.to_owned()), extra.1),
         ])
+    }
+
+    /// Ensures grep rejects wrong-typed path/glob instead of searching the
+    /// default directory or dropping the glob.
+    #[test]
+    fn grep_rejects_wrong_type_optional_strings() {
+        let path_err = run_grep(&args(("path", CborValue::Integer(1.into()))))
+            .expect_err("integer path should be rejected");
+        let glob_err = run_grep(&args(("glob", CborValue::Integer(1.into()))))
+            .expect_err("integer glob should be rejected");
+
+        assert_eq!(path_err.message, "argument `path` must be a string");
+        assert_eq!(glob_err.message, "argument `glob` must be a string");
     }
 
     /// Ensures grep rejects wrong-typed optional integers before spawning rg,

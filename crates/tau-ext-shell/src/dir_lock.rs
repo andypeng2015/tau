@@ -750,7 +750,21 @@ pub(crate) fn dispatch_dir_lock_tool(
             }
         }
         "unlock" => {
-            let owner_arg = optional_argument_text(&invoke.arguments, "owner_agent_id");
+            let owner_arg = match optional_argument_text(&invoke.arguments, "owner_agent_id") {
+                Ok(owner_arg) => owner_arg,
+                Err(message) => {
+                    send_event(
+                        tx,
+                        tool_error_with_args(
+                            &invoke,
+                            message,
+                            Some(invoke.arguments.clone()),
+                            Some(dir_lock_display_args("unlock", &dir)),
+                        ),
+                    );
+                    return;
+                }
+            };
             let owner = match owner_arg.as_deref() {
                 Some(owner) => match owner.parse::<AgentId>() {
                     Ok(owner) => owner,
@@ -951,7 +965,8 @@ pub(crate) fn canonical_path_parent(path: &Path) -> Result<PathBuf, ToolFailure>
 
 /// Canonical lock directory for a shell command's cwd argument.
 pub(crate) fn canonical_shell_cwd(arguments: &CborValue) -> Result<PathBuf, ToolFailure> {
-    let cwd = crate::argument::optional_argument_text(arguments, "cwd");
+    let cwd =
+        crate::argument::optional_argument_text(arguments, "cwd").map_err(ToolFailure::from)?;
     let display_arg = cwd.clone().unwrap_or_else(|| ".".to_owned());
     let path = cwd
         .as_deref()

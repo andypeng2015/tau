@@ -1299,7 +1299,11 @@ fn acquire_dir_lock_dispatch_permit(
 }
 
 fn is_dir_lock_update_invocation(arguments: &CborValue) -> bool {
-    crate::argument::optional_argument_text(arguments, "command").as_deref() == Some("update")
+    crate::argument::optional_argument_text(arguments, "command")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("update")
 }
 
 fn is_dir_lock_update_tool(name: &str) -> bool {

@@ -51,6 +51,19 @@ fn ls_args(path: &std::path::Path) -> CborValue {
 }
 
 #[test]
+fn ls_rejects_wrong_type_path() {
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Integer(1.into()),
+    )]);
+    let mut world = crate::tools::world::ShellWorld::real();
+
+    let err = run_ls(&args, &mut world).expect_err("integer path should be rejected");
+
+    assert_eq!(err.message, "argument `path` must be a string");
+}
+
+#[test]
 fn empty_ls_display_uses_zero_line_and_byte_stats() {
     let tempdir = tempfile::TempDir::new().expect("tempdir");
 

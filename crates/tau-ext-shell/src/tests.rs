@@ -993,6 +993,49 @@ fn dir_lock_unlock_can_target_another_owner() {
 }
 
 #[test]
+fn dir_lock_unlock_rejects_wrong_type_owner_agent_id() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let lock_dir = tempdir.path().to_path_buf();
+    let (mut reader, mut writer) = spawn_extension();
+    drain_startup(&mut reader);
+
+    writer
+        .write_event(&tool_started(
+            "unlock-bad-owner-type",
+            DIR_LOCK_TOOL_NAME,
+            cbor_map(vec![
+                ("command", CborValue::Text("unlock".to_owned())),
+                ("directory", CborValue::Text(lock_dir.display().to_string())),
+                ("owner_agent_id", CborValue::Integer(1.into())),
+            ]),
+            "agent-b",
+        ))
+        .expect("dir_lock unlock");
+    writer.flush().expect("flush unlock");
+
+    loop {
+        match reader.read_event().expect("read") {
+            Some(Event::ToolError(error)) if error.call_id.as_str() == "unlock-bad-owner-type" => {
+                assert_eq!(error.message, "argument `owner_agent_id` must be a string");
+                break;
+            }
+            Some(Event::ToolResult(result))
+                if result.call_id.as_str() == "unlock-bad-owner-type" =>
+            {
+                panic!("unlock should fail, got {result:?}");
+            }
+            Some(_) => continue,
+            None => panic!("extension closed before unlock result"),
+        }
+    }
+
+    writer
+        .write_frame(&disconnect_frame(None))
+        .expect("disconnect");
+    writer.flush().expect("flush");
+}
+
+#[test]
 fn dir_lock_update_errors_when_same_agent_already_holds_overlapping_lock() {
     let tempdir = TempDir::new().expect("tempdir");
     let lock_dir = tempdir.path().to_path_buf();
@@ -1201,7 +1244,7 @@ fn shell_ro_bypasses_directory_update_lock() {
             Some(Event::ToolResult(result)) if result.call_id.as_str() == "read-only-shell" => {
                 assert_eq!(
                     optional_argument_text(&result.result, "output"),
-                    Some("out(no_nl) ro-ok".to_owned())
+                    Ok(Some("out(no_nl) ro-ok".to_owned()))
                 );
                 break;
             }
@@ -1854,7 +1897,7 @@ fn extension_reads_file() {
     assert_eq!(result.tool_name, READ_TOOL_NAME);
     assert_eq!(
         optional_argument_text(&result.result, "line-numbered content"),
-        Some("1(no_nl) hello from file".to_owned())
+        Ok(Some("1(no_nl) hello from file".to_owned()))
     );
 
     writer
@@ -3842,7 +3885,7 @@ fn shell_tool_reports_progress_and_success() {
     assert_eq!(result.tool_name, SHELL_TOOL_NAME);
     assert_eq!(
         optional_argument_text(&result.result, "output"),
-        Some("out(no_nl) hello".to_owned())
+        Ok(Some("out(no_nl) hello".to_owned()))
     );
 
     writer
@@ -3883,7 +3926,7 @@ fn gpt_shell_tool_reports_progress_and_success() {
     assert_eq!(result.tool_name, GPT_SHELL_TOOL_NAME);
     assert_eq!(
         optional_argument_text(&result.result, "output"),
-        Some("out(no_nl) hello".to_owned())
+        Ok(Some("out(no_nl) hello".to_owned()))
     );
 
     writer
@@ -3940,7 +3983,7 @@ fn shell_tool_applies_configured_prefix_and_command() {
     };
     assert_eq!(
         optional_argument_text(&result.result, "output"),
-        Some("out(no_nl) ok".to_owned())
+        Ok(Some("out(no_nl) ok".to_owned()))
     );
 
     writer
@@ -4807,6 +4850,24 @@ fn shell_tool_rejects_wrong_type_timeout() {
     assert_eq!(error.message, "argument `timeout` must be an integer");
 }
 
+#[test]
+fn shell_tool_rejects_wrong_type_cwd() {
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("command".to_owned()),
+            CborValue::Text("printf should-not-run".to_owned()),
+        ),
+        (
+            CborValue::Text("cwd".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+    ]);
+
+    let error = run_command_live(&args, &crate::config::ShellConfig::default(), false, None)
+        .expect_err("cwd");
+    assert_eq!(error.message, "argument `cwd` must be a string");
+}
+
 #[cfg(unix)]
 #[test]
 fn shell_tool_reports_signal_termination_details() {
@@ -5108,6 +5169,18 @@ fn optional_argument_bool_rejects_present_non_bool_values() {
     let err = optional_argument_bool(&args, "ignoreCase").expect_err("non-bool should fail");
 
     assert_eq!(err, "argument `ignoreCase` must be a boolean");
+}
+
+#[test]
+fn optional_argument_text_rejects_present_non_string_values() {
+    let args = CborValue::Map(vec![(
+        CborValue::Text("path".to_owned()),
+        CborValue::Integer(123.into()),
+    )]);
+
+    let err = optional_argument_text(&args, "path").expect_err("non-string should fail");
+
+    assert_eq!(err, "argument `path` must be a string");
 }
 
 fn grep_args(pattern: &str, path: &str, extra: Vec<(CborValue, CborValue)>) -> CborValue {

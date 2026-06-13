@@ -16,7 +16,9 @@ pub(crate) fn run_ls(
     arguments: &CborValue,
     world: &mut ShellWorld,
 ) -> Result<ToolOutput, ToolFailure> {
-    let path = optional_argument_text(arguments, "path").unwrap_or_else(|| ".".to_owned());
+    let path = optional_argument_text(arguments, "path")
+        .map_err(ToolFailure::from)?
+        .unwrap_or_else(|| ".".to_owned());
     let limit = parse_limit(arguments)?;
     let dir_path = PathBuf::from(&path);
     let display_args = dir_path.display().to_string();
