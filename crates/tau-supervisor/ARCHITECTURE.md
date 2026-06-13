@@ -1,0 +1,23 @@
+# tau-supervisor architecture
+
+`tau-supervisor` owns child process launch and stdio transport primitives used to prototype supervision behavior outside the production harness path.
+
+## Scope
+
+This crate is currently non-production. The production harness supervisor still lives in `tau-harness`, so reliability guarantees here only apply to direct users of this crate until the harness integrates it or duplicates the same contracts.
+
+## Process ownership
+
+`SupervisedChild::spawn` owns the spawned child from successful process creation onward. During initialization a guard kill/waits the child if pipe setup or stdout-reader startup fails. Once construction succeeds, callers should prefer explicit protocol shutdown or `SupervisedChild::terminate`; `Drop` is only best-effort hard-kill cleanup with ignored errors.
+
+Lifecycle helpers on `SupervisedChild` derive process pids from the owned child. Use `ExtensionCommand::pre_spawn_starting_event` only for pid-less pre-spawn lifecycle reporting.
+
+## Stdio transport
+
+Children communicate with the harness over CBOR protocol frames on stdin/stdout. A dedicated stdout reader thread decodes frames and forwards them through a bounded buffer. Callers supervising a child that may emit during shutdown must keep draining stdout or avoid waiting indefinitely for exit.
+
+Receive outcomes distinguish decoded messages, timeout, and clean stdout closure. Corrupt or truncated frames remain decode errors.
+
+## Child environment
+
+Children inherit the supervisor environment except variables with names starting `TAU_SECRET_`; those are stripped before launch. Command configuration also controls argv, optional working directory, and stderr policy.
