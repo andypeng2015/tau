@@ -1392,24 +1392,6 @@ pub fn load_harness_settings_with_cli_overrides_in(
     Ok(settings)
 }
 
-#[derive(Clone, Debug)]
-struct HarnessConfigOverrideSource {
-    key: String,
-    value: config::Value,
-}
-
-impl config::Source for HarnessConfigOverrideSource {
-    fn clone_into_box(&self) -> Box<dyn config::Source + Send + Sync> {
-        Box::new(self.clone())
-    }
-
-    fn collect(&self) -> Result<config::Map<String, config::Value>, config::ConfigError> {
-        let mut out = config::Map::new();
-        out.insert(self.key.clone(), self.value.clone());
-        Ok(out)
-    }
-}
-
 fn normalize_alias_key(
     map: &mut serde_json::Map<String, serde_json::Value>,
     alias: &str,
@@ -1566,18 +1548,29 @@ fn harness_role_cli_override_layers(
 
 fn harness_config_override_source(
     override_: &HarnessConfigCliOverride,
-) -> Result<HarnessConfigOverrideSource, SettingsError> {
-    let yaml: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&override_.raw_value).map_err(|err| {
-            SettingsError::InvalidHarnessConfigCliOverride(format!(
-                "{}: failed to parse value as YAML: {err}",
-                override_.key
-            ))
-        })?;
-    let value = config_value_from_yaml(yaml)?;
-    Ok(HarnessConfigOverrideSource {
-        key: override_.key.clone(),
-        value,
+) -> Result<config::File<config::FileSourceString, config::FileFormat>, SettingsError> {
+    let yaml: serde_json::Value = serde_yaml_ng::from_str(&override_.raw_value).map_err(|err| {
+        SettingsError::InvalidHarnessConfigCliOverride(format!(
+            "{}: failed to parse value as YAML: {err}",
+            override_.key
+        ))
+    })?;
+    let mut value = nested_harness_override_value(&override_.key, yaml);
+    normalize_harness_config_value(&mut value, &format!("CLI override `{}`", override_.key))?;
+    let normalized = serde_yaml_ng::to_string(&value).map_err(|err| {
+        SettingsError::Config(config::ConfigError::Message(format!(
+            "failed to normalize CLI override `{}`: {err}",
+            override_.key
+        )))
+    })?;
+    Ok(config::File::from_str(&normalized, config::FileFormat::Yaml).required(true))
+}
+
+fn nested_harness_override_value(key: &str, value: serde_json::Value) -> serde_json::Value {
+    key.split('.').rev().fold(value, |value, key| {
+        let mut map = serde_json::Map::new();
+        map.insert(key.to_owned(), value);
+        serde_json::Value::Object(map)
     })
 }
 
@@ -1658,51 +1651,6 @@ fn canonical_role_key(key: &str) -> &str {
         "disableTools" => "disable_tools",
         _ => key,
     }
-}
-
-fn config_value_from_yaml(value: serde_yaml_ng::Value) -> Result<config::Value, SettingsError> {
-    let kind = match value {
-        serde_yaml_ng::Value::Null => config::ValueKind::Nil,
-        serde_yaml_ng::Value::Bool(value) => config::ValueKind::Boolean(value),
-        serde_yaml_ng::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                config::ValueKind::I64(value)
-            } else if let Some(value) = value.as_u64() {
-                config::ValueKind::U64(value)
-            } else if let Some(value) = value.as_f64() {
-                config::ValueKind::Float(value)
-            } else {
-                return Err(SettingsError::InvalidHarnessConfigCliOverride(
-                    "unsupported YAML number".to_owned(),
-                ));
-            }
-        }
-        serde_yaml_ng::Value::String(value) => config::ValueKind::String(value),
-        serde_yaml_ng::Value::Sequence(values) => config::ValueKind::Array(
-            values
-                .into_iter()
-                .map(config_value_from_yaml)
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        serde_yaml_ng::Value::Mapping(entries) => {
-            let mut table = config::Map::new();
-            for (key, value) in entries {
-                let serde_yaml_ng::Value::String(key) = key else {
-                    return Err(SettingsError::InvalidHarnessConfigCliOverride(
-                        "YAML map override values must use string keys".to_owned(),
-                    ));
-                };
-                table.insert(key, config_value_from_yaml(value)?);
-            }
-            config::ValueKind::Table(table)
-        }
-        serde_yaml_ng::Value::Tagged(_) => {
-            return Err(SettingsError::InvalidHarnessConfigCliOverride(
-                "YAML tags are not supported in harness config overrides".to_owned(),
-            ));
-        }
-    };
-    Ok(config::Value::new(None, kind))
 }
 
 /// Stacks an embedded built-in YAML string underneath the user's files.

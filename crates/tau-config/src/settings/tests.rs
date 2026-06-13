@@ -662,6 +662,43 @@ fn harness_config_cli_overrides_reject_alias_conflicts() {
 }
 
 #[test]
+fn harness_config_cli_overrides_normalize_map_value_aliases() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    let overrides = [HarnessConfigCliOverride::from_str(
+        "role_groups.engineer.roles.senior-engineer={enabled: false}",
+    )
+    .expect("override")];
+
+    let settings =
+        load_harness_settings_with_cli_overrides_in(&dirs_with_config(dir), &[], &overrides)
+            .expect("load");
+
+    assert!(!settings.roles.contains_key("senior-engineer"));
+}
+
+#[test]
+fn harness_config_cli_overrides_reject_map_value_alias_conflicts() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    let overrides = [HarnessConfigCliOverride::from_str(
+        "role_groups.engineer.roles.senior-engineer={enabled: false, enable: true}",
+    )
+    .expect("override")];
+
+    let error =
+        load_harness_settings_with_cli_overrides_in(&dirs_with_config(dir), &[], &overrides)
+            .expect_err("conflicting map aliases");
+
+    assert!(
+        error.to_string().contains("enabled")
+            && error.to_string().contains("enable")
+            && error.to_string().contains("senior-engineer"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn harness_settings_load_role_tool_lists() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
