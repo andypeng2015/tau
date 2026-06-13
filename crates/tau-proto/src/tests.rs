@@ -573,6 +573,43 @@ fn multiple_directional_messages_can_share_one_stream() {
     assert_eq!(decoded, messages);
 }
 
+/// Ensures extension-defined events cannot spoof first-party event categories
+/// that routing and policy code treat as typed protocol events.
+#[test]
+fn custom_event_rejects_reserved_event_names() {
+    let value = serde_json::json!({
+        "event": "extension.event",
+        "payload": {
+            "name": "harness.info",
+            "payload": "spoofed"
+        }
+    });
+
+    let error = serde_json::from_value::<Event>(value).expect_err("reserved name should fail");
+
+    assert!(
+        error.to_string().contains("extension-owned category"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Ensures extension-owned custom event categories still round-trip and route
+/// by their payload name.
+#[test]
+fn custom_event_allows_extension_owned_event_names() {
+    let event = Event::ExtensionEvent(CustomEvent {
+        name: "demo.progress".parse().expect("custom event name"),
+        session_id: None,
+        payload: CborValue::Text("working".to_owned()),
+    });
+
+    let encoded = serde_json::to_value(&event).expect("serialize custom event");
+    let decoded: Event = serde_json::from_value(encoded).expect("decode custom event");
+
+    assert_eq!(decoded.name(), "demo.progress".parse().expect("event name"));
+    assert_eq!(decoded, event);
+}
+
 #[test]
 fn input_emit_and_output_deliver_are_distinct_wire_messages() {
     let event = sample_session_started();

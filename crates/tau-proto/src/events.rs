@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActionInvocationId, AgentContextKey, AgentId, AgentMessageId, AgentPromptId, CborValue,
-    ContextItem, DiffSummary, EventName, ExtensionInstanceId, ExtensionName, ModelId,
-    PromptContext, PromptFragment, ProviderResponseItem, ProviderTokenUsage, SessionId, SkillName,
-    ToolCallId, ToolDefinition, ToolGroupName, ToolName,
+    ContextItem, DiffSummary, EventCategory, EventName, ExtensionInstanceId, ExtensionName,
+    ModelId, PromptContext, PromptFragment, ProviderResponseItem, ProviderTokenUsage, SessionId,
+    SkillName, ToolCallId, ToolDefinition, ToolGroupName, ToolName,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -1791,13 +1791,54 @@ pub struct ProviderModelsUpdated {
 /// matching. `payload` carries extension-owned CBOR data. `session_id`, when
 /// set, is runtime routing/context metadata; custom events are not folded into
 /// durable semantic logs unless a typed durable event is added for that use
-/// case.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// case. The name must use an extension-owned category, not one of Tau's
+/// reserved first-party categories such as `tool`, `harness`, `agent`, or
+/// `extension`; this prevents custom payloads from spoofing typed protocol
+/// events in routing code keyed by [`Event::name`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CustomEvent {
+    /// Extension-owned dotted event name used for routing and subscription
+    /// matching. The category must be unknown to Tau's first-party protocol.
     pub name: EventName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
     pub payload: CborValue,
+}
+
+impl CustomEvent {
+    /// Returns `true` when `name` uses an extension-owned event category.
+    #[must_use]
+    pub fn name_is_allowed(name: &EventName) -> bool {
+        matches!(name.category, EventCategory::Other(_))
+    }
+}
+
+impl<'de> Deserialize<'de> for CustomEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireCustomEvent {
+            name: EventName,
+            #[serde(default)]
+            session_id: Option<SessionId>,
+            payload: CborValue,
+        }
+
+        let wire = WireCustomEvent::deserialize(deserializer)?;
+        if !Self::name_is_allowed(&wire.name) {
+            return Err(serde::de::Error::custom(format!(
+                "custom event name must use an extension-owned category, got {}",
+                wire.name
+            )));
+        }
+        Ok(Self {
+            name: wire.name,
+            session_id: wire.session_id,
+            payload: wire.payload,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
