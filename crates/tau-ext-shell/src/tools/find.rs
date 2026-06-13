@@ -42,6 +42,7 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
 
     let glob = compile_find_glob(&pattern).map_err(|e| with_args(ToolFailure::from(e)))?;
     let mut matches = Vec::new();
+    let collection_cap = limit.saturating_add(1);
     for entry in WalkBuilder::new(&search_path)
         .hidden(false)
         .parents(true)
@@ -70,8 +71,12 @@ pub(crate) fn run_find(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         };
         if glob.is_match(relative_path) {
             matches.push(path_to_slash(relative_path));
+            if collection_cap <= matches.len() {
+                break;
+            }
         }
     }
+    matches.sort_by_key(|entry| entry.to_lowercase());
     matches.sort_by_key(|entry| entry.to_lowercase());
 
     if matches.is_empty() {
@@ -197,6 +202,49 @@ mod tests {
             .expect_err("zero limit should be rejected");
 
         assert_eq!(err.message, "limit must be >= 1");
+    }
+
+    /// Ensures find stops after collecting one match past the requested limit,
+    /// bounding memory/traversal work while still adding the user-visible limit
+    /// notice.
+    #[test]
+    fn find_limit_bounds_collected_matches() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+            std::fs::write(tempdir.path().join(name), "x").expect("write file");
+        }
+        let args = CborValue::Map(vec![
+            (
+                CborValue::Text("pattern".to_owned()),
+                CborValue::Text("*.txt".to_owned()),
+            ),
+            (
+                CborValue::Text("path".to_owned()),
+                CborValue::Text(tempdir.path().display().to_string()),
+            ),
+            (
+                CborValue::Text("limit".to_owned()),
+                CborValue::Integer(1.into()),
+            ),
+        ]);
+
+        let result = run_find(&args).expect("find").result;
+        let CborValue::Map(entries) = result else {
+            panic!("expected result map");
+        };
+        let output = entries
+            .iter()
+            .find_map(|(key, value)| match (key, value) {
+                (CborValue::Text(key), CborValue::Text(value)) if key == "output" => Some(value),
+                _ => None,
+            })
+            .expect("output");
+
+        assert_eq!(
+            output.lines().take_while(|line| !line.is_empty()).count(),
+            1
+        );
+        assert!(output.contains("1 results limit reached"));
     }
     /// Ensures find notices are included without exceeding the documented 50KB
     /// output budget.

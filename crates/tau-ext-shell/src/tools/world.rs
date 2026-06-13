@@ -135,31 +135,15 @@ impl ShellWorld {
         }
     }
 
-    pub(crate) fn read_dir(&mut self, path: &Path) -> io::Result<Vec<WorldDirEntry>> {
+    pub(crate) fn read_dir_limited(
+        &mut self,
+        path: &Path,
+        max_entries: usize,
+    ) -> io::Result<Vec<WorldDirEntry>> {
         match &mut self.mode {
-            WorldMode::Real => {
-                let mut entries = Vec::new();
-                for entry in std::fs::read_dir(path)? {
-                    let entry = entry?;
-                    entries.push(WorldDirEntry {
-                        name: os_str_name(&entry.file_name()),
-                        is_dir: entry.file_type()?.is_dir(),
-                    });
-                }
-                Ok(entries)
-            }
+            WorldMode::Real => read_dir_entries(path, max_entries),
             WorldMode::Recording { cassette, .. } => {
-                let result = (|| {
-                    let mut entries = Vec::new();
-                    for entry in std::fs::read_dir(path)? {
-                        let entry = entry?;
-                        entries.push(WorldDirEntry {
-                            name: os_str_name(&entry.file_name()),
-                            is_dir: entry.file_type()?.is_dir(),
-                        });
-                    }
-                    Ok(entries)
-                })();
+                let result = read_dir_entries(path, max_entries);
                 cassette.ops.push(WorldOp::ReadDir {
                     path: cassette_path(path),
                     result: OpResult::from_io_result_ref(&result).map_ok(|entries| {
@@ -182,12 +166,14 @@ impl ShellWorld {
                     return Err(unexpected_replay_op(key, "read_dir", path));
                 };
                 check_replay_path(key, "read_dir", expected_path, path)?;
-                result.clone().into_io_result().map(|entries| {
+                let mut entries = result.clone().into_io_result().map(|entries| {
                     entries
                         .into_iter()
                         .map(RecordedDirEntry::into_world)
-                        .collect()
-                })
+                        .collect::<Vec<_>>()
+                })?;
+                entries.truncate(max_entries);
+                Ok(entries)
             }
         }
     }
@@ -476,6 +462,21 @@ pub(crate) enum WorldShellOutcome {
         elapsed_ms: u64,
     },
     Cancelled,
+}
+
+fn read_dir_entries(path: &Path, max_entries: usize) -> io::Result<Vec<WorldDirEntry>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        entries.push(WorldDirEntry {
+            name: os_str_name(&entry.file_name()),
+            is_dir: entry.file_type()?.is_dir(),
+        });
+        if max_entries <= entries.len() {
+            break;
+        }
+    }
+    Ok(entries)
 }
 
 #[cfg(unix)]

@@ -174,6 +174,35 @@ fn ls_limit_truncation_reports_standard_total_headers() {
     );
 }
 
+/// Ensures ls only asks the world for one entry past the requested limit, which
+/// bounds directory-entry collection while still detecting that the limit was
+/// reached.
+#[test]
+fn ls_limit_bounds_world_directory_collection() {
+    let tempdir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(tempdir.path().join("alpha"), "a").expect("write alpha");
+    std::fs::write(tempdir.path().join("beta"), "b").expect("write beta");
+    std::fs::write(tempdir.path().join("gamma"), "g").expect("write gamma");
+    let args = CborValue::Map(vec![
+        (
+            CborValue::Text("path".to_owned()),
+            CborValue::Text(tempdir.path().display().to_string()),
+        ),
+        (
+            CborValue::Text("limit".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+    ]);
+
+    let mut world = crate::tools::world::ShellWorld::real();
+    let output = run_ls(&args, &mut world).expect("ls output");
+    let text = cbor_map_text(&output.result, "output").expect("output");
+
+    assert_eq!(text.lines().count(), 1);
+    assert_eq!(cbor_map_bool(&output.result, "truncated"), Some(true));
+    assert_eq!(cbor_map_int(&output.result, "total_lines"), Some(2));
+}
+
 #[test]
 fn ls_byte_budget_truncation_reports_standard_total_headers() {
     let tempdir = tempfile::TempDir::new().expect("tempdir");

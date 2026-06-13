@@ -33,13 +33,17 @@ pub(crate) fn run_ls(
         ))));
     }
 
+    let collection_cap = limit.saturating_add(1);
     let mut entries = Vec::new();
-    for entry in world.read_dir(&dir_path).map_err(|e| {
-        with_args(ToolFailure::from(format!(
-            "failed to read {}: {e}",
-            dir_path.display()
-        )))
-    })? {
+    for entry in world
+        .read_dir_limited(&dir_path, collection_cap)
+        .map_err(|e| {
+            with_args(ToolFailure::from(format!(
+                "failed to read {}: {e}",
+                dir_path.display()
+            )))
+        })?
+    {
         entries.push(render_entry_name(&entry.name, entry.is_dir));
     }
     entries.sort_by_key(|entry| entry.sort_key());
