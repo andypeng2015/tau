@@ -72,6 +72,14 @@ fn ctrl_c_cancels() {
 }
 
 #[test]
+fn ctrl_d_cancels() {
+    // Ctrl-D commonly signals EOF; byte-stream callers should get the same
+    // cancellation result as terminal users pressing Ctrl-C or Escape.
+    let it = items(&["a", "b"]);
+    assert!(matches!(run(b"\x04", &it), Err(PickerError::Cancelled)));
+}
+
+#[test]
 fn q_cancels() {
     let it = items(&["a", "b"]);
     assert!(matches!(run(b"q", &it), Err(PickerError::Cancelled)));

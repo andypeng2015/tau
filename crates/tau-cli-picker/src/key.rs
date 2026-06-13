@@ -31,6 +31,7 @@ enum LogicalKey {
     Enter,
     Esc,
     CtrlC,
+    CtrlD,
     Char(char),
     Unknown,
 }
@@ -41,7 +42,7 @@ fn logical_to_action(key: LogicalKey) -> PickerKey {
         LogicalKey::Up | LogicalKey::BackTab => PickerKey::Up,
         LogicalKey::Down | LogicalKey::Tab => PickerKey::Down,
         LogicalKey::Enter => PickerKey::Enter,
-        LogicalKey::Esc | LogicalKey::CtrlC => PickerKey::Cancelled,
+        LogicalKey::Esc | LogicalKey::CtrlC | LogicalKey::CtrlD => PickerKey::Cancelled,
         LogicalKey::Char(c) => match c {
             'j' => PickerKey::Down,
             'k' => PickerKey::Up,
@@ -85,6 +86,7 @@ fn terminal_key_to_logical(key: crossterm::event::KeyEvent) -> LogicalKey {
         KeyCode::Enter => LogicalKey::Enter,
         KeyCode::Esc => LogicalKey::Esc,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => LogicalKey::CtrlC,
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => LogicalKey::CtrlD,
         KeyCode::Char(c) => LogicalKey::Char(c),
         _ => LogicalKey::Unknown,
     }
@@ -105,6 +107,7 @@ pub(crate) fn read_byte_key(reader: &mut impl io::Read) -> io::Result<PickerKey>
     }
     let logical = match b[0] {
         0x03 => LogicalKey::CtrlC,
+        0x04 => LogicalKey::CtrlD,
         b'\n' | b'\r' => LogicalKey::Enter,
         b'\t' => LogicalKey::Tab,
         0x1b => read_escape_sequence(reader)?,
@@ -148,6 +151,7 @@ mod tests {
         assert_eq!(logical_to_action(LogicalKey::Enter), PickerKey::Enter);
         assert_eq!(logical_to_action(LogicalKey::Esc), PickerKey::Cancelled);
         assert_eq!(logical_to_action(LogicalKey::CtrlC), PickerKey::Cancelled);
+        assert_eq!(logical_to_action(LogicalKey::CtrlD), PickerKey::Cancelled);
         assert_eq!(logical_to_action(LogicalKey::Char('j')), PickerKey::Down);
         assert_eq!(logical_to_action(LogicalKey::Char('k')), PickerKey::Up);
         assert_eq!(
