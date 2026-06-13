@@ -1843,7 +1843,7 @@ fn extension_state_dir_rejects_unsafe_extension_names() {
         state_dir.join("ext").join("std-email")
     );
 
-    for name in ["", "../x", "a/b", "/tmp/x", ".", ".."] {
+    for name in ["", "../x", "a/b", "/tmp/x", ".", "..", "foo.bar"] {
         assert!(
             extension_state_dir_of(state_dir, name).is_err(),
             "{name:?} must be rejected"

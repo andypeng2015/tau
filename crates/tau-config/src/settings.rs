@@ -1216,11 +1216,11 @@ pub fn validate_extension_name(extension_name: &str) -> Result<(), InvalidExtens
     }
     if !extension_name
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
         return Err(InvalidExtensionName {
             name: extension_name.to_owned(),
-            reason: "extension name may contain only ASCII letters, digits, '.', '_' and '-'",
+            reason: "extension name may contain only ASCII letters, digits, '_' and '-'",
         });
     }
     Ok(())
