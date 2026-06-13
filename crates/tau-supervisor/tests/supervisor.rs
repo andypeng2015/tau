@@ -212,6 +212,21 @@ fn spawn_rejects_relative_program_with_working_dir() {
     fs::remove_dir_all(working_dir).expect("working dir should be removed");
 }
 
+/// Ensures pre-spawn starting events intentionally omit the child pid.
+#[test]
+fn pre_spawn_starting_event_has_no_pid() {
+    let command = test_command(&[]);
+
+    assert_eq!(
+        command.pre_spawn_starting_event(7.into()),
+        Event::ExtensionStarting(tau_proto::ExtensionStarting {
+            instance_id: 7.into(),
+            extension_name: "test-child".into(),
+            pid: None,
+        })
+    );
+}
+
 /// Ensures explicit hard termination can clean up a child that ignores protocol
 /// shutdown.
 #[test]
