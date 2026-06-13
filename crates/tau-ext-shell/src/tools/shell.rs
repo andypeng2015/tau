@@ -11,12 +11,12 @@ use crate::argument::{argument_text, optional_argument_int_strict, optional_argu
 use crate::config::ShellConfig;
 use crate::display::{ToolFailure, ToolOutput, ok_display, text_stats};
 use crate::tools::world::{ShellWorld, WorldShellOutcome};
-use crate::truncate::{MAX_OUTPUT_LINES, truncate_line_oriented_lines};
+use crate::truncate::{MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, truncate_line_oriented_lines};
 
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(crate) const SLOW_COMMAND_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 const VCR_REPLAY_SPEEDUP: u64 = 100;
-
+const MAX_CAPTURED_LINE_BYTES: usize = MAX_OUTPUT_BYTES;
 /// Agent-declared filesystem access intent for a shell command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShellAccessMode {
@@ -359,7 +359,14 @@ pub(crate) fn dispatch_user_shell_command(
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                        captured.push_str(&chunk);
+                        if captured.len() < MAX_OUTPUT_BYTES {
+                            let remaining = MAX_OUTPUT_BYTES - captured.len();
+                            let mut end = remaining.min(chunk.len());
+                            while !chunk.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            captured.push_str(&chunk[..end]);
+                        }
                         let _ = tx.send(HarnessInputMessage::emit(Event::ShellCommandProgress(
                             tau_proto::ShellCommandProgress {
                                 command_id: command_id.clone(),
@@ -965,8 +972,11 @@ enum OutputContent {
         text: String,
         ending: Option<LineEndingKind>,
     },
+    Truncated {
+        invalid_utf8: bool,
+        ending: Option<LineEndingKind>,
+    },
 }
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum LineEndingKind {
     Lf,
@@ -1051,6 +1061,7 @@ struct StreamDecoder {
     pending_utf8: Vec<u8>,
     pending_line: String,
     pending_line_invalid: bool,
+    pending_line_truncated: bool,
     pending_cr: bool,
     had_invalid_utf8: bool,
 }
@@ -1089,7 +1100,9 @@ impl StreamDecoder {
                         self.flush_pending_cr_as_cr(&mut lines);
                         self.had_invalid_utf8 = true;
                         self.pending_line_invalid = true;
-                        self.pending_line.push('\u{fffd}');
+                        if !self.pending_line_truncated {
+                            self.push_char('\u{fffd}');
+                        }
                         remaining = &remaining[valid_up_to + error_len..];
                     } else {
                         self.flush_pending_cr_as_cr(&mut lines);
@@ -1116,9 +1129,22 @@ impl StreamDecoder {
             match ch {
                 '\r' => self.pending_cr = true,
                 '\n' => lines.push(self.take_pending_line(Some(LineEndingKind::Lf))),
-                _ => self.pending_line.push(ch),
+                _ => self.push_char(ch),
             }
         }
+    }
+
+    fn push_char(&mut self, ch: char) {
+        if self.pending_line_truncated {
+            return;
+        }
+        let next_len = self.pending_line.len().saturating_add(ch.len_utf8());
+        if MAX_CAPTURED_LINE_BYTES < next_len {
+            self.pending_line.clear();
+            self.pending_line_truncated = true;
+            return;
+        }
+        self.pending_line.push(ch);
     }
 
     fn finish(&mut self) -> Vec<OutputContent> {
@@ -1128,10 +1154,13 @@ impl StreamDecoder {
             self.pending_utf8.clear();
             self.flush_pending_cr_as_cr(&mut lines);
             self.pending_line_invalid = true;
-            self.pending_line.push('\u{fffd}');
+            if !self.pending_line_truncated {
+                self.push_char('\u{fffd}');
+            }
         }
         self.flush_pending_cr_as_cr(&mut lines);
-        if !self.pending_line.is_empty() || self.pending_line_invalid {
+        if !self.pending_line.is_empty() || self.pending_line_invalid || self.pending_line_truncated
+        {
             lines.push(self.take_pending_line(None));
         }
         lines
@@ -1145,6 +1174,14 @@ impl StreamDecoder {
     }
 
     fn take_pending_line(&mut self, ending: Option<LineEndingKind>) -> OutputContent {
+        if std::mem::take(&mut self.pending_line_truncated) {
+            let invalid_utf8 = std::mem::take(&mut self.pending_line_invalid);
+            self.pending_line.clear();
+            return OutputContent::Truncated {
+                invalid_utf8,
+                ending,
+            };
+        }
         if std::mem::take(&mut self.pending_line_invalid) {
             OutputContent::InvalidUtf8 {
                 text: std::mem::take(&mut self.pending_line),
@@ -1171,6 +1208,20 @@ fn render_output_line(line: &OutputLine) -> String {
                 markers.push(marker);
             }
             format_output_line(prefix, Some(&markers.join(",")), text)
+        }
+        OutputContent::Truncated {
+            invalid_utf8,
+            ending,
+        } => {
+            let mut markers = Vec::new();
+            if *invalid_utf8 {
+                markers.push("invalid-utf8");
+            }
+            if let Some(marker) = line_ending_marker(*ending) {
+                markers.push(marker);
+            }
+            markers.push("truncated");
+            format_output_line(prefix, Some(&markers.join(",")), "")
         }
     }
 }
@@ -1615,5 +1666,19 @@ mod tests {
         .expect_err("missing cancel should fail");
 
         assert!(error.message.contains("expected shell cancellation"));
+    }
+    /// Ensures a command that emits one huge line without a newline is captured
+    /// as a truncated marker instead of retaining the whole line in memory.
+    #[test]
+    fn captured_output_bounds_no_newline_lines() {
+        let mut output = CapturedOutput::default();
+        output.push_bytes(
+            OutputStream::Stdout,
+            &vec![b'x'; MAX_CAPTURED_LINE_BYTES + 128],
+        );
+        output.finish();
+
+        let rendered = output.truncate().content;
+        assert_eq!(rendered, "out(no_nl,truncated) ");
     }
 }
