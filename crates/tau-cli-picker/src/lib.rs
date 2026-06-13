@@ -36,8 +36,10 @@ use crate::raw_mode::RawModeGuard;
 /// Enables terminal raw mode for the duration of the call. The picker
 /// must therefore not be invoked while another component already owns
 /// raw mode — the inner [`Drop`] would silently restore cooked mode and
-/// strand the parent. Use [`pick_with_io`] if the caller manages raw
-/// mode itself.
+/// strand the parent. Simple byte-stream hosts that manage raw mode themselves
+/// can use [`pick_with_io`]. Embedded crossterm/TUI callers should not use this
+/// picker as a widget; they need a future host-event API that accepts
+/// caller-provided events, resize notifications, and size samples.
 ///
 /// The picker frame is written to `stderr` (fd 2) so that the typical
 /// `cli | tool` pipe shape leaves `stdout` untouched.

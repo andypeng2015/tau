@@ -14,7 +14,7 @@ Embedded crossterm/TUI integration still needs a new public API that accepts hos
 
 ## Rendering model
 
-The picker builds a pure list of styled rows, then asks `tau-term-screen::Screen` to diff that frame to the terminal. Resize events are part of the picker event stream and cause an immediate erase, width update, and redraw.
+The picker builds a pure list of styled rows, then asks `tau-term-screen::Screen` to diff that frame to the terminal. Resize events are part of the picker event stream and cause an immediate erase, width and height update, and redraw.
 
 For normal terminal heights, row 0 is the prompt and the remaining rows show a centered window of items. For a one-row terminal, the picker switches to a compact single-row frame containing both prompt and selected item, so it never intentionally renders more rows than the reported height.
 
