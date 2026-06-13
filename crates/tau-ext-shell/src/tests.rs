@@ -5251,18 +5251,21 @@ fn approximate_tool_bytes_caps_large_cbor_without_debug_rendering() {
     let Event::ToolStarted(invoke) = tool_started(
         "large-args",
         SHELL_TOOL_NAME,
-        CborValue::Bytes(vec![0; DEFAULT_QUEUED_BYTES_LIMIT + 1024]),
+        CborValue::Bytes(vec![0; crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT + 1024]),
         "agent-a",
     ) else {
         panic!("expected tool started");
     };
 
     assert_eq!(
-        approximate_tool_bytes(&invoke),
-        DEFAULT_QUEUED_BYTES_LIMIT + 1
+        approximate_tool_bytes(&invoke, crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT),
+        crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT + 1
     );
+    let raised_estimate =
+        approximate_tool_bytes(&invoke, crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT * 2);
+    assert!(raised_estimate > crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT + 1024);
+    assert!(raised_estimate < crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT * 2);
 }
-
 fn grep_args(pattern: &str, path: &str, extra: Vec<(CborValue, CborValue)>) -> CborValue {
     let mut entries = vec![
         (

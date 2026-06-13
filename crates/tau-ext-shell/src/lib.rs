@@ -39,7 +39,7 @@ mod tests;
 use crate::agents::{ancestor_dirs, discover_session_agents_files};
 use crate::config::{ExtConfig, ShellConfig};
 use crate::dir_lock::{DIR_LOCK_TOOL_NAME, DirLockManager};
-use crate::scheduler::{DEFAULT_QUEUED_BYTES_LIMIT, WorkMeta, WorkPriority, WorkScheduler};
+use crate::scheduler::{WorkMeta, WorkPriority, WorkScheduler};
 #[cfg(any(test, feature = "echo-agent"))]
 use crate::tools::ECHO_TOOL_NAME;
 use crate::tools::{
@@ -804,7 +804,7 @@ fn schedule_tool_started(
         call_id: Some(invoke.call_id.clone()),
         tool_name: Some(invoke.tool_name.clone()),
         agent_id: Some(invoke.agent_id.clone()),
-        queued_bytes: approximate_tool_bytes(&invoke),
+        queued_bytes: approximate_tool_bytes(&invoke, scheduler.queued_bytes_limit()),
     };
     let tx_for_job = tx.clone();
     let invoke_for_error = invoke.clone();
@@ -885,8 +885,8 @@ fn priority_for_tool(invoke: &tau_proto::ToolStarted, config: &ExtConfig) -> Wor
     WorkPriority::Bulk
 }
 
-fn approximate_tool_bytes(invoke: &tau_proto::ToolStarted) -> usize {
-    let cap = DEFAULT_QUEUED_BYTES_LIMIT.saturating_add(1);
+fn approximate_tool_bytes(invoke: &tau_proto::ToolStarted, queued_bytes_limit: usize) -> usize {
+    let cap = queued_bytes_limit.saturating_add(1);
     let base = invoke
         .call_id
         .as_str()

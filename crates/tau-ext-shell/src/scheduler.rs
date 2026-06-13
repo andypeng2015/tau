@@ -140,6 +140,11 @@ impl WorkScheduler {
         scheduler
     }
 
+    /// Return the configured aggregate queued argument byte budget.
+    pub(crate) fn queued_bytes_limit(&self) -> usize {
+        self.inner.config.queued_bytes_limit
+    }
+
     /// Enqueue work or return a bounded-backpressure error.
     pub(crate) fn enqueue(
         &self,
