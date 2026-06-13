@@ -4,7 +4,7 @@
 //! results, so tool parsing, formatting, truncation, and validation still run
 //! during replay.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -256,9 +256,9 @@ impl ShellWorld {
 
     pub(crate) fn write_file(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         match &mut self.mode {
-            WorldMode::Real => std::fs::write(path, bytes),
+            WorldMode::Real => atomic_write_file(path, bytes),
             WorldMode::Recording { cassette, .. } => {
-                let result = std::fs::write(path, bytes);
+                let result = atomic_write_file(path, bytes);
                 cassette.ops.push(WorldOp::WriteFile {
                     path: cassette_path(path),
                     bytes: tau_vcr::EscapedBytes::new(bytes),
@@ -462,6 +462,73 @@ pub(crate) enum WorldShellOutcome {
         elapsed_ms: u64,
     },
     Cancelled,
+}
+
+fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let target = final_write_path(path)?;
+    let parent = target.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path has no parent: {}", target.display()),
+        )
+    })?;
+    let file_name = target.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path has no file name: {}", target.display()),
+        )
+    })?;
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        unique_temp_suffix()
+    ));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, &target)?;
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn final_write_path(path: &Path) -> io::Result<std::path::PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let link = std::fs::read_link(path)?;
+            if link.is_absolute() {
+                Ok(link)
+            } else {
+                Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(link))
+            }
+        }
+        Ok(_) => Ok(path.to_owned()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path.to_owned()),
+        Err(error) => Err(error),
+    }
+}
+
+fn unique_temp_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
 }
 
 fn read_dir_entries(path: &Path, max_entries: usize) -> io::Result<Vec<WorldDirEntry>> {
@@ -731,6 +798,59 @@ mod tests {
             CborValue::Text("path".to_owned()),
             CborValue::Text(path.display().to_string()),
         )])
+    }
+
+    /// Protects real-world writes against truncate-in-place updates by checking
+    /// the atomic helper updates existing files through a same-directory
+    /// rename.
+    #[test]
+    fn atomic_write_updates_existing_file() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("file.txt");
+        std::fs::write(&path, "old\n").expect("write old");
+
+        atomic_write_file(&path, b"new\n").expect("atomic write");
+
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "new\n");
+    }
+
+    /// Protects file creation semantics for mutation tools after switching from
+    /// direct writes to same-directory atomic renames.
+    #[test]
+    fn atomic_write_creates_new_file() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("created.txt");
+
+        atomic_write_file(&path, b"created\n").expect("atomic write");
+
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "created\n");
+    }
+
+    /// Ensures final symlinks keep the previous write-through behavior: editing
+    /// a symlink updates its target instead of replacing the symlink itself.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let target = tempdir.path().join("target.txt");
+        let link = tempdir.path().join("link.txt");
+        std::fs::write(&target, "old\n").expect("write target");
+        symlink("target.txt", &link).expect("symlink");
+
+        atomic_write_file(&link, b"new\n").expect("atomic write");
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "new\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
