@@ -303,6 +303,33 @@ fn harness_rejects_same_layer_nested_alias_conflict() {
     );
 }
 
+#[test]
+fn harness_rejects_same_layer_role_alias_conflict() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+        role_groups:
+          engineer:
+            roles:
+              senior-engineer:
+                enabled: false
+                enable: true
+        "#,
+    )
+    .expect("write");
+
+    let error = load_harness_settings_in(&dirs_with_config(dir)).expect_err("conflicting aliases");
+
+    assert!(
+        error.to_string().contains("enabled")
+            && error.to_string().contains("enable")
+            && error.to_string().contains("senior-engineer"),
+        "unexpected error: {error}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn unreadable_drop_in_directory_is_reported() {
