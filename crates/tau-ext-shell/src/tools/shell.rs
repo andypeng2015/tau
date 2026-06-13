@@ -17,6 +17,7 @@ pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 pub(crate) const SLOW_COMMAND_EXEC_TIME_THRESHOLD_SECS: u64 = 5;
 const VCR_REPLAY_SPEEDUP: u64 = 100;
 const MAX_CAPTURED_LINE_BYTES: usize = MAX_OUTPUT_BYTES;
+const USER_OUTPUT_TRUNCATED_MARKER: &str = "[output truncated]";
 /// Agent-declared filesystem access intent for a shell command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShellAccessMode {
@@ -474,10 +475,7 @@ pub(crate) fn dispatch_user_shell_command(
         merged.push_str(&stderr);
     }
     if stdout_clipped || stderr_clipped {
-        if !merged.is_empty() {
-            merged.push('\n');
-        }
-        merged.push_str("[output truncated]");
+        append_guaranteed_output_truncated_marker(&mut merged);
     }
     if let Some(note) = status_note {
         if !merged.is_empty() {
@@ -499,6 +497,27 @@ pub(crate) fn dispatch_user_shell_command(
             cancelled,
         },
     )));
+}
+
+fn append_guaranteed_output_truncated_marker(output: &mut String) {
+    let separator = if output.is_empty() { "" } else { "\n" };
+    let tail_len = separator.len() + USER_OUTPUT_TRUNCATED_MARKER.len();
+    if output.len().saturating_add(tail_len) <= MAX_OUTPUT_BYTES {
+        output.push_str(separator);
+        output.push_str(USER_OUTPUT_TRUNCATED_MARKER);
+        return;
+    }
+
+    let budget = MAX_OUTPUT_BYTES.saturating_sub(tail_len);
+    let mut end = budget.min(output.len());
+    while !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    output.truncate(end);
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(USER_OUTPUT_TRUNCATED_MARKER);
 }
 
 /// Wait for a child process with a timeout, preserving bounded tail output.
@@ -1465,6 +1484,20 @@ mod tests {
                 _ => None,
             })
             .expect("output field")
+    }
+
+    /// Protects user shell clipping feedback for a single huge no-newline
+    /// stdout stream. The final tail truncation must not drop the explicit
+    /// marker that tells session history the captured context is incomplete.
+    #[test]
+    fn clipped_user_shell_output_marker_survives_tail_truncation() {
+        let mut output = "x".repeat(MAX_OUTPUT_BYTES);
+
+        append_guaranteed_output_truncated_marker(&mut output);
+        let truncated = crate::truncate::truncate_tail(&output);
+
+        assert!(truncated.content.ends_with(USER_OUTPUT_TRUNCATED_MARKER));
+        assert!(truncated.content.len() <= MAX_OUTPUT_BYTES);
     }
 
     fn record_cancelled_shell(
