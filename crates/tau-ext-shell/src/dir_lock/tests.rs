@@ -203,6 +203,51 @@ fn manual_lock_rejects_same_owner_overlapping_lock_but_allows_auto_reentry() {
     drop(first_guard);
 }
 
+#[test]
+fn same_owner_auto_must_be_covered_by_manual_lock_to_reenter() {
+    let manager = DirLockManager::default();
+    manager
+        .acquire_manual(
+            "manual-child".into(),
+            agent_id("agent-a"),
+            path("/repo/a/child"),
+            || {},
+        )
+        .expect("manual lock");
+
+    let waiter = std::thread::spawn({
+        let manager = manager.clone();
+        move || {
+            manager.acquire_auto(
+                "auto-ancestor".into(),
+                agent_id("agent-a"),
+                vec![path("/repo/a")],
+                || {},
+            )
+        }
+    });
+    wait_until(|| manager.inner.state.lock().expect("state").waiters.len() == 1);
+    assert!(
+        manager
+            .inner
+            .state
+            .lock()
+            .expect("state")
+            .automatic
+            .is_empty(),
+        "same-owner automatic lock outside manual coverage should not be granted"
+    );
+
+    manager
+        .unlock_manual(&agent_id("agent-a"), Path::new("/repo/a/child"))
+        .expect("unlock");
+    let guard = waiter
+        .join()
+        .expect("waiter")
+        .expect("auto acquired after unlock");
+    drop(guard);
+}
+
 #[cfg(unix)]
 #[test]
 fn canonical_write_lock_dir_follows_chained_final_symlink() {

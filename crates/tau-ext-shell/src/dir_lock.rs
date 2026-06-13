@@ -548,7 +548,9 @@ impl LockState {
         }
 
         self.manual.iter().any(|lock| {
-            if &lock.owner == owner {
+            let same_owner_reentry =
+                &lock.owner == owner && kind == WaitKind::Automatic && manual_reentry;
+            if &lock.owner == owner && (kind == WaitKind::Manual || same_owner_reentry) {
                 return false;
             }
             match kind {
