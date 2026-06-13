@@ -1402,7 +1402,7 @@ fn load_yaml_layered_with_builtin_and_harness_overrides<T: for<'de> Deserialize<
         built_in_text,
         "built-in harness config",
     )?);
-    for path in yaml_layer_paths(dir, name) {
+    for path in yaml_layer_paths(dir, name)? {
         let text = std::fs::read_to_string(&path).map_err(|err| {
             SettingsError::Config(config::ConfigError::Message(format!(
                 "failed to read {}: {err}",
@@ -1530,7 +1530,7 @@ fn load_yaml_layered_with_builtin<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, SettingsError> {
     let builder = config::Config::builder()
         .add_source(config::File::from_str(built_in_text, config::FileFormat::Yaml).required(true));
-    let builder = add_yaml_file_sources(builder, dir, name);
+    let builder = add_yaml_file_sources(builder, dir, name)?;
     builder
         .build()?
         .try_deserialize()
@@ -1541,7 +1541,7 @@ fn load_yaml_layer_files<T: for<'de> Deserialize<'de>>(
     dir: Option<&Path>,
     name: &str,
 ) -> Result<Vec<T>, SettingsError> {
-    yaml_layer_paths(dir, name)
+    yaml_layer_paths(dir, name)?
         .into_iter()
         .map(|path| {
             config::Config::builder()
@@ -1561,43 +1561,74 @@ fn add_yaml_file_sources(
     mut builder: config::ConfigBuilder<config::builder::DefaultState>,
     dir: Option<&Path>,
     name: &str,
-) -> config::ConfigBuilder<config::builder::DefaultState> {
-    for path in yaml_layer_paths(dir, name) {
+) -> Result<config::ConfigBuilder<config::builder::DefaultState>, SettingsError> {
+    for path in yaml_layer_paths(dir, name)? {
         builder = builder.add_source(
             config::File::from(path)
                 .format(config::FileFormat::Yaml)
                 .required(true),
         );
     }
-    builder
+    Ok(builder)
 }
 
-fn yaml_layer_paths(dir: Option<&Path>, name: &str) -> Vec<PathBuf> {
+fn yaml_layer_paths(dir: Option<&Path>, name: &str) -> Result<Vec<PathBuf>, SettingsError> {
     let Some(dir) = dir else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     let mut paths = Vec::new();
     let base_path = dir.join(format!("{name}.yaml"));
-    if base_path.exists() {
+    if base_path.try_exists().map_err(|err| {
+        SettingsError::Config(config::ConfigError::Message(format!(
+            "failed to check {}: {err}",
+            base_path.display()
+        )))
+    })? {
         paths.push(base_path);
     }
 
     let drop_dir = dir.join(format!("{name}.d"));
-    if drop_dir.is_dir() {
-        let mut drop_in_paths: Vec<PathBuf> = std::fs::read_dir(&drop_dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|ext| ext == "yaml" || ext == "yml")
-            })
-            .collect();
-        drop_in_paths.sort();
-        paths.extend(drop_in_paths);
+    let Some(metadata) = std::fs::metadata(&drop_dir).map(Some).or_else(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(SettingsError::Config(config::ConfigError::Message(
+                format!("failed to inspect {}: {err}", drop_dir.display()),
+            )))
+        }
+    })?
+    else {
+        return Ok(paths);
+    };
+    if !metadata.is_dir() {
+        return Ok(paths);
     }
-    paths
+
+    let mut drop_in_paths = Vec::new();
+    for entry in std::fs::read_dir(&drop_dir).map_err(|err| {
+        SettingsError::Config(config::ConfigError::Message(format!(
+            "failed to read {}: {err}",
+            drop_dir.display()
+        )))
+    })? {
+        let entry = entry.map_err(|err| {
+            SettingsError::Config(config::ConfigError::Message(format!(
+                "failed to read an entry in {}: {err}",
+                drop_dir.display()
+            )))
+        })?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+        {
+            drop_in_paths.push(path);
+        }
+    }
+    drop_in_paths.sort();
+    paths.extend(drop_in_paths);
+    Ok(paths)
 }
 
 #[cfg(test)]

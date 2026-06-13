@@ -239,6 +239,29 @@ fn harness_canonical_cli_override_wins_over_legacy_alias() {
     assert_eq!(settings.default_role.as_deref(), Some("cli"));
 }
 
+#[cfg(unix)]
+#[test]
+fn unreadable_drop_in_directory_is_reported() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(dir.join("cli.yaml"), "greeting: false\n").expect("write base");
+    let drop_dir = dir.join("cli.d");
+    std::fs::create_dir_all(&drop_dir).expect("mkdir dropins");
+    std::fs::set_permissions(&drop_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod unreadable");
+
+    let error = load_cli_settings_in(&dirs_with_config(dir)).expect_err("unreadable drop-in dir");
+
+    std::fs::set_permissions(&drop_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("restore permissions");
+    assert!(
+        error.to_string().contains("failed to read"),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn cli_state_defaults_to_cli_config_when_state_file_is_missing() {
     let td = TempDir::new().expect("tempdir");
