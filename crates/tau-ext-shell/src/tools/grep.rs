@@ -397,7 +397,14 @@ fn render_grep_line(path: &str, lineno: u64, sep: char, text: &str) -> (String, 
 
     let ellipsis = "…";
     let Some(text_budget) = GREP_MAX_LINE_LENGTH.checked_sub(prefix.len() + ellipsis.len()) else {
-        return (format!("{prefix}(truncated)"), true);
+        let marker = "(truncated)";
+        let mut end = GREP_MAX_LINE_LENGTH
+            .saturating_sub(marker.len())
+            .min(prefix.len());
+        while !prefix.is_char_boundary(end) {
+            end -= 1;
+        }
+        return (format!("{}{marker}", &prefix[..end]), true);
     };
     let mut end = text_budget.min(text.len());
     while !text.is_char_boundary(end) {
@@ -482,6 +489,17 @@ mod tests {
             "line was {line:?}"
         );
         assert!(line.ends_with('…'));
+        assert!(line.len() <= GREP_MAX_LINE_LENGTH);
+    }
+
+    /// Ensures very long path prefixes are capped too, while preserving as much
+    /// location information as possible.
+    #[test]
+    fn grep_long_prefix_truncation_stays_within_line_cap() {
+        let (line, truncated) = render_grep_line(&"p".repeat(1000), 42, ':', "match");
+
+        assert!(truncated);
+        assert!(line.ends_with("(truncated)"));
         assert!(line.len() <= GREP_MAX_LINE_LENGTH);
     }
 
