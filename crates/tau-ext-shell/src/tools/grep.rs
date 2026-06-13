@@ -375,11 +375,11 @@ fn read_grep_json<R: Read>(stdout: R, limit: usize) -> GrepStreamResult {
                 let text = strip_eol(&text);
                 let is_match = record.kind == "match";
                 if is_match {
-                    match_count += 1;
-                    if limit < match_count {
+                    if limit <= match_count {
                         match_limit_reached = true;
                         break;
                     }
+                    match_count += 1;
                 }
                 let sep = if is_match { ':' } else { '-' };
                 let (rendered, truncated) = render_grep_line(&path, lineno, sep, &text);
@@ -580,6 +580,35 @@ mod tests {
             output.result_lines,
             vec!["(invalid-utf8) bad�name.txt:3:needle"]
         );
+    }
+
+    /// Ensures grep reports the number of rendered matches, not the extra
+    /// over-limit match used only to detect that the limit was reached.
+    #[test]
+    fn grep_limit_reports_rendered_match_count() {
+        let first = serde_json::json!({
+            "type": "match",
+            "data": {
+                "path": { "text": "file.txt" },
+                "lines": { "text": "needle one\n" },
+                "line_number": 1
+            }
+        });
+        let second = serde_json::json!({
+            "type": "match",
+            "data": {
+                "path": { "text": "file.txt" },
+                "lines": { "text": "needle two\n" },
+                "line_number": 2
+            }
+        });
+        let input = format!("{first}\n{second}\n");
+
+        let output = read_grep_json(input.as_bytes(), 1);
+
+        assert_eq!(output.match_count, 1);
+        assert!(output.match_limit_reached);
+        assert_eq!(output.result_lines, vec!["file.txt:1:needle one"]);
     }
 
     /// Ensures grep long-line shortening preserves the path and line number
