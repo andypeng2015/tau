@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 
 use tau_proto::{
@@ -244,6 +244,35 @@ fn terminate_kills_long_running_child() {
         .terminate(Duration::from_secs(2))
         .expect("child should terminate");
     assert_ne!(exit.exit_code, Some(0));
+}
+
+/// Ensures Drop performs best-effort direct child cleanup when callers forget
+/// explicit termination.
+#[cfg(unix)]
+#[test]
+fn drop_kills_long_running_direct_child() {
+    let pid = {
+        let child = SupervisedChild::spawn(test_command(&["--sleep"])).expect("child should spawn");
+        child.pid()
+    };
+
+    for _ in 0..200 {
+        if !process_exists(pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("dropped child process should exit");
+}
+
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    StdCommand::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Ensures the null stderr policy discards child stderr output.
