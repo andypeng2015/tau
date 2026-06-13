@@ -98,6 +98,7 @@ where
                 "Reads a file. Defaults to reading the whole file in one call — \
                  output is capped at 2000 lines / 50 KB. Truncated output keeps \
                  the first 1000 and last 1000 lines separated by a literal `...` line. \
+                 Files over 10 MiB are rejected by an input safety cap before output truncation. \
                  Prefer one full read. Pass inclusive `start_line`/`end_line` only to \
                  fetch one specific known slice, or `ranges` for up to 100 slices; \
                  range chunks are separated by one empty line and may overlap. `start_line` past EOF errors, \
