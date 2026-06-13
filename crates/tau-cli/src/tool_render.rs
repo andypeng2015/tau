@@ -574,24 +574,20 @@ fn move_delegate_completion_stats_first(
 /// descriptor.
 pub(crate) fn render_tool_use_state(tool_name: &str, display: &ToolUseState) -> ToolCallDisplay {
     let mut suffixes: Vec<ToolSuffixSegment> = Vec::new();
-    // Diff `+N -M` chips (themed green/red) are derived from the
-    // payload so file-editing tools don't have to push them as info chips.
-    if let Some(ToolUsePayload::Diff(summary)) = &display.payload
-        && (summary.added > 0 || summary.removed > 0)
-    {
-        if summary.added > 0 {
-            suffixes.push(tool_suffix(
-                format!("+{}", summary.added),
-                ToolStatus::DiffAdded,
-            ));
-        }
-        if summary.removed > 0 {
-            suffixes.push(ToolSuffixSegment {
-                text: format!("-{}", summary.removed),
-                status: ToolStatus::DiffRemoved,
-                no_leading_space: summary.added > 0,
-            });
-        }
+    let (added, removed) = display
+        .payload
+        .as_ref()
+        .map(diff_payload_counts)
+        .unwrap_or_default();
+    if 0 < added {
+        suffixes.push(tool_suffix(format!("+{added}"), ToolStatus::DiffAdded));
+    }
+    if 0 < removed {
+        suffixes.push(ToolSuffixSegment {
+            text: format!("-{removed}"),
+            status: ToolStatus::DiffRemoved,
+            no_leading_space: 0 < added,
+        });
     }
     let stats_chip = format_tool_use_state_stats(&display.stats);
     if !stats_chip.is_empty() {
@@ -907,6 +903,21 @@ pub(crate) fn render_tool_block(
     StyledBlock::new(themed_text(theme, &themed))
 }
 
+pub(crate) fn diff_payload_counts(payload: &ToolUsePayload) -> (u32, u32) {
+    match payload {
+        ToolUsePayload::Diff(summary) => (summary.added, summary.removed),
+        ToolUsePayload::Diffs { files } => {
+            files.iter().fold((0u32, 0u32), |(added, removed), file| {
+                (
+                    added.saturating_add(file.diff.added),
+                    removed.saturating_add(file.diff.removed),
+                )
+            })
+        }
+        ToolUsePayload::Text { .. } => (0, 0),
+    }
+}
+
 /// Like [`render_tool_block`] but appends an expanded unified-diff
 /// body when `expanded` is true and `diff` has hunks. The first line
 /// is the themed tool header (with `+N/-M` chip); the body, if
@@ -966,6 +977,74 @@ pub(crate) fn render_diff_tool_block(
                     spans.push(Span::new("\n".to_owned(), context_style));
                     spans.push(Span::new("+".to_owned(), added_style));
                     push_segments(&mut spans, new, added_style, added_inline_style);
+                }
+            }
+        }
+    }
+    StyledBlock::new(StyledText::from(spans))
+}
+
+/// Like [`render_diff_tool_block`] but keeps file boundaries for multi-file
+/// mutation payloads by rendering each display path before its hunks.
+pub(crate) fn render_multi_diff_tool_block(
+    theme: &tau_themes::Theme,
+    display: &ToolCallDisplay,
+    files: &[tau_proto::FileDiffSummary],
+    expanded: bool,
+) -> tau_cli_term::StyledBlock {
+    use tau_cli_term::resolve::resolve;
+    use tau_cli_term::{Span, StyledBlock, StyledText};
+    use tau_themes::names;
+
+    let header = render_tool_block(theme, display);
+    let mut spans: Vec<Span> = header.content.spans().to_vec();
+
+    if !expanded || files.iter().all(|file| file.diff.hunks.is_empty()) {
+        return StyledBlock::new(StyledText::from(spans));
+    }
+
+    let added_style = resolve(theme, names::DIFF_ADDED);
+    let removed_style = resolve(theme, names::DIFF_REMOVED);
+    let context_style = resolve(theme, names::DIFF_CONTEXT);
+    let header_style = resolve(theme, names::DIFF_HUNK_HEADER);
+    let added_inline_style = overlay_style(added_style, resolve(theme, names::DIFF_ADDED_INLINE));
+    let removed_inline_style =
+        overlay_style(removed_style, resolve(theme, names::DIFF_REMOVED_INLINE));
+
+    for file in files {
+        if file.diff.hunks.is_empty() {
+            continue;
+        }
+        spans.push(Span::new("\n", context_style));
+        spans.push(Span::new(format!("--- {}", file.path), header_style));
+        for hunk in &file.diff.hunks {
+            spans.push(Span::new("\n", context_style));
+            spans.push(Span::new(
+                format!(
+                    "@@ -{},{} +{},{} @@",
+                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+                ),
+                header_style,
+            ));
+            for line in &hunk.lines {
+                spans.push(Span::new("\n", context_style));
+                match line {
+                    tau_proto::DiffLine::Equal { text } => {
+                        spans.push(Span::new(format!(" {text}"), context_style));
+                    }
+                    tau_proto::DiffLine::Add { text } => {
+                        spans.push(Span::new(format!("+{text}"), added_style));
+                    }
+                    tau_proto::DiffLine::Remove { text } => {
+                        spans.push(Span::new(format!("-{text}"), removed_style));
+                    }
+                    tau_proto::DiffLine::Modify { old, new } => {
+                        spans.push(Span::new("-".to_owned(), removed_style));
+                        push_segments(&mut spans, old, removed_style, removed_inline_style);
+                        spans.push(Span::new("\n".to_owned(), context_style));
+                        spans.push(Span::new("+".to_owned(), added_style));
+                        push_segments(&mut spans, new, added_style, added_inline_style);
+                    }
                 }
             }
         }

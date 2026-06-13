@@ -2401,6 +2401,33 @@ fn extension_apply_patch_applies_multiple_operations() {
             delete_path.display(),
         ))
     );
+    let display = result.display.expect("apply_patch display");
+    let Some(ToolUsePayload::Diffs { files }) = display.payload else {
+        panic!("expected multi-file structured diff payload");
+    };
+    assert_eq!(files.len(), 3);
+    assert!(
+        files
+            .iter()
+            .any(|file| file.path == add_path.display().to_string())
+    );
+    assert!(
+        files
+            .iter()
+            .any(|file| file.path == delete_path.display().to_string())
+    );
+    let modify_diff = files
+        .iter()
+        .find(|file| file.path == modify_path.display().to_string())
+        .expect("modify diff");
+    assert!(
+        modify_diff
+            .diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .any(|line| matches!(line, tau_proto::DiffLine::Modify { .. }))
+    );
 
     writer
         .write_frame(&disconnect_frame(None))

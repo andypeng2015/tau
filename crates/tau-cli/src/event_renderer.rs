@@ -17,12 +17,12 @@ use crate::agent_activity::AgentActivity;
 use crate::build_banner;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
-    build_osc1337_set_user_var, build_tool_summary_display, extension_status_block, extract_diff,
-    format_token_count, pending_tool_call_display, render_compaction_block,
-    render_delegate_display, render_diff_tool_block, render_harness_info, render_shell_block,
-    render_tool_block, render_tool_use_state, render_turn_stats_block, session_status_block,
-    streaming_block, synthesize_fallback_display, system_loaded_block, tool_duration_suffix,
-    ui_dir_block,
+    build_osc1337_set_user_var, build_tool_summary_display, diff_payload_counts,
+    extension_status_block, extract_diff, format_token_count, pending_tool_call_display,
+    render_compaction_block, render_delegate_display, render_diff_tool_block, render_harness_info,
+    render_multi_diff_tool_block, render_shell_block, render_tool_block, render_tool_use_state,
+    render_turn_stats_block, session_status_block, streaming_block, synthesize_fallback_display,
+    system_loaded_block, tool_duration_suffix, ui_dir_block,
 };
 
 pub(crate) const UI_IO_MEDIUM_BYTES_PER_SEC: u64 = 10 * 1024;
@@ -301,7 +301,7 @@ struct AgentUiState {
 struct DiffBlockEntry {
     block_id: tau_cli_term::BlockId,
     display: ToolCallDisplay,
-    diff: tau_proto::DiffSummary,
+    diff: tau_proto::ToolUsePayload,
 }
 
 #[derive(Clone)]
@@ -1635,12 +1635,18 @@ impl EventRenderer {
     fn render_diff_history_block(
         &self,
         display: &ToolCallDisplay,
-        diff: &tau_proto::DiffSummary,
+        diff: &tau_proto::ToolUsePayload,
     ) -> tau_cli_term::StyledBlock {
         match self.show_tools {
-            tau_config::settings::ShowTools::Full => {
-                render_diff_tool_block(&self.theme, display, diff, self.diffs_expanded)
-            }
+            tau_config::settings::ShowTools::Full => match diff {
+                tau_proto::ToolUsePayload::Diff(summary) => {
+                    render_diff_tool_block(&self.theme, display, summary, self.diffs_expanded)
+                }
+                tau_proto::ToolUsePayload::Diffs { files } => {
+                    render_multi_diff_tool_block(&self.theme, display, files, self.diffs_expanded)
+                }
+                tau_proto::ToolUsePayload::Text { .. } => render_tool_block(&self.theme, display),
+            },
             tau_config::settings::ShowTools::Compact => self.render_compact_tool_block(display),
             tau_config::settings::ShowTools::Off
             | tau_config::settings::ShowTools::SummarizeTurn
@@ -1672,7 +1678,7 @@ impl EventRenderer {
         &mut self,
         block_id: Option<tau_cli_term::BlockId>,
         display: Option<&tau_proto::ToolUseState>,
-        diff: Option<&tau_proto::DiffSummary>,
+        diff: Option<&tau_proto::ToolUsePayload>,
         is_error: bool,
     ) {
         let Some(block_id) = block_id else {
@@ -1691,8 +1697,9 @@ impl EventRenderer {
                 summary.bytes += display.stats.bytes.unwrap_or(0);
             }
             if let Some(diff) = diff {
-                summary.added += u64::from(diff.added);
-                summary.removed += u64::from(diff.removed);
+                let (added, removed) = diff_payload_counts(diff);
+                summary.added += u64::from(added);
+                summary.removed += u64::from(removed);
             }
         }
         let finished = self
@@ -4190,17 +4197,21 @@ impl EventRenderer {
         Some(Duration::from_micros(elapsed_micros))
     }
 
-    fn tool_result_diff(result: &tau_proto::ToolResult) -> Option<tau_proto::DiffSummary> {
+    fn diff_payload_has_changes(payload: &tau_proto::ToolUsePayload) -> bool {
+        let (added, removed) = diff_payload_counts(payload);
+        0 < added || 0 < removed
+    }
+
+    fn tool_result_diff(result: &tau_proto::ToolResult) -> Option<tau_proto::ToolUsePayload> {
         let display_diff = result.display.as_ref().and_then(|d| match &d.payload {
-            Some(tau_proto::ToolUsePayload::Diff(s)) if 0 < s.added || 0 < s.removed => {
-                Some(s.clone())
-            }
+            Some(payload) if Self::diff_payload_has_changes(payload) => Some(payload.clone()),
             _ => None,
         });
         if result.display.is_some() {
             display_diff
         } else {
-            display_diff.or_else(|| extract_diff(&result.result))
+            display_diff
+                .or_else(|| extract_diff(&result.result).map(tau_proto::ToolUsePayload::Diff))
         }
     }
 
@@ -4208,7 +4219,7 @@ impl EventRenderer {
         &mut self,
         existing_block_id: Option<tau_cli_term::BlockId>,
         display: ToolCallDisplay,
-        diff: Option<tau_proto::DiffSummary>,
+        diff: Option<tau_proto::ToolUsePayload>,
     ) {
         if let Some(diff) = diff {
             let block = self.render_diff_history_block(&display, &diff);

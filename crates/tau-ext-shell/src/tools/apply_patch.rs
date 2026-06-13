@@ -320,9 +320,24 @@ fn display_payload_for_changes(changes: &[AppliedChange], summary: &str) -> Opti
             new_content,
         )));
     }
-    Some(ToolUsePayload::Text {
-        text: summary.to_owned(),
-    })
+
+    let files = changes
+        .iter()
+        .map(|change| {
+            let new_content = change.new_content.as_deref().unwrap_or_default();
+            tau_proto::FileDiffSummary {
+                path: change.display_path.clone(),
+                diff: compute_diff(&change.old_content, new_content),
+            }
+        })
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        Some(ToolUsePayload::Text {
+            text: summary.to_owned(),
+        })
+    } else {
+        Some(ToolUsePayload::Diffs { files })
+    }
 }
 
 fn display_payload_for_failure(changes: &[AppliedChange]) -> Option<ToolUsePayload> {

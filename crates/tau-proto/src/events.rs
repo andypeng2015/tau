@@ -1345,6 +1345,10 @@ pub enum ToolUsePayload {
     /// from the summary's `added`/`removed` and renders the hunks
     /// below the chip row.
     Diff(DiffSummary),
+    /// Structured diffs for a multi-file mutation. Each entry carries its
+    /// display path so UIs can keep file boundaries while rendering the
+    /// same hunk/inline data as a single-file diff.
+    Diffs { files: Vec<crate::FileDiffSummary> },
     /// Plain text rendered below the chip row. Used when the inline
     /// args label would be too noisy (e.g. multi-line shell commands).
     Text { text: String },

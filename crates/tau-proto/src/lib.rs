@@ -28,7 +28,7 @@ use std::marker::PhantomData;
 
 pub use ciborium::value::Value as CborValue;
 pub use context::*;
-pub use diff::{DiffHunk, DiffLine, DiffSegment, DiffSummary};
+pub use diff::{DiffHunk, DiffLine, DiffSegment, DiffSummary, FileDiffSummary};
 pub use event_name::*;
 pub use events::*;
 pub use interception::*;

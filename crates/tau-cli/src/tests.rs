@@ -29,8 +29,8 @@ use super::tool_render::{
     CompactionStatus, ToolStatus, build_delegate_completion_display, build_osc1337_set_user_var,
     cache_hit_percent, format_turn_stats_line, render_action_error_block,
     render_action_output_block, render_compaction_block, render_delegate_display,
-    render_diff_tool_block, render_shell_block, render_tool_block, render_tool_use_state,
-    render_turn_stats_block, streaming_block, synthesize_fallback_display,
+    render_diff_tool_block, render_multi_diff_tool_block, render_shell_block, render_tool_block,
+    render_tool_use_state, render_turn_stats_block, streaming_block, synthesize_fallback_display,
 };
 
 #[test]
@@ -5476,6 +5476,78 @@ fn render_diff_tool_block_uses_unified_diff_line_prefixes() {
         .expect("added changed token is split into its own span");
     assert_eq!(changed_added.style.fg, Some(tau_cli_term::Color::Green));
     assert!(changed_added.style.bold);
+}
+
+/// Ensures multi-file mutation payloads keep per-file headers and aggregate
+/// diff chips, so apply_patch results can show structured UI diffs for every
+/// changed file instead of falling back to plain text summaries.
+#[test]
+fn render_multi_diff_tool_block_preserves_file_boundaries() {
+    use tau_proto::{
+        DiffHunk, DiffLine, DiffSummary, FileDiffSummary, ToolUsePayload, ToolUseState,
+        ToolUseStatus,
+    };
+
+    let files = vec![
+        FileDiffSummary {
+            path: "a.txt".into(),
+            diff: DiffSummary {
+                added: 1,
+                removed: 0,
+                hunks: vec![DiffHunk {
+                    old_start: 0,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![DiffLine::Add {
+                        text: "alpha".into(),
+                    }],
+                }],
+            },
+        },
+        FileDiffSummary {
+            path: "b.txt".into(),
+            diff: DiffSummary {
+                added: 0,
+                removed: 1,
+                hunks: vec![DiffHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 0,
+                    new_count: 0,
+                    lines: vec![DiffLine::Remove {
+                        text: "beta".into(),
+                    }],
+                }],
+            },
+        },
+    ];
+    let display = render_tool_use_state(
+        "apply_patch",
+        &ToolUseState {
+            status: ToolUseStatus::Success,
+            status_text: "ok".into(),
+            payload: Some(ToolUsePayload::Diffs {
+                files: files.clone(),
+            }),
+            ..Default::default()
+        },
+    );
+
+    let suffixes: Vec<&str> = display.suffixes.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(suffixes, vec!["+1", "-1", "ok"]);
+    let block = render_multi_diff_tool_block(&tau_themes::Theme::builtin(), &display, &files, true);
+    let text: String = block
+        .content
+        .spans()
+        .iter()
+        .map(|span| span.text.as_str())
+        .collect();
+
+    assert!(text.contains("\n--- a.txt"));
+    assert!(text.contains("\n+alpha"));
+    assert!(text.contains("\n--- b.txt"));
+    assert!(text.contains("\n-beta"));
 }
 
 #[test]
