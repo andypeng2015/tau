@@ -8,7 +8,7 @@ This crate is currently non-production. The production harness supervisor still 
 
 ## Process ownership
 
-`SupervisedChild::spawn` owns the spawned child from successful process creation onward. During initialization a guard kill/waits the child if pipe setup or stdout-reader startup fails. Once construction succeeds, callers should prefer explicit protocol shutdown or `SupervisedChild::terminate`; `Drop` is only best-effort hard-kill cleanup with ignored errors.
+`SupervisedChild::spawn` owns the spawned direct child from successful process creation onward. During initialization a guard kill/waits the child if pipe setup or stdout-reader startup fails. Once construction succeeds, callers should prefer explicit protocol shutdown or `SupervisedChild::terminate`; `Drop` is only best-effort hard-kill cleanup with ignored errors. Termination intentionally targets only the direct child process, not a process tree or grandchildren.
 
 Lifecycle helpers on `SupervisedChild` derive process pids from the owned child. Use `ExtensionCommand::pre_spawn_starting_event` only for pid-less pre-spawn lifecycle reporting.
 
