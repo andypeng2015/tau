@@ -18,6 +18,16 @@ The picker builds a pure list of styled rows, then asks `tau-term-screen::Screen
 
 For normal terminal heights, row 0 is the prompt and the remaining rows show a centered window of items. For a one-row terminal, the picker switches to a compact single-row frame containing both prompt and selected item, so it never intentionally renders more rows than the reported height.
 
+## Controls
+
+The picker recognizes the following controls:
+
+- Enter selects the highlighted enabled item.
+- Up/Down arrows move between enabled items; disabled items remain visible but are skipped.
+- `k`/`j` and BackTab/Tab mirror Up/Down navigation for keyboard-only flows.
+- Escape, Ctrl-C, Ctrl-D/EOF, and `q` cancel the picker.
+- Space is reserved for a possible future multi-select mode and is ignored.
+
 ## Scope
 
 This crate owns only picker-local state: selected item, viewport window, and frame cleanup. It should not grow general TUI concepts such as async event loops, background redraw threads, application actions, or nested widget composition without first changing the public API to model terminal ownership explicitly.
