@@ -653,6 +653,95 @@ fn dir_lock_config_re_registers_tool_disabled_when_config_false() {
     writer.flush().expect("flush");
 }
 
+/// Ensures the dispatch path returns a clear bounded-backpressure ToolError
+/// when scheduler admission rejects excess work.
+#[test]
+fn schedule_tool_started_reports_queue_full_error() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let scheduler = WorkScheduler::new(
+        tx.clone(),
+        crate::scheduler::SchedulerConfig {
+            total_limit: 0,
+            control_workers: 0,
+            user_workers: 0,
+            cheap_workers: 0,
+            general_workers: 0,
+            ..Default::default()
+        },
+    );
+    let Event::ToolStarted(invoke) = tool_started(
+        "queue-full-read",
+        READ_TOOL_NAME,
+        cbor_text_map(vec![("path", "Cargo.toml")]),
+        "agent-a",
+    ) else {
+        panic!("expected tool started");
+    };
+
+    let Err((returned, failure)) = schedule_tool_started(
+        invoke,
+        &scheduler,
+        &tx,
+        ExtConfig::default(),
+        DirLockManager::default(),
+        Arc::new(Mutex::new(HashMap::new())),
+    ) else {
+        panic!("queue-full call should be rejected");
+    };
+
+    assert_eq!(returned.call_id.as_str(), "queue-full-read");
+    assert!(failure.message.contains("queue limit is 0"));
+}
+
+/// Ensures a model tool canceled while queued by the scheduler never reaches
+/// the mutation implementation.
+#[test]
+fn schedule_tool_started_cancel_before_start_prevents_mutation() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let edit_path = tempdir.path().join("queued-edit.txt");
+    fs::write(&edit_path, "old\n").expect("initial file");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let scheduler = WorkScheduler::new(
+        tx.clone(),
+        crate::scheduler::SchedulerConfig {
+            control_workers: 0,
+            user_workers: 0,
+            cheap_workers: 0,
+            general_workers: 0,
+            ..Default::default()
+        },
+    );
+    let Event::ToolStarted(invoke) = tool_started(
+        "queued-edit",
+        EDIT_TOOL_NAME,
+        edit_arguments(&edit_path, vec![line_edit(1, 2, "new\n")]),
+        "agent-a",
+    ) else {
+        panic!("expected tool started");
+    };
+    let call_id = invoke.call_id.clone();
+
+    schedule_tool_started(
+        invoke,
+        &scheduler,
+        &tx,
+        ExtConfig::default(),
+        DirLockManager::default(),
+        Arc::new(Mutex::new(HashMap::new())),
+    )
+    .expect("edit queued");
+    assert!(scheduler.cancel_queued_call(&call_id));
+
+    let HarnessInputMessage::Emit(emit) = rx.recv().expect("cancel event") else {
+        panic!("expected emit");
+    };
+    let Event::ToolCancelled(cancelled) = *emit.event else {
+        panic!("expected ToolCancelled");
+    };
+    assert_eq!(cancelled.call_id, call_id);
+    assert_eq!(fs::read_to_string(&edit_path).expect("file"), "old\n");
+}
+
 #[test]
 fn dir_lock_tool_can_be_disabled_by_config() {
     let tempdir = TempDir::new().expect("tempdir");
