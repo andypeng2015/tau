@@ -99,6 +99,12 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         .stdout
         .take()
         .ok_or_else(|| with_args(ToolFailure::from("ripgrep stdout pipe missing".to_owned())))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| with_args(ToolFailure::from("ripgrep stderr pipe missing".to_owned())))?;
+    let stderr_handle = std::thread::spawn(move || read_limited_bytes(stderr, MAX_OUTPUT_BYTES));
+
     let GrepStreamResult {
         result_lines,
         match_count,
@@ -112,20 +118,21 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         let _ = child.kill();
     }
 
-    let output = child.wait_with_output().map_err(|e| {
+    let exit_status = child.wait().map_err(|e| {
         with_args(ToolFailure::from(format!(
             "failed to wait for ripgrep: {e}"
         )))
     })?;
+    let stderr = stderr_handle.join().unwrap_or_default();
 
     // rg exit codes: 0=matches found, 1=no matches, 2=error.
     // Exit-2 is overloaded — ripgrep emits regex parse errors, IO
     // errors, and permission denials all under the same code. Classify
     // the stderr into a short, single-line message so the UI doesn't
     // surface a multi-line regex-parser dump in the inline tool block.
-    let status = output.status.code();
+    let status = exit_status.code();
     if status == Some(2) {
-        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let stderr_raw = String::from_utf8_lossy(&stderr);
         return Err(with_args(ToolFailure::from(
             classify_ripgrep_stderr(stderr_raw.trim()).to_string(),
         )));
@@ -174,6 +181,23 @@ pub(crate) fn run_grep(arguments: &CborValue) -> Result<ToolOutput, ToolFailure>
         result: grep_result_map(status, match_count, output_text),
         display,
     })
+}
+
+fn read_limited_bytes(mut reader: impl Read, limit: usize) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if output.len() < limit {
+                    let remaining = limit - output.len();
+                    output.extend_from_slice(&buf[..n.min(remaining)]);
+                }
+            }
+        }
+    }
+    output
 }
 
 /// Categorized ripgrep failure (exit code 2). The variants encode the
@@ -477,6 +501,18 @@ mod tests {
 
         assert_eq!(err.message, "limit must be >= 1");
     }
+    /// Protects the stderr drain used while grep reads stdout. The capture must
+    /// stay bounded so a noisy ripgrep cannot trade pipe backpressure for
+    /// unbounded memory growth in the drain thread.
+    #[test]
+    fn grep_stderr_drain_caps_captured_bytes() {
+        let captured =
+            read_limited_bytes(std::io::Cursor::new(vec![b'x'; MAX_OUTPUT_BYTES + 100]), 32);
+
+        assert_eq!(captured.len(), 32);
+        assert!(captured.iter().all(|byte| *byte == b'x'));
+    }
+
     /// Ensures grep long-line shortening preserves the path and line number
     /// prefix instead of replacing the whole rendered match with a marker.
     #[test]
