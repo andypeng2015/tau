@@ -249,14 +249,17 @@ pub enum CliTheme {
 impl CliTheme {
     /// Parses a user-authored theme name from `cli.yaml` or `TAU_THEME`.
     #[must_use]
-    pub fn parse_name(value: &str) -> Self {
+    pub fn parse_name(value: &str) -> Option<Self> {
         let trimmed = value.trim();
-        match trimmed.to_ascii_lowercase().as_str() {
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(match trimmed.to_ascii_lowercase().as_str() {
             "auto" => Self::Auto,
             "dark" => Self::Dark,
             "light" => Self::Light,
             _ => Self::Named(trimmed.to_owned()),
-        }
+        })
     }
 
     /// Returns the normalized name used for serialization and diagnostics.
@@ -277,11 +280,7 @@ impl<'de> Deserialize<'de> for CliTheme {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(D::Error::custom("theme name must not be empty"));
-        }
-        Ok(Self::parse_name(trimmed))
+        Self::parse_name(&value).ok_or_else(|| D::Error::custom("theme name must not be empty"))
     }
 }
 

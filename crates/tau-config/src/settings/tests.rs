@@ -74,6 +74,16 @@ fn cli_settings_reject_unknown_top_level_fields() {
     );
 }
 
+#[test]
+fn cli_theme_parse_name_rejects_empty_names() {
+    assert_eq!(CliTheme::parse_name("  "), None);
+    assert_eq!(CliTheme::parse_name("dark"), Some(CliTheme::Dark));
+    assert_eq!(
+        CliTheme::parse_name("custom"),
+        Some(CliTheme::Named("custom".to_owned()))
+    );
+}
+
 /// Ensures arbitrary non-empty theme names survive config parsing so the CLI
 /// can resolve them to external files under the user's `themes` directory.
 #[test]

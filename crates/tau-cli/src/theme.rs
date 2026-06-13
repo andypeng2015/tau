@@ -137,11 +137,7 @@ fn env_theme_override() -> Option<CliTheme> {
 }
 
 fn parse_theme_name(value: &str) -> Option<CliTheme> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(CliTheme::parse_name(trimmed))
+    CliTheme::parse_name(value)
 }
 
 fn external_theme_path(config_dir: &Path, name: &str) -> PathBuf {
