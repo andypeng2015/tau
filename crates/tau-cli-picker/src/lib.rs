@@ -14,9 +14,6 @@ mod item;
 mod key;
 mod raw_mode;
 
-pub use crate::error::PickerError;
-pub use crate::item::PickerItem;
-
 #[cfg(test)]
 mod tests;
 
@@ -26,6 +23,8 @@ use tau_term_screen::screen::Screen;
 use tau_term_screen::style::StyledText;
 use tau_term_screen::truncate_to_width;
 
+pub use crate::error::PickerError;
+pub use crate::item::PickerItem;
 use crate::key::{PickerEvent, PickerKey, read_byte_key, read_terminal_event};
 use crate::raw_mode::RawModeGuard;
 
