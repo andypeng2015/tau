@@ -1657,7 +1657,9 @@ fn yaml_layer_paths(dir: Option<&Path>, name: &str) -> Result<Vec<PathBuf>, Sett
         return Ok(paths);
     };
     if !metadata.is_dir() {
-        return Ok(paths);
+        return Err(SettingsError::Config(config::ConfigError::Message(
+            format!("{} exists but is not a directory", drop_dir.display()),
+        )));
     }
 
     let mut drop_in_paths = Vec::new();

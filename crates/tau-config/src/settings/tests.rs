@@ -287,6 +287,37 @@ fn unreadable_drop_in_directory_is_reported() {
 }
 
 #[test]
+fn cli_drop_in_path_must_be_a_directory() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(dir.join("cli.yaml"), "greeting: false\n").expect("write base");
+    std::fs::write(dir.join("cli.d"), "not a directory\n").expect("write file");
+
+    let error = load_cli_settings_in(&dirs_with_config(dir)).expect_err("file cli.d should fail");
+
+    assert!(
+        error.to_string().contains("not a directory"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn harness_drop_in_path_must_be_a_directory() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(dir.join("harness.yaml"), "default_role: manager\n").expect("write base");
+    std::fs::write(dir.join("harness.d"), "not a directory\n").expect("write file");
+
+    let error =
+        load_harness_settings_in(&dirs_with_config(dir)).expect_err("file harness.d should fail");
+
+    assert!(
+        error.to_string().contains("not a directory"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn cli_state_defaults_to_cli_config_when_state_file_is_missing() {
     let td = TempDir::new().expect("tempdir");
     let config_dir = td.path().join("config");
