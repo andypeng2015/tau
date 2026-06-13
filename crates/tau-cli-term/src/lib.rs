@@ -215,7 +215,9 @@ impl HighTerm {
     ///
     /// Use this when another component (e.g. the event renderer) owns
     /// the authoritative context and needs the prompt's external-editor
-    /// integration to read from the same `Arc`. The previously-owned
+    /// integration to read conversation context and write prompt-trailer
+    /// recovery state through the same `Arc`. The previously-owned
+    /// `EditorContext` is dropped.
     /// `EditorContext` is dropped.
     pub fn set_editor_context_handle(&mut self, editor_context: Arc<Mutex<EditorContext>>) {
         self.editor_context = editor_context;
@@ -584,8 +586,8 @@ enum PromptShellAction {
     InsertNewline,
 }
 
-/// Read-only conversation context appended below the prompt trailer when the
-/// user edits the prompt in an external editor.
+/// Conversation context and prompt-editor recovery state appended below the
+/// prompt trailer when the user edits the prompt in an external editor.
 #[derive(Clone, Default)]
 pub struct EditorContext {
     /// Response text currently streaming or otherwise in progress, included as
@@ -597,6 +599,22 @@ pub struct EditorContext {
     /// Previous submitted prompt text, included as read-only context when
     /// editing the next prompt.
     pub previous_prompt: Option<String>,
+    /// Text recovered from a previous edit where the normally ignored trailer
+    /// section was modified before the editor exited. This is set only when the
+    /// edited trailer differs from the generated trailer, cleared when the
+    /// trailer is unchanged or the marker is deleted, rendered below the marker
+    /// on the next edit, and never promoted into the prompt unless the user
+    /// manually moves it above the marker.
+    pub edited_trailer_recovery: Option<String>,
+}
+
+impl EditorContext {
+    fn update_edited_trailer_recovery(&mut self, original_text: &str, edited_text: &str) {
+        let Some((_, original_trailer)) = split_at_prompt_trailer_marker(original_text) else {
+            return;
+        };
+        self.edited_trailer_recovery = edited_trailer_recovery(original_trailer, edited_text);
+    }
 }
 
 enum PromptShellResult {
@@ -783,6 +801,10 @@ fn run_prompt_shell_action(
         PromptShellAction::Edit(_) => {
             let new_text = std::fs::read_to_string(tmp.path())
                 .map_err(|e| format!("could not read tempfile: {e}"))?;
+            editor_context
+                .lock()
+                .expect("editor context mutex poisoned")
+                .update_edited_trailer_recovery(&file_text, &new_text);
             let new_text = strip_prompt_trailer(&new_text);
             let new_text = trim_prompt_newlines(new_text).to_owned();
             Ok(Some(PromptShellResult::Replace(new_text)))
@@ -859,6 +881,7 @@ fn append_prompt_trailer(current: &str, editor_context: &Arc<Mutex<EditorContext
     if context.current_response.is_none()
         && context.last_response.is_none()
         && context.previous_prompt.is_none()
+        && context.edited_trailer_recovery.is_none()
     {
         return current.to_owned();
     }
@@ -883,6 +906,21 @@ fn append_prompt_trailer(current: &str, editor_context: &Arc<Mutex<EditorContext
         out.push_str("\n## Previous prompt\n\n");
         push_markdown_quote(&mut out, text);
     }
+    if let Some(text) = context
+        .edited_trailer_recovery
+        .as_deref()
+        .filter(|t| !t.is_empty())
+    {
+        out.push_str("\n## Previously edited text below TAU trailer\n\n");
+        out.push_str(
+            "Move anything you want to keep above the TAU trailer marker; \
+             leaving this section unchanged will discard it after this editor session.\n\n",
+        );
+        out.push_str(text);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
     out
 }
 
@@ -891,9 +929,22 @@ fn trim_prompt_newlines(text: &str) -> &str {
 }
 
 fn strip_prompt_trailer(text: &str) -> &str {
-    let Some(before) = text_before_prompt_trailer_marker(text) else {
+    let Some((before, _)) = split_at_prompt_trailer_marker(text) else {
         return text;
     };
+    trim_prompt_before_trailer_marker(before)
+}
+
+fn edited_trailer_recovery(original_trailer: &str, edited_text: &str) -> Option<String> {
+    let (_, edited_trailer) = split_at_prompt_trailer_marker(edited_text)?;
+    if edited_trailer == original_trailer {
+        return None;
+    }
+    let trimmed = trim_prompt_newlines(edited_trailer);
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn trim_prompt_before_trailer_marker(before: &str) -> &str {
     before
         .strip_suffix("\n\n")
         .or_else(|| before.strip_suffix("\r\n\r\n"))
@@ -902,7 +953,7 @@ fn strip_prompt_trailer(text: &str) -> &str {
         .unwrap_or(before)
 }
 
-fn text_before_prompt_trailer_marker(text: &str) -> Option<&str> {
+fn split_at_prompt_trailer_marker(text: &str) -> Option<(&str, &str)> {
     let mut line_start = 0;
     for line in text.split_inclusive('\n') {
         let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
@@ -910,7 +961,8 @@ fn text_before_prompt_trailer_marker(text: &str) -> Option<&str> {
             .strip_suffix('\r')
             .unwrap_or(line_without_newline);
         if line_without_ending == PROMPT_TRAILER_MARKER {
-            return Some(&text[..line_start]);
+            let trailer_start = line_start + line.len();
+            return Some((&text[..line_start], &text[trailer_start..]));
         }
         line_start += line.len();
     }

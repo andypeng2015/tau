@@ -109,7 +109,12 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
   recorded for `prompt-undo` before the picker opens.
 - `shell-prompt-insert` — run `command` and insert stdout at the cursor.
 - `shell-prompt-edit` — run `command` with the current prompt in
-  `$TAU_PROMPT_PATH` and replace the prompt with the edited file content.
+  `$TAU_PROMPT_PATH` and replace the prompt with the edited file content. When
+  Tau adds its `TAU trailer` marker, text below the marker is ignored unless it
+  changed during editing: changed trailer text is shown under `Previously edited
+  text below TAU trailer` on the next editor open so you can manually move it
+  above the marker. Leaving the trailer unchanged clears old recovery. Deleting
+  the marker makes the whole file prompt-owned and also clears old recovery.
 
 Shell prompt actions capture at most 1 MiB of stdout, discard stderr, and time
 out after 1 hour. `complete_with_command` completion commands capture at most

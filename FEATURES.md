@@ -597,7 +597,13 @@ The editor file also includes a Markdown trailer after:
 Everything after the marker is ignored when Tau reads the file back. The
 trailer quotes useful context for composing the next prompt: the current
 in-flight response, the last agent response, and the previous submitted prompt.
-Leading and trailing blank lines around the editable prompt are trimmed.
+If you accidentally edit text below the marker, Tau detects that the trailer
+changed and shows the edited text under `Previously edited text below TAU
+trailer` the next time you open `$EDITOR`. That recovered text is still not
+submitted automatically; move anything you want to keep above the marker. If the
+trailer is unchanged, prior recovery is cleared. If you delete the marker line,
+the whole file becomes prompt text and prior recovery is cleared. Leading and
+trailing blank lines around the editable prompt are trimmed.
 
 ### `Ctrl+F` — fzf (or anything else) into the prompt
 

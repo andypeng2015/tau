@@ -20,6 +20,22 @@ Bounded subprocess execution lives in `src/bounded_command.rs`.
   controlling terminal foreground pgrp, then restores Tau's pgrp before
   raw-mode/redraw resume. `tcsetpgrp` is guarded against `SIGTTOU`.
 
+## External-editor prompt trailer
+
+Prompt edit actions write the current prompt to `$TAU_PROMPT_PATH` and, when
+context exists, append an exact `TAU trailer` marker line followed by read-only
+conversation context. On editor exit, only text before an exact marker line is
+used as the prompt. If the marker line is deleted, the whole file is treated as
+prompt text.
+
+The shared `EditorContext` mutex carries both conversation context from the outer
+renderer and process-local trailer recovery state. When the edited below-marker
+trailer differs from the exact trailer Tau generated for that editor session,
+Tau stores the edited trailer in memory and renders it below the marker on the
+next editor open. Unchanged trailers and deleted marker lines clear that
+recovery. Recovery text remains below the marker and is never submitted unless
+the user manually moves it above the marker.
+
 ## Git completion cache
 
 Git file enumeration caches results per current directory. Positive results are

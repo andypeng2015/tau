@@ -20,6 +20,7 @@ fn roundtrip_strips_trailer_with_current_response() {
             current_response: Some("agent draft".to_owned()),
             last_response: None,
             previous_prompt: None,
+            ..EditorContext::default()
         }),
     );
     assert!(edited.contains(PROMPT_TRAILER_MARKER));
@@ -35,6 +36,7 @@ fn roundtrip_strips_trailer_with_all_sections() {
             current_response: Some("in progress".to_owned()),
             last_response: Some("last".to_owned()),
             previous_prompt: Some("prev".to_owned()),
+            ..EditorContext::default()
         }),
     );
     assert!(edited.contains("Current response in progress"));
@@ -51,6 +53,7 @@ fn empty_section_strings_are_skipped() {
             current_response: Some(String::new()),
             last_response: Some("kept".to_owned()),
             previous_prompt: Some(String::new()),
+            ..EditorContext::default()
         }),
     );
     assert!(!edited.contains("Current response in progress"));
@@ -85,6 +88,7 @@ fn deleting_marker_line_keeps_entire_file_as_prompt() {
             current_response: Some(format!("agent mentioned {PROMPT_TRAILER_MARKER}")),
             last_response: Some("last".to_owned()),
             previous_prompt: None,
+            ..EditorContext::default()
         }),
     );
     let without_marker_line = edited
@@ -96,5 +100,78 @@ fn deleting_marker_line_keeps_entire_file_as_prompt() {
     assert_eq!(
         strip_prompt_trailer(&without_marker_line),
         without_marker_line
+    );
+}
+
+#[test]
+fn changed_trailer_is_saved_for_next_editor_session() {
+    // Ensures accidental edits below the marker are preserved for recovery on
+    // the following external-editor invocation instead of being silently lost.
+    let editor_context = ctx(EditorContext {
+        current_response: Some("agent context".to_owned()),
+        ..EditorContext::default()
+    });
+    let original = append_prompt_trailer("draft", &editor_context);
+    let edited = original.replace("agent context", "accidental note");
+
+    editor_context
+        .lock()
+        .expect("editor context mutex poisoned")
+        .update_edited_trailer_recovery(&original, &edited);
+
+    let next = append_prompt_trailer("next draft", &editor_context);
+    assert!(next.contains("Previously edited text below TAU trailer"));
+    assert!(next.contains("accidental note"));
+    assert_eq!(strip_prompt_trailer(&next), "next draft");
+}
+
+#[test]
+fn unchanged_trailer_clears_recovery() {
+    // Ensures stale recovery text is thrown away after an editor session where
+    // the below-marker trailer is left exactly as Tau generated it.
+    let editor_context = ctx(EditorContext {
+        current_response: Some("agent context".to_owned()),
+        edited_trailer_recovery: Some("old accidental text".to_owned()),
+        ..EditorContext::default()
+    });
+    let original = append_prompt_trailer("draft", &editor_context);
+
+    editor_context
+        .lock()
+        .expect("editor context mutex poisoned")
+        .update_edited_trailer_recovery(&original, &original);
+
+    let next = append_prompt_trailer("next draft", &editor_context);
+    assert!(!next.contains("old accidental text"));
+    assert!(!next.contains("Previously edited text below TAU trailer"));
+}
+
+#[test]
+fn deleting_marker_line_does_not_save_recovery() {
+    // Ensures deleting the marker makes the whole file prompt-owned and clears
+    // stale recovery instead of showing the same content again below the marker.
+    let editor_context = ctx(EditorContext {
+        current_response: Some("agent context".to_owned()),
+        edited_trailer_recovery: Some("old accidental text".to_owned()),
+        ..EditorContext::default()
+    });
+    let original = append_prompt_trailer("draft", &editor_context);
+    let edited = original
+        .lines()
+        .filter(|line| *line != PROMPT_TRAILER_MARKER)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    editor_context
+        .lock()
+        .expect("editor context mutex poisoned")
+        .update_edited_trailer_recovery(&original, &edited);
+
+    assert!(
+        editor_context
+            .lock()
+            .expect("editor context mutex poisoned")
+            .edited_trailer_recovery
+            .is_none()
     );
 }
