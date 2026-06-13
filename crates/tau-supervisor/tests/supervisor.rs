@@ -295,7 +295,7 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
         }
     );
     assert_eq!(
-        child.ready_event(42.into(), Some(child.pid())),
+        child.ready_event(42.into()),
         Event::ExtensionReady(tau_proto::ExtensionReady {
             instance_id: 42.into(),
             extension_name: "test-child".into(),
@@ -334,11 +334,11 @@ fn supervised_child_exchanges_protocol_events_over_stdio() {
         .expect("child should exit");
     assert_eq!(exit.exit_code, Some(0));
     assert_eq!(
-        child.exited_event(42.into(), None, &exit),
+        child.exited_event(42.into(), &exit),
         Event::ExtensionExited(tau_proto::ExtensionExited {
             instance_id: 42.into(),
             extension_name: "test-child".into(),
-            pid: None,
+            pid: Some(child.pid()),
             exit_code: Some(0),
             signal: None,
         })

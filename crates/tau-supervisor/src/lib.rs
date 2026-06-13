@@ -226,15 +226,11 @@ impl SupervisedChild {
 
     /// Creates the lifecycle event emitted when the child becomes connected.
     #[must_use]
-    pub fn ready_event(
-        &self,
-        instance_id: tau_proto::ExtensionInstanceId,
-        pid: Option<u32>,
-    ) -> Event {
+    pub fn ready_event(&self, instance_id: tau_proto::ExtensionInstanceId) -> Event {
         Event::ExtensionReady(ExtensionReady {
             instance_id,
             extension_name: self.command.name.clone(),
-            pid,
+            pid: Some(self.pid()),
         })
     }
 
@@ -288,13 +284,12 @@ impl SupervisedChild {
     pub fn exited_event(
         &self,
         instance_id: tau_proto::ExtensionInstanceId,
-        pid: Option<u32>,
         exit: &ChildExit,
     ) -> Event {
         Event::ExtensionExited(ExtensionExited {
             instance_id,
             extension_name: self.command.name.clone(),
-            pid,
+            pid: Some(self.pid()),
             exit_code: exit.exit_code,
             signal: exit.signal,
         })
