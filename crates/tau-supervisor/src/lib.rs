@@ -47,15 +47,6 @@ pub struct ExtensionCommand {
 }
 
 impl ExtensionCommand {
-    /// Returns the argv used to launch the child process.
-    #[must_use]
-    pub fn argv(&self) -> Vec<String> {
-        let mut argv = Vec::with_capacity(1 + self.args.len());
-        argv.push(self.program.display().to_string());
-        argv.extend(self.args.iter().cloned());
-        argv
-    }
-
     /// Creates the lifecycle event emitted before the child starts.
     #[must_use]
     pub fn starting_event(
