@@ -491,6 +491,7 @@ where
     // thread drains them onto the wire.
     let (tx, rx) = mpsc::channel::<HarnessInputMessage>();
     let sem = Arc::new(Semaphore::new(16));
+    let dir_lock_wait_sem = Arc::new(Semaphore::new(64));
     let running_shells = Arc::new(Mutex::new(
         HashMap::<tau_proto::ToolCallId, mpsc::Sender<()>>::new(),
     ));
@@ -571,7 +572,7 @@ where
                         let running_shells = Arc::clone(&running_shells);
                         if invoke.tool_name == DIR_LOCK_TOOL_NAME {
                             let permit = if is_dir_lock_update_invocation(&invoke.arguments) {
-                                let Some(permit) = sem.try_acquire() else {
+                                let Some(permit) = dir_lock_wait_sem.try_acquire() else {
                                     send_worker_saturated_failure(invoke, &tx);
                                     continue;
                                 };
@@ -593,10 +594,11 @@ where
                         } else if config.dir_lock.enable
                             && is_dir_lock_update_tool(invoke.tool_name.as_str())
                         {
-                            let Some(permit) = sem.try_acquire() else {
+                            let Some(wait_permit) = dir_lock_wait_sem.try_acquire() else {
                                 send_worker_saturated_failure(invoke, &tx);
                                 continue;
                             };
+                            let exec_sem = Arc::clone(&sem);
                             let lock_manager = lock_manager.clone();
                             std::thread::spawn(move || {
                                 dispatch_locked_tool_invoke(
@@ -605,7 +607,8 @@ where
                                     &tx,
                                     &running_shells,
                                     &lock_manager,
-                                    permit,
+                                    exec_sem,
+                                    wait_permit,
                                     enforce_ro_mode,
                                 );
                             });
@@ -844,7 +847,8 @@ fn dispatch_locked_tool_invoke(
     tx: &mpsc::Sender<HarnessInputMessage>,
     running_shells: &Arc<Mutex<HashMap<tau_proto::ToolCallId, mpsc::Sender<()>>>>,
     lock_manager: &DirLockManager,
-    permit: OwnedPermit,
+    exec_sem: Arc<Semaphore>,
+    wait_permit: OwnedPermit,
     enforce_ro_mode: bool,
 ) {
     let dirs = match crate::dir_lock::automatic_lock_dirs_for_tool(
@@ -853,7 +857,11 @@ fn dispatch_locked_tool_invoke(
     ) {
         Ok(Some(dirs)) => crate::dir_lock::normalize_lock_dirs(dirs),
         Ok(None) => {
-            let _permit = permit;
+            let Some(_permit) = exec_sem.try_acquire() else {
+                drop(wait_permit);
+                send_worker_saturated_failure(invoke, tx);
+                return;
+            };
             dispatch_tool_invoke(
                 invoke,
                 shell_config,
@@ -901,9 +909,13 @@ fn dispatch_locked_tool_invoke(
         }
     };
 
+    drop(wait_permit);
+    let Some(_permit) = exec_sem.try_acquire() else {
+        send_worker_saturated_failure(invoke, tx);
+        return;
+    };
     let lock_wait_duration_seconds =
         reported_lock_wait_duration_seconds(lock_wait_started.elapsed());
-    let _permit = permit;
     dispatch_tool_invoke(
         invoke,
         shell_config,
