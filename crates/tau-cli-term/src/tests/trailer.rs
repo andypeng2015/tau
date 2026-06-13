@@ -64,15 +64,37 @@ fn strip_without_marker_is_identity() {
 }
 
 #[test]
-fn user_text_containing_marker_is_truncated() {
-    // Documents the *current* behavior: if the user's own draft
-    // happens to contain the trailer marker, `strip_prompt_trailer`
-    // truncates at the first occurrence. The marker is verbose
-    // enough that this is unlikely in practice, but pinning the
-    // behavior makes the trade-off explicit.
+fn marker_inside_user_text_is_kept() {
+    // Ensures only the generated marker line strips trailer context. If the
+    // marker text appears in user-owned content, including after the generated
+    // marker line was deleted in $EDITOR, it must remain part of the prompt.
     let mut user_text = String::from("body with marker: ");
     user_text.push_str(PROMPT_TRAILER_MARKER);
     user_text.push_str(" and more");
     let stripped = strip_prompt_trailer(&user_text);
-    assert_eq!(stripped, "body with marker: ");
+    assert_eq!(stripped, user_text);
+}
+
+#[test]
+fn deleting_marker_line_keeps_entire_file_as_prompt() {
+    // Prevents edited prompt text from being discarded when the user removes
+    // the generated marker line but leaves the informational trailer text.
+    let edited = append_prompt_trailer(
+        "my reply",
+        &ctx(EditorContext {
+            current_response: Some(format!("agent mentioned {PROMPT_TRAILER_MARKER}")),
+            last_response: Some("last".to_owned()),
+            previous_prompt: None,
+        }),
+    );
+    let without_marker_line = edited
+        .lines()
+        .filter(|line| *line != PROMPT_TRAILER_MARKER)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(
+        strip_prompt_trailer(&without_marker_line),
+        without_marker_line
+    );
 }

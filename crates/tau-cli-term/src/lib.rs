@@ -891,13 +891,30 @@ fn trim_prompt_newlines(text: &str) -> &str {
 }
 
 fn strip_prompt_trailer(text: &str) -> &str {
-    let Some((before, _)) = text.split_once(PROMPT_TRAILER_MARKER) else {
+    let Some(before) = text_before_prompt_trailer_marker(text) else {
         return text;
     };
     before
         .strip_suffix("\n\n")
+        .or_else(|| before.strip_suffix("\r\n\r\n"))
         .or_else(|| before.strip_suffix('\n'))
+        .or_else(|| before.strip_suffix("\r\n"))
         .unwrap_or(before)
+}
+
+fn text_before_prompt_trailer_marker(text: &str) -> Option<&str> {
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+        let line_without_ending = line_without_newline
+            .strip_suffix('\r')
+            .unwrap_or(line_without_newline);
+        if line_without_ending == PROMPT_TRAILER_MARKER {
+            return Some(&text[..line_start]);
+        }
+        line_start += line.len();
+    }
+    None
 }
 
 fn push_markdown_quote(out: &mut String, text: &str) {
