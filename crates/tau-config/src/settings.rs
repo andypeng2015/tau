@@ -601,36 +601,85 @@ type RawRoleGroups = IndexMap<String, RawRoleGroup>;
 struct RawRoleGroup {
     // `enabled` was a mistaken old spelling. Keep it as a little bandaid for
     // reading old config during migration.
-    #[serde(alias = "enabled")]
-    enable: Option<bool>,
-    description: Option<String>,
-    model: Option<ModelId>,
-    effort: Option<tau_proto::Effort>,
-    verbosity: Option<tau_proto::Verbosity>,
-    #[serde(alias = "thinkingSummary")]
-    thinking_summary: Option<tau_proto::ThinkingSummary>,
-    #[serde(alias = "serviceTier")]
-    service_tier: Option<tau_proto::ServiceTier>,
-    compaction: Option<RoleCompaction>,
+    #[serde(alias = "enabled", deserialize_with = "present_option")]
+    enable: Option<Option<bool>>,
+    #[serde(deserialize_with = "present_option")]
+    description: Option<Option<String>>,
+    #[serde(deserialize_with = "present_option")]
+    model: Option<Option<ModelId>>,
+    #[serde(deserialize_with = "present_option")]
+    effort: Option<Option<tau_proto::Effort>>,
+    #[serde(deserialize_with = "present_option")]
+    verbosity: Option<Option<tau_proto::Verbosity>>,
+    #[serde(alias = "thinkingSummary", deserialize_with = "present_option")]
+    thinking_summary: Option<Option<tau_proto::ThinkingSummary>>,
+    #[serde(alias = "serviceTier", deserialize_with = "present_option")]
+    service_tier: Option<Option<tau_proto::ServiceTier>>,
+    #[serde(deserialize_with = "present_option")]
+    compaction: Option<Option<RoleCompaction>>,
     #[serde(alias = "promptFragments")]
-    prompt_fragments: Vec<RolePromptFragment>,
-    #[serde(alias = "promptOverride")]
-    prompt_override: Option<String>,
-    tools: Option<Vec<ToolName>>,
+    prompt_fragments: Option<Vec<RolePromptFragment>>,
+    #[serde(alias = "promptOverride", deserialize_with = "present_option")]
+    prompt_override: Option<Option<String>>,
+    #[serde(deserialize_with = "present_option")]
+    tools: Option<Option<Vec<ToolName>>>,
     #[serde(alias = "enableToolGroups")]
-    enable_tool_groups: Vec<tau_proto::ToolGroupName>,
+    enable_tool_groups: Option<Vec<tau_proto::ToolGroupName>>,
     #[serde(alias = "disableToolGroups")]
-    disable_tool_groups: Vec<tau_proto::ToolGroupName>,
+    disable_tool_groups: Option<Vec<tau_proto::ToolGroupName>>,
     #[serde(alias = "enableTools")]
-    enable_tools: Vec<ToolName>,
+    enable_tools: Option<Vec<ToolName>>,
     #[serde(alias = "disableTools")]
-    disable_tools: Vec<ToolName>,
-    roles: IndexMap<String, AgentRole>,
+    disable_tools: Option<Vec<ToolName>>,
+    roles: IndexMap<String, AgentRolePatch>,
+}
+
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AgentRolePatch {
+    #[serde(alias = "enabled", deserialize_with = "present_option")]
+    enable: Option<Option<bool>>,
+    #[serde(deserialize_with = "present_option")]
+    description: Option<Option<String>>,
+    #[serde(deserialize_with = "present_option")]
+    model: Option<Option<ModelId>>,
+    #[serde(deserialize_with = "present_option")]
+    effort: Option<Option<tau_proto::Effort>>,
+    #[serde(deserialize_with = "present_option")]
+    verbosity: Option<Option<tau_proto::Verbosity>>,
+    #[serde(alias = "thinkingSummary", deserialize_with = "present_option")]
+    thinking_summary: Option<Option<tau_proto::ThinkingSummary>>,
+    #[serde(alias = "serviceTier", deserialize_with = "present_option")]
+    service_tier: Option<Option<tau_proto::ServiceTier>>,
+    #[serde(deserialize_with = "present_option")]
+    compaction: Option<Option<RoleCompaction>>,
+    #[serde(alias = "promptFragments")]
+    prompt_fragments: Option<Vec<RolePromptFragment>>,
+    #[serde(alias = "promptOverride", deserialize_with = "present_option")]
+    prompt_override: Option<Option<String>>,
+    #[serde(deserialize_with = "present_option")]
+    tools: Option<Option<Vec<ToolName>>>,
+    #[serde(alias = "enableToolGroups")]
+    enable_tool_groups: Option<Vec<tau_proto::ToolGroupName>>,
+    #[serde(alias = "disableToolGroups")]
+    disable_tool_groups: Option<Vec<tau_proto::ToolGroupName>>,
+    #[serde(alias = "enableTools")]
+    enable_tools: Option<Vec<ToolName>>,
+    #[serde(alias = "disableTools")]
+    disable_tools: Option<Vec<ToolName>>,
 }
 
 impl RawRoleGroup {
-    fn defaults(&self) -> AgentRole {
-        AgentRole {
+    fn defaults(&self) -> AgentRolePatch {
+        AgentRolePatch {
             enable: self.enable,
             description: self.description.clone(),
             model: self.model.clone(),
@@ -698,7 +747,7 @@ impl HarnessSettings {
                 {
                     for role_name in existing_group.roles.clone() {
                         if let Some(role) = self.roles.get_mut(&role_name) {
-                            role.apply_overrides_from(&group_defaults);
+                            role.apply_patch(&group_defaults);
                         }
                     }
                 } else {
@@ -710,12 +759,16 @@ impl HarnessSettings {
                 continue;
             }
             for (role_name, role_overrides) in group.roles {
-                let mut override_role = group_defaults.clone();
-                override_role.apply_overrides_from(&role_overrides);
+                let mut override_role = AgentRole::default();
+                override_role.apply_patch(&group_defaults);
+                override_role.apply_patch(&role_overrides);
                 self.ensure_role_group_member(&group_name, &role_name)?;
                 self.roles
                     .entry(role_name)
-                    .and_modify(|role| role.apply_overrides_from(&override_role))
+                    .and_modify(|role| {
+                        role.apply_patch(&group_defaults);
+                        role.apply_patch(&role_overrides);
+                    })
                     .or_insert(override_role);
             }
         }
@@ -1007,53 +1060,55 @@ pub enum RoleCompaction {
 }
 
 impl AgentRole {
-    fn apply_overrides_from(&mut self, override_role: &Self) {
-        if let Some(enable) = override_role.enable {
-            self.enable = Some(enable);
+    fn apply_patch(&mut self, patch: &AgentRolePatch) {
+        if let Some(enable) = patch.enable {
+            self.enable = enable;
         }
-        if let Some(description) = &override_role.description {
-            self.description = Some(description.clone());
+        if let Some(description) = &patch.description {
+            self.description = description.clone();
         }
-        if let Some(model) = &override_role.model {
-            self.model = Some(model.clone());
+        if let Some(model) = &patch.model {
+            self.model = model.clone();
         }
-        if let Some(effort) = override_role.effort {
-            self.effort = Some(effort);
+        if let Some(effort) = patch.effort {
+            self.effort = effort;
         }
-        if let Some(verbosity) = override_role.verbosity {
-            self.verbosity = Some(verbosity);
+        if let Some(verbosity) = patch.verbosity {
+            self.verbosity = verbosity;
         }
-        if let Some(thinking_summary) = override_role.thinking_summary {
-            self.thinking_summary = Some(thinking_summary);
+        if let Some(thinking_summary) = patch.thinking_summary {
+            self.thinking_summary = thinking_summary;
         }
-        if let Some(service_tier) = override_role.service_tier {
-            self.service_tier = Some(service_tier);
+        if let Some(service_tier) = patch.service_tier {
+            self.service_tier = service_tier;
         }
-        if let Some(compaction) = override_role.compaction {
-            self.compaction = Some(compaction);
+        if let Some(compaction) = patch.compaction {
+            self.compaction = compaction;
         }
-        for prompt_fragment in &override_role.prompt_fragments {
-            if !self.prompt_fragments.contains(prompt_fragment) {
-                self.prompt_fragments.push(prompt_fragment.clone());
+        if let Some(prompt_fragments) = &patch.prompt_fragments {
+            for prompt_fragment in prompt_fragments {
+                if !self.prompt_fragments.contains(prompt_fragment) {
+                    self.prompt_fragments.push(prompt_fragment.clone());
+                }
             }
         }
-        if let Some(prompt_override) = &override_role.prompt_override {
-            self.prompt_override = Some(prompt_override.clone());
+        if let Some(prompt_override) = &patch.prompt_override {
+            self.prompt_override = prompt_override.clone();
         }
-        if let Some(tools) = &override_role.tools {
-            self.tools = Some(tools.clone());
+        if let Some(tools) = &patch.tools {
+            self.tools = tools.clone();
         }
-        if !override_role.enable_tool_groups.is_empty() {
-            self.enable_tool_groups = override_role.enable_tool_groups.clone();
+        if let Some(enable_tool_groups) = &patch.enable_tool_groups {
+            self.enable_tool_groups = enable_tool_groups.clone();
         }
-        if !override_role.disable_tool_groups.is_empty() {
-            self.disable_tool_groups = override_role.disable_tool_groups.clone();
+        if let Some(disable_tool_groups) = &patch.disable_tool_groups {
+            self.disable_tool_groups = disable_tool_groups.clone();
         }
-        if !override_role.enable_tools.is_empty() {
-            self.enable_tools = override_role.enable_tools.clone();
+        if let Some(enable_tools) = &patch.enable_tools {
+            self.enable_tools = enable_tools.clone();
         }
-        if !override_role.disable_tools.is_empty() {
-            self.disable_tools = override_role.disable_tools.clone();
+        if let Some(disable_tools) = &patch.disable_tools {
+            self.disable_tools = disable_tools.clone();
         }
     }
 }

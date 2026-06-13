@@ -522,6 +522,52 @@ fn harness_settings_load_role_tool_lists() {
 }
 
 #[test]
+fn harness_role_drop_in_can_clear_inherited_scalar_and_tool_lists() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+        role_groups:
+          custom:
+            roles:
+              reviewer:
+                description: Base description
+                model: openai/gpt-5
+                tools: [read]
+                enable_tools: [grep]
+                disable_tools: [shell]
+        "#,
+    )
+    .expect("write base");
+    std::fs::create_dir_all(dir.join("harness.d")).expect("mkdir dropins");
+    std::fs::write(
+        dir.join("harness.d/10-clear.yaml"),
+        r#"
+        role_groups:
+          custom:
+            roles:
+              reviewer:
+                description: null
+                model: null
+                tools: null
+                enable_tools: []
+                disable_tools: []
+        "#,
+    )
+    .expect("write dropin");
+
+    let settings = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+    let reviewer = settings.roles.get("reviewer").expect("reviewer role");
+
+    assert_eq!(reviewer.description, None);
+    assert_eq!(reviewer.model, None);
+    assert_eq!(reviewer.tools, None);
+    assert!(reviewer.enable_tools.is_empty());
+    assert!(reviewer.disable_tools.is_empty());
+}
+
+#[test]
 fn harness_settings_load_role_compaction() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();
