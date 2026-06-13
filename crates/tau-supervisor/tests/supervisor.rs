@@ -84,6 +84,16 @@ fn disconnect_child(child: &mut SupervisedChild, reason: &str) {
         .expect("disconnect should be sent");
 }
 
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    StdCommand::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Ensures receive timeout is observable without treating the child as
 /// disconnected.
 #[test]
@@ -263,16 +273,6 @@ fn drop_kills_long_running_direct_child() {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("dropped child process should exit");
-}
-
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    StdCommand::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 /// Ensures the null stderr policy discards child stderr output.
