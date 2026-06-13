@@ -43,7 +43,6 @@ tau-proto.workspace = true
 tau-session-inspect.workspace = true
 tau-skills.workspace = true
 tau-socket.workspace = true
-tau-supervisor.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 

@@ -2891,7 +2891,6 @@ dependencies = [
  "tau-session-inspect",
  "tau-skills",
  "tau-socket",
- "tau-supervisor",
  "tempfile",
  "tracing",
 ]
