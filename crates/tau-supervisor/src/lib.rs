@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use std::{fmt, thread};
 
-use tau_core::{ToolRegistry, ToolRouteError};
+use tau_core::ToolRegistry;
 use tau_proto::{
     DecodeError, Event, ExtensionExited, ExtensionName, ExtensionReady, ExtensionStarting,
     HarnessInputMessage, HarnessInputReader, HarnessOutputMessage, HarnessOutputWriter, ToolName,
@@ -85,7 +85,6 @@ pub enum SupervisionError {
     Decode(DecodeError),
     Wait(io::Error),
     Timeout { duration: Duration },
-    ToolRoute(ToolRouteError),
 }
 
 impl fmt::Display for SupervisionError {
@@ -101,10 +100,6 @@ impl fmt::Display for SupervisionError {
             Self::Timeout { duration } => {
                 write!(f, "timed out waiting for child exit after {duration:?}")
             }
-            Self::ToolRoute(source) => write!(
-                f,
-                "tool routing failed during supervision cleanup: {source}"
-            ),
         }
     }
 }
@@ -120,7 +115,6 @@ impl std::error::Error for SupervisionError {
             Self::Decode(source) => Some(source),
             Self::Wait(source) => Some(source),
             Self::Timeout { .. } => None,
-            Self::ToolRoute(source) => Some(source),
         }
     }
 }
