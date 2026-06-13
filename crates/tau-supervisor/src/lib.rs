@@ -188,18 +188,21 @@ impl SupervisedChild {
         }
         remove_secret_env(&mut child_command);
 
-        let mut child = child_command.spawn().map_err(SupervisionError::Spawn)?;
+        let child = child_command.spawn().map_err(SupervisionError::Spawn)?;
+        let mut child_guard = SpawnedChildGuard::new(child);
 
-        let stdin = child.stdin.take().ok_or(SupervisionError::MissingStdin)?;
-        let stdout = child.stdout.take().ok_or(SupervisionError::MissingStdout)?;
-        let stdout_frames = match spawn_stdout_reader(stdout) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        let stdin = child_guard
+            .child_mut()
+            .stdin
+            .take()
+            .ok_or(SupervisionError::MissingStdin)?;
+        let stdout = child_guard
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or(SupervisionError::MissingStdout)?;
+        let stdout_frames = spawn_stdout_reader(stdout)?;
+        let child = child_guard.disarm();
 
         Ok(Self {
             command,
@@ -321,6 +324,33 @@ impl Drop for SupervisedChild {
                 let _ = self.child.wait();
             }
             Err(_) => {}
+        }
+    }
+}
+
+struct SpawnedChildGuard {
+    child: Option<Child>,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("guard always holds child")
+    }
+
+    fn disarm(mut self) -> Child {
+        self.child.take().expect("guard always holds child")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
