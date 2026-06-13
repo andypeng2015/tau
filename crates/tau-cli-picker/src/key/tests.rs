@@ -93,3 +93,55 @@ fn byte_reader_retries_interrupted_escape_sequence_reads() {
         PickerKey::Down
     );
 }
+
+/// Protects terminal-event decoding for every documented non-control key so
+/// crossterm input stays in parity with byte-stream controls.
+#[test]
+fn terminal_documented_controls_decode_to_logical_keys() {
+    let cases = [
+        (
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            LogicalKey::Up,
+        ),
+        (
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            LogicalKey::Down,
+        ),
+        (
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            LogicalKey::Tab,
+        ),
+        (
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            LogicalKey::BackTab,
+        ),
+        (
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            LogicalKey::Enter,
+        ),
+        (
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            LogicalKey::Esc,
+        ),
+        (
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            LogicalKey::Char('j'),
+        ),
+        (
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            LogicalKey::Char('k'),
+        ),
+        (
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            LogicalKey::Char('q'),
+        ),
+        (
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            LogicalKey::Char(' '),
+        ),
+    ];
+
+    for (event, expected) in cases {
+        assert_eq!(terminal_key_to_logical(event), expected);
+    }
+}
