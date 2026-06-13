@@ -220,6 +220,25 @@ impl io::Write for SharedWriter {
     }
 }
 
+struct FailsAfterFirstFlush {
+    flushed_once: bool,
+}
+
+impl io::Write for FailsAfterFirstFlush {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.flushed_once {
+            Err(io::Error::other("synthetic cleanup error"))
+        } else {
+            Ok(buf.len())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flushed_once = true;
+        Ok(())
+    }
+}
+
 #[test]
 fn resize_event_redraws_without_waiting_for_key_resample() {
     let it = items(&["very long item label"]);
@@ -296,4 +315,23 @@ fn picker_clears_frame_on_user_cancel() {
     let bytes = output.bytes();
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("[J"), "cleanup should clear frame: {text:?}");
+}
+
+/// Ensures cancellation preserves the user-facing cancellation error even when
+/// best-effort cleanup fails, matching the public error contract.
+#[test]
+fn cancel_cleanup_failure_does_not_replace_cancel_error() {
+    let it = items(&["one", "two"]);
+    let err = pick_with_event_reader(
+        "pick",
+        &it,
+        FailsAfterFirstFlush {
+            flushed_once: false,
+        },
+        || Ok(PickerEvent::Key(PickerKey::Cancelled)),
+        || (40, 5),
+    )
+    .expect_err("user cancellation should remain visible");
+
+    assert!(matches!(err, PickerError::Cancelled));
 }

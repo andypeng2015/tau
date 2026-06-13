@@ -47,8 +47,9 @@ use crate::raw_mode::RawModeGuard;
 /// Returns [`PickerError::Empty`] when no items are supplied,
 /// [`PickerError::NoEnabledItems`] when every item is disabled,
 /// [`PickerError::Cancelled`] when the user cancels, and
-/// [`PickerError::Io`] for terminal raw-mode, input, rendering, or cleanup
-/// failures.
+/// [`PickerError::Io`] for terminal raw-mode, input, rendering, or normal
+/// selection cleanup failures. Cleanup after cancellation or input errors is
+/// best-effort and does not replace the original error.
 pub fn pick(prompt: &str, items: &[PickerItem]) -> Result<usize, PickerError> {
     let _raw = RawModeGuard::enable()?;
     pick_with_event_reader(
@@ -99,7 +100,9 @@ pub fn pick_with_writer(
 /// Returns [`PickerError::Empty`] when no items are supplied,
 /// [`PickerError::NoEnabledItems`] when every item is disabled,
 /// [`PickerError::Cancelled`] when the input stream cancels or reaches EOF, and
-/// [`PickerError::Io`] for reader, writer, rendering, or cleanup failures.
+/// [`PickerError::Io`] for reader, writer, rendering, or normal selection
+/// cleanup failures. Cleanup after cancellation or input errors is best-effort
+/// and does not replace the original error.
 pub fn pick_with_io(
     prompt: &str,
     items: &[PickerItem],
