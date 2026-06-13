@@ -1194,8 +1194,9 @@ pub fn sessions_dir_of(state_dir: &Path) -> PathBuf {
 /// The harness passes this path to the extension in
 /// [`tau_proto::Configure::state_dir`]. Extension names come from the resolved
 /// harness configuration, including user-authored `harness.yaml` keys, so only
-/// conservative single-component names are accepted before joining under
-/// `state/ext/`.
+/// conservative names are accepted before joining under `state/ext/`: names
+/// must be safe as one path component and unambiguous in dotted harness config
+/// override paths.
 pub fn extension_state_dir_of(
     state_dir: &Path,
     extension_name: &str,
@@ -1205,7 +1206,9 @@ pub fn extension_state_dir_of(
 }
 
 /// Validates that an extension name is safe to use as a single path component
-/// in harness-owned per-extension paths.
+/// in harness-owned per-extension paths and as an unambiguous segment in
+/// dotted harness config override paths. Valid names contain only ASCII
+/// letters, digits, `_`, and `-`.
 pub fn validate_extension_name(extension_name: &str) -> Result<(), InvalidExtensionName> {
     if extension_name.is_empty() {
         return Err(InvalidExtensionName {
@@ -1231,8 +1234,8 @@ pub fn validate_extension_name(extension_name: &str) -> Result<(), InvalidExtens
     Ok(())
 }
 
-/// Error returned when a configured extension name is unsafe to use as a state
-/// directory path component.
+/// Error returned when a configured extension name is unsafe as a state
+/// directory path component or ambiguous in dotted config override paths.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvalidExtensionName {
     name: String,
@@ -1243,7 +1246,7 @@ impl fmt::Display for InvalidExtensionName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid extension name `{}` for harness path component: {}",
+            "invalid extension name `{}` for harness path/config key segment: {}",
             self.name, self.reason
         )
     }
