@@ -199,7 +199,9 @@ impl Handshake {
     /// selectors have been added — sending an empty subscription would still be
     /// valid but adds noise on the wire.
     ///
-    /// For extensions, `Subscribe` only starts live delivery.
+    /// For extensions, `Subscribe` starts live delivery and may also send
+    /// replay-marked catch-up frames; side-effecting extensions must check
+    /// [`tau_proto::EventDelivery::is_replay`].
     pub fn run<W: Write>(self, writer: &mut PeerOutputWriter<W>) -> Result<(), EncodeError> {
         writer.write_message(&HarnessInputMessage::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
