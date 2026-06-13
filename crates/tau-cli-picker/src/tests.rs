@@ -53,18 +53,24 @@ fn interrupted_byte_read_is_retried() {
     assert_eq!(picked, 0);
 }
 
+/// Verifies Enter accepts the initial enabled item, protecting the primary
+/// selection path used by byte-stream hosts.
 #[test]
 fn enter_selects_first_enabled() {
     let it = items(&["one", "two"]);
     assert_eq!(run(b"\n", &it).expect("enter picks 0"), 0);
 }
 
+/// Verifies carriage return is treated like Enter so hosts using CR line
+/// endings can still accept the highlighted item.
 #[test]
 fn cr_also_selects() {
     let it = items(&["one"]);
     assert_eq!(run(b"\r", &it).expect("cr picks 0"), 0);
 }
 
+/// Ensures Space remains ignored rather than selecting, preserving room for a
+/// future multi-select mode without changing current behavior.
 #[test]
 fn space_does_not_select() {
     // Space must NOT be Enter — reserved for a possible multi-select.
@@ -74,6 +80,8 @@ fn space_does_not_select() {
     assert!(matches!(run(b" ", &it), Err(PickerError::Cancelled)));
 }
 
+/// Verifies vim-style j/k navigation so keyboard-only users can move through
+/// choices without arrow keys.
 #[test]
 fn j_moves_down_k_moves_up() {
     let it = items(&["a", "b", "c"]);
@@ -81,6 +89,8 @@ fn j_moves_down_k_moves_up() {
     assert_eq!(run(b"jjk\n", &it).expect("jjk enter"), 1);
 }
 
+/// Verifies byte-stream CSI arrow decoding moves selection in both directions,
+/// protecting common terminal navigation input.
 #[test]
 fn arrow_keys_move() {
     let it = items(&["a", "b", "c"]);
@@ -93,6 +103,8 @@ fn arrow_keys_move() {
     );
 }
 
+/// Verifies Tab and BackTab mirror down/up navigation for keyboard-only flows
+/// and shell-style completion muscle memory.
 #[test]
 fn tab_moves_down_backtab_moves_up() {
     let it = items(&["a", "b", "c"]);
@@ -101,12 +113,16 @@ fn tab_moves_down_backtab_moves_up() {
     assert_eq!(run(b"\t\t\x1b[Z\n", &it).expect("two tabs one backtab"), 1);
 }
 
+/// Ensures Ctrl-C cancels instead of selecting, matching terminal interrupt
+/// expectations for interactive prompts.
 #[test]
 fn ctrl_c_cancels() {
     let it = items(&["a", "b"]);
     assert!(matches!(run(b"\x03", &it), Err(PickerError::Cancelled)));
 }
 
+/// Ensures Ctrl-D cancels like EOF so closed input streams do not select an
+/// item accidentally.
 #[test]
 fn ctrl_d_cancels() {
     // Ctrl-D commonly signals EOF; byte-stream callers should get the same
@@ -115,12 +131,16 @@ fn ctrl_d_cancels() {
     assert!(matches!(run(b"\x04", &it), Err(PickerError::Cancelled)));
 }
 
+/// Ensures q cancels the picker, preserving the documented keyboard shortcut
+/// for aborting selection.
 #[test]
 fn q_cancels() {
     let it = items(&["a", "b"]);
     assert!(matches!(run(b"q", &it), Err(PickerError::Cancelled)));
 }
 
+/// Ensures bare Escape cancels promptly in buffered byte-stream tests rather
+/// than being interpreted as an incomplete control sequence.
 #[test]
 fn bare_esc_cancels() {
     // ESC followed by EOF must cancel — not block, not eat phantom bytes.
@@ -128,6 +148,8 @@ fn bare_esc_cancels() {
     assert!(matches!(run(b"\x1b", &it), Err(PickerError::Cancelled)));
 }
 
+/// Ensures Escape followed by a non-CSI byte is treated as cancellation,
+/// preserving the byte-reader ambiguity contract.
 #[test]
 fn esc_then_unrelated_byte_cancels() {
     let it = items(&["a", "b"]);
@@ -135,12 +157,16 @@ fn esc_then_unrelated_byte_cancels() {
     assert!(matches!(run(b"\x1bx", &it), Err(PickerError::Cancelled)));
 }
 
+/// Verifies empty item lists return the documented validation error instead of
+/// attempting to render or read input.
 #[test]
 fn empty_items_errors() {
     let it: Vec<PickerItem> = Vec::new();
     assert!(matches!(run(b"\n", &it), Err(PickerError::Empty)));
 }
 
+/// Verifies all-disabled item lists return the documented validation error so
+/// callers know no selection is possible.
 #[test]
 fn all_disabled_errors() {
     let it = vec![PickerItem::disabled("a"), PickerItem::disabled("b")];
@@ -195,6 +221,8 @@ fn raw_mode_picker_validates_items_before_enabling_raw_mode() {
     assert!(!raw_enabled, "raw mode should not be enabled");
 }
 
+/// Ensures disabled rows stay visible but are skipped by navigation and cannot
+/// become the selected result.
 #[test]
 fn disabled_items_are_skipped() {
     let it = vec![
@@ -208,6 +236,8 @@ fn disabled_items_are_skipped() {
     assert_eq!(run(b"jj\n", &it).expect("skip disabled twice"), 0);
 }
 
+/// Verifies the initial cursor lands on the first enabled item when earlier
+/// rows are disabled.
 #[test]
 fn first_enabled_is_initial_selection() {
     let it = vec![
@@ -218,6 +248,8 @@ fn first_enabled_is_initial_selection() {
     assert_eq!(run(b"\n", &it).expect("third is enabled"), 2);
 }
 
+/// Ensures unrelated printable keys are ignored so accidental typing does not
+/// move, select, or cancel the picker.
 #[test]
 fn byte_reader_ignores_unknown_chars() {
     // Random printable ASCII not in the keymap → Ignored, picker keeps reading.
@@ -225,6 +257,8 @@ fn byte_reader_ignores_unknown_chars() {
     assert_eq!(run(b"xy\n", &it).expect("unknown then enter"), 0);
 }
 
+/// Protects direct byte-reader decoding of CSI arrow sequences independently
+/// from the full picker event loop.
 #[test]
 fn byte_reader_decodes_csi_arrows() {
     let mut reader = Cursor::new(b"\x1b[A".to_vec());
@@ -236,6 +270,8 @@ fn byte_reader_decodes_csi_arrows() {
     );
 }
 
+/// Verifies viewport calculations keep the selected item visible and centered
+/// where possible for long lists.
 #[test]
 fn visible_window_centers_selection() {
     use crate::visible_window;
@@ -251,6 +287,8 @@ fn line_text(line: &[tau_term_screen::style::Cell]) -> String {
     line.iter().map(|cell| cell.ch).collect()
 }
 
+/// Ensures one-row terminals use the compact frame so rendering stays within
+/// the reported terminal height.
 #[test]
 fn one_row_terminal_uses_compact_frame() {
     let it = items(&["one", "two"]);
@@ -261,6 +299,8 @@ fn one_row_terminal_uses_compact_frame() {
     assert_eq!(line_text(&lines[0]), "> two — ? pick");
 }
 
+/// Ensures compact rendering truncates around the selected item first so tiny
+/// terminals still show the active choice.
 #[test]
 fn compact_frame_prioritizes_selected_item_when_truncated() {
     let it = items(&["one", "selected-item"]);
@@ -270,6 +310,8 @@ fn compact_frame_prioritizes_selected_item_when_truncated() {
     assert_eq!(line_text(&lines[0]), "> selec…");
 }
 
+/// Verifies normal-height rendering includes the prompt and item rows with the
+/// cursor positioned on the selected item.
 #[test]
 fn normal_terminal_uses_prompt_plus_items() {
     let it = items(&["one", "two"]);
@@ -323,6 +365,8 @@ impl io::Write for FailsAfterFirstFlush {
     }
 }
 
+/// Ensures resize events immediately redraw with the new width so truncation
+/// and layout update before the next keypress.
 #[test]
 fn resize_event_redraws_without_waiting_for_key_resample() {
     let it = items(&["very long item label"]);
@@ -353,12 +397,16 @@ fn resize_event_redraws_without_waiting_for_key_resample() {
     );
 }
 
+/// Verifies zero resize dimensions are ignored, protecting platforms that may
+/// report transient zero terminal sizes.
 #[test]
 fn zero_resize_dimensions_keep_current_size() {
     assert_eq!(resize_dimension(0, 40), 40);
     assert_eq!(resize_dimension(10, 40), 10);
 }
 
+/// Ensures input errors trigger best-effort frame cleanup so failed prompts do
+/// not leave stale picker rows on screen.
 #[test]
 fn picker_clears_frame_on_input_error() {
     let it = items(&["one", "two"]);
@@ -379,6 +427,8 @@ fn picker_clears_frame_on_input_error() {
     assert!(text.contains("[J"), "cleanup should clear frame: {text:?}");
 }
 
+/// Ensures user cancellation also clears the frame, covering the cancellation
+/// cleanup path separately from I/O errors.
 #[test]
 fn picker_clears_frame_on_user_cancel() {
     // Cancellation exits through a different path than input errors; keep
