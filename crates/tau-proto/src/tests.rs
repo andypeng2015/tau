@@ -972,6 +972,36 @@ fn tool_name_rejects_overlong_input() {
     assert!(ToolName::try_new(at_cap).is_some());
 }
 
+/// Ensures tool group names enforce the same valid identifier shape as tool
+/// names.
+#[test]
+fn tool_group_name_accepts_valid_names() {
+    assert!(ToolGroupName::try_new("mail").is_some());
+    assert!(ToolGroupName::try_new("project_tools_2").is_some());
+    assert!(ToolGroupName::try_new("Ops").is_some());
+}
+
+/// Ensures invalid tool group names cannot enter the protocol through fallible
+/// construction.
+#[test]
+fn tool_group_name_rejects_invalid_names() {
+    assert!(ToolGroupName::try_new("").is_none());
+    assert!(ToolGroupName::try_new("mail.send").is_none());
+    assert!(ToolGroupName::try_new("mail send").is_none());
+    assert!(ToolGroupName::try_new("mail-send").is_none());
+    assert!(ToolGroupName::try_new("mail/send").is_none());
+}
+
+/// Ensures overlong tool group names are rejected before they can be
+/// serialized.
+#[test]
+fn tool_group_name_rejects_overlong_input() {
+    let long = "a".repeat(ToolGroupName::MAX_LEN + 1);
+    assert!(ToolGroupName::try_new(long).is_none());
+    let at_cap = "a".repeat(ToolGroupName::MAX_LEN);
+    assert!(ToolGroupName::try_new(at_cap).is_some());
+}
+
 #[test]
 fn event_delivery_helpers_expose_replay_marker_and_inner_event() {
     // The replay marker is the contract side-effecting consumers rely on to

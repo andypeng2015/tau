@@ -574,7 +574,7 @@ impl<'de> serde::Deserialize<'de> for ModelId {
 /// than enough for any well-formed tool identifier and stops a
 /// pathological model emission (e.g. a hundred-megabyte hallucinated
 /// name) from being faithfully round-tripped through the wire codec.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct ToolName(String);
 
@@ -678,7 +678,7 @@ impl<'de> serde::Deserialize<'de> for ToolName {
 /// Tool group name: must be non-empty, at most [`ToolGroupName::MAX_LEN`]
 /// bytes, and contain only ASCII alphanumerics or underscores
 /// (`[a-zA-Z0-9_]+`).
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct ToolGroupName(String);
 
