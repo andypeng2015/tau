@@ -825,6 +825,34 @@ fn harness_role_group_defaults_can_clear_existing_role_fields() {
 }
 
 #[test]
+fn harness_role_group_defaults_apply_to_existing_roles_when_adding_role() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"
+        role_groups:
+          engineer:
+            disable_tools: [shell]
+            roles:
+              custom: {}
+        "#,
+    )
+    .expect("write");
+
+    let settings = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+
+    assert_eq!(
+        settings.roles["senior-engineer"].disable_tools,
+        vec![tau_proto::ToolName::new("shell")]
+    );
+    assert_eq!(
+        settings.roles["custom"].disable_tools,
+        vec![tau_proto::ToolName::new("shell")]
+    );
+}
+
+#[test]
 fn harness_settings_load_role_compaction() {
     let td = TempDir::new().expect("tempdir");
     let dir = td.path();

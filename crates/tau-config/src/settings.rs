@@ -754,18 +754,20 @@ impl HarnessSettings {
     fn apply_role_group_overrides(&mut self, groups: RawRoleGroups) -> Result<(), SettingsError> {
         for (group_name, group) in groups {
             let group_defaults = group.defaults();
-            if group.roles.is_empty() {
-                if let Some(existing_group) = self
-                    .role_groups
-                    .iter()
-                    .find(|existing_group| existing_group.name == group_name)
-                {
-                    for role_name in existing_group.roles.clone() {
-                        if let Some(role) = self.roles.get_mut(&role_name) {
-                            role.apply_patch(&group_defaults);
-                        }
+            let existing_role_names = self
+                .role_groups
+                .iter()
+                .find(|existing_group| existing_group.name == group_name)
+                .map(|existing_group| existing_group.roles.clone());
+            if let Some(role_names) = &existing_role_names {
+                for role_name in role_names {
+                    if let Some(role) = self.roles.get_mut(role_name) {
+                        role.apply_patch(&group_defaults);
                     }
-                } else {
+                }
+            }
+            if group.roles.is_empty() {
+                if existing_role_names.is_none() {
                     self.role_groups.push(RoleGroup {
                         name: group_name,
                         roles: Vec::new(),
