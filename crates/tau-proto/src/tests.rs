@@ -869,6 +869,23 @@ fn provider_model_info_requires_context_window() {
     );
 }
 
+/// Ensures JSON-to-CBOR conversion preserves unsigned integer precision above
+/// the exact range of IEEE-754 floats.
+#[test]
+fn json_to_cbor_preserves_large_unsigned_integers() {
+    let max = serde_json::json!(u64::MAX);
+    assert_eq!(
+        json_to_cbor(&max),
+        CborValue::Integer(ciborium::value::Integer::from(u64::MAX))
+    );
+
+    let above_precise_float = serde_json::json!(9_007_199_254_740_993_u64);
+    assert_eq!(
+        json_to_cbor(&above_precise_float),
+        CborValue::Integer(ciborium::value::Integer::from(9_007_199_254_740_993_u64))
+    );
+}
+
 #[test]
 fn tool_name_accepts_valid_names() {
     assert!(ToolName::try_new("read").is_some());

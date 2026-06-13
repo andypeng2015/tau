@@ -936,11 +936,11 @@ pub fn cbor_int_field(value: &CborValue, key: &str) -> Option<i128> {
 /// Convert a `serde_json::Value` into a [`CborValue`].
 ///
 /// Numbers are preserved as integers when possible, otherwise as
-/// floats. Anything that doesn't round-trip cleanly (e.g. a number
-/// that's neither `i64` nor `f64` — `u64` over `i64::MAX`, or
-/// arbitrary-precision input enabled via `serde_json/arbitrary_precision`)
-/// is logged via `tracing::warn!` and lowered to [`CborValue::Null`]
-/// rather than crashing the wire codec.
+/// floats. Signed and unsigned JSON integers are preserved exactly when they
+/// fit CBOR's integer representation. Other numeric values are encoded as
+/// floats when possible; values that do not round-trip through serde_json's
+/// numeric accessors are logged via `tracing::warn!` and lowered to
+/// [`CborValue::Null`] rather than crashing the wire codec.
 #[must_use]
 pub fn json_to_cbor(v: &serde_json::Value) -> CborValue {
     match v {
@@ -949,12 +949,14 @@ pub fn json_to_cbor(v: &serde_json::Value) -> CborValue {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 CborValue::Integer(i.into())
+            } else if let Some(u) = n.as_u64() {
+                CborValue::Integer(u.into())
             } else if let Some(f) = n.as_f64() {
                 CborValue::Float(f)
             } else {
                 tracing::warn!(
                     number = %n,
-                    "json_to_cbor: number is not representable as i64 or f64, dropping to Null"
+                    "json_to_cbor: number is not representable as i64, u64, or f64, dropping to Null"
                 );
                 CborValue::Null
             }
