@@ -520,20 +520,39 @@ fn atomic_write_file_to_temp(target: &Path, temp_path: &Path, bytes: &[u8]) -> i
     result
 }
 
+const MAX_FINAL_SYMLINK_HOPS: usize = 40;
+
 fn final_write_path(path: &Path) -> io::Result<std::path::PathBuf> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            let link = std::fs::read_link(path)?;
-            if link.is_absolute() {
-                Ok(link)
-            } else {
-                Ok(path.parent().unwrap_or_else(|| Path::new(".")).join(link))
+    let mut current = path.to_owned();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..MAX_FINAL_SYMLINK_HOPS {
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if !seen.insert(current.clone()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("symlink loop while resolving {}", path.display()),
+                    ));
+                }
+                let link = std::fs::read_link(&current)?;
+                current = if link.is_absolute() {
+                    link
+                } else {
+                    current
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(link)
+                };
             }
+            Ok(_) => return Ok(current),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(current),
+            Err(error) => return Err(error),
         }
-        Ok(_) => Ok(path.to_owned()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path.to_owned()),
-        Err(error) => Err(error),
     }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("too many symlink hops while resolving {}", path.display()),
+    ))
 }
 
 fn unique_temp_suffix() -> u128 {
@@ -860,6 +879,42 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(&link)
                 .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    /// Protects chained final symlinks: atomic writes should update the real
+    /// target at the end of the chain instead of replacing an intermediate
+    /// link.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_follows_chained_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let target = tempdir.path().join("target.txt");
+        let link2 = tempdir.path().join("link2.txt");
+        let link1 = tempdir.path().join("link1.txt");
+        std::fs::write(&target, "old\n").expect("write target");
+        symlink("target.txt", &link2).expect("link2");
+        symlink("link2.txt", &link1).expect("link1");
+
+        atomic_write_file(&link1, b"new\n").expect("atomic write");
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target"),
+            "new\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link1)
+                .expect("link1 metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(&link2)
+                .expect("link2 metadata")
                 .file_type()
                 .is_symlink()
         );
