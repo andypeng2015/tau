@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, Cursor};
 use std::sync::{Arc, Mutex};
 
-use crate::key::{LogicalKey, PickerEvent, PickerKey, logical_to_action, read_byte_key};
+use crate::key::{PickerEvent, PickerKey, read_byte_key};
 use crate::{
     PickerError, PickerItem, pick_with_event_reader, pick_with_io, picker_lines, resize_dimension,
 };
@@ -124,25 +124,6 @@ fn first_enabled_is_initial_selection() {
         PickerItem::enabled("c"),
     ];
     assert_eq!(run(b"\n", &it).expect("third is enabled"), 2);
-}
-
-#[test]
-fn logical_mapping_is_single_source_of_truth() {
-    // Sanity-check a few mappings to lock down the contract.
-    assert_eq!(logical_to_action(LogicalKey::Up), PickerKey::Up);
-    assert_eq!(logical_to_action(LogicalKey::Down), PickerKey::Down);
-    assert_eq!(logical_to_action(LogicalKey::Tab), PickerKey::Down);
-    assert_eq!(logical_to_action(LogicalKey::BackTab), PickerKey::Up);
-    assert_eq!(logical_to_action(LogicalKey::Enter), PickerKey::Enter);
-    assert_eq!(logical_to_action(LogicalKey::Esc), PickerKey::Cancelled);
-    assert_eq!(logical_to_action(LogicalKey::CtrlC), PickerKey::Cancelled);
-    assert_eq!(logical_to_action(LogicalKey::Char('j')), PickerKey::Down);
-    assert_eq!(logical_to_action(LogicalKey::Char('k')), PickerKey::Up);
-    assert_eq!(
-        logical_to_action(LogicalKey::Char('q')),
-        PickerKey::Cancelled
-    );
-    assert_eq!(logical_to_action(LogicalKey::Char(' ')), PickerKey::Ignored);
 }
 
 #[test]

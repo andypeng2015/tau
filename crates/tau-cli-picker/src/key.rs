@@ -23,7 +23,7 @@ pub(crate) enum PickerKey {
 /// Logical key recognized by the picker, independent of how it was
 /// physically encoded (a `crossterm` event or a raw byte stream).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LogicalKey {
+enum LogicalKey {
     Up,
     Down,
     Tab,
@@ -36,7 +36,7 @@ pub(crate) enum LogicalKey {
 }
 
 /// Single source of truth for the picker key map.
-pub(crate) fn logical_to_action(key: LogicalKey) -> PickerKey {
+fn logical_to_action(key: LogicalKey) -> PickerKey {
     match key {
         LogicalKey::Up | LogicalKey::BackTab => PickerKey::Up,
         LogicalKey::Down | LogicalKey::Tab => PickerKey::Down,
@@ -131,4 +131,29 @@ fn read_escape_sequence(reader: &mut impl io::Read) -> io::Result<LogicalKey> {
         b'Z' => LogicalKey::BackTab,
         _ => LogicalKey::Unknown,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LogicalKey, PickerKey, logical_to_action};
+
+    /// Verifies the central logical-key mapping so terminal and byte-stream
+    /// readers continue to share the same controls.
+    #[test]
+    fn logical_mapping_is_single_source_of_truth() {
+        assert_eq!(logical_to_action(LogicalKey::Up), PickerKey::Up);
+        assert_eq!(logical_to_action(LogicalKey::Down), PickerKey::Down);
+        assert_eq!(logical_to_action(LogicalKey::Tab), PickerKey::Down);
+        assert_eq!(logical_to_action(LogicalKey::BackTab), PickerKey::Up);
+        assert_eq!(logical_to_action(LogicalKey::Enter), PickerKey::Enter);
+        assert_eq!(logical_to_action(LogicalKey::Esc), PickerKey::Cancelled);
+        assert_eq!(logical_to_action(LogicalKey::CtrlC), PickerKey::Cancelled);
+        assert_eq!(logical_to_action(LogicalKey::Char('j')), PickerKey::Down);
+        assert_eq!(logical_to_action(LogicalKey::Char('k')), PickerKey::Up);
+        assert_eq!(
+            logical_to_action(LogicalKey::Char('q')),
+            PickerKey::Cancelled
+        );
+        assert_eq!(logical_to_action(LogicalKey::Char(' ')), PickerKey::Ignored);
+    }
 }
