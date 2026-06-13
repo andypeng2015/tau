@@ -5118,6 +5118,33 @@ fn lock_wait_duration_header_extends_tool_error_details() {
 }
 
 #[test]
+fn saturated_worker_error_preserves_slow_lock_wait_duration() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let Event::ToolStarted(invoke) = tool_started(
+        "call-lock-wait-saturated",
+        EDIT_TOOL_NAME,
+        cbor_text_map(vec![("path", "/tmp/file.txt")]),
+        "agent-a",
+    ) else {
+        panic!("expected tool started");
+    };
+
+    send_worker_saturated_failure_with_lock_wait(invoke, &tx, Some(8));
+
+    let HarnessInputMessage::Emit(emit) = rx.recv().expect("event") else {
+        panic!("expected emitted event");
+    };
+    let Event::ToolError(error) = *emit.event else {
+        panic!("expected tool error");
+    };
+    let details = error.details.expect("error details");
+    assert_eq!(
+        cbor_int_field(&details, LOCK_WAIT_DURATION_SECONDS_HEADER),
+        Some(8)
+    );
+}
+
+#[test]
 fn command_details_value_records_combined_output_stats() {
     let details = command_details_value(CommandDetails {
         status: Some(0),

@@ -942,13 +942,13 @@ fn dispatch_locked_tool_invoke(
         }
     };
 
-    drop(wait_permit);
-    let Some(_permit) = exec_sem.try_acquire() else {
-        send_worker_saturated_failure(invoke, tx);
-        return;
-    };
     let lock_wait_duration_seconds =
         reported_lock_wait_duration_seconds(lock_wait_started.elapsed());
+    drop(wait_permit);
+    let Some(_permit) = exec_sem.try_acquire() else {
+        send_worker_saturated_failure_with_lock_wait(invoke, tx, lock_wait_duration_seconds);
+        return;
+    };
     dispatch_tool_invoke(
         invoke,
         shell_config,
@@ -982,11 +982,20 @@ fn send_worker_saturated_failure(
     invoke: tau_proto::ToolStarted,
     tx: &mpsc::Sender<HarnessInputMessage>,
 ) {
-    send_tool_failure(
-        invoke,
-        crate::display::ToolFailure::new("too many concurrent shell tool calls; try again later"),
-        tx,
-    );
+    send_worker_saturated_failure_with_lock_wait(invoke, tx, None);
+}
+
+fn send_worker_saturated_failure_with_lock_wait(
+    invoke: tau_proto::ToolStarted,
+    tx: &mpsc::Sender<HarnessInputMessage>,
+    lock_wait_duration_seconds: Option<u64>,
+) {
+    let mut failure =
+        crate::display::ToolFailure::new("too many concurrent shell tool calls; try again later");
+    if let Some(seconds) = lock_wait_duration_seconds {
+        failure = failure.with_details(CborValue::Map(vec![lock_wait_duration_entry(seconds)]));
+    }
+    send_tool_failure(invoke, failure, tx);
 }
 
 fn send_tool_failure(
