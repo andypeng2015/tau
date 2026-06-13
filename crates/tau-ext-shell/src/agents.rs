@@ -1,7 +1,10 @@
 //! `AGENTS.md` and `AGENTS.*.md` discovery used at `SessionStarted` time.
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+const MAX_AGENTS_FILE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) struct DiscoveredAgentsFile {
     pub(crate) file_path: PathBuf,
@@ -32,14 +35,17 @@ pub(crate) fn discover_agents_files_from_roots(
     let mut discovered = Vec::new();
     for dir in roots {
         for candidate in agents_file_candidates(&dir) {
-            let Ok(metadata) = fs::metadata(&candidate) else {
+            let Ok(metadata) = fs::symlink_metadata(&candidate) else {
                 continue;
             };
-            if !metadata.is_file() {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            if MAX_AGENTS_FILE_BYTES < metadata.len() {
                 continue;
             }
 
-            let Ok(content) = fs::read_to_string(&candidate) else {
+            let Ok(content) = read_agents_file(&candidate) else {
                 continue;
             };
             if content.trim().is_empty() {
@@ -55,6 +61,17 @@ pub(crate) fn discover_agents_files_from_roots(
     }
 
     discovered
+}
+
+fn read_agents_file(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut limited = file.by_ref().take(MAX_AGENTS_FILE_BYTES + 1);
+    let mut content = String::new();
+    limited.read_to_string(&mut content)?;
+    if MAX_AGENTS_FILE_BYTES < content.len() as u64 {
+        return Err(std::io::Error::other("AGENTS file exceeds safety cap"));
+    }
+    Ok(content)
 }
 
 fn agents_file_candidates(dir: &Path) -> Vec<PathBuf> {

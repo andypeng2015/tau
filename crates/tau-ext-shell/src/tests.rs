@@ -1490,6 +1490,39 @@ fn discover_agents_files_walks_ancestor_chain_in_order() {
 }
 
 #[test]
+fn discover_agents_files_skips_symlinked_candidates() {
+    // AGENTS files are loaded implicitly on session start, so discovery must not
+    // follow repository-controlled symlinks into arbitrary readable files.
+    let tempdir = TempDir::new().expect("tempdir");
+    let root = tempdir.path().join("repo");
+    fs::create_dir_all(&root).expect("mkdir");
+    let secret = tempdir.path().join("secret.txt");
+    fs::write(&secret, "private material\n").expect("write secret");
+    fs::write(root.join("AGENTS.good.md"), "# Good\n").expect("write good agents");
+    symlink(&secret, root.join("AGENTS.md")).expect("symlink agents");
+    symlink(&secret, root.join("AGENTS.secret.md")).expect("symlink extra agents");
+
+    let discovered = discover_agents_files_from_roots(vec![root]);
+    assert_eq!(discovered.len(), 1);
+    assert!(discovered[0].file_path.ends_with("AGENTS.good.md"));
+    assert!(!discovered[0].content.contains("private material"));
+}
+
+#[test]
+fn discover_agents_files_skips_oversized_candidates() {
+    // Session-start AGENTS loading must have its own input cap; output caps on
+    // later tool calls do not protect the implicit instruction payload.
+    let tempdir = TempDir::new().expect("tempdir");
+    let root = tempdir.path();
+    fs::write(root.join("AGENTS.md"), "x".repeat(1024 * 1024 + 1)).expect("write huge agents");
+    fs::write(root.join("AGENTS.ok.md"), "# Ok\n").expect("write ok agents");
+
+    let discovered = discover_agents_files_from_roots(vec![root.to_path_buf()]);
+    assert_eq!(discovered.len(), 1);
+    assert!(discovered[0].file_path.ends_with("AGENTS.ok.md"));
+}
+
+#[test]
 fn discover_agents_files_from_roots_keeps_home_before_repo_chain() {
     let tempdir = TempDir::new().expect("tempdir");
     let home = tempdir.path().join("home");
