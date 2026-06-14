@@ -980,6 +980,10 @@ impl ToolChoice {
     }
 }
 
+/// Tool group metadata published by an extension or provider.
+///
+/// Groups let roles enable or disable related tools together and optionally add
+/// shared provider-visible prompt context when any group member is available.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolGroup {
     /// Stable group name shared by related tools from the same provider.
@@ -1334,12 +1338,16 @@ impl ToolUseStats {
     }
 }
 
+/// Status severity for one rendered tool-use or progress item.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolUseStatus {
+    /// Tool execution completed successfully or progress is informational.
     #[default]
     Success,
+    /// Tool execution completed with a non-fatal warning.
     Warning,
+    /// Tool execution failed or progress describes an error state.
     Error,
     /// The tool provider has accepted the call and it is running. Used by
     /// progress events. The renderer trades an empty trailing status chip for
@@ -1745,11 +1753,15 @@ pub struct StartAgentResult {
     pub error: Option<String>,
 }
 
+/// Transient runtime state of an agent as observed by the harness.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeState {
+    /// The agent has no prompt currently running.
     #[default]
     Idle,
+    /// The agent owns live work such as an in-flight provider prompt or tool
+    /// execution.
     Running,
 }
 
@@ -1759,7 +1771,9 @@ pub enum AgentRuntimeState {
 /// the harness and is not part of the durable agent transcript.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentStateChanged {
+    /// Agent whose live runtime state changed.
     pub agent_id: AgentId,
+    /// New transient runtime state for the agent.
     pub state: AgentRuntimeState,
 }
 /// Metadata for one model currently served by a provider extension.
