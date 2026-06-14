@@ -81,7 +81,7 @@ The layout from top to bottom:
 history          ← oldest, scrolls into scrollback first
 above_active     ← live blocks (streaming responses, in-flight thinking)
 above_sticky     ← pinned blocks (model status chip, queued user prompt)
-input line       ← the prompt
+input area       ← capped prompt viewport + optional hidden-row indicator
 suggestions      ← completion menu
 below            ← anything below suggestions
 ```
@@ -158,7 +158,10 @@ ordered lists reference them for rendering (top to bottom):
 1. **History** — persistent output (append-only).
 2. **Above active** — mutable blocks (e.g. streaming responses).
 3. **Above sticky** — blocks pinned right above the prompt.
-4. **Input area** — left-prompt + user input + right-prompt.
+4. **Input area** — a prompt-local viewport over left-prompt + user input +
+   right-prompt, capped to one third of terminal height. It may include a
+   compact hidden-row indicator; this local viewport is separate from terminal
+   scrollback and history viewporting.
 5. **Suggestions** — completion menus below the prompt.
 6. **Below** — status bars and other persistent bottom content.
 

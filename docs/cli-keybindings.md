@@ -2,7 +2,8 @@
 
 Keep this document in sync with
 `crates/tau-config/config/built-in.cli-bindings.yaml`, prompt-local action
-handling in `crates/tau-cli-term/src/lib.rs`, application action handling in
+handling in `crates/tau-cli-term/src/lib.rs` and
+`crates/tau-cli-term-raw/src/lib.rs`, application action handling in
 `crates/tau-cli/src/chat.rs`, built-in completion triggers in
 `crates/tau-cli-term/src/completion.rs` (`CompletionRules::built_in()`), and the
 sample `config/cli.yaml`.
@@ -22,7 +23,7 @@ sample `config/cli.yaml`.
 | `Backspace` | `delete-backward` | Delete the character before the cursor. |
 | `Delete` | `delete-forward` | Delete the character after the cursor. |
 | `Left`, `Right` | `cursor-left`, `cursor-right` | Move by one character. |
-| `Up`, `Down` | `cursor-up`, `cursor-down` | Move within multiline input, completion candidates, or prompt history. |
+| `Up`, `Down` | `cursor-up`, `cursor-down` | Cycle completion candidates, move/scroll within capped multiline input, then step prompt history at the input edges. |
 | `Esc` | `escape` | Dismiss the completion menu if open, otherwise surface Escape. |
 | `C-f` | `shell-prompt-insert` | Pick a file with `fzf`, preview the highlighted file, and insert it at the cursor. |
 | `C-k` | `agent-previous` | Switch to the previous active agent. |
@@ -68,7 +69,7 @@ These keys are handled by named actions in the default binding file, with raw fa
 | `C-u` | Kill from cursor to the beginning of the prompt. |
 | `C-w` | Kill the word before the cursor. |
 | `Backspace`, `Delete` | Delete text around the cursor. |
-| Arrow keys | Move within multiline input, completion candidates, or prompt history. |
+| Arrow keys | Cycle completion candidates, move/scroll within capped multiline input, then step prompt history at the input edges. |
 | `Shift-Tab` | Cycle completion candidates backward when a completion menu is open; this takes precedence over configured `BackTab` bindings. Otherwise this is configurable as `BackTab`. |
 | `Esc` | Dismiss the completion menu. |
 
@@ -84,7 +85,7 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
 - `clear-or-cancel-prompt` — clear a non-empty prompt, or arm/trigger cancellation on an empty prompt.
 - `cursor-start` / `cursor-end` — move to the beginning or end of the prompt.
 - `cursor-left` / `cursor-right` — move one character left or right.
-- `cursor-up` / `cursor-down` — cycle completion candidates, move vertically in multiline input, or step prompt history.
+- `cursor-up` / `cursor-down` — cycle completion candidates, move vertically/scroll locally in capped multiline input, or step prompt history after reaching the input edge.
 - `move-up` / `move-down` — move vertically inside multiline input only.
 - `delete-backward` / `delete-forward` — delete around the cursor.
 - `kill-to-start` — kill from cursor to the beginning of the prompt.
@@ -93,8 +94,8 @@ Bindings live under `cli.bind` in config. The built-in bindings are merged below
 - `accept-completion` — accept the previewed completion candidate when available.
 - `dismiss-completion` — dismiss the completion menu when open.
 - `escape` / `backtab` — surface Escape or BackTab to the outer UI.
-- `prompt-previous` — move backward in prompt history.
-- `prompt-next` — move forward in prompt history.
+- `prompt-previous` — move backward in prompt history, bypassing prompt-local scrolling.
+- `prompt-next` — move forward in prompt history, bypassing prompt-local scrolling.
 - `prompt-undo` — undo an edit in the current prompt/history entry.
 - `prompt-redo` — redo an undone edit in the current prompt/history entry.
 - `fast-toggle` — toggle fast mode without editing the prompt draft.

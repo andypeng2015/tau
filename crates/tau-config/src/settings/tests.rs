@@ -208,6 +208,7 @@ fn cli_state_round_trip_through_save_and_load() {
         show_tools: crate::settings::ShowTools::SummarizeTurn,
         show_messages: crate::settings::ShowMessages::AllSummary,
         show_status: crate::settings::ShowStatus::Minimal,
+        show_prompt_scroll_indicator: false,
     };
     original.save(&dirs);
     assert!(td.path().join("cli.json").exists());
@@ -228,6 +229,7 @@ fn cli_state_defaults_missing_show_messages_to_all_full() {
 
     let loaded = CliState::load(&dirs);
     assert_eq!(loaded.show_messages, crate::settings::ShowMessages::AllFull);
+    assert!(loaded.show_prompt_scroll_indicator);
 }
 
 /// Ensures legacy `show_tools: on` config remains accepted as the full display
@@ -579,7 +581,7 @@ fn cli_state_defaults_to_cli_config_when_state_file_is_missing() {
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     std::fs::write(
         config_dir.join("cli.yaml"),
-        r#"{ show_diff: true, show_thinking: false, show_turn_stats: true, redraw_counter: true, show_ui_io: true, show_tools: "compact", show_messages: "self-full", show_status: "minimal" }"#,
+        r#"{ show_diff: true, show_thinking: false, show_turn_stats: true, redraw_counter: true, show_ui_io: true, show_tools: "compact", show_messages: "self-full", show_status: "minimal", show_prompt_scroll_indicator: false }"#,
     )
     .expect("write");
 
@@ -598,6 +600,7 @@ fn cli_state_defaults_to_cli_config_when_state_file_is_missing() {
             show_tools: ShowTools::Compact,
             show_messages: ShowMessages::SelfFull,
             show_status: ShowStatus::Minimal,
+            show_prompt_scroll_indicator: false,
         }
     );
 }

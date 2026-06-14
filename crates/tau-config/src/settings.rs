@@ -80,6 +80,9 @@ pub struct CliSettings {
     pub show_messages: ShowMessages,
     /// How routine startup lifecycle and status messages are rendered.
     pub show_status: ShowStatus,
+    /// Whether to show a compact indicator when the prompt input is locally
+    /// scrolled.
+    pub show_prompt_scroll_indicator: bool,
     /// Which built-in color theme to use for the terminal UI.
     pub theme: CliTheme,
     /// Prompt-text completion rules keyed by word prefix. Values name
@@ -114,6 +117,7 @@ impl CliSettings {
             show_tools: self.show_tools,
             show_messages: self.show_messages,
             show_status: self.show_status,
+            show_prompt_scroll_indicator: self.show_prompt_scroll_indicator,
         }
     }
 }
@@ -190,6 +194,9 @@ pub struct CliState {
     /// How routine startup lifecycle and status messages are rendered.
     /// Controlled by `/set show-status <all|minimal>`.
     pub show_status: ShowStatus,
+    /// Whether to show a compact indicator when the prompt input has hidden
+    /// rows. Controlled by `/set show-prompt-scroll-indicator <true|false>`.
+    pub show_prompt_scroll_indicator: bool,
 }
 /// CLI color theme selection.
 ///
@@ -402,6 +409,7 @@ impl Default for CliState {
             show_tools: ShowTools::Full,
             show_messages: ShowMessages::AllFull,
             show_status: ShowStatus::All,
+            show_prompt_scroll_indicator: true,
         }
     }
 }

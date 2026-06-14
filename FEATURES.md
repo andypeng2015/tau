@@ -519,8 +519,21 @@ hidden-agent preferences to other UIs.
 
 Available `/set` names include `show-diff` (expanded vs. compact diffs),
 `show-thinking` (agent reasoning summaries), `show-turn-stats` (per-turn
-token usage below responses), `redraw-counter` (debug redraw counter), and
-`show-ui-io` (UI↔harness socket throughput). These take `true` / `false`.
+token usage below responses), `redraw-counter` (debug redraw counter),
+`show-ui-io` (UI↔harness socket throughput), and
+`show-prompt-scroll-indicator` (hidden-row indicator for capped prompt input).
+These take `true` / `false`.
+
+Prompt input is capped to `floor(33% of terminal height)` with a minimum of
+one editable row. Long drafts scroll inside this prompt-local viewport instead
+of taking over the whole screen. Plain `Up` / `Down` keep completion-menu
+priority, then move/scroll within the capped input, and only fall through to
+prompt history once the input edge is reached. Explicit history shortcuts such
+as `C-p` / `C-n` and `C-Up` / `C-Down` bypass local input scrolling. When rows
+are hidden and the cap is at least two rows, Tau shows a compact hidden-row
+indicator inside the cap; `/set show-prompt-scroll-indicator false` disables
+it.
+
 `/set show-messages <none|self-summary|self-full|all-summary|all-full>`
 controls how agent-to-agent messages are shown in the transcript; messages sent
 from an agent to `user` always render fully as human-visible broadcasts.

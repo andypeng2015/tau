@@ -852,6 +852,7 @@ pub(crate) fn run_chat(
         handle.request_input_shutdown();
     }
     handle.set_right_prompt(right_prompt);
+    handle.set_prompt_scroll_indicator(cli_state.show_prompt_scroll_indicator);
     // Show logo if enabled.
     if settings.show_logo {
         handle.print_output(

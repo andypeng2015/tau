@@ -36,3 +36,13 @@ fn show_status_values_are_registered() {
 
     assert_eq!(values, vec!["all", "minimal"]);
 }
+
+/// `/set show-prompt-scroll-indicator` is a boolean prompt-input toggle.
+#[test]
+fn show_prompt_scroll_indicator_values_are_registered() {
+    let setting =
+        super::find("show-prompt-scroll-indicator").expect("show-prompt-scroll-indicator setting");
+    let values: Vec<_> = setting.values.iter().map(|value| value.value).collect();
+
+    assert_eq!(values, vec!["true", "false"]);
+}

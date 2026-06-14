@@ -19,6 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 const INPUT_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const PROMPT_INPUT_MAX_HEIGHT_PERCENT: usize = 33;
 
 use crossterm::cursor::{MoveToColumn, MoveUp, SetCursorStyle};
 use crossterm::event::{
@@ -30,7 +31,7 @@ use crossterm::{QueueableCommand, terminal};
 pub use tau_term_screen::{Align, BlockId, Cell, Color, Span, Style, StyledBlock, StyledText};
 use tau_term_screen::{
     Screen, display_width, emit_styled_cells, layout_block, layout_lines, next_grapheme_boundary,
-    previous_grapheme_boundary,
+    previous_grapheme_boundary, truncate_to_width,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -188,6 +189,12 @@ struct SharedState {
     history_nav: Option<HistoryNav>,
     /// Active completion menu, if any. Independent of `history_nav`.
     completion: Option<CompletionMenu>,
+    /// First visual input row rendered in the prompt-local capped viewport.
+    /// This is independent of terminal scrollback/history viewporting; plain
+    /// Up/Down can adjust it before falling through to prompt history.
+    input_viewport_start: usize,
+    /// Whether to show a compact indicator when prompt input rows are hidden.
+    show_prompt_scroll_indicator: bool,
     /// Whether an empty-prompt Ctrl-C has armed cancel for a second press.
     ctrl_c_cancel_armed: bool,
     width: usize,
@@ -247,6 +254,8 @@ impl SharedState {
             current_redo: Vec::new(),
             history_nav: None,
             completion: None,
+            input_viewport_start: 0,
+            show_prompt_scroll_indicator: true,
             ctrl_c_cancel_armed: false,
             width,
             height,
@@ -325,6 +334,7 @@ impl SharedState {
         self.current_undo = draft.undo;
         self.current_redo = draft.redo;
         self.cursor = draft.cursor.min(self.buffer.len());
+        self.ensure_input_cursor_visible();
     }
 
     fn record_undo(&mut self) {
@@ -391,6 +401,7 @@ impl SharedState {
     fn write_cursor(&mut self, new_cursor: usize) {
         self.cursor = new_cursor;
         self.sticky_col = None;
+        self.ensure_input_cursor_visible();
     }
 
     /// Sets the cursor as part of a vertical motion. Preserves the
@@ -398,6 +409,31 @@ impl SharedState {
     /// original column over short or empty rows.
     fn write_cursor_keep_sticky(&mut self, new_cursor: usize) {
         self.cursor = new_cursor;
+        self.ensure_input_cursor_visible();
+    }
+
+    fn input_visible_rows(&self) -> usize {
+        let total_rows = self.last_visual_row() + 1;
+        let cap_rows = prompt_input_max_rows(self.height);
+        let indicator_rows = prompt_scroll_indicator_rows(
+            self.show_prompt_scroll_indicator,
+            !self.buffer.is_empty(),
+            total_rows,
+            cap_rows,
+        );
+        prompt_editable_rows(total_rows, cap_rows, indicator_rows)
+    }
+
+    fn ensure_input_cursor_visible(&mut self) {
+        let (cursor_row, _) = self.visual_cursor_position();
+        let total_rows = self.last_visual_row() + 1;
+        let visible_rows = self.input_visible_rows();
+        self.input_viewport_start = viewport_start_with_cursor(
+            self.input_viewport_start,
+            cursor_row,
+            total_rows,
+            visible_rows,
+        );
     }
 
     /// Pushes the current prompt onto input history and resets to a
@@ -1087,7 +1123,9 @@ impl TermHandle {
 
     /// Updates the left prompt prefix.
     pub fn set_left_prompt(&self, text: impl Into<StyledText>) {
-        self.lock().left_prompt = text.into();
+        let mut st = self.lock();
+        st.left_prompt = text.into();
+        st.ensure_input_cursor_visible();
     }
 
     /// Returns a clone of the current input buffer.
@@ -1158,6 +1196,14 @@ impl TermHandle {
     /// Updates the placeholder shown when the input buffer is empty.
     pub fn set_input_placeholder(&self, text: impl Into<StyledText>) {
         self.lock().input_placeholder = text.into();
+    }
+
+    /// Enables or disables the compact hidden-row indicator for capped prompt
+    /// input.
+    pub fn set_prompt_scroll_indicator(&self, enabled: bool) {
+        let mut st = self.lock();
+        st.show_prompt_scroll_indicator = enabled;
+        st.ensure_input_cursor_visible();
     }
 
     /// Queues a raw byte string (typically a terminal escape sequence
@@ -1387,6 +1433,7 @@ impl Term {
                         let height = effective_resize_dimension(h, st.height);
                         st.width = width;
                         st.height = height;
+                        st.ensure_input_cursor_visible();
                         (width, height)
                     };
                     self.handle.redraw();
@@ -1616,6 +1663,7 @@ impl Term {
             let mut st = self.handle.lock();
             st.width = width;
             st.height = height;
+            st.ensure_input_cursor_visible();
             st.external_paused = false;
             st.invalidate_screen = true;
         }
@@ -2498,6 +2546,7 @@ enum LineSource {
     Input {
         wrapped_row: usize,
     },
+    InputScrollIndicator,
 }
 
 /// Lays out blocks referenced by an id list, skipping missing ids
@@ -2826,6 +2875,53 @@ impl TerminalModel {
     }
 }
 
+fn prompt_input_max_rows(terminal_height: usize) -> usize {
+    (terminal_height.max(1) * PROMPT_INPUT_MAX_HEIGHT_PERCENT / 100).max(1)
+}
+
+fn prompt_scroll_indicator_rows(
+    show_indicator: bool,
+    buffer_non_empty: bool,
+    total_rows: usize,
+    cap_rows: usize,
+) -> usize {
+    usize::from(show_indicator && buffer_non_empty && cap_rows >= 2 && cap_rows < total_rows)
+}
+
+fn prompt_editable_rows(total_rows: usize, cap_rows: usize, indicator_rows: usize) -> usize {
+    cap_rows
+        .saturating_sub(indicator_rows)
+        .max(1)
+        .min(total_rows.max(1))
+}
+
+fn prompt_scroll_indicator_text(
+    start: usize,
+    visible_rows: usize,
+    total_rows: usize,
+    width: usize,
+) -> String {
+    let end = (start + visible_rows).min(total_rows);
+    let hidden_above = start;
+    let hidden_below = total_rows.saturating_sub(end);
+    let full = format!(
+        "↕ prompt rows {}-{}/{}  ↑{} ↓{}",
+        start + 1,
+        end,
+        total_rows,
+        hidden_above,
+        hidden_below
+    );
+    if display_width(&full) <= width {
+        return full;
+    }
+    let compact = format!("↕ ↑{} ↓{}", hidden_above, hidden_below);
+    if display_width(&compact) <= width {
+        return compact;
+    }
+    truncate_to_width("↕", width)
+}
+
 fn layout_tail(st: &SharedState, history_height: usize) -> TailLayout {
     let width = st.width;
     let mut lines: Vec<Vec<Cell>> = Vec::new();
@@ -2900,9 +2996,41 @@ fn layout_tail(st: &SharedState, history_height: usize) -> TailLayout {
         }
     }
 
-    let cursor_row = above_end + buffer_cursor_row;
+    let input_total_rows = input_lines.len().max(1);
+    let cap_rows = prompt_input_max_rows(st.height);
+    let indicator_rows = prompt_scroll_indicator_rows(
+        st.show_prompt_scroll_indicator,
+        !st.buffer.is_empty(),
+        input_total_rows,
+        cap_rows,
+    );
+    let visible_input_rows = prompt_editable_rows(input_total_rows, cap_rows, indicator_rows);
+    let viewport_start = viewport_start_with_cursor(
+        st.input_viewport_start,
+        buffer_cursor_row,
+        input_total_rows,
+        visible_input_rows,
+    );
+    let cursor_row = above_end + indicator_rows + buffer_cursor_row.saturating_sub(viewport_start);
 
-    for (wrapped_row, line) in input_lines.into_iter().enumerate() {
+    if indicator_rows == 1 {
+        let indicator = prompt_scroll_indicator_text(
+            viewport_start,
+            visible_input_rows,
+            input_total_rows,
+            width,
+        );
+        sources.push(LineSource::InputScrollIndicator);
+        lines.push(StyledText::from(indicator).to_cells());
+    }
+
+    let viewport_end = (viewport_start + visible_input_rows).min(input_lines.len());
+    for (wrapped_row, line) in input_lines
+        .into_iter()
+        .enumerate()
+        .skip(viewport_start)
+        .take(viewport_end.saturating_sub(viewport_start))
+    {
         sources.push(LineSource::Input { wrapped_row });
         lines.push(line);
     }
@@ -3356,6 +3484,7 @@ fn describe_line_source(source: Option<&LineSource>) -> String {
             wrapped_row,
         }) => format!("block {:?} `{}` row {}", id, debug_id, wrapped_row),
         Some(LineSource::Input { wrapped_row }) => format!("input row {wrapped_row}"),
+        Some(LineSource::InputScrollIndicator) => "input scroll indicator".to_owned(),
         None => "<missing>".to_owned(),
     }
 }

@@ -1727,10 +1727,10 @@ fn assert_full_redraw_after(
 #[test]
 fn multiline_buffer_layout_tracks_cursor_after_paste() {
     let buf = SharedBuffer::new();
-    let mut parser = vt100::Parser::new(5, 10, 20);
+    let mut parser = vt100::Parser::new(30, 10, 20);
 
     let (term, handle, input_tx) =
-        Term::new_virtual(10, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+        Term::new_virtual(10, 30, "> ", Box::new(buf.clone()), CursorShape::Bar);
 
     input_tx
         .send(RawEvent::Paste("abc\ndefghijkl".to_owned()))
@@ -1743,10 +1743,7 @@ fn multiline_buffer_layout_tracks_cursor_after_paste() {
 
     assert_eq!(handle.get_buffer(), "abc\ndefghijkl");
     assert_eq!(handle.get_cursor(), "abc\ndefghijkl".len());
-    assert_eq!(
-        vt100_rows(&parser, 10),
-        vec!["> abc", "defghijkl", "", "", ""]
-    );
+    assert_eq!(&vt100_rows(&parser, 10)[..2], &["> abc", "defghijkl"]);
     assert_eq!(parser.screen().cursor_position(), (1, 9));
 }
 
@@ -1772,7 +1769,7 @@ fn long_multiline_prompt_scrolls_viewport_to_cursor() {
         Event::BufferChanged
     ));
     flush_redraws(&handle, &buf, &mut parser);
-    assert_eq!(vt100_rows(&parser, 10)[0], "line03");
+    assert_eq!(vt100_rows(&parser, 10)[0], "line07");
 
     let full_renders = handle.full_render_count();
     for _ in 0..5 {
@@ -1791,7 +1788,7 @@ fn long_multiline_prompt_scrolls_viewport_to_cursor() {
 
     assert_eq!(vt100_rows(&parser, 10)[0], "line02");
     assert_eq!(parser.screen().cursor_position(), (0, 6));
-    assert_eq!(handle.full_render_count(), full_renders + 1);
+    assert_eq!(handle.full_render_count(), full_renders);
 
     input_tx
         .send(RawEvent::Key(KeyEvent::new(
@@ -1815,10 +1812,10 @@ fn long_multiline_prompt_scrolls_viewport_to_cursor() {
 #[test]
 fn paste_normalizes_crlf_so_cursor_matches_rendered_multiline_buffer() {
     let buf = SharedBuffer::new();
-    let mut parser = vt100::Parser::new(5, 10, 20);
+    let mut parser = vt100::Parser::new(30, 10, 20);
 
     let (term, handle, input_tx) =
-        Term::new_virtual(10, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+        Term::new_virtual(10, 30, "> ", Box::new(buf.clone()), CursorShape::Bar);
 
     input_tx
         .send(RawEvent::Paste("abc\r\ndefghijkl".to_owned()))
@@ -1831,10 +1828,7 @@ fn paste_normalizes_crlf_so_cursor_matches_rendered_multiline_buffer() {
 
     assert_eq!(handle.get_buffer(), "abc\ndefghijkl");
     assert_eq!(handle.get_cursor(), "abc\ndefghijkl".len());
-    assert_eq!(
-        vt100_rows(&parser, 10),
-        vec!["> abc", "defghijkl", "", "", ""]
-    );
+    assert_eq!(&vt100_rows(&parser, 10)[..2], &["> abc", "defghijkl"]);
     assert_eq!(parser.screen().cursor_position(), (1, 9));
 }
 
@@ -1919,7 +1913,7 @@ fn prompt_boundaries_move_by_grapheme_cluster() {
 // prompt-only cursor behavior, not generic block wrapping behavior.
 #[test]
 fn prompt_input_cursor_uses_last_column_before_line_is_full() {
-    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    let mut st = SharedState::new(10, 30, StyledText::from("> "));
     st.buffer = "abcdefg".to_owned();
     st.cursor = st.buffer.len();
 
@@ -1934,7 +1928,7 @@ fn prompt_input_cursor_uses_last_column_before_line_is_full() {
 // must immediately live on the next visual row at column 0.
 #[test]
 fn prompt_input_cursor_wraps_to_new_line_when_last_column_is_filled() {
-    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    let mut st = SharedState::new(10, 30, StyledText::from("> "));
     st.buffer = "abcdefgh".to_owned();
     st.cursor = st.buffer.len();
 
@@ -1952,7 +1946,7 @@ fn prompt_input_cursor_wraps_to_new_line_when_last_column_is_filled() {
 // an additional phantom blank row below it.
 #[test]
 fn prompt_input_newline_after_filled_line_does_not_add_phantom_row() {
-    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    let mut st = SharedState::new(10, 30, StyledText::from("> "));
     st.buffer = "abcdefgh\n".to_owned();
     st.cursor = st.buffer.len();
 
@@ -1969,7 +1963,7 @@ fn prompt_input_newline_after_filled_line_does_not_add_phantom_row() {
 // one row too low while inserted characters appeared on the row above.
 #[test]
 fn prompt_input_text_after_newline_after_filled_line_keeps_cursor_on_text_row() {
-    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    let mut st = SharedState::new(10, 30, StyledText::from("> "));
     st.buffer = "abcdefgh\nZ".to_owned();
     st.cursor = st.buffer.len();
 
@@ -1987,7 +1981,7 @@ fn prompt_input_text_after_newline_after_filled_line_keeps_cursor_on_text_row() 
 // height must stay in lockstep for all lines.
 #[test]
 fn prompt_input_repeated_full_lines_ending_in_newline_do_not_stack_phantom_rows() {
-    let mut st = SharedState::new(10, 5, StyledText::from("> "));
+    let mut st = SharedState::new(10, 30, StyledText::from("> "));
     st.buffer = "abcdefgh\nabcdefghij\n".to_owned();
     st.cursor = st.buffer.len();
 
@@ -1998,6 +1992,234 @@ fn prompt_input_repeated_full_lines_ending_in_newline_do_not_stack_phantom_rows(
     assert_eq!(line_text(&layout.all_lines[1]), "abcdefghij");
     assert_eq!(line_text(&layout.all_lines[2]), "");
     assert_eq!((layout.cursor_row, layout.cursor_col), (2, 0));
+}
+
+#[test]
+fn prompt_input_height_cap_uses_floor_third_with_minimum_one() {
+    assert_eq!(prompt_input_max_rows(0), 1);
+    assert_eq!(prompt_input_max_rows(1), 1);
+    assert_eq!(prompt_input_max_rows(3), 1);
+    assert_eq!(prompt_input_max_rows(9), 2);
+    assert_eq!(prompt_input_max_rows(12), 3);
+}
+
+#[test]
+fn prompt_input_layout_caps_height_and_shows_hidden_row_indicator() {
+    let mut st = SharedState::new(12, 12, StyledText::from("> "));
+    st.buffer = "a\nb\nc\nd\ne".to_owned();
+    st.write_cursor(st.buffer.len());
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 3, "cap floor(12*33%) = 3 rows");
+    assert!(line_text(&layout.all_lines[0]).starts_with('↕'));
+    assert_eq!(line_text(&layout.all_lines[1]), "d");
+    assert_eq!(line_text(&layout.all_lines[2]), "e");
+    assert_eq!(layout.line_sources[0], LineSource::InputScrollIndicator);
+}
+
+#[test]
+fn prompt_input_cap_one_keeps_editable_row_and_suppresses_indicator() {
+    let mut st = SharedState::new(12, 1, StyledText::from("> "));
+    st.buffer = "a\nb\nc".to_owned();
+    st.write_cursor(st.buffer.len());
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 1);
+    assert_eq!(line_text(&layout.all_lines[0]), "c");
+    assert_eq!(layout.line_sources[0], LineSource::Input { wrapped_row: 2 });
+}
+
+#[test]
+fn prompt_input_scroll_indicator_can_be_disabled() {
+    let mut st = SharedState::new(12, 9, StyledText::from("> "));
+    st.show_prompt_scroll_indicator = false;
+    st.buffer = "a\nb\nc\nd".to_owned();
+    st.write_cursor(st.buffer.len());
+
+    let layout = layout_all(&st);
+
+    assert_eq!(layout.all_lines.len(), 2, "cap floor(9*33%) = 2 rows");
+    assert_eq!(line_text(&layout.all_lines[0]), "c");
+    assert_eq!(line_text(&layout.all_lines[1]), "d");
+}
+
+#[test]
+fn prompt_input_resize_clamps_viewport_when_more_rows_fit() {
+    let mut st = SharedState::new(12, 12, StyledText::from("> "));
+    st.buffer = "a\nb\nc\nd\ne".to_owned();
+    st.write_cursor(st.buffer.len());
+    assert_eq!(st.input_viewport_start, 3);
+
+    st.height = 30;
+    st.ensure_input_cursor_visible();
+
+    assert_eq!(st.input_viewport_start, 0);
+    let layout = layout_all(&st);
+    assert_eq!(layout.all_lines.len(), 5);
+}
+
+#[test]
+fn prompt_input_plain_up_scrolls_before_history_navigation() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(12, 12, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("hist".to_owned(), 4);
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL,
+        )))
+        .expect("submit history");
+    let _ = term.get_next_event().expect("submit event");
+
+    handle.set_buffer("a\nb\nc\nd\ne".to_owned(), 5);
+    {
+        let mut st = handle.lock();
+        st.input_viewport_start = 2;
+    }
+    assert_eq!(handle.lock().input_viewport_start, 2);
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )))
+        .expect("up");
+    let _ = term.get_next_event().expect("up event");
+
+    assert_eq!(handle.get_buffer(), "a\nb\nc\nd\ne");
+    assert_eq!(handle.lock().input_viewport_start, 1);
+
+    for _ in 0..2 {
+        input_tx
+            .send(RawEvent::Key(KeyEvent::new(
+                KeyCode::Up,
+                KeyModifiers::NONE,
+            )))
+            .expect("up");
+        let _ = term.get_next_event().expect("up event");
+    }
+    assert_eq!(handle.get_buffer(), "hist");
+}
+
+#[test]
+fn prompt_input_explicit_history_shortcut_bypasses_local_scroll() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(12, 12, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("hist".to_owned(), 4);
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL,
+        )))
+        .expect("submit history");
+    let _ = term.get_next_event().expect("submit event");
+
+    handle.set_buffer("a\nb\nc\nd\ne".to_owned(), 9);
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::CONTROL,
+        )))
+        .expect("ctrl-up");
+    let _ = term.get_next_event().expect("ctrl-up event");
+
+    assert_eq!(handle.get_buffer(), "hist");
+}
+
+#[test]
+fn prompt_input_completion_menu_keeps_priority_over_local_scroll() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(12, 12, "> ", Box::new(buf), CursorShape::Bar);
+    handle.set_buffer("a\nb\nc\nd\ne".to_owned(), 9);
+    {
+        let mut st = handle.lock();
+        st.completion = Some(CompletionMenu {
+            candidates: vec![Candidate {
+                label: "x".to_owned(),
+                description: "candidate".to_owned(),
+                replacement: "replacement".to_owned(),
+            }],
+            selected: None,
+            original_buffer: st.buffer.clone(),
+            original_cursor: st.cursor,
+        });
+    }
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )))
+        .expect("up");
+    let _ = term.get_next_event().expect("up event");
+
+    assert_eq!(handle.get_buffer(), "replacement");
+}
+
+#[test]
+fn prompt_input_indicator_fits_tiny_terminal_width() {
+    let mut st = SharedState::new(1, 7, StyledText::from(""));
+    st.buffer = "a\nb\nc".to_owned();
+    st.write_cursor(st.buffer.len());
+
+    let layout = layout_all(&st);
+    let indicator = line_text(&layout.all_lines[0]);
+
+    assert_eq!(layout.line_sources[0], LineSource::InputScrollIndicator);
+    assert!(
+        display_width(&indicator) <= 1,
+        "indicator must not wrap: {indicator:?}"
+    );
+}
+
+#[test]
+fn prompt_input_plain_down_scrolls_before_history_navigation() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(12, 12, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("a\nb\nc\nd\ne".to_owned(), 5);
+    {
+        let mut st = handle.lock();
+        st.input_viewport_start = 1;
+    }
+    assert_eq!(handle.lock().input_viewport_start, 1);
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )))
+        .expect("down");
+    let _ = term.get_next_event().expect("down event");
+
+    assert_eq!(handle.get_buffer(), "a\nb\nc\nd\ne");
+    assert_eq!(handle.lock().input_viewport_start, 2);
+}
+
+#[test]
+fn prompt_input_explicit_next_history_shortcut_bypasses_local_scroll() {
+    let buf = SharedBuffer::new();
+    let (term, handle, input_tx) = Term::new_virtual(12, 12, "> ", Box::new(buf), CursorShape::Bar);
+
+    handle.set_buffer("a\nb\nc\nd\ne".to_owned(), 5);
+    {
+        let mut st = handle.lock();
+        st.input_viewport_start = 1;
+    }
+
+    input_tx
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::CONTROL,
+        )))
+        .expect("ctrl-down");
+    let _ = term.get_next_event().expect("ctrl-down event");
+
+    assert_eq!(handle.get_buffer(), "");
 }
 
 /// Virtual terminal smoke test: constructing Term should render the prompt on
@@ -3921,15 +4143,15 @@ fn terminal_scrollback_matches_known_lines_model_across_visible_churn() {
 #[test]
 fn trailing_newline_buffer_grows_prompt_height() {
     let buf = SharedBuffer::new();
-    let mut parser = vt100::Parser::new(5, 10, 20);
+    let mut parser = vt100::Parser::new(30, 10, 20);
 
     let (_term, handle, _input_tx) =
-        Term::new_virtual(10, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+        Term::new_virtual(10, 30, "> ", Box::new(buf.clone()), CursorShape::Bar);
 
     handle.set_buffer("abc\n".to_owned(), "abc\n".len());
     flush_redraws(&handle, &buf, &mut parser);
 
-    assert_eq!(vt100_rows(&parser, 10), vec!["> abc", "", "", "", ""]);
+    assert_eq!(&vt100_rows(&parser, 10)[..2], &["> abc", ""]);
     assert_eq!(parser.screen().cursor_position(), (1, 0));
 }
 
@@ -3938,10 +4160,10 @@ fn trailing_newline_buffer_grows_prompt_height() {
 #[test]
 fn exact_width_prompt_end_grows_prompt_height_for_cursor() {
     let buf = SharedBuffer::new();
-    let mut parser = vt100::Parser::new(5, 10, 20);
+    let mut parser = vt100::Parser::new(30, 10, 20);
 
     let (_term, handle, _input_tx) =
-        Term::new_virtual(10, 5, "> ", Box::new(buf.clone()), CursorShape::Bar);
+        Term::new_virtual(10, 30, "> ", Box::new(buf.clone()), CursorShape::Bar);
     let below = handle.new_block("below", plain_block("below"));
     handle.push_below(below);
 
@@ -3949,8 +4171,8 @@ fn exact_width_prompt_end_grows_prompt_height_for_cursor() {
     flush_redraws(&handle, &buf, &mut parser);
 
     assert_eq!(
-        vt100_rows(&parser, 10),
-        vec!["> abc", "abcdefghij", "", "below     ", ""]
+        &vt100_rows(&parser, 10)[..4],
+        &["> abc", "abcdefghij", "", "below     "]
     );
     assert_eq!(parser.screen().cursor_position(), (2, 0));
 }

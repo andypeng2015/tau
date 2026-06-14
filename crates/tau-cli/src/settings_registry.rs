@@ -155,6 +155,12 @@ pub const SETTINGS: &[SettingDef] = &[
         values: SHOW_STATUS_VALUES,
         get: |s| s.show_status.as_str(),
     },
+    SettingDef {
+        name: "show-prompt-scroll-indicator",
+        description: "Hidden-row indicator for capped prompt input",
+        values: BOOL_VALUES,
+        get: |s| bool_str(s.show_prompt_scroll_indicator),
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static SettingDef> {

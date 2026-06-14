@@ -210,6 +210,8 @@ pub(crate) struct EventRenderer {
     show_messages: tau_config::settings::ShowMessages,
     /// Routine lifecycle/status message visibility mode.
     show_status: tau_config::settings::ShowStatus,
+    /// Whether to show an indicator when prompt input rows are hidden.
+    show_prompt_scroll_indicator: bool,
     /// Tool summary blocks keyed by their block id. Hidden when
     /// `show_tools` is `Full` or `Compact`, rendered in summarize modes.
     tool_summaries: HashMap<tau_cli_term::BlockId, ToolSummaryDisplay>,
@@ -1046,6 +1048,7 @@ impl EventRenderer {
             show_tools: state.show_tools,
             show_messages: state.show_messages,
             show_status: state.show_status,
+            show_prompt_scroll_indicator: state.show_prompt_scroll_indicator,
             show_ui_io: state.show_ui_io,
             ui_io_stats: UiIoStats::default(),
             tool_summaries: HashMap::new(),
@@ -1377,6 +1380,7 @@ impl EventRenderer {
             show_tools: self.show_tools,
             show_messages: self.show_messages,
             show_status: self.show_status,
+            show_prompt_scroll_indicator: self.show_prompt_scroll_indicator,
         };
         if let Ok(mut mirror) = self.cli_state_mirror.lock() {
             *mirror = state.clone();
@@ -1472,6 +1476,7 @@ impl EventRenderer {
                     self.set_show_status(show_status);
                 }
             }
+            "show-prompt-scroll-indicator" => self.set_show_prompt_scroll_indicator(on),
             _ => {}
         }
     }
@@ -1816,6 +1821,16 @@ impl EventRenderer {
             return;
         }
         self.show_status = show_status;
+        self.save_cli_state();
+    }
+
+    fn set_show_prompt_scroll_indicator(&mut self, enabled: bool) {
+        if self.show_prompt_scroll_indicator == enabled {
+            return;
+        }
+        self.show_prompt_scroll_indicator = enabled;
+        self.handle.set_prompt_scroll_indicator(enabled);
+        self.handle.redraw();
         self.save_cli_state();
     }
 
