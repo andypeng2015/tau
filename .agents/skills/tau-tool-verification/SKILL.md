@@ -62,6 +62,34 @@ context and makes the meaningful result harder to scan. Only report a requested
 path, query, command, or similar argument when the tool has transformed it into
 new information, such as a canonicalized path that differs from the input.
 
+### Layered escaping policy
+
+Tools must semantically escape untrusted metadata fields before composing
+model-visible text. This includes paths, filenames, identifiers, owner names,
+queries, commands when shown as metadata, and any other field whose bytes come
+from the workspace, filesystem, user config, or an extension peer. Escaping is
+local to the tool because the tool knows which substrings are metadata and which
+substrings are user/file payload that should remain literal.
+
+Line-oriented outputs must never let metadata inject extra records, headers, or
+status lines. Escape at least `\\`, newlines, carriage returns, tabs, and other
+control characters in metadata fields; use explicit flags such as `escaped` or
+`invalid-utf8` when that helps the caller understand that displayed text is not
+byte-exact. Do not over-escape file contents or command output just because they
+are untrusted; those payloads have separate line-prefix, truncation, and UTF-8
+handling rules.
+
+Central provider-visible rendering should still apply a last-resort safety
+invariant when structured tool responses are rendered into model input, but that
+is defense-in-depth. It is not a substitute for tool-local semantic escaping,
+because a central renderer cannot reliably know whether an arbitrary string is a
+path, a header value, a status label, or content.
+
+Terminal/UI sanitization is a separate layer. UI code must protect terminal
+state and layout from control sequences, but UI escaping does not make
+provider/model-visible text safe, and provider-visible escaping does not replace
+terminal sanitization.
+
 ### Common patterns
 
 `read` range operations use inclusive `start_line` and `end_line` fields. `edit` range operations use half-open `start_line` and `end_line_exclusive` fields.
