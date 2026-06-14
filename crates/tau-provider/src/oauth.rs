@@ -12,9 +12,10 @@ use rand::seq::SliceRandom;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-/// A ureq::Agent configured to respect HTTPS_PROXY / HTTP_PROXY environment
-/// variables (both upper and lowercase). NO_PROXY / no_proxy are honored
-/// internally by ureq's agent.
+/// A ureq::Agent configured to respect proxy-related environment variables.
+///
+/// `ureq::Proxy::try_from_env` owns the environment parsing, including
+/// `NO_PROXY` / `no_proxy` bypass rules.
 pub fn proxy_agent() -> &'static ureq::Agent {
     static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
         let tls_config = ureq::tls::TlsConfig::builder()
@@ -24,20 +25,17 @@ pub fn proxy_agent() -> &'static ureq::Agent {
             .http_status_as_error(false)
             .tls_config(tls_config);
 
-        for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-            if let Ok(val) = std::env::var(key) {
-                if val.is_empty() {
-                    continue;
-                }
-                if let Ok(proxy) = ureq::Proxy::new(&val) {
-                    builder = builder.proxy(Some(proxy));
-                }
-            }
+        if let Some(proxy) = proxy_from_env() {
+            builder = builder.proxy(Some(proxy));
         }
 
         ureq::Agent::new_with_config(builder.build())
     });
     &AGENT
+}
+
+fn proxy_from_env() -> Option<ureq::Proxy> {
+    ureq::Proxy::try_from_env()
 }
 
 // ---------------------------------------------------------------------------
@@ -463,3 +461,6 @@ fn read_success_json(
 fn urlencoding(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+#[cfg(test)]
+mod tests;
