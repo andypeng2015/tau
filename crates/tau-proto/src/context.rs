@@ -201,6 +201,8 @@ fn sanitize_provider_text(input: &str, preserve_lf: bool) -> String {
             '\t' => output.push_str("\\t"),
             '\0' => output.push_str("\\0"),
             '\u{1b}' => output.push_str("\\x1b"),
+            '\u{2028}' => output.push_str("\\u{2028}"),
+            '\u{2029}' => output.push_str("\\u{2029}"),
             ch if is_provider_unsafe_control(ch) => {
                 write!(output, "\\u{{{:x}}}", ch as u32).expect("writing to String cannot fail");
             }

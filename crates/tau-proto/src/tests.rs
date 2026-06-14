@@ -1596,6 +1596,28 @@ fn tool_response_preserves_body_lfs_but_escapes_controls() {
     assert_eq!(response.render(), "line 1\nline 2\\r\\x1b\\0\\t\\u{85}");
 }
 
+/// Unicode line and paragraph separators are not ASCII LF record separators, so
+/// they must be escaped in both headers and bodies before model-visible output.
+#[test]
+fn tool_response_escapes_unicode_line_separators() {
+    let header_response = ToolResponse::from_cbor(&CborValue::Map(vec![(
+        CborValue::Text("key\u{2028}next".to_owned()),
+        CborValue::Text("value\u{2029}next".to_owned()),
+    )]));
+    let body_response = ToolResponse::from_cbor(&CborValue::Text(
+        "line\u{2028}not-record\u{2029}end".to_owned(),
+    ));
+
+    assert_eq!(
+        header_response.render(),
+        "key\\u{2028}next: value\\u{2029}next\n\n"
+    );
+    assert_eq!(
+        body_response.render(),
+        "line\\u{2028}not-record\\u{2029}end"
+    );
+}
+
 /// Metadata labels that are pushed into a multiline body still need single-line
 /// escaping so a malicious key cannot forge additional labels.
 #[test]
