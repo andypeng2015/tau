@@ -56,6 +56,22 @@ fn search_rows_and_previews_are_bounded_before_picker_launch() {
     }
 }
 
+/// Protects prompt-history setup against huge single-token entries: summary
+/// construction must stop at the display cap instead of measuring the whole
+/// word.
+#[test]
+fn search_rows_truncate_single_token_summary_at_cap() {
+    let huge_prompt = "x".repeat(PROMPT_HISTORY_SUMMARY_MAX_CHARS * 100);
+    let rows = prompt_history_search_rows(&[huge_prompt]);
+    let summary = rows
+        .strip_prefix("0\t")
+        .and_then(|row| row.strip_suffix('\n'))
+        .expect("single history row");
+
+    assert_eq!(summary.chars().count(), PROMPT_HISTORY_SUMMARY_MAX_CHARS);
+    assert!(summary.ends_with('…'));
+}
+
 #[test]
 fn selected_history_prompt_replaces_buffer_and_can_be_undone() {
     // Ctrl-R must record the draft before launching the picker, expose

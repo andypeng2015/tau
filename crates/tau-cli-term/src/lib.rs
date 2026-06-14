@@ -898,23 +898,43 @@ fn bounded_prompt_history_entries(
 
 fn prompt_history_summary(prompt: &str) -> String {
     let mut summary = String::new();
-    for word in prompt.split_whitespace() {
-        let separator_len = usize::from(!summary.is_empty());
-        if summary.chars().count() + separator_len + word.chars().count()
-            > PROMPT_HISTORY_SUMMARY_MAX_CHARS
-        {
-            if !summary.is_empty() {
-                summary.push(' ');
+    let mut summary_chars = 0usize;
+    let mut pending_space = false;
+
+    for ch in prompt.chars() {
+        if ch.is_whitespace() {
+            pending_space = !summary.is_empty();
+            continue;
+        }
+
+        if pending_space {
+            if summary_chars + 1 >= PROMPT_HISTORY_SUMMARY_MAX_CHARS {
+                append_prompt_history_summary_ellipsis(&mut summary, &mut summary_chars);
+                return summary;
             }
-            summary.push('…');
-            break;
-        }
-        if !summary.is_empty() {
             summary.push(' ');
+            summary_chars += 1;
+            pending_space = false;
         }
-        summary.push_str(word);
+
+        if summary_chars + 1 >= PROMPT_HISTORY_SUMMARY_MAX_CHARS {
+            append_prompt_history_summary_ellipsis(&mut summary, &mut summary_chars);
+            return summary;
+        }
+        summary.push(ch);
+        summary_chars += 1;
     }
+
     summary
+}
+
+fn append_prompt_history_summary_ellipsis(summary: &mut String, summary_chars: &mut usize) {
+    if *summary_chars == PROMPT_HISTORY_SUMMARY_MAX_CHARS {
+        summary.pop();
+        *summary_chars -= 1;
+    }
+    summary.push('…');
+    *summary_chars += 1;
 }
 
 fn bounded_prompt_history_preview(prompt: &str, remaining_total: &mut usize) -> String {
