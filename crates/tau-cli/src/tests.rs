@@ -935,6 +935,35 @@ fn finished_response(
     }
 }
 
+fn finished_response_with_usage(
+    agent_prompt_id: &str,
+    agent_id_value: &str,
+    prompt_sent_tokens: u64,
+    prompt_cached_tokens: u64,
+    response_received_tokens: u64,
+    text: &str,
+) -> ProviderResponseFinished {
+    ProviderResponseFinished {
+        agent_id: agent_id(agent_id_value),
+        usage: Some(tau_proto::ProviderTokenUsage {
+            prompt_sent_tokens,
+            prompt_cached_tokens,
+            response_received_tokens,
+            stats: tau_proto::TokenUsageStats {
+                total: tau_proto::TokenUsageCounts {
+                    sent_tokens: prompt_sent_tokens,
+                    cached_tokens: prompt_cached_tokens,
+                    received_tokens: response_received_tokens,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        ..finished_response(agent_prompt_id, vec![assistant_message_item(text)])
+    }
+}
+
 #[test]
 fn first_agent_event_does_not_force_full_redraw() {
     // Regression: starting from the initial start-new-agent screen only changes
@@ -1069,6 +1098,89 @@ fn switching_between_displayed_agents_restores_transcripts() {
     assert!(vt.screen_contains(80, "worker one transcript"));
     assert!(!vt.screen_contains(80, "worker two transcript"));
     assert!(handle.full_render_count() > full_render_count);
+}
+
+#[test]
+fn switching_agents_preserves_turn_stats_cache_hit_baseline() {
+    // Regression: switching away and back re-renders turn-stats blocks, so the
+    // second response must keep the previous same-agent response as its cache-hit
+    // denominator instead of falling back to the no-baseline `Δ0% .../0` display.
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    renderer.apply_setting("show-turn-stats", "true");
+    renderer.switch_agent("worker-1".to_owned());
+
+    renderer.handle(&Event::ProviderResponseFinished(
+        finished_response_with_usage(
+            "worker-1-sp-0",
+            "worker-1",
+            20_000,
+            0,
+            0,
+            "first worker response",
+        ),
+    ));
+    renderer.handle(&Event::ProviderResponseFinished(
+        finished_response_with_usage(
+            "worker-1-sp-1",
+            "worker-1",
+            20_100,
+            19_000,
+            0,
+            "second worker response",
+        ),
+    ));
+    renderer.switch_agent("worker-2".to_owned());
+    renderer.switch_agent("worker-1".to_owned());
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "Δ95% 19k/20k"));
+    assert!(!vt.screen_contains(80, "Δ0% 19k/0"));
+}
+
+#[test]
+fn switching_to_hidden_agent_preserves_turn_stats_cache_hit_baseline() {
+    // Regression: hidden side-agent responses are recorded in that agent's UI
+    // state and later replayed by a full transcript re-render when selected, so
+    // they must also retain their per-entry cache-hit baseline.
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    renderer.apply_setting("show-turn-stats", "true");
+    renderer.switch_agent("worker-1".to_owned());
+
+    renderer.handle(&Event::ProviderResponseFinished(
+        finished_response_with_usage(
+            "worker-2-sp-0",
+            "worker-2",
+            20_000,
+            0,
+            0,
+            "hidden first response",
+        ),
+    ));
+    renderer.handle(&Event::ProviderResponseFinished(
+        finished_response_with_usage(
+            "worker-2-sp-1",
+            "worker-2",
+            20_100,
+            19_000,
+            0,
+            "hidden second response",
+        ),
+    ));
+    renderer.switch_agent("worker-2".to_owned());
+    sync(&handle);
+
+    assert!(vt.screen_contains(80, "Δ95% 19k/20k"));
+    assert!(!vt.screen_contains(80, "Δ0% 19k/0"));
 }
 
 #[test]

@@ -702,6 +702,10 @@ fn role_command_completions(
 struct TurnStatsBlockEntry {
     block_id: tau_cli_term::BlockId,
     usage: tau_proto::ProviderTokenUsage,
+    /// Same-agent previous response usage captured when this block was
+    /// recorded. Re-render paths must use this stored baseline instead of
+    /// recomputing from whichever agent/transcript is currently visible.
+    previous_usage: Option<tau_proto::ProviderTokenUsage>,
     turn_latency: Option<Duration>,
     total_latency: Option<Duration>,
 }
@@ -1590,26 +1594,25 @@ impl EventRenderer {
             return;
         }
         self.show_turn_stats = on;
-        for (index, entry) in self.turn_stats_history.iter().enumerate() {
-            let previous_usage = index
-                .checked_sub(1)
-                .and_then(|previous_index| self.turn_stats_history.get(previous_index))
-                .map(|previous_entry| &previous_entry.usage);
-            let block = if self.show_turn_stats {
-                render_turn_stats_block(
-                    &self.theme,
-                    &entry.usage,
-                    previous_usage,
-                    entry.turn_latency,
-                    entry.total_latency,
-                )
-            } else {
-                Self::empty_block()
-            };
+        for entry in &self.turn_stats_history {
+            let block = self.render_turn_stats_entry(entry);
             self.handle.set_block(entry.block_id, block);
         }
         self.invalidate_for_retroactive_toggle();
         self.save_cli_state();
+    }
+    fn render_turn_stats_entry(&self, entry: &TurnStatsBlockEntry) -> tau_cli_term::StyledBlock {
+        if self.show_turn_stats {
+            render_turn_stats_block(
+                &self.theme,
+                &entry.usage,
+                entry.previous_usage.as_ref(),
+                entry.turn_latency,
+                entry.total_latency,
+            )
+        } else {
+            Self::empty_block()
+        }
     }
 
     fn empty_block() -> tau_cli_term::StyledBlock {
@@ -1793,17 +1796,7 @@ impl EventRenderer {
             );
         }
         for entry in &self.turn_stats_history {
-            let block = if self.show_turn_stats {
-                render_turn_stats_block(
-                    &self.theme,
-                    &entry.usage,
-                    None,
-                    entry.turn_latency,
-                    entry.total_latency,
-                )
-            } else {
-                Self::empty_block()
-            };
+            let block = self.render_turn_stats_entry(entry);
             self.handle.set_block(entry.block_id, block);
         }
     }
@@ -3592,12 +3585,15 @@ impl EventRenderer {
         let Some(usage) = finished.usage.clone() else {
             return;
         };
-        let previous_usage = self.turn_stats_history.last().map(|entry| &entry.usage);
+        let previous_usage = self
+            .turn_stats_history
+            .last()
+            .map(|entry| entry.usage.clone());
         let block = if self.show_turn_stats {
             render_turn_stats_block(
                 &self.theme,
                 &usage,
-                previous_usage,
+                previous_usage.as_ref(),
                 turn_latency,
                 Some(self.cumulative_agent_latency),
             )
@@ -3608,6 +3604,7 @@ impl EventRenderer {
         self.turn_stats_history.push(TurnStatsBlockEntry {
             block_id: bid,
             usage,
+            previous_usage,
             turn_latency,
             total_latency: Some(self.cumulative_agent_latency),
         });
