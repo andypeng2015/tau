@@ -848,7 +848,11 @@ where
     Ok(bytes)
 }
 
-/// Decodes one protocol message from a byte slice.
+/// Decodes exactly one protocol message from a byte slice.
+///
+/// The slice must contain a single self-delimiting CBOR item and no trailing
+/// bytes. Use [`MessageReader`] when decoding multiple concatenated messages
+/// from a stream.
 pub fn decode_message_from_slice<M>(bytes: &[u8]) -> Result<M, DecodeError>
 where
     M: DeserializeOwned,
@@ -869,7 +873,10 @@ pub fn encode_harness_input_to_vec(message: &HarnessInputMessage) -> Result<Vec<
     encode_message_to_vec(message)
 }
 
-/// Decodes one harness input message from a byte slice.
+/// Decodes exactly one harness input message from a byte slice.
+///
+/// Returns an error when bytes remain after the first self-delimiting CBOR
+/// item.
 pub fn decode_harness_input_from_slice(bytes: &[u8]) -> Result<HarnessInputMessage, DecodeError> {
     decode_message_from_slice(bytes)
 }
@@ -881,7 +888,10 @@ pub fn encode_harness_output_to_vec(
     encode_message_to_vec(message)
 }
 
-/// Decodes one harness output message from a byte slice.
+/// Decodes exactly one harness output message from a byte slice.
+///
+/// Returns an error when bytes remain after the first self-delimiting CBOR
+/// item.
 pub fn decode_harness_output_from_slice(bytes: &[u8]) -> Result<HarnessOutputMessage, DecodeError> {
     decode_message_from_slice(bytes)
 }
