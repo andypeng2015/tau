@@ -3,8 +3,9 @@
 The tau bus mostly carries facts: components broadcast what happened, while the
 `ui.*` category carries user-intent requests from attached UIs to the harness.
 Every event has a dotted name `<category>.<call>` and a typed payload defined in
-`crates/tau-proto/src/events.rs`. This document groups the core events by the
-component (or class of component) that emits them.
+`crates/tau-proto/src/events.rs`. This selected guide groups the core events by
+component (or class of component) that emits them; `events.rs` is the exhaustive
+source of truth for every current first-party wire event.
 
 Events are distinct from **messages**: messages are point-to-point protocol
 traffic (handshake, subscribe/intercept, `emit`, `deliver`, etc.) and never
@@ -99,7 +100,6 @@ Emitted by the provider backend that owns the selected model.
 
 - **`provider.prompt_submitted`** — The provider accepted an `agent.prompt_created`
   and started processing it. Echoes the originator. Transient.
-  originator. Transient.
 - **`provider.response_updated`** — Replace-style ordered item streaming
   snapshot. Consumers render `items` in order; each entry is either a completed
   non-durable context item or an in-progress message, reasoning text, tool-call,
