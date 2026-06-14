@@ -1822,9 +1822,22 @@ pub struct CustomEvent {
 pub struct InvalidCustomEventName {
     name: EventName,
 }
+impl InvalidCustomEventName {
+    /// Rejected event name.
+    #[must_use]
+    pub fn name(&self) -> &EventName {
+        &self.name
+    }
 
-impl std::fmt::Display for InvalidCustomEventName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// Consume the error and return the rejected event name.
+    #[must_use]
+    pub fn into_name(self) -> EventName {
+        self.name
+    }
+}
+
+impl fmt::Display for InvalidCustomEventName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "custom event name must use an extension-owned category, got {}",

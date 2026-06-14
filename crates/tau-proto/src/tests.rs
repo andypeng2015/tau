@@ -612,6 +612,11 @@ fn custom_event_rejects_reserved_category_spelled_as_other() {
     );
 
     assert!(!CustomEvent::name_is_allowed(&name));
+
+    let error = CustomEvent::try_new(name.clone(), None, CborValue::Null)
+        .expect_err("reserved custom event name should fail");
+    assert_eq!(error.name(), &name);
+    assert_eq!(error.into_name(), name);
 }
 
 /// Ensures extension-owned custom event categories still round-trip and route
