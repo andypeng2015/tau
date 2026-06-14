@@ -780,6 +780,8 @@ fn built_in_discovered_skills() -> HashMap<tau_proto::SkillName, DiscoveredSkill
                     description: skill.description,
                     source: DiscoveredSkillSource::BuiltIn { content },
                     add_to_prompt: skill.add_to_prompt,
+                    user_invocable: skill.user_invocable,
+                    disable_model_invocation: skill.disable_model_invocation,
                     modified,
                 },
             )
@@ -1009,6 +1011,7 @@ mod pending_notices;
 mod replay;
 mod semantic_event_router;
 mod subagents_tool;
+mod user_skill_invocation;
 
 /// Connection ID used for harness-owned tools and their side-query
 /// [`PromptOriginator`] name (e.g. `skill`, `agent_start`, and `wait`).
@@ -4547,14 +4550,22 @@ impl Harness {
         prompt: tau_proto::UiPromptSubmitted,
     ) -> Result<bool, HarnessError> {
         let agent_id = prompt.agent_id.to_string();
-        let pending = if prompt.message_class.is_internal() {
-            PendingPrompt::internal(prompt.text.clone())
-        } else {
-            PendingPrompt::user(prompt.text.clone())
-        }
-        .with_ctx_id(prompt.ctx_id.clone());
         let is_user_interaction =
             prompt.originator.is_user() && !prompt.message_class.is_internal();
+        let text = if is_user_interaction {
+            let Some(text) = self.expand_user_skill_command(&prompt.text) else {
+                return Ok(true);
+            };
+            text
+        } else {
+            prompt.text.clone()
+        };
+        let pending = if prompt.message_class.is_internal() {
+            PendingPrompt::internal(text)
+        } else {
+            PendingPrompt::user(text)
+        }
+        .with_ctx_id(prompt.ctx_id.clone());
         let submission = self.submit_prompt_to_agent(prompt.session_id, &agent_id, pending)?;
         if !matches!(submission, PromptSubmission::Rejected { .. }) && is_user_interaction {
             let _ = self.agent_store.record_agent_user_interaction(&agent_id);
@@ -4563,6 +4574,47 @@ impl Harness {
             self.interrupt_active_waits();
         }
         Ok(true)
+    }
+
+    fn expand_user_skill_command(&mut self, text: &str) -> Option<String> {
+        let Some((name, args)) = user_skill_invocation::parse_user_skill_command(text) else {
+            return Some(text.to_owned());
+        };
+        if let Some(message) = tau_skills::skill_name_validation_message(name) {
+            self.emit_info(&format!("/skill: invalid skill name `{name}`: {message}"));
+            return None;
+        }
+        let skill_name = tau_proto::SkillName::from(name.to_owned());
+        let Some(skill) = self.discovered_skills.get(&skill_name).cloned() else {
+            self.emit_info(&format!("/skill: unknown skill `{name}`"));
+            return None;
+        };
+        if !skill.user_invocable {
+            self.emit_info(&format!("/skill: skill `{name}` is not user-invocable"));
+            return None;
+        }
+        match user_skill_invocation::read_user_invoked_skill_body(&skill.source) {
+            Ok(loaded) => {
+                if loaded.truncated {
+                    self.emit_info_important(&format!(
+                        "skill too long: {} truncated to {} bytes while invoking {name}",
+                        skill.source.label(),
+                        user_skill_invocation::MAX_USER_INVOKED_SKILL_BYTES
+                    ));
+                }
+                Some(user_skill_invocation::format_user_invoked_skill_prompt(
+                    name,
+                    &skill.source,
+                    &loaded.body,
+                    loaded.truncated.then_some(loaded.total_bytes),
+                    args,
+                ))
+            }
+            Err(message) => {
+                self.emit_info(&format!("/skill: failed to load `{name}`: {message}"));
+                None
+            }
+        }
     }
 
     fn handle_ui_set_agent_display_name(
@@ -4643,6 +4695,21 @@ impl Harness {
             },
             None => None,
         };
+        let initial_prompt = if let Some(initial_prompt) = req.initial_prompt {
+            let is_user_initial_prompt =
+                req.originator.is_user() && !req.message_class.is_internal();
+            let initial_prompt = if is_user_initial_prompt {
+                let Some(text) = self.expand_user_skill_command(&initial_prompt) else {
+                    return Ok(true);
+                };
+                text
+            } else {
+                initial_prompt
+            };
+            Some(initial_prompt)
+        } else {
+            None
+        };
         let cid = self.create_durable_user_agent_with_parent(
             req.session_id.clone(),
             &req.role,
@@ -4652,7 +4719,7 @@ impl Harness {
         if let Some(conv) = self.agents.get_mut(&cid) {
             conv.next_ctx_id = req.ctx_id.clone();
         }
-        if let Some(initial_prompt) = req.initial_prompt {
+        if let Some(initial_prompt) = initial_prompt {
             if !req.message_class.is_internal() {
                 self.preempt_blocking_ext_side_agents(&req.session_id);
             }
@@ -6082,6 +6149,8 @@ impl Harness {
             description,
             source: DiscoveredSkillSource::File(std::path::PathBuf::from(&skill.file_path)),
             add_to_prompt: skill.add_to_prompt,
+            user_invocable: skill.user_invocable,
+            disable_model_invocation: skill.disable_model_invocation,
             modified,
         };
         let previous_winner = self.discovered_skills.get(&skill.name).cloned();

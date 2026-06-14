@@ -509,6 +509,7 @@ Type `/` for menu autocompletion. The built-in set:
 | `/fast`             | Toggle Codex Fast mode (`service_tier: fast`)        |
 | `/tree [id]`        | Print selected agent tree; with `id`, rewind head    |
 | `/set <name> <val>` | Set a UI setting (Tab cycles names + values)         |
+| `/skill <name> [args]` | Invoke a user-invocable skill; `/skill:<name>` is also accepted |
 
 A session is an agent-membership container backed by a durable membership log.
 Starting a new session resets harness/UI session state; prompts create/load

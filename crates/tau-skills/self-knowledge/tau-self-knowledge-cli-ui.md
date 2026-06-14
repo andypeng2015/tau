@@ -21,7 +21,7 @@ Runtime UI toggles changed with `/set` are stored in the state directory as `cli
 
 ## Slash commands
 
-Type `/` as the first non-whitespace character in the prompt to open slash/action completion. Built-in commands include session and agent management, model/role switching, `/set`, `/tree`, `/fast`, `/detach`, and `/quit`. Extension-provided actions can add dynamic slash commands and argument completions at runtime.
+Type `/` as the first non-whitespace character in the prompt to open slash/action completion. Built-in commands include session and agent management, model/role switching, `/skill <name> [args]` for explicit user-invocable skill injection, `/set`, `/tree`, `/fast`, `/detach`, and `/quit`. Extension-provided actions can add dynamic slash commands and argument completions at runtime. `/skill:<name> [args]` is accepted as a Pi-compatible alias; arguments are appended after the skill body without placeholder substitution.
 
 ## Prompt history and editing
 

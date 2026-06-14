@@ -260,6 +260,8 @@ fn test_discovered_skill(
         description: description.to_owned(),
         source: DiscoveredSkillSource::File(PathBuf::from(format!("/tmp/{description}.md"))),
         add_to_prompt: false,
+        user_invocable: true,
+        disable_model_invocation: false,
         modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(modified_secs)),
     }
 }
@@ -357,6 +359,9 @@ fn skill_collision_diagnostics_describe_replaced_and_ignored_candidates() {
             description: "old".to_owned(),
             file_path: old_path,
             add_to_prompt: false,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         },
     );
     h.record_discovered_skill(
@@ -366,6 +371,9 @@ fn skill_collision_diagnostics_describe_replaced_and_ignored_candidates() {
             description: "new".to_owned(),
             file_path: new_path,
             add_to_prompt: false,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         },
     );
     h.record_discovered_skill(
@@ -375,6 +383,9 @@ fn skill_collision_diagnostics_describe_replaced_and_ignored_candidates() {
             description: "tie".to_owned(),
             file_path: tie_path,
             add_to_prompt: false,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         },
     );
 
@@ -397,6 +408,80 @@ fn skill_collision_diagnostics_describe_replaced_and_ignored_candidates() {
     }));
 
     h.shutdown().expect("shutdown");
+}
+
+/// Ensures user slash invocation expands to a Pi-style prompt block and appends
+/// opaque arguments without making disabled-model skills unavailable to users.
+#[test]
+fn user_skill_command_expands_prompt_block() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    let path = tmp.path().join("manual.md");
+    std::fs::write(
+        &path,
+        "---\nname: manual\ndescription: Manual\ndisable-model-invocation: true\n---\nUse manual steps.\n",
+    )
+    .expect("write skill");
+    h.record_discovered_skill(
+        "ext",
+        &tau_proto::ExtSkillAvailable {
+            name: "manual".into(),
+            description: "Manual".to_owned(),
+            file_path: path.clone(),
+            add_to_prompt: true,
+            user_invocable: true,
+            disable_model_invocation: true,
+            argument_hint: Some("[topic]".to_owned()),
+        },
+    );
+
+    let expanded = h
+        .expand_user_skill_command("/skill manual do this")
+        .expect("expanded");
+    assert!(expanded.contains("<skill name=\"manual\" location="));
+    assert!(expanded.contains("References are relative to"));
+    assert!(expanded.contains("Use manual steps."));
+    assert!(expanded.ends_with("</skill>\n\ndo this"));
+}
+
+/// Ensures non-user-invocable skill commands are rejected before any prompt is
+/// submitted to the model path.
+#[test]
+fn user_skill_command_rejects_non_user_invocable_skill() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(tmp.path()).expect("harness");
+    let path = tmp.path().join("hidden.md");
+    std::fs::write(
+        &path,
+        "---\nname: hidden\ndescription: Hidden\n---\nHidden body.\n",
+    )
+    .expect("write skill");
+    h.record_discovered_skill(
+        "ext",
+        &tau_proto::ExtSkillAvailable {
+            name: "hidden".into(),
+            description: "Hidden".to_owned(),
+            file_path: path,
+            add_to_prompt: false,
+            user_invocable: false,
+            disable_model_invocation: false,
+            argument_hint: None,
+        },
+    );
+
+    assert!(h.expand_user_skill_command("/skill hidden").is_none());
+    let infos = event_log_events(&h)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::HarnessInfo(info) => Some(info.message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        infos
+            .iter()
+            .any(|message| message.contains("not user-invocable"))
+    );
 }
 
 #[test]

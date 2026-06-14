@@ -15,6 +15,7 @@ use tau_proto::{
 use crate::action_commands::ActionCommandState;
 use crate::agent_activity::AgentActivity;
 use crate::build_banner;
+use crate::skill_commands::SkillCommandState;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
     build_osc1337_set_user_var, build_tool_summary_display, diff_payload_counts,
@@ -43,6 +44,7 @@ pub(crate) struct EventRenderer {
     handle: tau_cli_term::TermHandle,
     completion_data: tau_cli_term::CompletionData,
     action_state: ActionCommandState,
+    skill_state: SkillCommandState,
     theme: tau_themes::Theme,
     /// Agent that prompt input targets. `None` means the UI is in the
     /// start-new-agent state; the next user prompt will start/select an agent.
@@ -1016,6 +1018,7 @@ impl EventRenderer {
             handle,
             completion_data,
             action_state: ActionCommandState::new(std::iter::empty::<&str>()),
+            skill_state: SkillCommandState::new(),
             theme,
             current_agent_id: None,
             displayed_agent_id: None,
@@ -1221,6 +1224,10 @@ impl EventRenderer {
     pub(crate) fn set_action_state(&mut self, action_state: ActionCommandState) {
         self.action_state = action_state;
         self.refresh_action_completions();
+    }
+
+    pub(crate) fn skill_arg_completer(&self) -> tau_cli_term::ArgCompleter {
+        self.skill_state.arg_completer()
     }
 
     fn take_visible_agent_state(&mut self) -> AgentUiState {
@@ -4593,6 +4600,10 @@ impl EventRenderer {
                     .remove_extension(&exited.extension_name, exited.instance_id);
                 self.refresh_action_completions();
                 self.handle_extension_exited(exited);
+                true
+            }
+            Event::ExtSkillAvailable(skill) => {
+                self.skill_state.apply_skill_available(skill);
                 true
             }
             Event::ExtAgentsMdAvailable(agents) => {

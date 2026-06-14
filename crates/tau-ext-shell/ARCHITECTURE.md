@@ -29,3 +29,7 @@ lock selection. Once automatic lock selection begins, the invocation carries the
 same cwd snapshot through lock waiting and execution, even if committed cwd
 metadata changes before the lock is granted. This keeps locks, shell execution,
 and patch paths aligned without calling `chdir(2)` in the extension process.
+
+## Skill and instruction discovery
+
+`tau-ext-shell` discovers local AGENTS.md files and Markdown skills from the working-directory and user skill roots, parses skill frontmatter through `tau-skills`, canonicalizes file paths, and announces candidates to the harness. The extension is only the filesystem discoverer: the harness owns skill-name validation at the protocol boundary, collision winner selection, model/user invocation filtering, and `/skill` prompt expansion policy.

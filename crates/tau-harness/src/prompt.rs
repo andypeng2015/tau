@@ -297,7 +297,7 @@ fn prompt_template_skills(
 ) -> Vec<serde_json::Value> {
     let mut skills: Vec<_> = skills
         .iter()
-        .filter(|(_, skill)| skill.add_to_prompt)
+        .filter(|(_, skill)| skill.add_to_prompt && !skill.disable_model_invocation)
         .map(|(name, skill)| {
             let base_dir = match &skill.source {
                 crate::discovery::DiscoveredSkillSource::File(path) => path

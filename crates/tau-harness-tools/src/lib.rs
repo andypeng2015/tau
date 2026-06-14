@@ -870,6 +870,10 @@ fn skill_search_result(
     )
 }
 
+// Keep this behavior in sync with harness/user_skill_invocation.rs: user
+// `/skill` and the model-visible `skill` tool intentionally share bounded
+// prefix reads, frontmatter truncation rejection, frontmatter stripping, and
+// call-site truncation notes.
 struct LimitedTextRead {
     text: String,
     truncated: bool,

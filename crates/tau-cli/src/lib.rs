@@ -15,6 +15,7 @@ mod prompt_stdin;
 mod render_request;
 mod send;
 mod settings_registry;
+mod skill_commands;
 mod theme;
 mod tool_render;
 mod ui_client;

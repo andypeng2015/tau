@@ -1,5 +1,21 @@
 use super::*;
 
+/// Ensures older serialized `extension.skill_available` payloads remain
+/// readable and default to user-invocable/model-invocable behavior.
+#[test]
+fn ext_skill_available_serde_defaults_new_invocation_fields() {
+    let value = serde_json::json!({
+        "name": "legacy-skill",
+        "description": "Legacy skill",
+        "file_path": "/tmp/legacy/SKILL.md",
+        "add_to_prompt": false
+    });
+    let skill: ExtSkillAvailable = serde_json::from_value(value).expect("legacy skill event");
+    assert!(skill.user_invocable);
+    assert!(!skill.disable_model_invocation);
+    assert!(skill.argument_hint.is_none());
+}
+
 fn agent_id(value: &str) -> AgentId {
     AgentId::parse(value).expect("test agent id")
 }
@@ -251,6 +267,9 @@ fn representative_events() -> Vec<Event> {
             description: "Web search via Brave API".to_owned(),
             file_path: "/home/user/.agents/skills/brave-search/SKILL.md".into(),
             add_to_prompt: true,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         }),
         Event::ExtAgentsMdAvailable(ExtAgentsMdAvailable {
             file_path: "/home/user/src/project/AGENTS.md".into(),

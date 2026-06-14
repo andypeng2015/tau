@@ -75,6 +75,12 @@ per-file/per-directory-list quotas. Quota failures are reported as
 `quota_exceeded`. These limits bound individual harness operations, not aggregate
 extension disk usage across many files.
 
+## Skills
+
+The harness owns canonical discovered-skill state. Extensions such as `tau-ext-shell` announce candidate skill files, but the harness validates names/descriptions, resolves collisions by selected winner, stores user/model invocation flags, and builds model-visible prompt/tool snapshots from the current winners. `disable-model-invocation` removes a winner from `<available_skills>` and from the internal `skill` tool snapshot; it is a prompt-surface policy, not a filesystem security boundary.
+
+User `/skill <name> [args]` and `/skill:<name> [args]` expansion is performed at harness prompt intake for both existing-agent prompts and new-agent initial prompts. Unknown, invalid, unreadable, or non-user-invocable commands emit `harness.info` and are not submitted as model prompts. Successful invocations read a bounded skill-file prefix, strip frontmatter, and store the expanded Pi-style `<skill>` block in the normal prompt transcript.
+
 ## Lifecycle events
 
 Harness lifecycle events such as session start/shutdown and extension status are

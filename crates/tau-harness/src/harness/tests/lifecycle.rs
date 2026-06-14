@@ -750,6 +750,9 @@ fn skill_agent_context_and_fragment_are_staged_until_ready() {
             description: "STAGED SKILL DESCRIPTION".to_owned(),
             file_path: "/tmp/staged-skill/SKILL.md".into(),
             add_to_prompt: true,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         })),
     )
     .expect("stage skill");
@@ -1191,6 +1194,9 @@ fn disconnect_before_ready_drops_all_staged_state() {
             description: "DROPPED SKILL".to_owned(),
             file_path: "/tmp/dropped/SKILL.md".into(),
             add_to_prompt: true,
+            user_invocable: true,
+            disable_model_invocation: false,
+            argument_hint: None,
         })),
     )
     .expect("stage skill");

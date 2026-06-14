@@ -429,6 +429,9 @@ fn local_slash_commands_are_identified_for_history_rendering() {
     assert!(is_local_slash_command("/session new"));
     assert!(is_local_slash_command("/version"));
     assert!(is_local_slash_command("/version now"));
+    assert!(is_local_slash_command("/skill jujutsu"));
+    assert!(is_local_slash_command("/skill:jujutsu args"));
+    assert!(!is_local_slash_command("/skillx jujutsu"));
     assert!(!is_local_slash_command("hello /model engineer"));
 }
 

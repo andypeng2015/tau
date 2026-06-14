@@ -35,6 +35,12 @@ key subject to harness validation.
 
 Read-only shell mode is a defense-in-depth feature. Native filesystem isolation is enforced only when supported and enabled by `enforce_ro_mode`; otherwise `mode: ro` can degrade to ordinary command execution and must not be treated as a hard sandbox. Directory update locks are advisory coordination between Tau agents and ext-shell tools, not an operating-system access-control boundary. They do not prevent commands from writing outside their locked working directory or other local processes from changing files. The shell extension remembers each agent's current cwd in durable metadata (`ext_<extension-instance>_cwd`); that value is visible to extensions and should be treated as non-secret path context.
 
+## Skills
+
+Skills are prompt instructions loaded from local/project Markdown files, not a sandbox or permission boundary. Project skills can be malicious prompt content. `disable-model-invocation` hides a skill from Tau's model-visible skill surfaces, but a model with filesystem tools could still read the underlying file if it learns the path. `allowed-tools` and similar frontmatter fields do not grant or restrict Tau tool permissions.
+
+User `/skill` invocation explicitly reads the selected skill file, strips frontmatter, and injects the skill body into the next model prompt along with any user arguments. Treat invoking a skill as intentionally adding that local file content to the conversation context.
+
 ## Telegram extension
 
 `std-telegram` / `tau-ext-telegram` is disabled by default because it bridges

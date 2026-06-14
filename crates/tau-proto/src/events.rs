@@ -16,6 +16,10 @@ use crate::{
     ProviderTokenUsage, SessionId, SkillName, ToolCallId, ToolDefinition, ToolGroupName, ToolName,
 };
 
+fn default_true() -> bool {
+    true
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
@@ -1525,6 +1529,15 @@ pub struct ExtSkillAvailable {
     pub file_path: std::path::PathBuf,
     /// When true the harness should include this skill in the system prompt.
     pub add_to_prompt: bool,
+    /// Whether users may explicitly invoke this skill with `/skill`.
+    #[serde(default = "default_true")]
+    pub user_invocable: bool,
+    /// Whether model-side skill discovery/loading should hide this skill.
+    #[serde(default)]
+    pub disable_model_invocation: bool,
+    /// Optional UI hint for arguments accepted by this skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 /// An extension discovered one AGENTS.md file and is advertising it to the

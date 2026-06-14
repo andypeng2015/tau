@@ -25,8 +25,12 @@ The frontmatter fields Tau reads are:
 
 - `name`: Optional. Defaults to the parent directory name for `SKILL.md`, or to the file stem for a root-level Markdown skill. Must be lowercase ASCII letters, digits, and hyphens only.
 - `description`: Required. Used in prompt advertisements, search results, and loaded skill results.
-- `advertise`: Optional. `true`, `True`, `TRUE`, and `1` force prompt advertisement. Any other explicit value keeps the skill hidden from the initial prompt.
+- `advertise`: Optional. `true`, `True`, `TRUE`, and `1` force prompt advertisement. `false`, `False`, `FALSE`, and `0` force no prompt advertisement. Invalid values warn and use the default.
+- `user-invocable`: Optional, default `true`. If false, `/skill` rejects the skill and the terminal completion hides it. This does not block model-side invocation.
+- `disable-model-invocation`: Optional, default `false`. If true, Tau excludes the skill from `<available_skills>` and from the model-visible `skill` tool. Explicit user invocation still works when `user-invocable` is true.
+- `argument-hint`: Optional short UI hint shown with `/skill` completion.
 
+Tau ignores `allowed-tools` and other provider-specific permission fields; skill frontmatter does not grant or restrict Tau tool permissions.
 Project-scoped skills default to advertised. User-scoped skills default to hidden until searched. `advertise:` overrides the scope default.
 
 
@@ -36,6 +40,33 @@ Advertised skills appear in `<available_skills>` with only name and description.
 
 This keeps normal agent context small while still surfacing project-local instructions that are likely relevant immediately.
 
+
+## User slash invocation
+
+Users can force a skill into the next model prompt with either form:
+
+```text
+/skill <name> [arguments...]
+/skill:<name> [arguments...]
+```
+
+The harness validates the selected discovered skill, rejects unknown or non-user-invocable skills with a visible `harness.info`, reads the same bounded 64 KiB prefix used by the model-visible tool, strips frontmatter, and expands the submitted prompt to a Pi-style block:
+
+```text
+<skill name="..." location="...">
+References are relative to ...
+
+...frontmatter-stripped skill body...
+</skill>
+
+...opaque arguments, if any...
+```
+
+Arguments are append-only text. Tau does not implement placeholder substitution or structured skill arguments.
+
+Terminal `/skill` name completion is currently best-effort over live extension skill announcements; the harness still validates against its canonical selected winner at invocation time. A dedicated harness-owned skill-winner completion snapshot is deferred.
+
+`disable-model-invocation` and `/skill` visibility are prompt-surface controls, not security boundaries. A model with filesystem tools may still read a skill file if it learns the path, and Tau ignores `allowed-tools` as a permission mechanism.
 
 ## The `skill` tool
 

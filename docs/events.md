@@ -243,8 +243,9 @@ Emitted by extensions to advertise capabilities or interact with the
 harness/agent.
 
 - **`extension.skill_available`** — The extension discovered a skill on
-  disk: name, description, file path, and whether to inject it into the
-  system prompt.
+  disk: name, description, file path, whether to inject it into the
+  system prompt, whether users may invoke it with `/skill`, whether model-side
+  invocation is disabled, and an optional argument hint.
 - **`extension.agents_md_available`** — The extension discovered an
   AGENTS.md file and is shipping its contents eagerly so the harness
   can inject them without a tool round-trip.

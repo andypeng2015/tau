@@ -104,6 +104,7 @@ impl<'a> InternalToolHost<'a> {
         self.harness
             .discovered_skills
             .iter()
+            .filter(|(_, skill)| !skill.disable_model_invocation)
             .map(|(name, skill)| InternalSkill {
                 name: name.as_str().to_owned(),
                 description: skill.description.clone(),

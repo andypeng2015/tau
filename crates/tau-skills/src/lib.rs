@@ -25,8 +25,11 @@ use serde_yaml_ng::Value as YamlValue;
 /// A validated, loaded skill.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Skill {
+    /// Validated skill name.
     pub name: String,
+    /// Short human-facing description from frontmatter.
     pub description: String,
+    /// Path to the Markdown skill file.
     pub file_path: PathBuf,
     /// When true, the skill is listed in the system prompt at session
     /// start so the agent sees its name + description without having
@@ -36,6 +39,14 @@ pub struct Skill {
     /// True when the skill file explicitly set `advertise:`. Scoped
     /// directory defaults only apply when this is false.
     pub add_to_prompt_explicit: bool,
+    /// Whether users may explicitly invoke this skill with `/skill`.
+    pub user_invocable: bool,
+    /// True when `user-invocable:` was explicitly present.
+    pub user_invocable_explicit: bool,
+    /// Whether model-side skill discovery/loading should hide this skill.
+    pub disable_model_invocation: bool,
+    /// Optional UI hint for arguments accepted by this skill.
+    pub argument_hint: Option<String>,
 }
 
 /// A skill search root plus policy that applies to every skill loaded
@@ -61,6 +72,12 @@ pub struct BuiltInSkill {
     pub content: Cow<'static, str>,
     /// Whether this skill should appear in the initial system prompt.
     pub add_to_prompt: bool,
+    /// Whether users may explicitly invoke this skill with `/skill`.
+    pub user_invocable: bool,
+    /// Whether model-side skill discovery/loading should hide this skill.
+    pub disable_model_invocation: bool,
+    /// Optional UI hint for arguments accepted by this skill.
+    pub argument_hint: Option<String>,
 }
 
 struct BuiltInSkillSource {
@@ -107,6 +124,7 @@ pub struct LoadSkillsResult {
 
 const MAX_NAME_LENGTH: usize = 64;
 pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
+pub const MAX_ARGUMENT_HINT_LENGTH: usize = 256;
 const SKILL_FILENAME: &str = "SKILL.md";
 const SELF_KNOWLEDGE_VERSION_TOKEN: &str = "__TAU_SELF_KNOWLEDGE_VERSION__";
 const TAU_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -412,6 +430,72 @@ fn validate_description(description: &str, path: &Path) -> Vec<SkillDiagnostic> 
     diagnostics
 }
 
+fn parse_bool_frontmatter(
+    fields: &BTreeMap<String, String>,
+    key: &str,
+    default: bool,
+    path: &Path,
+    diagnostics: &mut Vec<SkillDiagnostic>,
+) -> (bool, bool) {
+    let Some(value) = fields.get(key) else {
+        return (default, false);
+    };
+    let parsed = if value.eq_ignore_ascii_case("true") || value == "1" {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false") || value == "0" {
+        Some(false)
+    } else {
+        None
+    };
+    match parsed {
+        Some(value) => (value, true),
+        None => {
+            diagnostics.push(SkillDiagnostic {
+                path: path.to_owned(),
+                kind: DiagnosticKind::Warning,
+                message: format!("{key}: invalid boolean value {value:?}; using default {default}"),
+            });
+            (default, false)
+        }
+    }
+}
+
+fn truncate_argument_hint(argument_hint: &str) -> Cow<'_, str> {
+    if argument_hint.len() <= MAX_ARGUMENT_HINT_LENGTH {
+        return Cow::Borrowed(argument_hint);
+    }
+    let suffix = "…";
+    let mut end = MAX_ARGUMENT_HINT_LENGTH.saturating_sub(suffix.len());
+    while !argument_hint.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = String::from(&argument_hint[..end]);
+    truncated.push_str(suffix);
+    Cow::Owned(truncated)
+}
+
+fn parse_argument_hint(
+    fields: &BTreeMap<String, String>,
+    path: &Path,
+    diagnostics: &mut Vec<SkillDiagnostic>,
+) -> Option<String> {
+    let hint = fields.get("argument-hint")?.trim();
+    if hint.is_empty() {
+        return None;
+    }
+    if MAX_ARGUMENT_HINT_LENGTH < hint.len() {
+        diagnostics.push(SkillDiagnostic {
+            path: path.to_owned(),
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "argument-hint exceeds {MAX_ARGUMENT_HINT_LENGTH} bytes ({}); truncating",
+                hint.len()
+            ),
+        });
+    }
+    Some(truncate_argument_hint(hint).into_owned())
+}
+
 pub fn truncate_description(description: &str) -> Cow<'_, str> {
     if description.len() <= MAX_DESCRIPTION_LENGTH {
         return Cow::Borrowed(description);
@@ -535,20 +619,36 @@ pub fn load_skill_from_content(
         }
     };
 
-    // `advertise: true` opts a skill into the system-prompt listing at
-    // session start. Accept case-insensitive `true` or `1`; everything
-    // else is false. Keep whether the header was present so scoped
-    // directory defaults can distinguish unset from explicit false.
-    let advertise = fm
-        .get("advertise")
-        .map(|v| v.eq_ignore_ascii_case("true") || v == "1");
+    let (add_to_prompt, add_to_prompt_explicit) =
+        parse_bool_frontmatter(&fm, "advertise", false, file_path, &mut diagnostics);
+    let (user_invocable, user_invocable_explicit) =
+        parse_bool_frontmatter(&fm, "user-invocable", true, file_path, &mut diagnostics);
+    let (disable_model_invocation, _) = parse_bool_frontmatter(
+        &fm,
+        "disable-model-invocation",
+        false,
+        file_path,
+        &mut diagnostics,
+    );
+    let argument_hint = parse_argument_hint(&fm, file_path, &mut diagnostics);
+    if !user_invocable && disable_model_invocation {
+        diagnostics.push(SkillDiagnostic {
+            path: file_path.to_owned(),
+            kind: DiagnosticKind::Warning,
+            message: "skill has both user-invocable: false and disable-model-invocation: true; it is not reachable through Tau skill invocation".to_owned(),
+        });
+    }
 
     let skill = Skill {
         name,
         description,
         file_path: file_path.to_owned(),
-        add_to_prompt: advertise.unwrap_or(false),
-        add_to_prompt_explicit: advertise.is_some(),
+        add_to_prompt,
+        add_to_prompt_explicit,
+        user_invocable,
+        user_invocable_explicit,
+        disable_model_invocation,
+        argument_hint,
     };
 
     (Some(skill), diagnostics)
@@ -805,6 +905,9 @@ pub fn built_in_skills() -> Vec<BuiltInSkill> {
                 description: skill.description,
                 content,
                 add_to_prompt: skill.add_to_prompt,
+                user_invocable: skill.user_invocable,
+                disable_model_invocation: skill.disable_model_invocation,
+                argument_hint: skill.argument_hint,
             }
         })
         .collect()

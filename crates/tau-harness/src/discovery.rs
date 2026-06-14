@@ -39,6 +39,8 @@ pub(crate) struct DiscoveredSkill {
     pub(crate) description: String,
     pub(crate) source: DiscoveredSkillSource,
     pub(crate) add_to_prompt: bool,
+    pub(crate) user_invocable: bool,
+    pub(crate) disable_model_invocation: bool,
     pub(crate) modified: Option<SystemTime>,
 }
 

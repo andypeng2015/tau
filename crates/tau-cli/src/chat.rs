@@ -548,6 +548,10 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
         "Replace the editor with a configured custom prompt template",
     ),
     (
+        "/skill",
+        "Invoke a user-invocable skill (e.g. /skill jujutsu optional args)",
+    ),
+    (
         "/session",
         "Manage chat sessions (e.g. /session new starts a fresh session)",
     ),
@@ -884,6 +888,10 @@ pub(crate) fn run_chat(
         settings.submitted_prompt_symbol,
     );
     renderer.set_action_state(action_state.clone());
+    completion_data.set_arg_completer(
+        tau_cli_term::CommandName::new("/skill"),
+        renderer.skill_arg_completer(),
+    );
     let tool_timer = ToolTimerNotifier::new();
     renderer.set_tool_timer(tool_timer.clone());
     let timer_tx = event_tx.clone();
@@ -2584,6 +2592,9 @@ fn custom_prompt_ids(prompts: &[tau_proto::HarnessCustomPrompt]) -> String {
 
 pub(crate) fn is_local_slash_command(text: &str) -> bool {
     let command = text.split_whitespace().next().unwrap_or(text);
+    if command == "/skill" || command.starts_with("/skill:") {
+        return true;
+    }
     matches!(
         command,
         "/quit"

@@ -34,8 +34,32 @@ fn discovered_skill(description: &str, add_to_prompt: bool) -> DiscoveredSkill {
             content: std::borrow::Cow::Borrowed(""),
         },
         add_to_prompt,
+        user_invocable: true,
+        disable_model_invocation: false,
         modified: None,
     }
+}
+
+#[test]
+fn system_prompt_excludes_disable_model_invocation_skills() {
+    let mut skills = std::collections::HashMap::new();
+    skills.insert(
+        tau_proto::SkillName::new("manual-only"),
+        DiscoveredSkill {
+            source_id: "test-extension".into(),
+            description: "Manual only".to_owned(),
+            source: crate::discovery::DiscoveredSkillSource::BuiltIn {
+                content: std::borrow::Cow::Borrowed(""),
+            },
+            add_to_prompt: true,
+            user_invocable: true,
+            disable_model_invocation: true,
+            modified: None,
+        },
+    );
+
+    let prompt = build_system_prompt(&skills, &[]);
+    assert!(!prompt.contains("manual-only"));
 }
 
 fn cwd_prompt_fragment() -> tau_proto::PromptFragment {

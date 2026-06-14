@@ -219,12 +219,74 @@ fn load_skill_advertise_accepts_case_and_one() {
 
 #[test]
 fn load_skill_advertise_rejects_other_truthy_words() {
-    // `yes` / `on` are not in the accepted set — they stay false silently
+    // `yes` / `on` are not accepted boolean spellings; the loader warns and
+    // falls back to the default false value for single-file loading.
     // (documented behavior).
     let content = "---\nname: hidden\ndescription: visible\nadvertise: yes\n---\n";
     let path = Path::new("/skills/hidden/SKILL.md");
     let (skill, _diags) = load_skill_from_content(content, path);
     assert!(!skill.expect("should load").add_to_prompt);
+}
+
+#[test]
+fn load_skill_user_invocation_metadata_defaults_and_explicit_values() {
+    let content = "---\nname: manual\ndescription: Manual skill\nuser-invocable: false\ndisable-model-invocation: true\nargument-hint: '[topic]'\n---\n";
+    let path = Path::new("/skills/manual/SKILL.md");
+    let (skill, diags) = load_skill_from_content(content, path);
+    let skill = skill.expect("should load");
+    assert!(!skill.user_invocable);
+    assert!(skill.user_invocable_explicit);
+    assert!(skill.disable_model_invocation);
+    assert_eq!(skill.argument_hint.as_deref(), Some("[topic]"));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("not reachable"))
+    );
+
+    let defaults = "---\nname: defaults\ndescription: Default skill\n---\n";
+    let (skill, diags) = load_skill_from_content(defaults, Path::new("/skills/defaults/SKILL.md"));
+    let skill = skill.expect("should load");
+    assert!(skill.user_invocable);
+    assert!(!skill.user_invocable_explicit);
+    assert!(!skill.disable_model_invocation);
+    assert!(skill.argument_hint.is_none());
+    assert!(diags.is_empty());
+}
+
+#[test]
+fn load_skill_invalid_bool_warns_and_uses_defaults() {
+    let content = "---\nname: invalid-bool\ndescription: Invalid bool\nuser-invocable: maybe\ndisable-model-invocation: nope\n---\n";
+    let path = Path::new("/skills/invalid-bool/SKILL.md");
+    let (skill, diags) = load_skill_from_content(content, path);
+    let skill = skill.expect("should load");
+    assert!(skill.user_invocable);
+    assert!(!skill.disable_model_invocation);
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|d| d.message.contains("invalid boolean"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn load_skill_truncates_argument_hint() {
+    let hint = "x".repeat(MAX_ARGUMENT_HINT_LENGTH + 10);
+    let content = format!("---\nname: hint\ndescription: Hint skill\nargument-hint: {hint}\n---\n");
+    let path = Path::new("/skills/hint/SKILL.md");
+    let (skill, diags) = load_skill_from_content(&content, path);
+    let skill = skill.expect("should load");
+    assert_eq!(
+        skill.argument_hint.expect("hint").len(),
+        MAX_ARGUMENT_HINT_LENGTH
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("argument-hint") && d.message.contains("truncating"))
+    );
 }
 
 #[test]

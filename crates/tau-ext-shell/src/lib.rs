@@ -1754,6 +1754,9 @@ fn build_session_started_events(_started: SessionStarted) -> Vec<Event> {
             description: skill.description,
             file_path,
             add_to_prompt: skill.add_to_prompt,
+            user_invocable: skill.user_invocable,
+            disable_model_invocation: skill.disable_model_invocation,
+            argument_hint: skill.argument_hint,
         }));
     }
 
