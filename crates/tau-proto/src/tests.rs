@@ -462,6 +462,8 @@ fn representative_output_messages() -> Vec<HarnessOutputMessage> {
     ]
 }
 
+/// Ensures parsed event names preserve category/call structure and display back
+/// to the dotted wire name.
 #[test]
 fn event_name_round_trips_from_string() {
     for event in representative_events() {
@@ -482,6 +484,8 @@ fn event_name_rejects_empty_segments() {
     assert!("demo.progress".parse::<EventName>().is_ok());
 }
 
+/// Ensures agent-message event variants report stable event names and
+/// persistence defaults.
 #[test]
 fn agent_message_events_have_names_and_persistence_defaults() {
     let sent = Event::AgentMessageSent(AgentMessageSent {
@@ -507,6 +511,8 @@ fn agent_message_events_have_names_and_persistence_defaults() {
     assert!(!received.defaults_to_transient());
 }
 
+/// Ensures legacy agent-message payloads omit the default message kind but
+/// preserve non-default watch responses.
 #[test]
 fn agent_message_kind_defaults_and_serializes_only_when_non_default() {
     let legacy: AgentMessageReceived = serde_json::from_value(serde_json::json!({
@@ -536,6 +542,8 @@ fn agent_message_kind_defaults_and_serializes_only_when_non_default() {
     assert_eq!(watch_json["kind"], serde_json::json!("watch_response"));
 }
 
+/// Ensures representative harness input/output messages round-trip through the
+/// CBOR codec.
 #[test]
 fn representative_directional_messages_round_trip_through_cbor() {
     for message in representative_input_messages() {
@@ -592,6 +600,8 @@ fn decode_message_from_slice_rejects_trailing_bytes() {
     );
 }
 
+/// Ensures framed readers can decode multiple back-to-back protocol messages
+/// from one stream.
 #[test]
 fn multiple_directional_messages_can_share_one_stream() {
     let messages = representative_output_messages();
@@ -686,6 +696,8 @@ fn custom_event_allows_extension_owned_event_names() {
     assert_eq!(decoded, event);
 }
 
+/// Ensures peer-to-harness emits and harness-to-peer deliveries keep distinct
+/// wire tags.
 #[test]
 fn input_emit_and_output_deliver_are_distinct_wire_messages() {
     let event = sample_session_started();
@@ -718,6 +730,8 @@ fn input_emit_and_output_deliver_are_distinct_wire_messages() {
     assert!(decode_harness_input_from_slice(&output_bytes).is_err());
 }
 
+/// Ensures raw events are not accepted where directional protocol messages are
+/// required.
 #[test]
 fn bare_event_is_not_a_protocol_item_in_either_direction() {
     let bytes = encode_message_to_vec(&sample_session_started()).expect("encode bare event");
@@ -725,6 +739,8 @@ fn bare_event_is_not_a_protocol_item_in_either_direction() {
     assert!(decode_harness_output_from_slice(&bytes).is_err());
 }
 
+/// Ensures older configure payloads without state_dir still deserialize
+/// successfully.
 #[test]
 fn configure_state_dir_is_optional_for_older_payloads() {
     // Older harnesses sent only `config`. New extensions must still accept that
@@ -761,6 +777,8 @@ fn configure_state_dir_is_optional_for_older_payloads() {
     assert!(without_state.get("state_dir").is_none());
 }
 
+/// Ensures configure secrets round-trip while Debug output redacts secret
+/// material.
 #[test]
 fn configure_secrets_round_trip_and_debug_redacts_values() {
     // Secret values travel only to explicitly configured extensions and must not
@@ -789,6 +807,8 @@ fn configure_secrets_round_trip_and_debug_redacts_values() {
     );
 }
 
+/// Ensures directional protocol messages use the expected flat tagged wire
+/// representation.
 #[test]
 fn directional_message_wire_form_uses_flat_message_tag() {
     let input = HarnessInputMessage::Hello(Hello {
@@ -808,6 +828,7 @@ fn directional_message_wire_form_uses_flat_message_tag() {
     assert!(output_json.get("payload").is_some());
 }
 
+/// Ensures events serialize with dotted event names as the wire tag.
 #[test]
 fn event_wire_form_uses_dotted_event_tag() {
     let event = Event::ToolStarted(ToolStarted {
@@ -838,6 +859,8 @@ fn extension_prompt_submit_request_wire_form() {
     assert_eq!(event.name(), EventName::EXTENSION_PROMPT_SUBMIT_REQUEST);
 }
 
+/// Ensures model ids split only on the first slash so provider model names may
+/// contain slashes.
 #[test]
 fn model_id_parses_provider_and_slashy_model_name() {
     // OpenRouter and similar providers use native model ids such as
@@ -852,6 +875,7 @@ fn model_id_parses_provider_and_slashy_model_name() {
     assert_eq!(model.to_string(), "openrouter/anthropic/claude-sonnet-4");
 }
 
+/// Ensures provider model-list events use the provider event namespace.
 #[test]
 fn provider_models_updated_name_matches_wire_family() {
     // `provider.models_updated` is routed by event name, so `Event::name()` must
@@ -865,6 +889,8 @@ fn provider_models_updated_name_matches_wire_family() {
     assert_eq!(json["event"], "provider.models_updated");
 }
 
+/// Ensures execution lifecycle events retain the provider wire-family event
+/// names.
 #[test]
 fn execution_events_use_provider_wire_family() {
     // Provider extensions own execution status; agent transcript events use
@@ -914,6 +940,8 @@ fn execution_events_use_provider_wire_family() {
     }
 }
 
+/// Ensures provider response updates require snapshot output items rather than
+/// accepting empty deltas.
 #[test]
 fn provider_response_updated_requires_item_snapshots() {
     // The provider streaming payload is item-based only. Legacy text/thinking
@@ -932,6 +960,8 @@ fn provider_response_updated_requires_item_snapshots() {
     );
 }
 
+/// Ensures harness role info remains backward compatible when role descriptions
+/// are omitted.
 #[test]
 fn harness_role_info_role_description_is_optional_and_round_trips() {
     // Older harnesses only send `description`; the new free-form role metadata
@@ -979,6 +1009,8 @@ fn harness_role_info_role_description_is_optional_and_round_trips() {
     assert!(without_description.get("role_description").is_none());
 }
 
+/// Ensures provider model metadata rejects missing context-window limits
+/// required by scheduling/UI code.
 #[test]
 fn provider_model_info_requires_context_window() {
     // The harness uses provider snapshots as the only source of model UI
@@ -1015,6 +1047,7 @@ fn json_to_cbor_preserves_large_unsigned_integers() {
     );
 }
 
+/// Ensures valid tool identifiers are accepted by the ToolName validator.
 #[test]
 fn tool_name_accepts_valid_names() {
     assert!(ToolName::try_new("read").is_some());
@@ -1023,6 +1056,8 @@ fn tool_name_accepts_valid_names() {
     assert!(ToolName::try_new("Echo").is_some());
 }
 
+/// Ensures ToolName rejects empty names and names with unsupported separators
+/// or whitespace.
 #[test]
 fn tool_name_rejects_invalid_names() {
     assert!(ToolName::try_new("").is_none());
@@ -1032,12 +1067,15 @@ fn tool_name_rejects_invalid_names() {
     assert!(ToolName::try_new("tool/name").is_none());
 }
 
+/// Ensures the panicking ToolName constructor fails fast on invalid
+/// identifiers.
 #[test]
 #[should_panic(expected = "invalid tool name")]
 fn tool_name_new_panics_on_invalid() {
     let _ = ToolName::new("bad.name");
 }
 
+/// Ensures ToolName enforces its maximum byte length.
 #[test]
 fn tool_name_rejects_overlong_input() {
     // ASCII alphanumerics that exceed the cap must be rejected even
@@ -1078,6 +1116,8 @@ fn tool_group_name_rejects_overlong_input() {
     assert!(ToolGroupName::try_new(at_cap).is_some());
 }
 
+/// Ensures event-delivery helpers preserve replay/live state and expose the
+/// wrapped event.
 #[test]
 fn event_delivery_helpers_expose_replay_marker_and_inner_event() {
     // The replay marker is the contract side-effecting consumers rely on to
@@ -1105,6 +1145,7 @@ fn event_delivery_helpers_expose_replay_marker_and_inner_event() {
     assert_eq!(non_delivery.into_delivered_event(), None);
 }
 
+/// Ensures transient-default classification matches progress-style events.
 #[test]
 fn event_defaults_to_transient_marks_progress_kinds() {
     // The set named by `defaults_to_transient` is the contract the
@@ -1227,6 +1268,8 @@ fn event_defaults_to_transient_marks_progress_kinds() {
     }
 }
 
+/// Ensures legacy tool-result events without an explicit kind deserialize as
+/// final results.
 #[test]
 fn tool_result_kind_defaults_to_final_for_legacy_events() {
     let result: ToolResult = serde_json::from_value(serde_json::json!({
@@ -1240,6 +1283,8 @@ fn tool_result_kind_defaults_to_final_for_legacy_events() {
     assert_eq!(result.kind, ToolResultKind::Final);
 }
 
+/// Ensures prompt messages remain backward compatible by defaulting omitted
+/// class to user.
 #[test]
 fn prompt_message_class_defaults_to_user_when_omitted() {
     let prompt: UiPromptSubmitted = serde_json::from_value(serde_json::json!({
@@ -1539,6 +1584,8 @@ fn tool_response_renders_headers_blank_line_and_body() {
     );
 }
 
+/// Ensures ToolResponse renders conventional output fields as body text without
+/// an extra label.
 #[test]
 fn tool_response_renders_output_field_as_body_without_label() {
     let response = ToolResponse::from_cbor(&CborValue::Map(vec![
@@ -1555,6 +1602,8 @@ fn tool_response_renders_output_field_as_body_without_label() {
     assert_eq!(response.render(), "status: 0\n\nout stdout\nerr stderr");
 }
 
+/// Ensures ToolResponse rendering does not expose raw CBOR debug structure for
+/// output fields.
 #[test]
 fn tool_response_output_field_hides_raw_data_from_rendered_body() {
     let response = ToolResponse::from_cbor(&CborValue::Map(vec![
@@ -1584,6 +1633,8 @@ fn tool_response_output_field_hides_raw_data_from_rendered_body() {
     assert_eq!(response.render(), "format: name flags\n\nINBOX selectable");
 }
 
+/// Ensures plain text tool responses render as body content without synthetic
+/// headers.
 #[test]
 fn tool_response_leaves_plain_text_as_body_only() {
     let response = ToolResponse::from_cbor(&CborValue::Text("done".to_owned()));
@@ -1591,6 +1642,8 @@ fn tool_response_leaves_plain_text_as_body_only() {
     assert_eq!(response.render(), "done");
 }
 
+/// Ensures rendered array/map records remain visually separated for provider
+/// readability.
 #[test]
 fn tool_response_separates_array_map_records_with_blank_lines() {
     let response = ToolResponse::from_cbor(&CborValue::Array(vec![
@@ -1607,6 +1660,8 @@ fn tool_response_separates_array_map_records_with_blank_lines() {
     assert_eq!(response.render(), "name: first\n\nname: second");
 }
 
+/// Ensures arrays of scalar tool output values render compactly instead of as
+/// noisy records.
 #[test]
 fn tool_response_keeps_scalar_arrays_compact() {
     let response = ToolResponse::from_cbor(&CborValue::Array(vec![

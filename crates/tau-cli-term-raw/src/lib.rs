@@ -1576,12 +1576,8 @@ impl Term {
             return Ok(());
         }
         self.pause_for_external_with_release(|| {
-            crossterm::execute!(
-                io::stdout(),
-                PopKeyboardEnhancementFlags,
-                crossterm::event::DisableBracketedPaste,
-                SetCursorStyle::DefaultUserShape,
-            )?;
+            let mut stdout = io::stdout();
+            write_external_pause_features(&mut stdout)?;
             terminal::disable_raw_mode()?;
             crossterm::execute!(
                 io::stdout(),
@@ -1631,12 +1627,8 @@ impl Term {
         }
         let result = (|| -> io::Result<()> {
             terminal::enable_raw_mode()?;
-            crossterm::execute!(
-                io::stdout(),
-                crossterm::event::EnableBracketedPaste,
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-                self.cursor_shape.crossterm_style()
-            )?;
+            let mut stdout = io::stdout();
+            write_external_resume_features(&mut stdout, self.cursor_shape)?;
             crossterm::execute!(
                 io::stdout(),
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
@@ -2426,6 +2418,29 @@ impl Term {
             let _ = handle.join();
         }
     }
+}
+
+fn write_external_pause_features(writer: &mut impl Write) -> io::Result<()> {
+    crossterm::execute!(
+        writer,
+        PopKeyboardEnhancementFlags,
+        crossterm::event::DisableFocusChange,
+        crossterm::event::DisableBracketedPaste,
+        SetCursorStyle::DefaultUserShape,
+    )
+}
+
+fn write_external_resume_features(
+    writer: &mut impl Write,
+    cursor_shape: CursorShape,
+) -> io::Result<()> {
+    crossterm::execute!(
+        writer,
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableFocusChange,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+        cursor_shape.crossterm_style()
+    )
 }
 
 impl Drop for Term {

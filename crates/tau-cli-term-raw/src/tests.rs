@@ -62,6 +62,21 @@ fn visible_rows(term: &vt100::Parser) -> Vec<String> {
     term.screen().rows(0, cols).collect()
 }
 
+/// External-program pause must release terminal feature modes that Tau enabled
+/// so child editors do not receive focus-reporting escape sequences.
+#[test]
+fn external_pause_disables_and_resume_enables_focus_reporting() {
+    let mut pause = Vec::new();
+    write_external_pause_features(&mut pause).expect("pause features");
+    let pause = String::from_utf8(pause).expect("utf8 pause escapes");
+    assert!(pause.contains("\u{1b}[?1004l"), "pause: {pause:?}");
+
+    let mut resume = Vec::new();
+    write_external_resume_features(&mut resume, CursorShape::Bar).expect("resume features");
+    let resume = String::from_utf8(resume).expect("utf8 resume escapes");
+    assert!(resume.contains("\u{1b}[?1004h"), "resume: {resume:?}");
+}
+
 // --- full_render: content overflows terminal height ---
 
 /// Full redraw is allowed to write past the viewport; this locks in which rows
