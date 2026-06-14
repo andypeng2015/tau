@@ -17,7 +17,7 @@ mod tests;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use bounded_command::{ProcessOwnership, run_with_bounded_stdout};
+use bounded_command::{ProcessOwnership, run_with_bounded_stdout, run_with_inherited_stdio};
 pub use completion::{
     ArgCompleter, CommandName, CompletionData, CompletionItem, CompletionRule, CompletionRules,
     SlashCommand,
@@ -767,77 +767,92 @@ fn run_prompt_shell_action(
     if let Some((_, prompt_dir)) = &history_picker {
         command_builder.env("TAU_PROMPT_HISTORY_DIR", prompt_dir.path());
     }
-    command_builder.stdin(if history_picker.is_some() {
-        std::process::Stdio::piped()
-    } else {
-        std::process::Stdio::null()
-    });
-    command_builder
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let stdin_input = history_picker.as_ref().map(|(input, _)| input.as_bytes());
-    let output = run_with_bounded_stdout(
-        &mut command_builder,
-        stdin_input,
-        PROMPT_COMMAND_OUTPUT_LIMIT_BYTES,
-        PROMPT_COMMAND_TIMEOUT,
-        ProcessOwnership::ForegroundProcessGroup,
-    )?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-
     match action {
-        PromptShellAction::Insert(_) => {
-            let text = String::from_utf8(output.stdout)
-                .map_err(|e| format!("command output was not utf-8: {e}"))?;
-            let text = if shell.trim {
-                text.trim().to_owned()
-            } else {
-                text
-            };
-            Ok(Some(PromptShellResult::Insert(text)))
-        }
         PromptShellAction::Edit(_) => {
-            let new_text = std::fs::read_to_string(tmp.path())
-                .map_err(|e| format!("could not read tempfile: {e}"))?;
-            editor_context
-                .lock()
-                .expect("editor context mutex poisoned")
-                .update_edited_trailer_recovery(&file_text, &new_text);
-            let new_text = strip_prompt_trailer(&new_text);
-            let new_text = trim_prompt_newlines(new_text).to_owned();
-            Ok(Some(PromptShellResult::Replace(new_text)))
-        }
-        PromptShellAction::HistorySearch(_) => {
-            let selected = String::from_utf8(output.stdout)
-                .map_err(|e| format!("command output was not utf-8: {e}"))?;
-            let selected = if shell.trim {
-                selected.trim().to_owned()
-            } else {
-                selected
-            };
-            let selected_index = selected.split('\t').next().unwrap_or("").trim();
-            if selected_index.is_empty() {
+            command_builder
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit());
+            let status = run_with_inherited_stdio(
+                &mut command_builder,
+                PROMPT_COMMAND_TIMEOUT,
+                ProcessOwnership::ForegroundProcessGroup,
+            )?
+            .status;
+            if !status.success() {
                 return Ok(None);
             }
-            let index = selected_index
-                .parse::<usize>()
-                .map_err(|e| format!("history selection was not an index: {e}"))?;
-            let text = prompt_history
-                .get(index)
-                .ok_or_else(|| format!("history selection index {index} is out of range"))?
-                .clone();
-            Ok(Some(PromptShellResult::ReplacePreservingUndo(text)))
         }
-        PromptShellAction::Action(_)
-        | PromptShellAction::PromptNext
-        | PromptShellAction::PromptPrevious
-        | PromptShellAction::PromptUndo
-        | PromptShellAction::PromptRedo
-        | PromptShellAction::SubmitPrompt
-        | PromptShellAction::InsertNewline => unreachable!(),
+        PromptShellAction::Insert(_) | PromptShellAction::HistorySearch(_) => {
+            command_builder.stdin(if history_picker.is_some() {
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            });
+            command_builder
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            let stdin_input = history_picker.as_ref().map(|(input, _)| input.as_bytes());
+            let output = run_with_bounded_stdout(
+                &mut command_builder,
+                stdin_input,
+                PROMPT_COMMAND_OUTPUT_LIMIT_BYTES,
+                PROMPT_COMMAND_TIMEOUT,
+                ProcessOwnership::ForegroundProcessGroup,
+            )?;
+            if !output.status.success() {
+                return Ok(None);
+            }
+            return match action {
+                PromptShellAction::Insert(_) => {
+                    let text = String::from_utf8(output.stdout)
+                        .map_err(|e| format!("command output was not utf-8: {e}"))?;
+                    let text = if shell.trim {
+                        text.trim().to_owned()
+                    } else {
+                        text
+                    };
+                    Ok(Some(PromptShellResult::Insert(text)))
+                }
+                PromptShellAction::HistorySearch(_) => {
+                    let selected = String::from_utf8(output.stdout)
+                        .map_err(|e| format!("command output was not utf-8: {e}"))?;
+                    let selected = if shell.trim {
+                        selected.trim().to_owned()
+                    } else {
+                        selected
+                    };
+                    let selected_index = selected.split('\t').next().unwrap_or("").trim();
+                    if selected_index.is_empty() {
+                        return Ok(None);
+                    }
+                    let index = selected_index
+                        .parse::<usize>()
+                        .map_err(|e| format!("history selection was not an index: {e}"))?;
+                    let text = prompt_history
+                        .get(index)
+                        .ok_or_else(|| format!("history selection index {index} is out of range"))?
+                        .clone();
+                    Ok(Some(PromptShellResult::ReplacePreservingUndo(text)))
+                }
+                _ => unreachable!(),
+            };
+        }
+        _ => unreachable!(),
     }
+
+    let PromptShellAction::Edit(_) = action else {
+        unreachable!();
+    };
+    let new_text =
+        std::fs::read_to_string(tmp.path()).map_err(|e| format!("could not read tempfile: {e}"))?;
+    editor_context
+        .lock()
+        .expect("editor context mutex poisoned")
+        .update_edited_trailer_recovery(&file_text, &new_text);
+    let new_text = strip_prompt_trailer(&new_text);
+    let new_text = trim_prompt_newlines(new_text).to_owned();
+    Ok(Some(PromptShellResult::Replace(new_text)))
 }
 
 fn prompt_history_search_rows(prompt_history: &[String]) -> String {

@@ -54,6 +54,13 @@ pub(crate) struct BoundedCommandOutput {
     pub(crate) stdout: Vec<u8>,
 }
 
+/// Exit status from a bounded subprocess whose stdio is owned by the caller.
+#[derive(Debug)]
+pub(crate) struct BoundedCommandStatus {
+    /// Direct child exit status.
+    pub(crate) status: std::process::ExitStatus,
+}
+
 /// Runs a child process while bounding captured stdout and elapsed time.
 ///
 /// Callers must configure stderr before calling. This helper always captures
@@ -79,13 +86,7 @@ pub(crate) fn run_with_bounded_stdout(
     let mut child = command
         .spawn()
         .map_err(|e| format!("could not spawn command: {e}"))?;
-    #[cfg(test)]
-    if matches!(ownership, ProcessOwnership::ForegroundProcessGroup)
-        && FAIL_NEXT_FOREGROUND_CLAIM.swap(false, Ordering::SeqCst)
-    {
-        FAIL_FOREGROUND_CLAIM_FOR_CHILD_ID.store(child.id(), Ordering::SeqCst);
-    }
-    let process_group = match ProcessGroupHandle::new(ownership, child.id()) {
+    let process_group = match claim_process_group_handle(ownership, child.id()) {
         Ok(process_group) => process_group,
         Err(error) => {
             #[cfg(test)]
@@ -208,6 +209,56 @@ struct LimitedRead {
     bytes: Vec<u8>,
     /// Whether the reader observed more bytes than the configured limit.
     overflowed: bool,
+}
+
+/// Runs a child process while bounding elapsed time without capturing output.
+///
+/// Callers must configure stdin/stdout/stderr before calling. This is intended
+/// for terminal-releasing prompt edit actions where the child needs the real
+/// terminal file descriptors rather than Tau-owned pipes. Process-group and
+/// foreground ownership behavior matches [`run_with_bounded_stdout`].
+pub(crate) fn run_with_inherited_stdio(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+    ownership: ProcessOwnership,
+) -> Result<BoundedCommandStatus, String> {
+    configure_process_ownership(command, ownership)?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not spawn command: {e}"))?;
+    let process_group = match claim_process_group_handle(ownership, child.id()) {
+        Ok(process_group) => process_group,
+        Err(error) => {
+            #[cfg(test)]
+            LAST_FAILED_FOREGROUND_CHILD_ID.store(child.id(), Ordering::SeqCst);
+            let child_pgid = match ownership {
+                ProcessOwnership::ProcessGroup | ProcessOwnership::ForegroundProcessGroup => {
+                    process_group_id(child.id())
+                }
+            };
+            terminate_child(&mut child, child_pgid);
+            return Err(error);
+        }
+    };
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            terminate_child(&mut child, process_group.child_pgid());
+            return Err(format!("command exceeded {}s timeout", timeout.as_secs()));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(BoundedCommandStatus { status }),
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(&mut child, process_group.child_pgid());
+                return Err(format!("could not wait for command: {error}"));
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn read_to_limit(mut reader: impl Read, limit: usize) -> io::Result<LimitedRead> {
@@ -467,4 +518,17 @@ fn tcsetpgrp_blocking_sigtou(
         None,
     );
     result.and(restore)
+}
+
+fn claim_process_group_handle(
+    ownership: ProcessOwnership,
+    child_id: u32,
+) -> Result<ProcessGroupHandle, String> {
+    #[cfg(test)]
+    if matches!(ownership, ProcessOwnership::ForegroundProcessGroup)
+        && FAIL_NEXT_FOREGROUND_CLAIM.swap(false, Ordering::SeqCst)
+    {
+        FAIL_FOREGROUND_CLAIM_FOR_CHILD_ID.store(child_id, Ordering::SeqCst);
+    }
+    ProcessGroupHandle::new(ownership, child_id)
 }

@@ -222,3 +222,28 @@ fn process_group_setup_failure_kills_spawned_child() {
         .is_ok_and(|status| status.success());
     assert!(!alive, "spawned child {pid} should have been killed");
 }
+
+/// Covers terminal-style prompt edit actions that inherit stdio instead of
+/// capturing stdout; they must still be bounded by timeout and process-group
+/// cleanup so a stuck editor cannot leave Tau paused indefinitely.
+#[test]
+fn inherited_stdio_command_times_out_quiet_hung_child() {
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg("sleep 5")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let start = std::time::Instant::now();
+    let err = run_with_inherited_stdio(
+        &mut command,
+        std::time::Duration::from_millis(100),
+        ProcessOwnership::ProcessGroup,
+    )
+    .expect_err("quiet hung child should time out");
+
+    assert!(err.contains("timeout"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}
