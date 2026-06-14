@@ -1432,7 +1432,7 @@ impl<'a> TerminalInputSession<'a> {
         }
     }
 
-    fn handle_non_exit_event(&self, event: tau_cli_term::Event) {
+    fn handle_non_exit_event(&mut self, event: tau_cli_term::Event) {
         use tau_cli_term::Event as TermEvent;
 
         // These events update local UI/session state only; none of them can
@@ -1451,7 +1451,7 @@ impl<'a> TerminalInputSession<'a> {
         }
     }
 
-    fn handle_binding_action(&self, action: &str) {
+    fn handle_binding_action(&mut self, action: &str) {
         match action {
             "fast-toggle" => self.toggle_fast_service_tier(),
             "cycle-role" => self.cycle_role_inner(),
@@ -1556,11 +1556,11 @@ impl<'a> TerminalInputSession<'a> {
         true
     }
 
-    fn handle_navigation_or_role_shortcut(&self, text: &str) -> bool {
+    fn handle_navigation_or_role_shortcut(&mut self, text: &str) -> bool {
         self.handle_tree_or_compact_command(text) || self.handle_role_setting_shortcut(text)
     }
 
-    fn handle_utility_or_shell_shortcut(&self, text: &str) -> bool {
+    fn handle_utility_or_shell_shortcut(&mut self, text: &str) -> bool {
         self.handle_utility_command(text)
             || self.handle_role_selection_command(text)
             || self.handle_shell_shortcut(text)
@@ -1716,7 +1716,7 @@ impl<'a> TerminalInputSession<'a> {
         false
     }
 
-    fn handle_utility_command(&self, text: &str) -> bool {
+    fn handle_utility_command(&mut self, text: &str) -> bool {
         if text == "/version" {
             self.output.system_info(&crate::version_label());
             return true;
@@ -1765,7 +1765,7 @@ impl<'a> TerminalInputSession<'a> {
         false
     }
 
-    fn handle_agent_command(&self, text: &str) {
+    fn handle_agent_command(&mut self, text: &str) {
         let rest = text.strip_prefix("/agent").unwrap_or("").trim();
         if rest.is_empty() {
             let current = self
@@ -1844,7 +1844,7 @@ impl<'a> TerminalInputSession<'a> {
         }
     }
 
-    fn handle_new_alias(&self, text: &str) {
+    fn handle_new_alias(&mut self, text: &str) {
         if text.trim() != "/new" {
             self.output.system_info("/new");
             return;
@@ -1872,7 +1872,7 @@ impl<'a> TerminalInputSession<'a> {
         self.ctx.routing.selected_agent_id()
     }
 
-    fn handle_agent_new(&self, target: Option<&str>) {
+    fn handle_agent_new(&mut self, target: Option<&str>) {
         if target.is_some() {
             self.output.system_info("/agent new");
             return;
@@ -1880,12 +1880,13 @@ impl<'a> TerminalInputSession<'a> {
         self.clear_selected_agent();
     }
 
-    fn clear_selected_agent(&self) {
+    fn clear_selected_agent(&mut self) {
         self.ctx.routing.set_selected_agent(None);
+        self.dismiss_completion_menu();
         let _ = self.ctx.renderer_tx.send(RendererCmd::ClearSelectedAgent);
     }
 
-    fn handle_agent_switch(&self, target: Option<&str>) {
+    fn handle_agent_switch(&mut self, target: Option<&str>) {
         let Some(arg) = target.map(str::trim).filter(|arg| !arg.is_empty()) else {
             self.output.system_info("/agent switch <agent_id|none>");
             return;
@@ -1904,10 +1905,7 @@ impl<'a> TerminalInputSession<'a> {
             ));
             return;
         }
-        self.ctx.routing.set_selected_agent(Some(arg.to_owned()));
-        let _ = self.ctx.renderer_tx.send(RendererCmd::SwitchAgent {
-            agent_id: arg.to_owned(),
-        });
+        self.switch_to_agent(arg.to_owned());
     }
 
     fn handle_agent_suspend(&self, target: Option<&str>) {
@@ -2149,7 +2147,7 @@ impl<'a> TerminalInputSession<'a> {
         );
     }
 
-    fn switch_agent_by_delta(&self, delta: isize) {
+    fn switch_agent_by_delta(&mut self, delta: isize) {
         let current = self.selected_agent_id();
         let Some(next) = self.ctx.routing.next_active_agent(delta) else {
             self.output
@@ -2159,11 +2157,22 @@ impl<'a> TerminalInputSession<'a> {
         if current.as_deref() == Some(next.as_str()) {
             return;
         }
-        self.ctx.routing.set_selected_agent(Some(next.clone()));
+        self.switch_to_agent(next);
+    }
+
+    fn switch_to_agent(&mut self, agent_id: String) {
+        self.ctx.routing.set_selected_agent(Some(agent_id.clone()));
+        self.dismiss_completion_menu();
         let _ = self
             .ctx
             .renderer_tx
-            .send(RendererCmd::SwitchAgent { agent_id: next });
+            .send(RendererCmd::SwitchAgent { agent_id });
+    }
+
+    fn dismiss_completion_menu(&mut self) {
+        if self.term.dismiss_completion_menu() {
+            self.update_draft();
+        }
     }
 
     fn cycle_role_group(&self) {

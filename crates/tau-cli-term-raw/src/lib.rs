@@ -1650,6 +1650,16 @@ impl Term {
         self.submit_or_accept_completion()
     }
 
+    /// Programmatically closes any open completion menu.
+    ///
+    /// Returns `true` when a menu was open and got dismissed. If the
+    /// selected completion had previewed text in the input buffer, the
+    /// buffer is restored to the text that opened the menu.
+    pub fn dismiss_completion_menu(&self) -> bool {
+        let mut st = self.handle.lock();
+        st.dismiss_completion()
+    }
+
     /// Programmatically triggers a history step (the same operation
     /// `Up`/`Down` and `Ctrl-K`/`Ctrl-J` perform). Closes any open
     /// completion menu first so callers don't have to coordinate with

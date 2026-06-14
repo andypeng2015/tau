@@ -232,6 +232,23 @@ impl HighTerm {
         self.handle.redraw();
     }
 
+    /// Closes the active completion menu, if any, and updates its rendered
+    /// block.
+    ///
+    /// Returns `true` when a menu was open. Call this from application-level
+    /// state transitions that make the active completion context stale but do
+    /// not otherwise change the prompt buffer. Dismissing a previewed candidate
+    /// may restore the previous buffer and cursor; this method updates the
+    /// rendered menu but does not emit a [`Event::BufferChanged`] event.
+    pub fn dismiss_completion_menu(&mut self) -> bool {
+        let dismissed = self.term.dismiss_completion_menu();
+        if dismissed {
+            self.sync_menu_block();
+            self.handle.redraw();
+        }
+        dismissed
+    }
+
     /// Appends persistent output to history.
     pub fn print_output(
         &self,

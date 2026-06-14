@@ -600,3 +600,22 @@ mod multi_arg_completion;
 mod prompt_history_search;
 
 mod prompt_action_parse;
+
+#[test]
+fn dismiss_completion_menu_closes_rendered_completion_menu() {
+    // Application-level UI transitions such as switching the selected agent do
+    // not edit the prompt buffer. They still need a central way to close stale
+    // completion UI so the rendered suggestion block cannot stick around.
+    let (mut term, handle, input_tx) =
+        new_test_term(vec![SlashCommand::new("/agent", "Manage agents")]);
+
+    type_text(&mut term, &input_tx, "/");
+    assert!(handle.completion_state().is_some());
+    assert!(term.menu_block_id.is_some());
+
+    assert!(term.dismiss_completion_menu());
+
+    assert!(handle.completion_state().is_none());
+    assert!(term.menu_block_id.is_none());
+    assert!(!term.dismiss_completion_menu());
+}
