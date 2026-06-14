@@ -1857,11 +1857,7 @@ impl Term {
             if st.cursor == 0 {
                 return false;
             }
-            let new_end = st.buffer[..st.cursor]
-                .trim_end()
-                .rfind(' ')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let new_end = word_left_boundary(&st.buffer, st.cursor);
             st.record_undo();
             let cursor = st.cursor;
             st.buffer.drain(new_end..cursor);
@@ -2149,11 +2145,7 @@ impl Term {
                 let changed = {
                     let mut st = self.handle.lock();
                     if st.cursor > 0 {
-                        let new_end = st.buffer[..st.cursor]
-                            .trim_end()
-                            .rfind(' ')
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
+                        let new_end = word_left_boundary(&st.buffer, st.cursor);
                         st.record_undo();
                         let cursor = st.cursor;
                         st.buffer.drain(new_end..cursor);
@@ -2388,6 +2380,16 @@ impl Term {
             let _ = handle.join();
         }
     }
+}
+
+fn word_left_boundary(buffer: &str, cursor: usize) -> usize {
+    let before_cursor = &buffer[..cursor];
+    let trimmed_end = before_cursor.trim_end_matches(char::is_whitespace).len();
+    before_cursor[..trimmed_end]
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+        .unwrap_or(0)
 }
 
 fn read_real_raw_event(

@@ -113,6 +113,19 @@ fn real_raw_event_propagates_read_errors() {
     assert_eq!(err.to_string(), "synthetic read error");
 }
 
+/// Ctrl-W word deletion should stop at any Unicode whitespace separator, not
+/// just ASCII spaces.
+#[test]
+fn word_left_boundary_uses_unicode_whitespace() {
+    assert_eq!(word_left_boundary("foo\nbar", "foo\nbar".len()), 4);
+    assert_eq!(word_left_boundary("foo\tbar", "foo\tbar".len()), 4);
+    assert_eq!(
+        word_left_boundary("foo\u{2003}bar", "foo\u{2003}bar".len()),
+        "foo\u{2003}".len()
+    );
+    assert_eq!(word_left_boundary("foo  bar   ", "foo  bar   ".len()), 5);
+}
+
 // --- full_render: content overflows terminal height ---
 
 /// Full redraw is allowed to write past the viewport; this locks in which rows
