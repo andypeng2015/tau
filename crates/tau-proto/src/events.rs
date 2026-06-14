@@ -1809,7 +1809,10 @@ impl CustomEvent {
     /// Returns `true` when `name` uses an extension-owned event category.
     #[must_use]
     pub fn name_is_allowed(name: &EventName) -> bool {
-        matches!(name.category, EventCategory::Other(_))
+        matches!(
+            EventCategory::from_wire(name.category.as_str()),
+            EventCategory::Other(_)
+        )
     }
 }
 

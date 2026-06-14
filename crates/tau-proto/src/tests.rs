@@ -593,6 +593,18 @@ fn custom_event_rejects_reserved_event_names() {
     );
 }
 
+/// Ensures custom event validation treats manually constructed `Other` values
+/// with reserved wire text as reserved categories.
+#[test]
+fn custom_event_rejects_reserved_category_spelled_as_other() {
+    let name = EventName::new(
+        EventCategory::Other("harness".to_owned()),
+        "info".to_owned(),
+    );
+
+    assert!(!CustomEvent::name_is_allowed(&name));
+}
+
 /// Ensures extension-owned custom event categories still round-trip and route
 /// by their payload name.
 #[test]
