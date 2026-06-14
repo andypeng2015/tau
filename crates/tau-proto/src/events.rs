@@ -1781,10 +1781,15 @@ pub struct ProviderModelInfo {
     /// not have to fall back to provider-specific config.
     pub context_window: u64,
     /// Reasoning-effort levels accepted by this model, in UI cycling order.
+    /// Empty means the model does not support reasoning-effort selection.
     pub efforts: Vec<Effort>,
     /// Output-verbosity levels accepted by this model, in UI cycling order.
+    /// Providers that do not expose verbosity selection should publish
+    /// [`Verbosity::Medium`] rather than an empty list.
     pub verbosities: Vec<Verbosity>,
     /// Thinking-summary modes accepted by this model, in UI cycling order.
+    /// Providers that do not support summaries should publish
+    /// [`ThinkingSummary::Off`] rather than an empty list.
     pub thinking_summaries: Vec<ThinkingSummary>,
     /// Whether this model can use provider/server-side context compaction.
     #[serde(default)]
@@ -2115,8 +2120,8 @@ pub enum UiRoleUpdateAction {
     },
     /// Set or clear the role's explicit tool allow-list.
     SetTools {
-        /// Internal tool names to allow, or `None` to use default tool
-        /// enablement.
+        /// Internal tool names to allow. `None` clears back to default tool
+        /// enablement; `Some(Vec::new())` is an explicit empty allow-list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tools: Option<Vec<ToolName>>,
     },
