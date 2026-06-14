@@ -22,8 +22,20 @@ fn agent_completer_offers_subcommands_first() {
 
     let completions = completer(&[""]);
 
-    let values: Vec<_> = completions.iter().map(|item| item.value.as_str()).collect();
-    assert_eq!(values, vec!["new", "switch", "suspend", "resume", "name"]);
+    let entries: Vec<_> = completions
+        .iter()
+        .map(|item| (item.value.as_str(), item.description.as_str()))
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            ("new", "Clear the selected agent"),
+            ("switch", "Route prompts to an active agent"),
+            ("suspend", "Hide an active agent transcript"),
+            ("resume", "Show a suspended agent transcript"),
+            ("name", "Set an agent display name"),
+        ]
+    );
 }
 
 #[test]
@@ -32,12 +44,15 @@ fn session_completer_offers_new_subcommand() {
     // reserved as an alias for `/agent new`.
     let completer = build_session_arg_completer();
 
-    let values: Vec<_> = completer(&[""])
+    let entries: Vec<_> = completer(&[""])
         .into_iter()
-        .map(|item| item.value)
+        .map(|item| (item.value, item.description))
         .collect();
 
-    assert_eq!(values, vec!["new"]);
+    assert_eq!(
+        entries,
+        vec![("new".to_owned(), "Start a fresh chat session".to_owned())]
+    );
 }
 
 #[test]

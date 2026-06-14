@@ -2333,16 +2333,26 @@ fn active_side_agent_count_from_handles(
         .count()
 }
 
+const SESSION_SUBCOMMAND_COMPLETIONS: &[(&str, &str)] = &[("new", "Start a fresh chat session")];
+
+const AGENT_SUBCOMMAND_COMPLETIONS: &[(&str, &str)] = &[
+    ("new", "Clear the selected agent"),
+    ("switch", "Route prompts to an active agent"),
+    ("suspend", "Hide an active agent transcript"),
+    ("resume", "Show a suspended agent transcript"),
+    ("name", "Set an agent display name"),
+];
+
 fn build_session_arg_completer() -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
     Arc::new(move |args: &[&str]| match args.len() {
         0 | 1 => {
             let needle = args.first().copied().unwrap_or("").to_lowercase();
-            ["new"]
-                .into_iter()
-                .filter(|subcommand| completion_matches(subcommand, &needle))
-                .map(|subcommand| CompletionItem::new(subcommand, "subcommand"))
+            SESSION_SUBCOMMAND_COMPLETIONS
+                .iter()
+                .filter(|(subcommand, _)| completion_matches(subcommand, &needle))
+                .map(|(subcommand, description)| CompletionItem::new(*subcommand, *description))
                 .collect()
         }
         _ => Vec::new(),
@@ -2355,39 +2365,36 @@ fn build_agent_arg_completer(
 ) -> tau_cli_term::ArgCompleter {
     use tau_cli_term::CompletionItem;
 
-    Arc::new(move |args: &[&str]| {
-        let subcommands = ["new", "switch", "suspend", "resume", "name"];
-        match args.len() {
-            0 | 1 => {
-                let needle = args.first().copied().unwrap_or("").to_lowercase();
-                subcommands
-                    .into_iter()
-                    .filter(|subcommand| completion_matches(subcommand, &needle))
-                    .map(|subcommand| CompletionItem::new(subcommand, "subcommand"))
-                    .collect()
-            }
-            2 => {
-                let known = routing.known_agents();
-                let display_names = agent_display_names
-                    .lock()
-                    .map(|names| names.clone())
-                    .unwrap_or_default();
-                let active = routing.active_agents();
-                let needle = args[1].to_lowercase();
-                agent_completion_candidates(args[0], known, active)
-                    .into_iter()
-                    .filter(|agent| completion_matches(agent, &needle))
-                    .map(|agent| {
-                        let description = display_names
-                            .get(&agent)
-                            .cloned()
-                            .unwrap_or_else(|| agent.clone());
-                        CompletionItem::new(agent, description)
-                    })
-                    .collect()
-            }
-            _ => Vec::new(),
+    Arc::new(move |args: &[&str]| match args.len() {
+        0 | 1 => {
+            let needle = args.first().copied().unwrap_or("").to_lowercase();
+            AGENT_SUBCOMMAND_COMPLETIONS
+                .iter()
+                .filter(|(subcommand, _)| completion_matches(subcommand, &needle))
+                .map(|(subcommand, description)| CompletionItem::new(*subcommand, *description))
+                .collect()
         }
+        2 => {
+            let known = routing.known_agents();
+            let display_names = agent_display_names
+                .lock()
+                .map(|names| names.clone())
+                .unwrap_or_default();
+            let active = routing.active_agents();
+            let needle = args[1].to_lowercase();
+            agent_completion_candidates(args[0], known, active)
+                .into_iter()
+                .filter(|agent| completion_matches(agent, &needle))
+                .map(|agent| {
+                    let description = display_names
+                        .get(&agent)
+                        .cloned()
+                        .unwrap_or_else(|| agent.clone());
+                    CompletionItem::new(agent, description)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
     })
 }
 
