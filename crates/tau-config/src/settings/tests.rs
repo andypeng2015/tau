@@ -331,6 +331,7 @@ fn harness_file_alias_table_normalizes_all_legacy_keys() {
     let mut value = serde_json::json!({
         "defaultRole": "manager",
         "promptFragments": [],
+        "customPrompts": [],
         "agents": {
             "idTemplate": "agent-{{random_alphanumeric 4}}",
             "displayNameTemplate": "Agent {{n}}",
@@ -367,6 +368,7 @@ fn harness_file_alias_table_normalizes_all_legacy_keys() {
 
     assert!(value.get("default_role").is_some());
     assert!(value.get("prompt_fragments").is_some());
+    assert!(value.get("custom_prompts").is_some());
     assert!(value.pointer("/agents/id_template").is_some());
     assert!(value.pointer("/agents/display_name_template").is_some());
     let group = value.pointer("/role_groups/engineer").expect("group");
@@ -398,6 +400,7 @@ fn harness_cli_alias_table_normalizes_all_legacy_keys() {
     let cases = [
         ("defaultRole", "default_role"),
         ("promptFragments", "prompt_fragments"),
+        ("customPrompts", "custom_prompts"),
         ("agents.idTemplate", "agents.id_template"),
         ("agents.displayNameTemplate", "agents.display_name_template"),
         ("roleGroups.engineer.enabled", "role_groups.engineer.enable"),
@@ -1881,6 +1884,92 @@ fn harness_role_groups_load_custom_roles() {
     assert_eq!(
         manager.model.as_ref().map(ToString::to_string).as_deref(),
         Some("openai/gpt-5.5")
+    );
+}
+
+/// Ensures harness custom prompts parse, preserve order, and are available by
+/// stable id for the CLI `/prompt <id>` command.
+#[test]
+fn harness_custom_prompts_parse_from_config() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        r#"custom_prompts:
+  - id: review
+    text: "Review this code carefully"
+  - id: summarize
+    text: |
+      Summarize the current session.
+"#,
+    )
+    .expect("write");
+
+    let settings = load_harness_settings_in(&dirs_with_config(dir)).expect("load");
+
+    assert_eq!(
+        settings.custom_prompts,
+        vec![
+            CustomPrompt {
+                id: "review".to_owned(),
+                text: "Review this code carefully".to_owned(),
+            },
+            CustomPrompt {
+                id: "summarize".to_owned(),
+                text: "Summarize the current session.\n".to_owned(),
+            },
+        ]
+    );
+}
+
+/// Ensures invalid custom prompt ids fail during config loading instead of
+/// producing ambiguous or unreachable `/prompt <id>` commands.
+#[test]
+fn harness_custom_prompts_reject_empty_whitespace_and_duplicate_ids() {
+    for (yaml, expected) in [
+        (
+            "custom_prompts:\n  - id: ''\n    text: hello\n",
+            "must not be empty",
+        ),
+        (
+            "custom_prompts:\n  - id: 'bad id'\n    text: hello\n",
+            "must not contain whitespace",
+        ),
+        (
+            "custom_prompts:\n  - id: dup\n    text: one\n  - id: dup\n    text: two\n",
+            "configured more than once",
+        ),
+    ] {
+        let td = TempDir::new().expect("tempdir");
+        let dir = td.path();
+        std::fs::write(dir.join("harness.yaml"), yaml).expect("write");
+
+        let error = load_harness_settings_in(&dirs_with_config(dir)).expect_err("reject prompt");
+
+        assert!(
+            error.to_string().contains(expected),
+            "error should contain `{expected}`: {error}"
+        );
+    }
+}
+
+/// Ensures empty custom prompt text is rejected because selecting it would look
+/// like a successful no-op rather than a reusable prompt template.
+#[test]
+fn harness_custom_prompts_reject_empty_text() {
+    let td = TempDir::new().expect("tempdir");
+    let dir = td.path();
+    std::fs::write(
+        dir.join("harness.yaml"),
+        "custom_prompts:\n  - id: empty\n    text: ''\n",
+    )
+    .expect("write");
+
+    let error = load_harness_settings_in(&dirs_with_config(dir)).expect_err("reject empty text");
+
+    assert!(
+        error.to_string().contains("text must not be empty"),
+        "error should explain empty text: {error}"
     );
 }
 

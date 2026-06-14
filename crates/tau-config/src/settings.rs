@@ -6,7 +6,7 @@
 //!
 //! Uses the `config` crate for layered YAML loading.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -506,6 +506,11 @@ pub struct HarnessSettings {
     /// global source list for inspection and future config tooling.
     pub prompt_fragments: Vec<RolePromptFragment>,
 
+    /// User-configured prompt templates exposed in the CLI as `/prompt <id>`.
+    /// IDs are unique, non-empty, and contain no whitespace so they can be
+    /// addressed unambiguously from the slash command.
+    pub custom_prompts: Vec<CustomPrompt>,
+
     /// Handlebars template used to mint new durable agent identifiers.
     pub agent_id_template: String,
 
@@ -524,6 +529,8 @@ struct HarnessSettingsWire {
     role_groups: RawRoleGroups,
     #[serde(default, alias = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
+    #[serde(default, alias = "customPrompts")]
+    custom_prompts: Vec<CustomPrompt>,
     agents: AgentsSettings,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -551,12 +558,14 @@ impl<'de> Deserialize<'de> for HarnessSettings {
             roles: HashMap::new(),
             role_groups: Vec::new(),
             prompt_fragments: wire.prompt_fragments,
+            custom_prompts: wire.custom_prompts,
             agent_id_template: wire.agents.id_template,
             agent_display_name_template: wire.agents.display_name_template,
         };
         settings
             .apply_role_group_overrides(wire.role_groups)
             .map_err(D::Error::custom)?;
+        validate_custom_prompts(&settings.custom_prompts).map_err(D::Error::custom)?;
         settings.remove_disabled_roles();
         Ok(settings)
     }
@@ -572,6 +581,46 @@ struct HarnessRoleOverrides {
     role_groups: RawRoleGroups,
     #[serde(default, alias = "promptFragments")]
     prompt_fragments: Vec<RolePromptFragment>,
+}
+
+/// One saved prompt template exposed through the CLI `/prompt <id>` command.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomPrompt {
+    /// Stable command argument used to select the prompt. Must be unique,
+    /// non-empty, and contain no whitespace.
+    pub id: String,
+    /// Prompt text inserted into the editable CLI prompt buffer. Must be
+    /// non-empty; users can still edit it before submission.
+    pub text: String,
+}
+
+fn validate_custom_prompts(prompts: &[CustomPrompt]) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for prompt in prompts {
+        if prompt.id.is_empty() {
+            return Err("custom prompt id must not be empty".to_owned());
+        }
+        if prompt.id.split_whitespace().count() != 1 || prompt.id.trim() != prompt.id {
+            return Err(format!(
+                "custom prompt id `{}` must not contain whitespace",
+                prompt.id
+            ));
+        }
+        if prompt.text.is_empty() {
+            return Err(format!(
+                "custom prompt `{}` text must not be empty",
+                prompt.id
+            ));
+        }
+        if !seen.insert(prompt.id.as_str()) {
+            return Err(format!(
+                "custom prompt id `{}` is configured more than once",
+                prompt.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// One ordered group in the role navigation palette.
@@ -1461,6 +1510,7 @@ fn normalize_harness_config_value(
     normalize_alias_key(map, "defaultRole", "default_role", source, "root")?;
     normalize_alias_key(map, "roleGroups", "role_groups", source, "root")?;
     normalize_alias_key(map, "promptFragments", "prompt_fragments", source, "root")?;
+    normalize_alias_key(map, "customPrompts", "custom_prompts", source, "root")?;
     if let Some(serde_json::Value::Object(agents)) = map.get_mut("agents") {
         normalize_alias_key(agents, "idTemplate", "id_template", source, "agents")?;
         normalize_alias_key(
@@ -1639,6 +1689,7 @@ fn canonical_top_level_key(key: &str) -> &str {
         "defaultRole" => "default_role",
         "roleGroups" => "role_groups",
         "promptFragments" => "prompt_fragments",
+        "customPrompts" => "custom_prompts",
         _ => key,
     }
 }
