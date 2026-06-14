@@ -164,10 +164,10 @@ impl Handshake {
     /// returns it instead of panicking. Use [`Handshake::try_intercept`] to
     /// receive that error immediately while building the handshake.
     pub fn intercept(mut self, selector: EventSelector, priority: InterceptionPriority) -> Self {
-        if self.error.is_none() {
-            if let Err(error) = self.add_intercept(selector, priority) {
-                self.error = Some(error);
-            }
+        if self.error.is_none()
+            && let Err(error) = self.add_intercept(selector, priority)
+        {
+            self.error = Some(error);
         }
         self
     }
