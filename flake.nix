@@ -48,7 +48,7 @@
         cargoCrap = pkgs.callPackage ./nix/pkgs/cargo-crap.nix { };
         selfciPkg = selfci.packages.${system}.default;
         mq = pkgs.writeShellScriptBin "mq" ''
-          exec ${selfciPkg}/bin/selfci mq "$@"
+          exec ${selfciPkg}/bin/selfci mq --wait "$@"
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
