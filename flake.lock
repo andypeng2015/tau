@@ -521,11 +521,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1778739253,
-        "narHash": "sha256-sndfFm06522D3ibi/kgtCAQqQ01UylIDxXKVuViHuo8=",
+        "lastModified": 1781406197,
+        "narHash": "sha256-YbNuqZ4GaXT4+BIyz+Vb9ozUYcK1gIqXc+fna0r2qhM=",
         "owner": "dpc",
         "repo": "selfci",
-        "rev": "01e6e45558b8d46aca1226d569da7f2066829c7d",
+        "rev": "93dc2fe6705418357cb37270604986d89dd0f4e3",
         "type": "github"
       },
       "original": {
