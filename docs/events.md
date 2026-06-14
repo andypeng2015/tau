@@ -34,6 +34,10 @@ for control of the emit/intercept pipeline.
 - **`harness.efforts_available`** — Which effort levels are valid for the
   selected role's resolved model. Empty when the selected role has no
   resolved model or the provider doesn't support reasoning.
+- **`harness.verbosities_available`** — Which output verbosity levels are valid
+  for the selected role's resolved model.
+- **`harness.thinking_summaries_available`** — Which thinking-summary modes are
+  valid for the selected role's resolved model.
 
 ## Session (harness session tracker)
 
@@ -80,9 +84,10 @@ of an agent log.
   harness (e.g. `!`-shell command output, AGENTS.md preamble). Folds into the
   agent tree like a real user prompt.
 - **`agent.prompt_created`** — The harness assembled a provider prompt and
-  assigned it an `agent_prompt_id`; payload carries `agent_id`,
-  `system_prompt`, materialized `context`, tools or `tools_ref`, model,
-  model params, tool choice, originator, and previous-response hint. This is
+  assigned it an `agent_prompt_id`; payload carries `agent_id`, `session_id`,
+  `system_prompt`, materialized `context`, tools or `tools_ref`, model, model
+  params, tool choice, originator, cache-sharing flag, optional UI correlation
+  id, and optional compaction summary. This is
   operational delivery state for the provider; transcript truth is still the
   accepted prompt, provider response, terminal tool results, and compaction
   facts.
@@ -232,10 +237,12 @@ harness/agent.
   dispatched and answered. Interceptors cannot drop or rewrite these validated
   projections. See [agent-messaging.md](agent-messaging.md) for model-facing tool
   examples.
-- **`extension.event`** — Custom extension-defined event with a free-form
-  dotted name and CBOR payload. The harness routes it like any other
-  event. It is runtime/debug-log state unless a typed semantic event is added
-  for a durable use case.
+- **`extension.event`** — Custom extension-defined event with an
+  extension-owned dotted name and CBOR payload. The nested name must not use
+  reserved first-party categories (`tool`, `action`, `agent`, `extension`,
+  `provider`, `harness`, `ui`, `shell`, `session`, or `term`). The harness
+  routes it like any other event. It is runtime/debug-log state unless a typed
+  semantic event is added for a durable use case.
 
 ## UI
 
@@ -252,11 +259,13 @@ intent.
   (e.g. notification idle reset), not persisted.
 - **`ui.role_select`** — User requests a role switch. The harness resolves
   the role to a provider-published model at runtime.
-- **`ui.role_update`** — User changes or deletes a role. Updates are typed
-  field mutations (`model`, `effort`, `verbosity`, `thinking-summary`,
-  `service-tier`, `tools-profile`) and are persisted as runtime role
-  overrides; omitted/null fields clear the role value back to
-  model/provider fallback behavior.
+- **`ui.role_update`** — User changes or deletes a role. Wire actions are
+  `delete`, `set_model`, `set_effort`, `set_verbosity`,
+  `set_thinking_summary`, `set_service_tier`, `set_compaction_threshold`,
+  `set_tools`, `set_enable_tool_groups`, `set_disable_tool_groups`,
+  `set_enable_tools`, and `set_disable_tools`. Nullable scalar setters use
+  `null` to clear back to model/provider fallback behavior; vector setters
+  replace the corresponding allow/block list, including with an empty list.
 - **`ui.detach_request`** — UI is detaching but wants the daemon to keep
   running so a later `tau --attach` can reconnect.
 - **`ui.shell_command`** — User submitted a `!` (in-context) or `!!`
