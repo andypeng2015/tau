@@ -498,7 +498,10 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
             }
             cli::Command::Run(_)
             | cli::Command::Dev {
-                command: cli::DevCommand::PrintPrompt | cli::DevCommand::PrintTools,
+                command:
+                    cli::DevCommand::PrintPrompt { .. }
+                    | cli::DevCommand::PrintSystemPrompt
+                    | cli::DevCommand::PrintTools,
             } => {}
             cli::Command::SessionList { .. } => {
                 reject_harness_config_overrides(&harness_config_overrides, "session-list")?;
@@ -653,9 +656,20 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                     println!("wrote {}", out.display());
                     Ok(())
                 }
-                cli::DevCommand::PrintPrompt => {
+                cli::DevCommand::PrintPrompt { enable_agents_md } => {
                     let role = required_harness_role(harness.role.as_deref(), "print-prompt")?;
                     print_prompt::run_print_prompt(
+                        role,
+                        enable_agents_md,
+                        &role_cli_overrides,
+                        &extension_cli_overrides,
+                        &harness_config_overrides,
+                    )
+                }
+                cli::DevCommand::PrintSystemPrompt => {
+                    let role =
+                        required_harness_role(harness.role.as_deref(), "print-system-prompt")?;
+                    print_prompt::run_print_system_prompt(
                         role,
                         &role_cli_overrides,
                         &extension_cli_overrides,

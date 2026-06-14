@@ -9919,3 +9919,95 @@ fn explicit_parent_agent_start_inherits_only_inheritable_metadata() {
 
     h.shutdown().expect("shutdown");
 }
+
+/// Ensures full prompt rendering with AGENTS disabled returns only the system
+/// wrapper and never falls back to harness-side filesystem discovery.
+#[test]
+fn rendered_prompt_without_agents_md_uses_system_wrapper_only() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path().join("state")).expect("start");
+    seed_render_prompt_role(&mut h);
+
+    let result = request_rendered_prompt(&mut h, "debug-role", false);
+    let prompt = result.prompt.expect("rendered prompt");
+
+    assert_eq!(result.error, None);
+    assert!(prompt.contains("<message role=\"system\">"));
+    assert!(prompt.contains("DEBUG ROLE PROMPT"));
+    assert!(!prompt.contains("source=\"AGENTS.md\""));
+    assert!(!prompt.contains("AGENTS_FILE"));
+}
+
+/// Ensures full prompt rendering uses only harness-owned discovered AGENTS.md
+/// state when AGENTS inclusion is enabled.
+#[test]
+fn rendered_prompt_with_seeded_agents_md_includes_synthetic_agents_message() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path().join("state")).expect("start");
+    seed_render_prompt_role(&mut h);
+    h.discovered_agents_files.push(DiscoveredAgentsFile {
+        source_id: "shell".into(),
+        file_path: td.path().join("AGENTS.md"),
+        content: "seeded AGENTS instructions\n".to_owned(),
+    });
+
+    let result = request_rendered_prompt(&mut h, "debug-role", true);
+    let prompt = result.prompt.expect("rendered prompt");
+
+    assert_eq!(result.error, None);
+    assert!(prompt.contains("<message role=\"user\" synthetic=\"true\" source=\"AGENTS.md\">"));
+    assert!(prompt.contains("<AGENTS_FILE path="));
+    assert!(prompt.contains("seeded AGENTS instructions"));
+}
+
+/// Ensures full prompt rendering reports unknown roles in-band on the request
+/// path instead of synthesizing a prompt.
+#[test]
+fn rendered_prompt_unknown_role_returns_in_band_error() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path().join("state")).expect("start");
+    seed_render_prompt_role(&mut h);
+
+    let result = request_rendered_prompt(&mut h, "missing-role", true);
+
+    assert_eq!(result.prompt, None);
+    assert_eq!(result.error, Some("unknown role: missing-role".to_owned()));
+}
+
+fn seed_render_prompt_role(h: &mut Harness) {
+    h.available_roles = std::collections::HashMap::from([(
+        "debug-role".to_owned(),
+        tau_config::settings::AgentRole {
+            prompt_fragments: vec![tau_config::settings::RolePromptFragment {
+                name: "debug.instructions".to_owned(),
+                priority: tau_proto::PromptPriority::new(100),
+                text: tau_proto::PromptContent::new("DEBUG ROLE PROMPT"),
+            }],
+            ..Default::default()
+        },
+    )]);
+}
+
+fn request_rendered_prompt(
+    h: &mut Harness,
+    role: &str,
+    enable_agents_md: bool,
+) -> tau_proto::RenderedPromptResult {
+    let frames = connect_test_client(h, "render-prompt-test", tau_proto::ClientKind::Ui);
+    h.send_rendered_prompt_result(
+        "render-prompt-test",
+        tau_proto::GetRenderedPrompt {
+            request_id: "request-1".to_owned(),
+            role: role.to_owned(),
+            enable_agents_md,
+        },
+    );
+    let frames = frames.lock().expect("frames lock");
+    frames
+        .iter()
+        .find_map(|frame| match &frame.frame {
+            HarnessOutputMessage::RenderedPromptResult(result) => Some((**result).clone()),
+            _ => None,
+        })
+        .expect("rendered prompt result")
+}

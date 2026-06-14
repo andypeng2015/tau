@@ -85,6 +85,7 @@ use crate::prompt::{
     BUILT_IN_SYSTEM_TEMPLATE_NAME, RolePromptTemplateContext, ToolPromptFragment,
     assemble_prompt_context_from, build_system_prompt_with_tool_template_context,
     built_in_system_prompt_templates, render_agents_context_message,
+    render_effective_prompt_message,
 };
 use crate::secrets::{load_secret_sources, resolve_extension_secrets};
 use crate::settings::{Config, ExtensionStartupDiagnostic, load_harness_settings_or_warn};
@@ -3407,6 +3408,42 @@ impl Harness {
         );
     }
 
+    fn send_rendered_prompt_result(
+        &mut self,
+        connection_id: &str,
+        request: tau_proto::GetRenderedPrompt,
+    ) {
+        let (prompt, error) = if !self.available_roles.contains_key(&request.role) {
+            (None, Some(format!("unknown role: {}", request.role)))
+        } else {
+            let system_prompt = self.build_system_prompt_for_role(&request.role);
+            let agents_context =
+                if request.enable_agents_md && !self.discovered_agents_files.is_empty() {
+                    Some(render_agents_context_message(
+                        self.discovered_agents_files.iter(),
+                    ))
+                } else {
+                    None
+                };
+            (
+                Some(render_effective_prompt_message(
+                    &system_prompt,
+                    agents_context.as_deref(),
+                )),
+                None,
+            )
+        };
+        let _ = self.bus.send_to(
+            connection_id,
+            None,
+            HarnessOutputMessage::RenderedPromptResult(Box::new(tau_proto::RenderedPromptResult {
+                request_id: request.request_id,
+                prompt,
+                error,
+            })),
+        );
+    }
+
     fn send_rendered_tool_definitions_result(
         &mut self,
         connection_id: &str,
@@ -3990,6 +4027,7 @@ impl Harness {
             // these. Ignore silently.
             HarnessInputMessage::Disconnect(_)
             | HarnessInputMessage::GetRenderedSystemPrompt(_)
+            | HarnessInputMessage::GetRenderedPrompt(_)
             | HarnessInputMessage::GetRenderedToolDefinitions(_) => {}
         }
         Ok(())
@@ -4457,6 +4495,10 @@ impl Harness {
             }
             HarnessInputMessage::GetRenderedSystemPrompt(request) => {
                 self.send_rendered_system_prompt_result(client_id, request);
+                Ok(true)
+            }
+            HarnessInputMessage::GetRenderedPrompt(request) => {
+                self.send_rendered_prompt_result(client_id, request);
                 Ok(true)
             }
             HarnessInputMessage::GetRenderedToolDefinitions(request) => {

@@ -410,6 +410,38 @@ pub struct RenderedSystemPromptResult {
     pub error: Option<String>,
 }
 
+/// Request that the harness render the effective provider-visible prompt
+/// context for one role.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GetRenderedPrompt {
+    /// Request correlation id echoed by [`RenderedPromptResult`].
+    pub request_id: String,
+    /// Role name whose resolved prompt should be rendered.
+    pub role: String,
+    /// Include harness-injected AGENTS.md context.
+    #[serde(default = "default_true")]
+    pub enable_agents_md: bool,
+}
+
+/// Response to [`GetRenderedPrompt`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RenderedPromptResult {
+    /// Request correlation id copied from the request.
+    pub request_id: String,
+    /// Rendered prompt context when the role exists and template rendering
+    /// succeeds. Exactly one of `prompt` and `error` should be present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Human-readable failure when the role is unknown or rendering fails.
+    /// Exactly one of `prompt` and `error` should be present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Request that the harness report the effective tools for one role.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GetRenderedToolDefinitions {
@@ -671,6 +703,7 @@ pub enum HarnessInputMessage {
     InterceptReply(InterceptReply),
     GetAgentPromptCreated(GetAgentPromptCreated),
     GetRenderedSystemPrompt(GetRenderedSystemPrompt),
+    GetRenderedPrompt(GetRenderedPrompt),
     GetRenderedToolDefinitions(GetRenderedToolDefinitions),
     ExtensionDataRequest(ExtensionDataRequest),
 }
@@ -703,6 +736,7 @@ pub enum HarnessOutputMessage {
     InterceptRequest(InterceptRequest),
     AgentPromptCreatedResult(Box<AgentPromptCreatedResult>),
     RenderedSystemPromptResult(Box<RenderedSystemPromptResult>),
+    RenderedPromptResult(Box<RenderedPromptResult>),
     RenderedToolDefinitionsResult(Box<RenderedToolDefinitionsResult>),
     ExtensionDataResult(Box<ExtensionDataResult>),
 }

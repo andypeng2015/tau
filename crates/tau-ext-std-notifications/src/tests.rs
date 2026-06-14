@@ -22,6 +22,7 @@ fn message_variant(msg: &HarnessInputMessage) -> &'static str {
         HarnessInputMessage::InterceptReply(_) => "InterceptReply",
         HarnessInputMessage::GetAgentPromptCreated(_) => "GetAgentPromptCreated",
         HarnessInputMessage::GetRenderedSystemPrompt(_) => "GetRenderedSystemPrompt",
+        HarnessInputMessage::GetRenderedPrompt(_) => "GetRenderedPrompt",
         HarnessInputMessage::GetRenderedToolDefinitions(_) => "GetRenderedToolDefinitions",
         HarnessInputMessage::ExtensionDataRequest(_) => "ExtensionDataRequest",
     }

@@ -320,6 +320,9 @@ fn ui_io_output_message_key(message: &HarnessOutputMessage) -> String {
         HarnessOutputMessage::RenderedSystemPromptResult(_) => {
             "message.rendered_system_prompt_result".to_owned()
         }
+        HarnessOutputMessage::RenderedPromptResult(_) => {
+            "message.rendered_prompt_result".to_owned()
+        }
         HarnessOutputMessage::RenderedToolDefinitionsResult(_) => {
             "message.rendered_tool_definitions_result".to_owned()
         }
@@ -339,6 +342,7 @@ fn ui_io_harness_input_message_name(message: &HarnessInputMessage) -> &'static s
         HarnessInputMessage::InterceptReply(_) => "intercept_reply",
         HarnessInputMessage::GetAgentPromptCreated(_) => "get_agent_prompt_created",
         HarnessInputMessage::GetRenderedSystemPrompt(_) => "get_rendered_system_prompt",
+        HarnessInputMessage::GetRenderedPrompt(_) => "get_rendered_prompt",
         HarnessInputMessage::GetRenderedToolDefinitions(_) => "get_rendered_tool_definitions",
         HarnessInputMessage::ExtensionDataRequest(_) => "extension_data_request",
     }

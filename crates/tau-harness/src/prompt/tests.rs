@@ -4,7 +4,7 @@ use tau_proto::{
 };
 
 use super::*;
-
+use crate::discovery::DiscoveredAgentsFile;
 fn assistant_message(text: &str) -> ContextItem {
     ContextItem::Message(MessageItem {
         role: ContextRole::Assistant,
@@ -62,6 +62,33 @@ fn system_prompt_excludes_disable_model_invocation_skills() {
     assert!(!prompt.contains("manual-only"));
 }
 
+#[test]
+fn render_effective_prompt_wraps_system_and_agents_context() {
+    let agents = [DiscoveredAgentsFile {
+        source_id: "core-shell".into(),
+        file_path: "/repo/AGENTS.md".into(),
+        content: "Read the docs.".to_owned(),
+    }];
+    let agents_context = render_agents_context_message(agents.iter());
+
+    let prompt = render_effective_prompt_message("System instructions", Some(&agents_context));
+
+    assert!(prompt.starts_with("<message role=\"system\">\nSystem instructions\n</message>\n"));
+    assert!(prompt.contains("<message role=\"user\" synthetic=\"true\" source=\"AGENTS.md\">"));
+    assert!(
+        prompt.contains("<AGENTS_FILE path=\"/repo/AGENTS.md\">\nRead the docs.\n</AGENTS_FILE>")
+    );
+}
+
+#[test]
+fn render_effective_prompt_can_omit_agents_context() {
+    let prompt = render_effective_prompt_message("System instructions", None);
+
+    assert_eq!(
+        prompt,
+        "<message role=\"system\">\nSystem instructions\n</message>\n"
+    );
+}
 fn cwd_prompt_fragment() -> tau_proto::PromptFragment {
     tau_proto::PromptFragment::new(
         "shell.cwd",

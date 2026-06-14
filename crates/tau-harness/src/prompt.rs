@@ -6,7 +6,6 @@ use tau_core::AgentEntry;
 use tau_proto::{ContextItem, PromptFragment, ToolName};
 
 use crate::discovery::{DiscoveredAgentsFile, DiscoveredSkill};
-
 pub(crate) const BUILT_IN_SYSTEM_TEMPLATE_NAME: &str = "built-in";
 const BUILT_IN_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/system.hbs");
 const BIG_SYSTEM_TEMPLATE_NAME: &str = "big";
@@ -513,6 +512,30 @@ More specific files usually override broader ones.\n\n",
             text.push('\n');
         }
         text.push_str("</AGENTS_FILE>\n\n");
+    }
+
+    text
+}
+
+pub(crate) fn render_effective_prompt_message(
+    system_prompt: &str,
+    agents_context: Option<&str>,
+) -> String {
+    let mut text = String::new();
+    text.push_str("<message role=\"system\">\n");
+    text.push_str(system_prompt);
+    if !system_prompt.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("</message>\n");
+
+    if let Some(agents_context) = agents_context {
+        text.push_str("\n<message role=\"user\" synthetic=\"true\" source=\"AGENTS.md\">\n");
+        text.push_str(agents_context);
+        if !agents_context.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("</message>\n");
     }
 
     text

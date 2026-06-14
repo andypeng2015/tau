@@ -123,14 +123,13 @@ fn daemon_mode_accepts_later_clients() {
     );
 }
 
-/// Ensures daemon debug prompt rendering uses the requested role over the
-/// socket path.
+/// Ensures daemon debug system-prompt rendering uses the requested role over
+/// the socket path.
 #[test]
 fn daemon_mode_renders_system_prompt_for_requested_role() {
-    // `tau dev print-prompt` asks the daemon for the same rendered prompt the
-    // harness would send to the provider. Exercise the socket helper rather
-    // than a direct Harness call so the debug command's request/response path is
-    // covered.
+    // `tau dev print-system-prompt` asks the daemon for the rendered system
+    // prompt. Exercise the socket helper rather than a direct Harness call so
+    // the debug command's request/response path is covered.
     let td = TempDir::new().expect("tempdir");
     let sock = td.path().join("daemon.sock");
     let sp = td.path().join("state");

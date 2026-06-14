@@ -203,8 +203,15 @@ pub enum DevCommand {
         message: String,
     },
 
-    /// Print the rendered system prompt for a role.
-    PrintPrompt,
+    /// Print the effective provider-visible prompt context for a role.
+    PrintPrompt {
+        /// Include harness-injected AGENTS.md context.
+        #[arg(long = "enable-agents-md", default_value_t = true, action = clap::ArgAction::Set)]
+        enable_agents_md: bool,
+    },
+
+    /// Print only the rendered system prompt for a role.
+    PrintSystemPrompt,
 
     /// Print the effective tool definitions for a role.
     PrintTools,

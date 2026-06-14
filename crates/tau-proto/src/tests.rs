@@ -396,8 +396,13 @@ fn representative_input_messages() -> Vec<HarnessInputMessage> {
             agent_prompt_id: "sp-1".into(),
         }),
         HarnessInputMessage::GetRenderedSystemPrompt(GetRenderedSystemPrompt {
+            request_id: "render-system-prompt-1".to_owned(),
+            role: "engineer".to_owned(),
+        }),
+        HarnessInputMessage::GetRenderedPrompt(GetRenderedPrompt {
             request_id: "render-prompt-1".to_owned(),
             role: "engineer".to_owned(),
+            enable_agents_md: true,
         }),
         HarnessInputMessage::GetRenderedToolDefinitions(GetRenderedToolDefinitions {
             request_id: "render-tools-1".to_owned(),
@@ -449,8 +454,13 @@ fn representative_output_messages() -> Vec<HarnessOutputMessage> {
             prompt: None,
         })),
         HarnessOutputMessage::RenderedSystemPromptResult(Box::new(RenderedSystemPromptResult {
-            request_id: "render-prompt-1".to_owned(),
+            request_id: "render-system-prompt-1".to_owned(),
             prompt: Some("You are helpful.".to_owned()),
+            error: None,
+        })),
+        HarnessOutputMessage::RenderedPromptResult(Box::new(RenderedPromptResult {
+            request_id: "render-prompt-1".to_owned(),
+            prompt: Some("<message role=\"system\">\nYou are helpful.\n</message>\n".to_owned()),
             error: None,
         })),
         HarnessOutputMessage::RenderedToolDefinitionsResult(Box::new(

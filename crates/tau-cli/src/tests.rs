@@ -43,11 +43,39 @@ fn dev_print_prompt_uses_shared_role_flag() {
     assert!(matches!(
         cli.command,
         Some(super::cli::Command::Dev {
-            command: super::cli::DevCommand::PrintPrompt,
+            command: super::cli::DevCommand::PrintPrompt {
+                enable_agents_md: true
+            },
         })
     ));
 }
 
+#[test]
+fn dev_print_prompt_accepts_agents_md_toggle() {
+    let cli =
+        super::cli::Cli::parse_from(["tau", "dev", "print-prompt", "--enable-agents-md", "false"]);
+    assert!(matches!(
+        cli.command,
+        Some(super::cli::Command::Dev {
+            command: super::cli::DevCommand::PrintPrompt {
+                enable_agents_md: false,
+            },
+        })
+    ));
+}
+
+#[test]
+fn dev_print_system_prompt_uses_shared_role_flag() {
+    let cli =
+        super::cli::Cli::parse_from(["tau", "--role", "engineer", "dev", "print-system-prompt"]);
+    assert_eq!(cli.harness.role.as_deref(), Some("engineer"));
+    assert!(matches!(
+        cli.command,
+        Some(super::cli::Command::Dev {
+            command: super::cli::DevCommand::PrintSystemPrompt,
+        })
+    ));
+}
 #[test]
 fn dev_print_tools_uses_shared_role_flag() {
     // `print-tools` mirrors print-prompt and uses the same global role flag.
@@ -251,7 +279,9 @@ fn global_harness_flags_parse_before_dev_print_prompt() {
     assert!(matches!(
         cli.command,
         Some(super::cli::Command::Dev {
-            command: super::cli::DevCommand::PrintPrompt,
+            command: super::cli::DevCommand::PrintPrompt {
+                enable_agents_md: true
+            },
         })
     ));
 }

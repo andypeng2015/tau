@@ -70,6 +70,7 @@ enum TestMessage {
     LiveDelivery(EventDelivery),
     AgentPromptCreatedResult(Box<tau_proto::AgentPromptCreatedResult>),
     RenderedSystemPromptResult(Box<tau_proto::RenderedSystemPromptResult>),
+    RenderedPromptResult(Box<tau_proto::RenderedPromptResult>),
     RenderedToolDefinitionsResult(Box<tau_proto::RenderedToolDefinitionsResult>),
     ExtensionDataResult(Box<tau_proto::ExtensionDataResult>),
 }
@@ -105,6 +106,9 @@ impl TestProtocolItem {
             }
             HarnessOutputMessage::RenderedSystemPromptResult(message) => {
                 Self::Message(TestMessage::RenderedSystemPromptResult(message))
+            }
+            HarnessOutputMessage::RenderedPromptResult(message) => {
+                Self::Message(TestMessage::RenderedPromptResult(message))
             }
             HarnessOutputMessage::RenderedToolDefinitionsResult(message) => {
                 Self::Message(TestMessage::RenderedToolDefinitionsResult(message))
@@ -147,6 +151,7 @@ impl TestMessage {
             | Self::LiveDelivery(_)
             | Self::AgentPromptCreatedResult(_)
             | Self::RenderedSystemPromptResult(_)
+            | Self::RenderedPromptResult(_)
             | Self::RenderedToolDefinitionsResult(_)
             | Self::ExtensionDataResult(_) => {
                 panic!("test frame shim cannot send harness-output message as input")
