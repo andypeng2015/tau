@@ -400,7 +400,7 @@ where
             ExtensionDataValue::ListFiles { entries } => Ok(entries
                 .into_iter()
                 .map(|entry| StorageEntry {
-                    path: entry.path,
+                    path: entry.path.into_string(),
                     is_dir: entry.is_dir,
                 })
                 .collect()),

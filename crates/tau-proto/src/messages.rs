@@ -635,8 +635,9 @@ fn default_extension_data_error_kind() -> ExtensionDataErrorKind {
 /// One direct child returned by an extension data list request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionDataEntry {
-    /// Sanitized path relative to the requested scope root.
-    pub path: String,
+    /// Path relative to the requested scope root, validated by the harness and
+    /// carried as the same string wire shape as request paths.
+    pub path: ExtensionDataPath,
     /// True when this entry is a directory.
     pub is_dir: bool,
     /// File size in bytes for files. Directories use `None`.

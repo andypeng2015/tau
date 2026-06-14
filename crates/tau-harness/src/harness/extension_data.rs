@@ -212,12 +212,12 @@ pub(super) fn list_extension_data_entries(
             .to_string_lossy()
             .into_owned();
         out.push(tau_proto::ExtensionDataEntry {
-            path: rel,
+            path: tau_proto::ExtensionDataPath::new(rel),
             is_dir: metadata.is_dir(),
             len: metadata.is_file().then_some(metadata.len()),
         });
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
     Ok(out)
 }
 

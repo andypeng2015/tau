@@ -452,7 +452,7 @@ fn representative_output_messages() -> Vec<HarnessOutputMessage> {
             result: ExtensionDataResultPayload::Ok {
                 value: ExtensionDataValue::ListFiles {
                     entries: vec![ExtensionDataEntry {
-                        path: "notes/state.cbor".to_owned(),
+                        path: ExtensionDataPath::new("notes/state.cbor"),
                         is_dir: false,
                         len: Some(3),
                     }],
@@ -582,6 +582,17 @@ fn extension_data_paths_use_string_wire_shape() {
     let decoded: ExtensionDataRequestOp =
         serde_json::from_value(value).expect("operation should deserialize");
     assert_eq!(decoded, op);
+
+    let entry = ExtensionDataEntry {
+        path: ExtensionDataPath::new("listed/name"),
+        is_dir: false,
+        len: Some(4),
+    };
+    let value = serde_json::to_value(&entry).expect("entry should serialize");
+    assert_eq!(value["path"], "listed/name");
+    let decoded: ExtensionDataEntry =
+        serde_json::from_value(value).expect("entry should deserialize");
+    assert_eq!(decoded, entry);
 }
 
 /// Ensures single-slice decoders reject extra bytes instead of accepting a
