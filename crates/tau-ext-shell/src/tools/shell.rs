@@ -407,120 +407,160 @@ fn merged_user_shell_output(
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
+const USER_SHELL_READ_CHUNK_BYTES: usize = 8192;
+#[cfg(unix)]
+const USER_SHELL_DRAIN_AFTER_DONE: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[cfg(unix)]
+fn set_user_shell_nonblocking(fd: std::os::fd::RawFd) {
+    #[allow(unsafe_code)]
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if 0 <= flags {
+            let _ = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn read_available_user_shell<R: std::io::Read>(
+    pipe: &mut Option<R>,
+    stream: tau_proto::ShellStream,
+    command_id: &tau_proto::ShellCommandId,
+    target_agent_id: &Option<tau_proto::AgentId>,
+    capture: &mut UserStreamCapture,
+    tx: &mpsc::Sender<HarnessInputMessage>,
+) {
+    let Some(pipe_ref) = pipe.as_mut() else {
+        return;
+    };
+
+    let mut close_pipe = false;
+    let mut buf = [0u8; USER_SHELL_READ_CHUNK_BYTES];
+    loop {
+        match pipe_ref.read(&mut buf) {
+            Ok(0) => {
+                close_pipe = true;
+                break;
+            }
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                capture.push_chunk(&chunk);
+                let _ = tx.send(HarnessInputMessage::emit(Event::ShellCommandProgress(
+                    tau_proto::ShellCommandProgress {
+                        command_id: command_id.clone(),
+                        stream,
+                        chunk,
+                        target_agent_id: target_agent_id.clone(),
+                    },
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => {
+                close_pipe = true;
+                break;
+            }
+        }
+    }
+    if close_pipe {
+        *pipe = None;
+    }
+}
+
+#[cfg(unix)]
+fn collect_user_shell_status(
+    status_rx: &mpsc::Receiver<Option<std::process::ExitStatus>>,
+    status: &mut Option<std::process::ExitStatus>,
+    wait_failed: &mut bool,
+) -> bool {
+    use std::sync::mpsc::TryRecvError;
+
+    if status.is_some() || *wait_failed {
+        return true;
+    }
+    match status_rx.try_recv() {
+        Ok(Some(received)) => {
+            *status = Some(received);
+            true
+        }
+        Ok(None) | Err(TryRecvError::Disconnected) => {
+            *wait_failed = true;
+            true
+        }
+        Err(TryRecvError::Empty) => false,
+    }
+}
+
+#[cfg(unix)]
+fn user_shell_poll_timeout_ms(deadline: std::time::Instant) -> i32 {
+    let now = std::time::Instant::now();
+    if deadline <= now {
+        return 0;
+    }
+    let remaining = deadline - now;
+    i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX)
+}
+
+#[cfg(unix)]
+fn drain_user_shell_wake_fd(wake_read: &std::os::fd::OwnedFd) {
+    use std::os::fd::AsRawFd;
+
+    let mut buf = [0u8; 16];
+    loop {
+        #[allow(unsafe_code)]
+        let n = unsafe {
+            libc::read(
+                wake_read.as_raw_fd(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len(),
+            )
+        };
+        if 0 < n {
+            continue;
+        }
+        break;
+    }
+}
+
+#[cfg(unix)]
+fn push_user_shell_poll_fd(poll_fds: &mut Vec<libc::pollfd>, fd: std::os::fd::RawFd) {
+    poll_fds.push(libc::pollfd {
+        fd,
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    });
+}
+
+#[cfg(unix)]
+fn user_shell_poll_fds(
+    stdout_pipe: Option<&std::process::ChildStdout>,
+    stderr_pipe: Option<&std::process::ChildStderr>,
+    wake_read: Option<&std::os::fd::OwnedFd>,
+) -> Vec<libc::pollfd> {
+    use std::os::fd::AsRawFd;
+
+    let mut poll_fds = Vec::new();
+    if let Some(pipe) = stdout_pipe {
+        push_user_shell_poll_fd(&mut poll_fds, pipe.as_raw_fd());
+    }
+    if let Some(pipe) = stderr_pipe {
+        push_user_shell_poll_fd(&mut poll_fds, pipe.as_raw_fd());
+    }
+    if let Some(wake_read) = wake_read {
+        push_user_shell_poll_fd(&mut poll_fds, wake_read.as_raw_fd());
+    }
+    poll_fds
+}
+
+#[cfg(unix)]
 fn dispatch_user_shell_command_unix(
     cmd: tau_proto::UiShellCommand,
     mut child: std::process::Child,
     timeout_secs: u64,
     tx: &mpsc::Sender<HarnessInputMessage>,
 ) {
-    use std::io::Read;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-    use std::sync::mpsc::TryRecvError;
-
-    const READ_CHUNK_BYTES: usize = 8192;
-    const DRAIN_AFTER_DONE: std::time::Duration = std::time::Duration::from_millis(50);
-
-    fn set_nonblocking(fd: RawFd) {
-        #[allow(unsafe_code)]
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            if 0 <= flags {
-                let _ = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            }
-        }
-    }
-
-    fn read_available<R: Read>(
-        pipe: &mut Option<R>,
-        stream: tau_proto::ShellStream,
-        command_id: &tau_proto::ShellCommandId,
-        target_agent_id: &Option<tau_proto::AgentId>,
-        capture: &mut UserStreamCapture,
-        tx: &mpsc::Sender<HarnessInputMessage>,
-    ) {
-        let Some(pipe_ref) = pipe.as_mut() else {
-            return;
-        };
-
-        let mut close_pipe = false;
-        let mut buf = [0u8; READ_CHUNK_BYTES];
-        loop {
-            match pipe_ref.read(&mut buf) {
-                Ok(0) => {
-                    close_pipe = true;
-                    break;
-                }
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    capture.push_chunk(&chunk);
-                    let _ = tx.send(HarnessInputMessage::emit(Event::ShellCommandProgress(
-                        tau_proto::ShellCommandProgress {
-                            command_id: command_id.clone(),
-                            stream,
-                            chunk,
-                            target_agent_id: target_agent_id.clone(),
-                        },
-                    )));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => {
-                    close_pipe = true;
-                    break;
-                }
-            }
-        }
-        if close_pipe {
-            *pipe = None;
-        }
-    }
-
-    fn collect_status(
-        status_rx: &mpsc::Receiver<Option<std::process::ExitStatus>>,
-        status: &mut Option<std::process::ExitStatus>,
-        wait_failed: &mut bool,
-    ) -> bool {
-        if status.is_some() || *wait_failed {
-            return true;
-        }
-        match status_rx.try_recv() {
-            Ok(Some(received)) => {
-                *status = Some(received);
-                true
-            }
-            Ok(None) | Err(TryRecvError::Disconnected) => {
-                *wait_failed = true;
-                true
-            }
-            Err(TryRecvError::Empty) => false,
-        }
-    }
-
-    fn poll_timeout_ms(deadline: std::time::Instant) -> i32 {
-        let now = std::time::Instant::now();
-        if deadline <= now {
-            return 0;
-        }
-        let remaining = deadline - now;
-        i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX)
-    }
-
-    fn drain_wake_fd(wake_read: &OwnedFd) {
-        let mut buf = [0u8; 16];
-        loop {
-            #[allow(unsafe_code)]
-            let n = unsafe {
-                libc::read(
-                    wake_read.as_raw_fd(),
-                    buf.as_mut_ptr().cast::<libc::c_void>(),
-                    buf.len(),
-                )
-            };
-            if 0 < n {
-                continue;
-            }
-            break;
-        }
-    }
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let pid = child.id();
@@ -533,10 +573,10 @@ fn dispatch_user_shell_command_unix(
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     if let Some(pipe) = stdout_pipe.as_ref() {
-        set_nonblocking(pipe.as_raw_fd());
+        set_user_shell_nonblocking(pipe.as_raw_fd());
     }
     if let Some(pipe) = stderr_pipe.as_ref() {
-        set_nonblocking(pipe.as_raw_fd());
+        set_user_shell_nonblocking(pipe.as_raw_fd());
     }
 
     let mut wake_fds = [0; 2];
@@ -554,7 +594,7 @@ fn dispatch_user_shell_command_unix(
         (None, None)
     };
     if let Some(wake_read) = wake_read.as_ref() {
-        set_nonblocking(wake_read.as_raw_fd());
+        set_user_shell_nonblocking(wake_read.as_raw_fd());
     }
     let waiter_wake_read = wake_read.as_ref().and_then(|wake_read| {
         #[allow(unsafe_code)]
@@ -596,7 +636,7 @@ fn dispatch_user_shell_command_unix(
     let deadline = std::time::Instant::now() + timeout;
 
     loop {
-        read_available(
+        read_available_user_shell(
             &mut stdout_pipe,
             tau_proto::ShellStream::Stdout,
             &cmd.command_id,
@@ -604,7 +644,7 @@ fn dispatch_user_shell_command_unix(
             &mut stdout,
             tx,
         );
-        read_available(
+        read_available_user_shell(
             &mut stderr_pipe,
             tau_proto::ShellStream::Stderr,
             &cmd.command_id,
@@ -612,7 +652,7 @@ fn dispatch_user_shell_command_unix(
             &mut stderr,
             tx,
         );
-        if collect_status(&status_rx, &mut status, &mut wait_failed) {
+        if collect_user_shell_status(&status_rx, &mut status, &mut wait_failed) {
             break;
         }
         let now = std::time::Instant::now();
@@ -622,28 +662,11 @@ fn dispatch_user_shell_command_unix(
             break;
         }
 
-        let mut poll_fds = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_ref() {
-            poll_fds.push(libc::pollfd {
-                fd: pipe.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            });
-        }
-        if let Some(pipe) = stderr_pipe.as_ref() {
-            poll_fds.push(libc::pollfd {
-                fd: pipe.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            });
-        }
-        if let Some(wake_read) = wake_read.as_ref() {
-            poll_fds.push(libc::pollfd {
-                fd: wake_read.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            });
-        }
+        let mut poll_fds = user_shell_poll_fds(
+            stdout_pipe.as_ref(),
+            stderr_pipe.as_ref(),
+            wake_read.as_ref(),
+        );
 
         if poll_fds.is_empty() {
             let sleep_for = (deadline - now).min(std::time::Duration::from_millis(25));
@@ -656,17 +679,17 @@ fn dispatch_user_shell_command_unix(
             let _ = libc::poll(
                 poll_fds.as_mut_ptr(),
                 poll_fds.len() as libc::nfds_t,
-                poll_timeout_ms(deadline),
+                user_shell_poll_timeout_ms(deadline),
             );
         }
         if let Some(wake_read) = wake_read.as_ref() {
-            drain_wake_fd(wake_read);
+            drain_user_shell_wake_fd(wake_read);
         }
     }
 
-    let drain_deadline = std::time::Instant::now() + DRAIN_AFTER_DONE;
+    let drain_deadline = std::time::Instant::now() + USER_SHELL_DRAIN_AFTER_DONE;
     loop {
-        read_available(
+        read_available_user_shell(
             &mut stdout_pipe,
             tau_proto::ShellStream::Stdout,
             &cmd.command_id,
@@ -674,7 +697,7 @@ fn dispatch_user_shell_command_unix(
             &mut stdout,
             tx,
         );
-        read_available(
+        read_available_user_shell(
             &mut stderr_pipe,
             tau_proto::ShellStream::Stderr,
             &cmd.command_id,
@@ -682,29 +705,14 @@ fn dispatch_user_shell_command_unix(
             &mut stderr,
             tx,
         );
-        let _ = collect_status(&status_rx, &mut status, &mut wait_failed);
-        if stdout_pipe.is_none() && stderr_pipe.is_none() {
-            break;
-        }
-        if drain_deadline <= std::time::Instant::now() {
+        let _ = collect_user_shell_status(&status_rx, &mut status, &mut wait_failed);
+        if (stdout_pipe.is_none() && stderr_pipe.is_none())
+            || drain_deadline <= std::time::Instant::now()
+        {
             break;
         }
 
-        let mut poll_fds = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_ref() {
-            poll_fds.push(libc::pollfd {
-                fd: pipe.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            });
-        }
-        if let Some(pipe) = stderr_pipe.as_ref() {
-            poll_fds.push(libc::pollfd {
-                fd: pipe.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-                revents: 0,
-            });
-        }
+        let mut poll_fds = user_shell_poll_fds(stdout_pipe.as_ref(), stderr_pipe.as_ref(), None);
         if poll_fds.is_empty() {
             break;
         }
@@ -713,7 +721,7 @@ fn dispatch_user_shell_command_unix(
             let _ = libc::poll(
                 poll_fds.as_mut_ptr(),
                 poll_fds.len() as libc::nfds_t,
-                poll_timeout_ms(drain_deadline),
+                user_shell_poll_timeout_ms(drain_deadline),
             );
         }
     }

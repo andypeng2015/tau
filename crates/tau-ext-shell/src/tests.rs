@@ -678,7 +678,7 @@ fn schedule_tool_started_reports_queue_full_error() {
         panic!("expected tool started");
     };
 
-    let Err((returned, failure)) = schedule_tool_started(
+    let Err(error) = schedule_tool_started(
         invoke,
         &scheduler,
         &tx,
@@ -688,6 +688,7 @@ fn schedule_tool_started_reports_queue_full_error() {
     ) else {
         panic!("queue-full call should be rejected");
     };
+    let (returned, failure) = *error;
 
     assert_eq!(returned.call_id.as_str(), "queue-full-read");
     assert!(failure.message.contains("queue limit is 0"));
