@@ -124,6 +124,46 @@ fn command_name_completion_preserves_trailing_arguments() {
     assert_eq!(cands[0].replacement, "/model trailing");
 }
 
+/// Protects slash completion from panicking on valid multi-byte whitespace
+/// separators such as an em space.
+#[test]
+fn slash_arg_completion_accepts_multibyte_whitespace() {
+    let data = CompletionData::new();
+    data.set_arg_completer(CommandName::new("/set"), make_completer());
+    let buf = "/set\u{2003}show-diff ";
+    let cands = build_candidates(
+        &[SlashCommand::new("/set", "set a UI setting")],
+        &data,
+        buf,
+        buf.len(),
+    );
+
+    assert_eq!(cands.len(), 2);
+    assert_eq!(cands[0].replacement, "/set show-diff true");
+    assert_eq!(cands[1].replacement, "/set show-diff false");
+}
+
+/// Protects the public completion entry point from non-char-boundary cursor
+/// offsets supplied by callers.
+#[test]
+fn slash_arg_completion_ignores_non_boundary_cursor() {
+    let data = CompletionData::new();
+    data.set_arg_completer(CommandName::new("/set"), make_completer());
+    let buf = "/set é";
+    let cursor_inside_e = "/set ".len() + 1;
+
+    let result = std::panic::catch_unwind(|| {
+        build_candidates(
+            &[SlashCommand::new("/set", "set a UI setting")],
+            &data,
+            buf,
+            cursor_inside_e,
+        )
+    });
+
+    assert!(result.is_ok());
+}
+
 /// Protects command-name completion from preserving same-token text after the
 /// cursor; accepting a command should replace the whole command token.
 #[test]

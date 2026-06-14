@@ -421,8 +421,10 @@ pub(crate) fn build_candidates_with_home_and_rules(
     if first_non_whitespace_starts_action(buffer) {
         let leading_len = buffer.len() - buffer.trim_start().len();
         let view = &buffer[leading_len..];
-        let view_cursor = cursor.saturating_sub(leading_len).min(view.len());
-        let command_token_end = view.find(char::is_whitespace).unwrap_or(view.len());
+        let view_cursor = clamp_to_char_boundary(view, cursor.saturating_sub(leading_len));
+        let command_token_end = first_whitespace(view)
+            .map(|(index, _)| index)
+            .unwrap_or(view.len());
         if view_cursor <= command_token_end {
             let prefix = &view[..view_cursor];
             let suffix = &view[command_token_end..];
@@ -430,13 +432,14 @@ pub(crate) fn build_candidates_with_home_and_rules(
             return replace_token_candidates(&buffer[..leading_len], suffix, candidates);
         }
 
-        if let Some(space_pos) = view.find(char::is_whitespace) {
+        if let Some((space_pos, space_ch)) = first_whitespace(view) {
             let cmd = &view[..space_pos];
             if cmd.is_empty() {
                 return Vec::new();
             }
-            let rest = &view[space_pos + 1..];
-            let rest_cursor = view_cursor.saturating_sub(space_pos + 1).min(rest.len());
+            let rest_start = space_pos + space_ch.len_utf8();
+            let rest = &view[rest_start..];
+            let rest_cursor = view_cursor.saturating_sub(rest_start).min(rest.len());
             let candidates = build_arg_candidates(data, cmd, rest, rest_cursor);
             return prepend_to_replacements(&buffer[..leading_len], candidates);
         }
@@ -706,6 +709,18 @@ fn build_filesystem_candidates_with_home(
     candidates
 }
 
+fn clamp_to_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn first_whitespace(text: &str) -> Option<(usize, char)> {
+    text.char_indices().find(|(_, ch)| ch.is_whitespace())
+}
+
 fn build_arg_candidates(
     data: &CompletionData,
     cmd: &str,
@@ -717,10 +732,11 @@ fn build_arg_candidates(
         return Vec::new();
     };
 
-    let rest_cursor = rest_cursor.min(rest.len());
+    let rest_cursor = clamp_to_char_boundary(rest, rest_cursor);
     let token_start = rest[..rest_cursor]
-        .rfind(char::is_whitespace)
-        .map(|pos| pos + 1)
+        .char_indices()
+        .rev()
+        .find_map(|(pos, ch)| ch.is_whitespace().then_some(pos + ch.len_utf8()))
         .unwrap_or(0);
     let token_end = rest[rest_cursor..]
         .find(char::is_whitespace)
