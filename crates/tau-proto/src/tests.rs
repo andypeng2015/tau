@@ -1585,6 +1585,22 @@ fn tool_response_escapes_header_controls() {
     );
 }
 
+/// Directly constructed ToolResponse headers still pass through render-time
+/// sanitization so header values cannot inject lines or raw DEL controls.
+#[test]
+fn tool_response_escapes_direct_header_value_controls() {
+    let response = ToolResponse {
+        raw: CborValue::Null,
+        headers: vec![ToolResponseHeader {
+            key: "status".to_owned(),
+            value: "ok\nforged: yes\u{7f}".to_owned(),
+        }],
+        body: String::new(),
+    };
+
+    assert_eq!(response.render(), "status: ok\\nforged: yes\\u{7f}\n\n");
+}
+
 /// Body sanitization is last-resort provider safety: it preserves legitimate
 /// line-feed record separators but escapes other raw controls.
 #[test]
