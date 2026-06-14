@@ -182,7 +182,18 @@ pub struct HarnessRoleGroup {
     pub roles: Vec<String>,
 }
 
-/// The harness announces all roles available for selection.
+/// One reusable prompt template configured by the running harness and offered
+/// to UI clients as `/prompt <id>`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessCustomPrompt {
+    /// Stable prompt id accepted by `/prompt <id>`.
+    pub id: String,
+    /// Prompt text inserted into the editable prompt buffer.
+    pub text: String,
+}
+
+/// The harness announces all roles and reusable prompts available for
+/// selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HarnessRolesAvailable {
     /// Role entries sorted by name for deterministic UI menus.
@@ -190,6 +201,9 @@ pub struct HarnessRolesAvailable {
     /// Ordered role groups for structured keyboard navigation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<HarnessRoleGroup>,
+    /// Reusable prompt templates from the running harness config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_prompts: Vec<HarnessCustomPrompt>,
 }
 
 /// The harness announces the selected role and its currently resolved model.

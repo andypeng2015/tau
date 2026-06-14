@@ -1214,6 +1214,8 @@ pub struct Harness {
     pub(crate) available_roles: std::collections::HashMap<String, tau_config::settings::AgentRole>,
     /// Ordered role navigation groups for the currently available roles.
     pub(crate) available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
+    /// Reusable prompt templates from the effective startup harness settings.
+    pub(crate) custom_prompts: Vec<tau_proto::HarnessCustomPrompt>,
     /// Handlebars template used to mint new durable agent identifiers.
     pub(crate) agent_id_template: String,
     /// Optional Handlebars template used to name newly created agents.
@@ -1522,6 +1524,8 @@ struct HarnessBaseParts {
     available_roles: HashMap<String, tau_config::settings::AgentRole>,
     /// Role groups available for navigation and UI display.
     available_role_groups: Vec<tau_proto::HarnessRoleGroup>,
+    /// Reusable prompt templates loaded from effective harness settings.
+    custom_prompts: Vec<tau_proto::HarnessCustomPrompt>,
     /// Runtime role overrides loaded from settings.
     role_overrides: HashMap<String, tau_config::settings::AgentRole>,
     /// Initially selected role name.
@@ -1600,6 +1604,7 @@ impl Harness {
             pending_provider_prompts: HashMap::new(),
             available_roles: parts.available_roles,
             available_role_groups: parts.available_role_groups,
+            custom_prompts: parts.custom_prompts,
             role_overrides: parts.role_overrides,
             agent_id_template: parts.agent_id_template,
             agent_display_name_template: parts.agent_display_name_template,
@@ -1712,6 +1717,14 @@ impl Harness {
             role_groups: available_role_groups,
             missing_default_role,
         } = load_roles(&harness_settings);
+        let custom_prompts = harness_settings
+            .custom_prompts
+            .iter()
+            .map(|prompt| tau_proto::HarnessCustomPrompt {
+                id: prompt.id.clone(),
+                text: prompt.text.clone(),
+            })
+            .collect();
         if available_roles.is_empty() {
             return Err(HarnessError::Participant(
                 "no roles are enabled; enable at least one role in harness.yaml or with --enable-role <role>".to_owned(),
@@ -1736,6 +1749,7 @@ impl Harness {
             current_session_start_reason: eager_session_start_reason,
             available_roles,
             available_role_groups,
+            custom_prompts,
             role_overrides,
             selected_role,
             selected_model,
@@ -1859,6 +1873,14 @@ impl Harness {
             role_groups: available_role_groups,
             missing_default_role,
         } = load_roles(&harness_settings);
+        let custom_prompts = harness_settings
+            .custom_prompts
+            .iter()
+            .map(|prompt| tau_proto::HarnessCustomPrompt {
+                id: prompt.id.clone(),
+                text: prompt.text.clone(),
+            })
+            .collect();
         if available_roles.is_empty() {
             return Err(HarnessError::Participant(
                 "no roles are enabled; enable at least one role in harness.yaml or with --enable-role <role>".to_owned(),
@@ -1884,6 +1906,7 @@ impl Harness {
             current_session_start_reason: eager_session_start_reason,
             available_roles,
             available_role_groups,
+            custom_prompts,
             role_overrides,
             selected_role,
             selected_model,
@@ -4407,6 +4430,7 @@ impl Harness {
                     &self.available_models,
                 ),
                 groups: self.current_role_groups(),
+                custom_prompts: self.custom_prompts.clone(),
             }),
         );
         self.publish_delegate_roles_context();
@@ -6752,6 +6776,7 @@ impl Harness {
                     &self.available_models,
                 ),
                 groups: self.current_role_groups(),
+                custom_prompts: self.custom_prompts.clone(),
             }),
         );
         self.publish_delegate_roles_context();

@@ -358,6 +358,7 @@ impl Harness {
                 &self.available_models,
             ),
             groups: self.current_role_groups(),
+            custom_prompts: self.custom_prompts.clone(),
         });
         if selector_matches_event(selectors, &roles_event) {
             let _ = self

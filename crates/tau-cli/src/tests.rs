@@ -349,7 +349,7 @@ fn extension_cli_overrides_preserve_argument_order() {
 /// text rather than submitting it immediately.
 #[test]
 fn custom_prompt_command_returns_configured_prompt_text() {
-    let prompts = vec![tau_config::settings::CustomPrompt {
+    let prompts = vec![tau_proto::HarnessCustomPrompt {
         id: "review".to_owned(),
         text: "Review this patch carefully".to_owned(),
     }];
@@ -366,7 +366,7 @@ fn custom_prompt_command_returns_configured_prompt_text() {
 /// command text.
 #[test]
 fn custom_prompt_command_reports_unknown_id() {
-    let prompts = vec![tau_config::settings::CustomPrompt {
+    let prompts = vec![tau_proto::HarnessCustomPrompt {
         id: "review".to_owned(),
         text: "Review this patch carefully".to_owned(),
     }];
@@ -377,6 +377,32 @@ fn custom_prompt_command_reports_unknown_id() {
 
     assert!(error.contains("unknown custom prompt `missing`"));
     assert!(error.contains("available: review"));
+}
+
+/// Ensures the CLI uses the running harness announcement as the custom-prompt
+/// source of truth, which keeps reattached UIs aligned with daemon startup
+/// overrides instead of re-reading local config files.
+#[test]
+fn renderer_tracks_custom_prompts_from_harness_event() {
+    let (_term, handle, _vt) = setup(80, 24);
+    let mut renderer = EventRenderer::new(
+        handle,
+        tau_cli_term::CompletionData::new(),
+        tau_themes::Theme::builtin(),
+    );
+    let prompt = tau_proto::HarnessCustomPrompt {
+        id: "review".to_owned(),
+        text: "Review this patch carefully".to_owned(),
+    };
+
+    renderer.handle(&Event::HarnessRolesAvailable(HarnessRolesAvailable {
+        roles: Vec::new(),
+        groups: Vec::new(),
+        custom_prompts: vec![prompt.clone()],
+    }));
+
+    let prompts = renderer.custom_prompts().lock().expect("prompts").clone();
+    assert_eq!(prompts, vec![prompt]);
 }
 
 /// Ensures `/prompt` remains a local slash command for command echo/history
@@ -3119,6 +3145,7 @@ fn role_default_knobs_are_hidden_and_overrides_follow_role() {
             details: None,
         }],
         groups: Vec::new(),
+        custom_prompts: Vec::new(),
     }));
     renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
         model: Some("test/model".into()),
@@ -3190,6 +3217,7 @@ fn role_state_overrides_are_compared_to_role_baseline() {
             details: None,
         }],
         groups: Vec::new(),
+        custom_prompts: Vec::new(),
     }));
     renderer.handle(&Event::HarnessRoleSelected(HarnessRoleSelected {
         model: Some("test/model".into()),

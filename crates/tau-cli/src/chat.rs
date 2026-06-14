@@ -803,12 +803,6 @@ pub(crate) fn run_chat(
     let dirs = tau_config::settings::TauDirs::default();
     let settings = tau_config::settings::load_cli_settings_in(&dirs)
         .map_err(|error| CliError::Participant(format!("cli.yaml failed to parse:\n{error}")))?;
-    let harness_settings = tau_config::settings::load_harness_settings_with_cli_overrides_in(
-        &dirs,
-        role_cli_overrides,
-        harness_config_overrides,
-    )
-    .map_err(|error| CliError::Participant(format!("harness.yaml failed to parse:\n{error}")))?;
     let theme = crate::theme::select_theme(&dirs, settings.theme.clone())
         .map_err(|error| CliError::Participant(format!("cli theme failed to load:\n{error}")))?;
     let prompt = crate::theme::active_prompt_marker(&theme, &settings.prompt_symbol, None);
@@ -926,15 +920,8 @@ pub(crate) fn run_chat(
         tau_cli_term::CommandName::new("/session"),
         build_session_arg_completer(),
     );
-    completion_data.set_arg_completions(
-        tau_cli_term::CommandName::new("/prompt"),
-        harness_settings
-            .custom_prompts
-            .iter()
-            .map(|prompt| tau_cli_term::CompletionItem::plain(prompt.id.clone()))
-            .collect(),
-    );
     let roles_available = renderer.roles_available();
+    let custom_prompts = renderer.custom_prompts();
     let role_groups_available = renderer.role_groups_available();
     let role_group_memory = renderer.role_group_memory();
     let editor_context = renderer.editor_context();
@@ -1003,7 +990,7 @@ pub(crate) fn run_chat(
             action_state,
             draft_handle: draft_handle.clone(),
             prompt_history,
-            custom_prompts: harness_settings.custom_prompts,
+            custom_prompts,
         },
     )?;
 
@@ -1183,7 +1170,7 @@ struct TerminalInputLoopCtx {
     action_state: ActionCommandState,
     draft_handle: DraftHandle,
     prompt_history: PromptHistoryStore,
-    custom_prompts: Vec<tau_config::settings::CustomPrompt>,
+    custom_prompts: Arc<Mutex<Vec<tau_proto::HarnessCustomPrompt>>>,
 }
 
 #[derive(Clone)]
@@ -1548,13 +1535,20 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn handle_custom_prompt_command(&mut self, text: &str) -> bool {
-        let Some(result) = custom_prompt_replacement(text, &self.ctx.custom_prompts) else {
+        let prompts = self
+            .ctx
+            .custom_prompts
+            .lock()
+            .map(|prompts| prompts.clone())
+            .unwrap_or_default();
+        let Some(result) = custom_prompt_replacement(text, &prompts) else {
             return false;
         };
         match result {
             Ok(prompt) => {
                 let cursor = prompt.len();
                 self.term.handle().set_buffer(prompt, cursor);
+                self.term.handle().redraw();
                 self.update_draft();
             }
             Err(message) => self.output.system_info(&message),
@@ -2526,7 +2520,7 @@ fn parsed_action_arguments(
 /// user-visible validation message.
 pub(crate) fn custom_prompt_replacement(
     text: &str,
-    prompts: &[tau_config::settings::CustomPrompt],
+    prompts: &[tau_proto::HarnessCustomPrompt],
 ) -> Option<Result<String, String>> {
     let mut parts = text.split_whitespace();
     if parts.next() != Some("/prompt") {
@@ -2555,7 +2549,7 @@ pub(crate) fn custom_prompt_replacement(
     }
 }
 
-fn custom_prompt_hint(prompts: &[tau_config::settings::CustomPrompt]) -> String {
+fn custom_prompt_hint(prompts: &[tau_proto::HarnessCustomPrompt]) -> String {
     if prompts.is_empty() {
         String::new()
     } else {
@@ -2563,7 +2557,7 @@ fn custom_prompt_hint(prompts: &[tau_config::settings::CustomPrompt]) -> String 
     }
 }
 
-fn custom_prompt_ids(prompts: &[tau_config::settings::CustomPrompt]) -> String {
+fn custom_prompt_ids(prompts: &[tau_proto::HarnessCustomPrompt]) -> String {
     prompts
         .iter()
         .map(|prompt| prompt.id.as_str())

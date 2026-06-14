@@ -239,6 +239,8 @@ pub(crate) struct EventRenderer {
     current_role_state: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Shared ordered role names for input-thread role cycling.
     roles_available: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Shared custom prompt templates announced by the running harness.
+    custom_prompts: std::sync::Arc<std::sync::Mutex<Vec<tau_proto::HarnessCustomPrompt>>>,
     /// Shared ordered role groups for input-thread role cycling.
     role_groups_available: std::sync::Arc<std::sync::Mutex<Vec<tau_proto::HarnessRoleGroup>>>,
     /// Last selected role per role group for in-memory group cycling.
@@ -1078,6 +1080,7 @@ impl EventRenderer {
             fast_service_tier_state: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_role_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             roles_available: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            custom_prompts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             role_groups_available: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             role_group_memory: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             verbosity_state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
@@ -1419,6 +1422,13 @@ impl EventRenderer {
     /// Returns a clone of the shared ordered role list used by role cycling.
     pub(crate) fn roles_available(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
         self.roles_available.clone()
+    }
+
+    /// Returns a clone of the shared custom prompts announced by the harness.
+    pub(crate) fn custom_prompts(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<tau_proto::HarnessCustomPrompt>>> {
+        self.custom_prompts.clone()
     }
 
     /// Returns a clone of the shared ordered role groups used by role cycling.
@@ -4737,6 +4747,16 @@ impl EventRenderer {
         if let Ok(mut available) = self.role_groups_available.lock() {
             *available = roles.groups.clone();
         }
+        if let Ok(mut prompts) = self.custom_prompts.lock() {
+            *prompts = roles.custom_prompts.clone();
+        }
+        let prompt_items = roles
+            .custom_prompts
+            .iter()
+            .map(|prompt| tau_cli_term::CompletionItem::plain(prompt.id.clone()))
+            .collect();
+        self.completion_data
+            .set_arg_completions(tau_cli_term::CommandName::new("/prompt"), prompt_items);
         self.role_defaults = role_defaults;
         if self.current_role.is_some() && self.model_status_block.is_some() {
             self.render_model_status();
