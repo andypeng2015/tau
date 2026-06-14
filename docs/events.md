@@ -35,9 +35,11 @@ for control of the emit/intercept pipeline.
   selected role's resolved model. Empty when the selected role has no
   resolved model or the provider doesn't support reasoning.
 - **`harness.verbosities_available`** — Which output verbosity levels are valid
-  for the selected role's resolved model.
+  for the selected role's resolved model. Empty means no resolved model;
+  `[medium]` means the provider does not expose a verbosity knob.
 - **`harness.thinking_summaries_available`** — Which thinking-summary modes are
-  valid for the selected role's resolved model.
+  valid for the selected role's resolved model. Empty means no resolved model;
+  `[off]` means the provider does not support thinking summaries.
 
 ## Session (harness session tracker)
 
@@ -263,9 +265,11 @@ intent.
   `delete`, `set_model`, `set_effort`, `set_verbosity`,
   `set_thinking_summary`, `set_service_tier`, `set_compaction_threshold`,
   `set_tools`, `set_enable_tool_groups`, `set_disable_tool_groups`,
-  `set_enable_tools`, and `set_disable_tools`. Nullable scalar setters use
-  `null` to clear back to model/provider fallback behavior; vector setters
-  replace the corresponding allow/block list, including with an empty list.
+  `set_enable_tools`, and `set_disable_tools`. Nullable override setters,
+  including `set_tools`, use `null` or omission to clear back to
+  model/provider fallback behavior. For `set_tools`, an empty list is an
+  explicit empty tool allow-list; the enable/disable vector setters replace
+  their corresponding lists, including with empty lists.
 - **`ui.detach_request`** — UI is detaching but wants the daemon to keep
   running so a later `tau --attach` can reconnect.
 - **`ui.shell_command`** — User submitted a `!` (in-context) or `!!`
