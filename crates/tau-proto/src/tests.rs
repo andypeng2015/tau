@@ -675,6 +675,13 @@ fn custom_event_rejects_reserved_category_spelled_as_other() {
     assert_eq!(error.name(), &name);
     assert_eq!(error.into_name(), name);
 }
+/// Ensures the panicking EventName constructor enforces dynamic segment
+/// validation for public callers.
+#[test]
+#[should_panic(expected = "invalid event name segment")]
+fn event_name_new_panics_on_invalid_segments() {
+    let _ = EventName::new(EventCategory::Other("demo.extra".to_owned()), "progress");
+}
 
 /// Ensures dynamic event-name construction rejects invalid segment text before
 /// custom events can enter routing or serialization.

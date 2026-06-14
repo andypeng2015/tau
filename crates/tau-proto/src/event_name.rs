@@ -148,7 +148,7 @@ pub struct EventName {
 
 impl EventName {
     /// Create an event name from a category and static call segment.
-    pub const fn from_static(category: EventCategory, call: &'static str) -> Self {
+    const fn from_static(category: EventCategory, call: &'static str) -> Self {
         Self {
             category,
             call: EventCall::from_static(call),
