@@ -8817,7 +8817,7 @@ fn completed_side_conversation_tool_result_reprompts_parent() {
         .collect();
     assert!(
         tool_results.iter().any(|id| id == "outer-call"),
-        "parent conversation must be re-prompted with delegate ToolResult; got: {tool_results:?}",
+        "parent conversation must be re-prompted with agent_start ToolResult; got: {tool_results:?}",
     );
 
     h.shutdown().expect("shutdown");

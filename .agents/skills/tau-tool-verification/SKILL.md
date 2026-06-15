@@ -323,7 +323,7 @@ Create a scratch directory in `/tmp`, such as `/tmp/tau-cancel-verification.*`, 
 Record all of these observations:
 
 * The agent_start placeholder includes `tau_internal: true`, `self_agent_id`, `sub_agent_id`, and the background agent_start tool call ID.
-* `cancel` must be called with the delegate `tool_call_id`, not the `sub_agent_id`.
+* `cancel` must be called with the agent_start `tool_call_id`, not the `sub_agent_id`.
 * A successful cancel returns exactly `Tool cancellation requested` and does not background.
 * The harness emits a `HarnessInfo` event containing `tool call cancellation request` if event logs are available.
 * The canceled delegate produces a background error that `wait` can collect.
