@@ -2038,9 +2038,15 @@ impl Harness {
             {
                 Ok(spawned) => spawned,
                 Err(error) if !ext_config.require => {
+                    tracing::warn!(
+                        target: "tau_harness::startup",
+                        extension = %ext_config.name,
+                        error = %error,
+                        "optional extension did not initialize during spawn"
+                    );
                     self.emit_info_important(&format!(
-                        "optional extension {} skipped: failed to spawn `extensions.{}`: {error}",
-                        ext_config.name, ext_config.name
+                        "optional extension {} did not initialize",
+                        ext_config.name
                     ));
                     continue;
                 }
@@ -2170,9 +2176,14 @@ impl Harness {
             .get(connection_id)
             .is_some_and(|entry| !entry.require && entry.state != ExtensionState::Ready);
         if optional_pre_ready_extension {
+            tracing::warn!(
+                target: "tau_harness::startup",
+                extension = %name,
+                "optional extension did not initialize: disconnected before becoming ready"
+            );
             self.disable_optional_extension(
                 connection_id,
-                &format!("optional extension {name} skipped: disconnected before becoming ready"),
+                &format!("optional extension {name} did not initialize"),
             );
             return Ok(());
         }
@@ -3165,9 +3176,14 @@ impl Harness {
             if require {
                 continue;
             }
+            tracing::warn!(
+                target: "tau_harness::startup",
+                extension = %name,
+                "optional extension did not initialize: timed out before becoming ready"
+            );
             self.disable_optional_extension(
                 connection_id.as_str(),
-                &format!("optional extension {name} skipped: timed out before becoming ready"),
+                &format!("optional extension {name} did not initialize"),
             );
         }
 
@@ -3895,6 +3911,11 @@ impl Harness {
                     .get(source_id)
                     .map(|e| e.name.clone())
                     .unwrap_or_else(|| "extension".to_owned());
+                let optional = self
+                    .extensions
+                    .entries
+                    .get(source_id)
+                    .is_some_and(|entry| !entry.require);
                 // This is the last line of defense for every extension's typed
                 // configuration schema. Do not downgrade, drop, or make this
                 // startup-only: invalid extension config must be visible in the
@@ -3905,15 +3926,16 @@ impl Harness {
                      invalid values are being ignored",
                     err.message,
                 ));
-                let optional = self
-                    .extensions
-                    .entries
-                    .get(source_id)
-                    .is_some_and(|entry| !entry.require);
                 if optional {
+                    tracing::warn!(
+                        target: "tau_harness::startup",
+                        extension = %name,
+                        error = %err.message,
+                        "optional extension did not initialize: rejected config"
+                    );
                     self.disable_optional_extension(
                         source_id,
-                        &format!("optional extension {name} disabled after rejecting its config"),
+                        &format!("optional extension {name} did not initialize"),
                     );
                 }
             }

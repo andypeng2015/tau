@@ -332,11 +332,14 @@ pub fn resolve_extensions_with_cli_overrides_and_diagnostics(
             Some((first, rest)) => (first.clone(), rest.to_vec()),
             None if entry.require => return Err(ResolveExtensionsError::EmptyCommand(name)),
             None => {
+                tracing::warn!(
+                    target: "tau_harness::startup",
+                    extension = %name,
+                    "optional extension did not initialize: resolved command is empty"
+                );
                 diagnostics.push(ExtensionStartupDiagnostic {
                     extension: name.clone(),
-                    message: format!(
-                        "optional extension {name} skipped: `extensions.{name}.command` is empty; set a command or disable the extension"
-                    ),
+                    message: format!("optional extension {name} did not initialize"),
                 });
                 continue;
             }

@@ -195,12 +195,15 @@ pub fn resolve_extension_secrets(
                 }
                 Ok(None) => {}
                 Err(error) if !extension_config.require => {
+                    tracing::warn!(
+                        target: "tau_harness::startup",
+                        extension = %extension,
+                        error = %error,
+                        "optional extension did not initialize during secret resolution"
+                    );
                     diagnostics.push(ExtensionStartupDiagnostic {
                         extension: extension.clone(),
-                        message: format!(
-                            "optional extension {extension} skipped: {}; check `extensions.{extension}.secrets` in harness.yaml",
-                            error
-                        ),
+                        message: format!("optional extension {extension} did not initialize"),
                     });
                     skipped_extensions.insert(extension.clone());
                     secrets.clear();

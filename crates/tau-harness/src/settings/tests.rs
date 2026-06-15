@@ -663,15 +663,9 @@ fn resolve_extensions_optional_empty_command_is_skipped_with_diagnostic() {
     );
     assert_eq!(resolved.diagnostics.len(), 1);
     assert_eq!(resolved.diagnostics[0].extension, "optional-empty");
-    assert!(
-        resolved.diagnostics[0]
-            .message
-            .contains("optional extension optional-empty skipped")
-    );
-    assert!(
-        resolved.diagnostics[0]
-            .message
-            .contains("extensions.optional-empty.command")
+    assert_eq!(
+        resolved.diagnostics[0].message,
+        "optional extension optional-empty did not initialize"
     );
 }
 

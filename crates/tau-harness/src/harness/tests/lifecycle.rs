@@ -373,7 +373,7 @@ fn optional_extension_config_error_is_replayed_and_disables_extension() {
             event,
             Event::HarnessInfo(info)
                 if info.level == tau_proto::HarnessInfoLevel::Important
-                    && info.message.contains("optional extension optional-config-bad-ext disabled")
+                    && info.message == "optional extension optional-config-bad-ext did not initialize"
         )
     ));
 
@@ -393,12 +393,13 @@ fn optional_extension_config_error_is_replayed_and_disables_extension() {
         Some(Event::HarnessInfo(info))
             if info.level == tau_proto::HarnessInfoLevel::Important
                 && info.message.contains("extension optional-config-bad-ext rejected its config")
+                && info.message.contains("missing token")
     )));
     assert!(frames.iter().any(|routed| matches!(
         peel_inner_event(&routed.frame),
         Some(Event::HarnessInfo(info))
             if info.level == tau_proto::HarnessInfoLevel::Important
-                && info.message.contains("optional extension optional-config-bad-ext disabled")
+                && info.message == "optional extension optional-config-bad-ext did not initialize"
     )));
 }
 
@@ -446,8 +447,7 @@ fn optional_extension_spawn_failure_is_important_and_nonfatal() {
             event,
             Event::HarnessInfo(info)
                 if info.level == tau_proto::HarnessInfoLevel::Important
-                    && info.message.contains("optional extension optional-spawn-bad skipped")
-                    && info.message.contains("failed to spawn")
+                    && info.message == "optional extension optional-spawn-bad did not initialize"
         )
     ));
 }
@@ -478,8 +478,7 @@ fn optional_pre_ready_disconnect_is_important_replayed_and_nonfatal() {
             event,
             Event::HarnessInfo(info)
                 if info.level == tau_proto::HarnessInfoLevel::Important
-                    && info.message.contains("optional extension optional-pre-ready-drop skipped")
-                    && info.message.contains("disconnected before becoming ready")
+                    && info.message == "optional extension optional-pre-ready-drop did not initialize"
         )
     ));
 
@@ -497,7 +496,7 @@ fn optional_pre_ready_disconnect_is_important_replayed_and_nonfatal() {
         peel_inner_event(&routed.frame),
         Some(Event::HarnessInfo(info))
             if info.level == tau_proto::HarnessInfoLevel::Important
-                && info.message.contains("optional extension optional-pre-ready-drop skipped")
+                && info.message == "optional extension optional-pre-ready-drop did not initialize"
     )));
 }
 
@@ -527,8 +526,7 @@ fn optional_startup_timeout_is_important_replayed_and_nonfatal() {
             event,
             Event::HarnessInfo(info)
                 if info.level == tau_proto::HarnessInfoLevel::Important
-                    && info.message.contains("optional extension optional-timeout-ext skipped")
-                    && info.message.contains("timed out before becoming ready")
+                    && info.message == "optional extension optional-timeout-ext did not initialize"
         )
     ));
 
@@ -546,7 +544,7 @@ fn optional_startup_timeout_is_important_replayed_and_nonfatal() {
         peel_inner_event(&routed.frame),
         Some(Event::HarnessInfo(info))
             if info.level == tau_proto::HarnessInfoLevel::Important
-                && info.message.contains("optional extension optional-timeout-ext skipped")
+                && info.message == "optional extension optional-timeout-ext did not initialize"
     )));
 }
 
@@ -613,7 +611,7 @@ fn startup_diagnostics_are_important_and_replayed() {
 
     h.emit_extension_startup_diagnostics(&[crate::settings::ExtensionStartupDiagnostic {
         extension: "optional-diagnostic".to_owned(),
-        message: "optional extension optional-diagnostic skipped: test diagnostic".to_owned(),
+        message: "optional extension optional-diagnostic did not initialize".to_owned(),
     }]);
 
     assert!(event_log_contains_source_event(
@@ -623,7 +621,7 @@ fn startup_diagnostics_are_important_and_replayed() {
             event,
             Event::HarnessInfo(info)
                 if info.level == tau_proto::HarnessInfoLevel::Important
-                    && info.message.contains("optional extension optional-diagnostic skipped")
+                    && info.message == "optional extension optional-diagnostic did not initialize"
         )
     ));
 
@@ -641,7 +639,7 @@ fn startup_diagnostics_are_important_and_replayed() {
         peel_inner_event(&routed.frame),
         Some(Event::HarnessInfo(info))
             if info.level == tau_proto::HarnessInfoLevel::Important
-                && info.message.contains("optional extension optional-diagnostic skipped")
+                && info.message == "optional extension optional-diagnostic did not initialize"
     )));
 }
 
