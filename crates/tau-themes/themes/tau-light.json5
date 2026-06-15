@@ -9,9 +9,17 @@
     "user.prompt.queued":   { fg: "grey" },
 
     // -- Agent responses --
-    "agent.response":       { fg: "dark_blue", italic: true },
+    "agent.response":       { fg: "dark_blue" },
     "agent.pending":        { fg: "grey" },
     "agent.thinking":       { fg: "grey", italic: true },
+
+    // -- Markdown-lite transcript formatting --
+    "markdown.strong":      { bold: true },
+    "markdown.emphasis":    { bold: true, italic: true },
+    "markdown.heading":     { fg: "blue", bold: true },
+    "markdown.list.marker": { fg: "blue", bold: true },
+    "markdown.code":        { fg: "#005fff" },
+    "markdown.escape":      { bg: "#f1e8f5" },
 
     // -- Tool execution --
     "tool.output":          { },

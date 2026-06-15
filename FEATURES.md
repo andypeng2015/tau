@@ -23,8 +23,13 @@ philosophy and motivation see [README.md](README.md); for design notes see
   `tool.started` calls, and use direct async `ShellJob` host shell execution
   outside ext-shell locks.
 - **Daily-driver terminal UX:** slash commands, role/model controls, prompt
-  history, fzf insertion, editor integration, diffs, thinking blocks, and status
-  telemetry are built into the terminal UI.
+  history, fzf insertion, editor integration, Markdown-lite transcript styling,
+  diffs, thinking blocks, and status telemetry are built into the terminal UI.
+
+### Markdown-lite transcript styling
+
+The terminal transcript applies lightweight Markdown-like formatting to submitted
+prompts, assistant responses, and thinking blocks.
 
 
 ## Architecture

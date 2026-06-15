@@ -205,6 +205,57 @@ fn builtin_theme_parses() {
 
     let sigma = theme.resolve_style(&StyleName::new("token.stats.symbol.sigma"));
     assert!(sigma.bold);
+
+    let markdown_strong = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_STRONG));
+    assert!(markdown_strong.bold);
+
+    let markdown_emphasis = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_EMPHASIS));
+    assert!(markdown_emphasis.bold);
+
+    let markdown_heading = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_HEADING));
+    assert!(markdown_heading.bold);
+    assert_eq!(
+        markdown_heading.fg,
+        Some(Color::Rgb {
+            r: 0x80,
+            g: 0xff,
+            b: 0xff,
+        })
+    );
+    assert!(!markdown_heading.underline);
+
+    let markdown_list_marker =
+        theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_LIST_MARKER));
+    assert!(markdown_list_marker.bold);
+    assert_eq!(
+        markdown_list_marker.fg,
+        Some(Color::Rgb {
+            r: 0x80,
+            g: 0xff,
+            b: 0xff,
+        })
+    );
+
+    let markdown_code = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_CODE));
+    assert_eq!(
+        markdown_code.fg,
+        Some(Color::Rgb {
+            r: 0x66,
+            g: 0xaa,
+            b: 0xff,
+        })
+    );
+    assert_eq!(markdown_code.bg, None);
+
+    let markdown_escape = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_ESCAPE));
+    assert_eq!(
+        markdown_escape.bg,
+        Some(Color::Rgb {
+            r: 0x2a,
+            g: 0x20,
+            b: 0x30,
+        })
+    );
 }
 
 #[test]
@@ -256,6 +307,43 @@ fn builtin_light_theme_parses() {
 
     let token_stats = theme.resolve_style(&StyleName::new("token.stats"));
     assert_eq!(token_stats.fg, Some(Color::Grey));
+
+    let markdown_strong = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_STRONG));
+    assert!(markdown_strong.bold);
+
+    let markdown_emphasis = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_EMPHASIS));
+    assert!(markdown_emphasis.bold);
+
+    let markdown_heading = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_HEADING));
+    assert!(markdown_heading.bold);
+    assert_eq!(markdown_heading.fg, Some(Color::Blue));
+    assert!(!markdown_heading.underline);
+
+    let markdown_list_marker =
+        theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_LIST_MARKER));
+    assert!(markdown_list_marker.bold);
+    assert_eq!(markdown_list_marker.fg, Some(Color::Blue));
+
+    let markdown_code = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_CODE));
+    assert_eq!(
+        markdown_code.fg,
+        Some(Color::Rgb {
+            r: 0x00,
+            g: 0x5f,
+            b: 0xff,
+        })
+    );
+    assert_eq!(markdown_code.bg, None);
+
+    let markdown_escape = theme.resolve_style(&StyleName::new(crate::names::MARKDOWN_ESCAPE));
+    assert_eq!(
+        markdown_escape.bg,
+        Some(Color::Rgb {
+            r: 0xf1,
+            g: 0xe8,
+            b: 0xf5,
+        })
+    );
 }
 
 #[test]

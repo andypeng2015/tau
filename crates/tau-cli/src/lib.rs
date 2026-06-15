@@ -8,6 +8,7 @@ mod agent_activity;
 mod chat;
 mod daemon;
 mod event_renderer;
+mod markdown_render;
 mod print_prompt;
 mod print_tools;
 mod prompt_history;

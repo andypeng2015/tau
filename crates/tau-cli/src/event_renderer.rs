@@ -15,6 +15,9 @@ use tau_proto::{
 use crate::action_commands::ActionCommandState;
 use crate::agent_activity::AgentActivity;
 use crate::build_banner;
+use crate::markdown_render::{
+    MarkdownStreamCache, markdown_block, markdown_prompt_block, markdown_streaming_block,
+};
 use crate::skill_commands::SkillCommandState;
 use crate::tool_render::{
     CompactionStatus, ToolCallDisplay, ToolSummaryDisplay, build_delegate_completion_display,
@@ -727,6 +730,10 @@ struct PromptState {
     /// can render it into history even when the finish event doesn't
     /// carry displayable reasoning text.
     thinking_text: Option<String>,
+    /// Append-aware Markdown-lite cache for the live assistant response block.
+    response_markdown_cache: MarkdownStreamCache,
+    /// Append-aware Markdown-lite cache for the live thinking block.
+    thinking_markdown_cache: MarkdownStreamCache,
     /// Live provider-side compaction block. Created only while a provider emits
     /// an in-progress compaction item, then removed on completion/cancel.
     compaction_block_id: Option<tau_cli_term::BlockId>,
@@ -1518,7 +1525,6 @@ impl EventRenderer {
     /// block's position in the transcript is preserved; turning
     /// back on restores the original reasoning text in place.
     fn set_show_thinking(&mut self, on: bool) {
-        use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
         if self.show_thinking == on {
             return;
@@ -1532,22 +1538,25 @@ impl EventRenderer {
             };
             self.handle.set_block(
                 entry.block_id,
-                themed_block(&self.theme, names::AGENT_THINKING, display),
+                markdown_block(&self.theme, names::AGENT_THINKING, display),
             );
         }
-        for state in self.prompts.values() {
+        for state in self.prompts.values_mut() {
             let Some(bid) = state.thinking_block_id else {
                 continue;
             };
-            let display = if self.show_thinking {
-                state.thinking_text.clone().unwrap_or_default()
+            let block = if self.show_thinking {
+                let display = state.thinking_text.clone().unwrap_or_default();
+                markdown_streaming_block(
+                    &self.theme,
+                    names::AGENT_THINKING,
+                    &display,
+                    &mut state.thinking_markdown_cache,
+                )
             } else {
-                String::new()
+                markdown_block(&self.theme, names::AGENT_THINKING, "")
             };
-            self.handle.set_block(
-                bid,
-                themed_block(&self.theme, names::AGENT_THINKING, display),
-            );
+            self.handle.set_block(bid, block);
         }
         self.invalidate_for_retroactive_toggle();
         self.save_cli_state();
@@ -1760,7 +1769,6 @@ impl EventRenderer {
     }
 
     fn rerender_visible_for_current_settings(&mut self) {
-        use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
         for entry in &self.message_history {
             self.handle.set_block(
@@ -1792,7 +1800,7 @@ impl EventRenderer {
             };
             self.handle.set_block(
                 entry.block_id,
-                themed_block(&self.theme, names::AGENT_THINKING, display),
+                markdown_block(&self.theme, names::AGENT_THINKING, display),
             );
         }
         for entry in &self.turn_stats_history {
@@ -2432,6 +2440,20 @@ impl EventRenderer {
         body_name: &str,
         body_text: impl Into<String>,
     ) -> tau_cli_term::StyledBlock {
+        let body_text = body_text.into();
+        markdown_prompt_block(
+            &self.theme,
+            body_name,
+            format!("{} ", self.submitted_prompt_symbol),
+            &body_text,
+        )
+    }
+
+    fn submitted_plain_block(
+        &self,
+        body_name: &str,
+        body_text: impl Into<String>,
+    ) -> tau_cli_term::StyledBlock {
         use tau_cli_term::resolve::{convert_color, themed_text};
         use tau_themes::{SpanTree, StyleName, ThemedText, names};
 
@@ -2975,11 +2997,11 @@ impl EventRenderer {
     fn render_agent_message_block(&self, event: &Event) -> tau_cli_term::StyledBlock {
         match Self::message_render_mode(self.show_messages, event) {
             MessageRenderMode::Hidden => Self::empty_block(),
-            MessageRenderMode::Summary => self.submitted_prompt_block(
+            MessageRenderMode::Summary => self.submitted_plain_block(
                 tau_themes::names::SYSTEM_INFO,
                 Self::agent_message_summary(event),
             ),
-            MessageRenderMode::Full => self.submitted_prompt_block(
+            MessageRenderMode::Full => self.submitted_plain_block(
                 tau_themes::names::SYSTEM_INFO,
                 format!(
                     "{}:\n{}",
@@ -3380,7 +3402,13 @@ impl EventRenderer {
         if !self.show_thinking {
             return;
         }
-        let block = streaming_block(&self.theme, names::AGENT_THINKING, thinking);
+        let state = self.prompts.entry(spid.to_owned()).or_default();
+        let block = markdown_streaming_block(
+            &self.theme,
+            names::AGENT_THINKING,
+            thinking,
+            &mut state.thinking_markdown_cache,
+        );
         let existing_tbid = self.prompts.get(spid).and_then(|s| s.thinking_block_id);
         if let Some(tbid) = existing_tbid {
             self.handle.set_block(tbid, block);
@@ -3474,7 +3502,15 @@ impl EventRenderer {
         use tau_themes::names;
 
         if let Some(bid) = self.prompts.get(spid).and_then(|s| s.response_block_id) {
-            let block = streaming_block(&self.theme, names::AGENT_RESPONSE, text.to_owned());
+            let Some(state) = self.prompts.get_mut(spid) else {
+                return;
+            };
+            let block = markdown_streaming_block(
+                &self.theme,
+                names::AGENT_RESPONSE,
+                text,
+                &mut state.response_markdown_cache,
+            );
             self.handle.set_block(bid, block);
             self.handle.redraw();
         }
@@ -3520,7 +3556,6 @@ impl EventRenderer {
         thinking_block_id: Option<tau_cli_term::BlockId>,
         thinking: Option<String>,
     ) {
-        use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
 
         // Finalize the thinking block above the response, using the final
@@ -3534,7 +3569,7 @@ impl EventRenderer {
         {
             let bid = self.handle.print_output(
                 "agent-thinking",
-                themed_block(&self.theme, names::AGENT_THINKING, thinking.clone()),
+                markdown_block(&self.theme, names::AGENT_THINKING, &thinking),
             );
             self.thinking_history.push(ThinkingBlockEntry {
                 block_id: bid,
@@ -3641,12 +3676,11 @@ impl EventRenderer {
     }
 
     fn render_provider_response_placeholder(&mut self, text: &str) {
-        use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
 
         self.handle.print_output(
             "agent-response-placeholder",
-            themed_block(&self.theme, names::AGENT_RESPONSE, text),
+            markdown_block(&self.theme, names::AGENT_RESPONSE, text),
         );
     }
 
@@ -3731,7 +3765,6 @@ impl EventRenderer {
         summary_block_id: Option<tau_cli_term::BlockId>,
         finished: &tau_proto::ProviderResponseFinished,
     ) {
-        use tau_cli_term::resolve::themed_block;
         use tau_themes::names;
 
         match item {
@@ -3739,7 +3772,7 @@ impl EventRenderer {
                 if let Some(text) = assistant_text_from_message_item(message) {
                     self.handle.print_output(
                         "agent-response",
-                        themed_block(&self.theme, names::AGENT_RESPONSE, text),
+                        markdown_block(&self.theme, names::AGENT_RESPONSE, &text),
                     );
                 }
             }

@@ -9,9 +9,17 @@
     "user.prompt.queued":   { fg: "dark_grey" },
 
     // -- Agent responses --
-    "agent.response":       { fg: "cyan", italic: true },
+    "agent.response":       { fg: "cyan" },
     "agent.pending":        { fg: "dark_grey" },
     "agent.thinking":       { fg: "dark_grey", italic: true },
+
+    // -- Markdown-lite transcript formatting --
+    "markdown.strong":      { bold: true },
+    "markdown.emphasis":    { bold: true, italic: true },
+    "markdown.heading":     { fg: "#80ffff", bold: true },
+    "markdown.list.marker": { fg: "#80ffff", bold: true },
+    "markdown.code":        { fg: "#66aaff" },
+    "markdown.escape":      { bg: "#2a2030" },
 
     // -- Tool execution --
     // A tool-call block is a `tool.output` span with nested name,

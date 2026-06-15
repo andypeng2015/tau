@@ -91,6 +91,14 @@ input coordination assumes a single foreground reader thread; background
 renderer threads must not write while the terminal is released to an external
 program.
 
+Transcript Markdown-lite formatting is a presentation-only terminal UI feature.
+It must not change protocol events, persisted logs, model context, or non-UI
+clients, and it must produce only Tau styled text spans rather than raw terminal
+escape sequences. Keep its scope narrow to submitted user prompts, assistant
+responses, and thinking text; do not accidentally run it over tool output, shell
+output, or other machine-generated blocks where styling could obscure exact
+results.
+
 ## Reporting guidance
 
 When reporting a vulnerability, include:
