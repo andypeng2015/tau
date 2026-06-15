@@ -696,6 +696,10 @@
       margin-bottom: 1rem;
     }
 
+    .demo-label {
+      margin-top: 1.5rem;
+    }
+
     .demo-link {
       display: block;
       margin-top: 1rem;
@@ -706,6 +710,27 @@
       display: block;
       margin-left: auto;
       margin-right: auto;
+    }
+
+    .video-embed {
+      position: relative;
+      width: 100%;
+      max-width: 720px;
+      margin: 1.25rem auto 0;
+      aspect-ratio: 16 / 9;
+      border: 1px solid rgb(255 255 255 / 0.12);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000000;
+      box-shadow: 0 24px 80px rgb(0 0 0 / 0.35);
+    }
+
+    .video-embed iframe {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
     }
 
     /* Philosophy */
@@ -1589,6 +1614,15 @@
     <p>There are many big plans ahead: more process-oriented integrations,
       stronger multi-agent workflows, and Unix-native features no other coding
       harness has today.</p>
+    <p>Watch the latest overview:
+      <a href="https://www.youtube.com/watch?v=v2Ez2umV9xA">The State of Tau #1</a>.</p>
+    <div class="video-embed">
+      <iframe src="https://www.youtube.com/embed/v2Ez2umV9xA"
+        title="The State of Tau #1"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+    </div>
+    <p class="demo-label">Terminal recording:</p>
     <a class="demo-link" href="https://asciinema.org/a/973826">
       <img src="https://asciinema.org/a/973826.svg" alt="asciicast"
         style="width:100%; max-width:720px; border-radius:6px; margin-top:1rem;">

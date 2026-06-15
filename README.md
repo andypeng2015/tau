@@ -39,11 +39,15 @@ See [FEATURES.md](FEATURES.md) for a tour of the major features.
 [Patchmark](https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3sP3WnHgo1UfwmfmFM9a5cZSSEZR) is a diff-aware language server for Markdown and plain-text review notes. It pairs nicely with Tau's prompt-editing flow: open your prompt in `$EDITOR`, review diffs with language-server help, and leave precise feedback for agents without leaving your normal editing environment.
 
 
-## Status: call for testing
+## Status: heavy development, daily use
 
-Tau is still young, but the core functionality is working and it is ready for testing.
+Tau is still under heavy development, but it has been a productive daily driver for its developers for weeks. It already has features and design choices that are stronger than those in popular coding agents, while the Unix-centric UX keeps improving quickly.
 
-Expect rough edges. If you try it, please report bugs, usability problems, and missing pieces.
+Recent overview video: [The State of Tau #1](https://www.youtube.com/watch?v=v2Ez2umV9xA).
+
+[![The State of Tau #1](https://i.ytimg.com/vi/v2Ez2umV9xA/hqdefault.jpg)](https://www.youtube.com/watch?v=v2Ez2umV9xA)
+
+Terminal demo:
 
 [![asciicast](https://asciinema.org/a/973826.svg)](https://asciinema.org/a/973826)
 
