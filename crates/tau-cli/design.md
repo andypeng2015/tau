@@ -15,15 +15,18 @@ protocol events, durable agent logs, prompt previews, model context, and other
 clients continue to see the original plain text.
 
 The formatter is deliberately small. It recognizes headings, unordered and
-ordered list markers, `*strong*`, `_emphasis_`, basic backslash escapes, and
-leading-pipe tables. Most constructs are style-only and preserve exact source
-characters rather than stripping delimiters or rewriting list/header prefixes.
-Tables are the exception: the UI may add bounded display-only padding spaces so
-cells align while the visible text remains valid Markdown table syntax. Inline
-backticks, fenced code blocks, and indented code-like lines get code styling and
-suppress nested Markdown-lite styling; escaped marker sequences get escape
-styling. This keeps live terminal wrapping, scrollback, and copy/paste behavior
-stable outside intentional table padding.
+ordered list markers, `*strong*` / `**strong**`, `_emphasis_`, combined
+`***strong emphasis***`, basic backslash escapes, and leading-pipe tables.
+Triple-asterisk runs compose the existing strong and emphasis semantic styles;
+they do not introduce a separate theme key or a general CommonMark parser. Most
+constructs are style-only and preserve exact source characters rather than
+stripping delimiters or rewriting list/header prefixes. Tables are the exception:
+the UI may add bounded display-only padding spaces so cells align while the
+visible text remains valid Markdown table syntax. Inline backticks, fenced code
+blocks, and indented code-like lines get code styling and suppress nested
+Markdown-lite styling; escaped marker sequences get escape styling. This keeps
+live terminal wrapping, scrollback, and copy/paste behavior stable outside
+intentional table padding.
 
 Live response and thinking blocks use an append-aware cache. Text before a blank
 line is treated as sealed and parsed once; the current unsealed suffix remains
@@ -35,3 +38,13 @@ Formatting is scoped to submitted user prompts, assistant response text, and
 reasoning/thinking text. Tool calls, tool payloads/results, shell output,
 status/progress lines, and agent-to-agent message debug displays must stay on
 their existing renderers unless there is a separate product decision.
+
+## tau-cli testing strategy
+
+Status: unconfirmed
+
+Pure transcript renderers should be tested at the rendered block/span boundary,
+not by snapshotting built-in theme implementation details. Use representative
+fixture themes with distinct semantic attributes, assert exact text preservation
+except for documented display-only transforms such as table padding, and check
+that the resolved spans carry the intended semantic styling.

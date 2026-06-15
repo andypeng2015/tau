@@ -6,11 +6,14 @@
 //! data, durable event logs, model context, or transcript copies.
 //!
 //! Supported syntax is intentionally small: ATX headings (`# Heading`),
-//! unordered (`-`, `*`, `+`) and ordered (`1.`/`1)`) list markers, `*strong*`,
-//! `_emphasis_`, backslash escapes, and leading-pipe tables. Most constructs
-//! preserve exact source characters; tables may receive bounded display-only
-//! padding spaces so cells align while the result remains valid Markdown table
-//! syntax.
+//! unordered (`-`, `*`, `+`) and ordered (`1.`/`1)`) list markers,
+//! `*strong*`/`**strong**`, `_emphasis_`, combined `***strong emphasis***`,
+//! backslash escapes, and leading-pipe tables. Triple-asterisk runs compose
+//! existing strong and emphasis semantic styles; this remains
+//! delimiter-preserving Markdown-lite, not a general CommonMark parser. Most
+//! constructs preserve exact source characters; tables may receive bounded
+//! display-only padding spaces so cells align while the result remains valid
+//! Markdown table syntax.
 //!
 //! Inline backtick spans, fenced code blocks, and indented code-like lines use
 //! code styling and suppress nested Markdown-lite styling. Escaped marker
@@ -113,6 +116,7 @@ impl<'line> TableRow<'line> {
 enum MarkdownStyle {
     Base,
     Strong,
+    StrongEmphasis,
     Emphasis,
     Heading,
     ListMarker,
@@ -310,6 +314,15 @@ fn push_runs(
                 children.push(SpanTree::span(
                     styles.strong,
                     vec![SpanTree::text(run.text.clone())],
+                ));
+            }
+            MarkdownStyle::StrongEmphasis => {
+                children.push(SpanTree::span(
+                    styles.strong,
+                    vec![SpanTree::span(
+                        styles.emphasis,
+                        vec![SpanTree::text(run.text.clone())],
+                    )],
                 ));
             }
             MarkdownStyle::Emphasis => {
@@ -635,6 +648,20 @@ fn parse_inline(text: &str, runs: &mut Vec<MarkdownRun>) {
                 index += len;
                 continue;
             }
+            if rest.starts_with("***")
+                && let Some(end) = find_closing_sequence(text, index, "***")
+            {
+                push_run(runs, &text[index..end], MarkdownStyle::StrongEmphasis);
+                index = end;
+                continue;
+            }
+            if rest.starts_with("**")
+                && let Some(end) = find_closing_sequence(text, index, "**")
+            {
+                push_run(runs, &text[index..end], MarkdownStyle::Strong);
+                index = end;
+                continue;
+            }
             if matches!(ch, '*' | '_')
                 && delimiter_allowed(text, index, ch)
                 && let Some(end) = find_closing_delimiter(text, index, ch)
@@ -676,6 +703,27 @@ fn find_unescaped(text: &str, needle: char) -> Option<usize> {
         }
         if ch == needle {
             return Some(idx);
+        }
+    }
+    None
+}
+
+fn find_closing_sequence(text: &str, start: usize, delimiter: &str) -> Option<usize> {
+    let after_open = start + delimiter.len();
+    let rest = &text[after_open..];
+    let mut escaped = false;
+    for (relative, ch) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        let close = after_open + relative;
+        if rest[relative..].starts_with(delimiter) && after_open < close {
+            return Some(close + delimiter.len());
         }
     }
     None

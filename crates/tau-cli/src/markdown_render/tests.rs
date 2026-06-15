@@ -70,6 +70,33 @@ fn final_render_applies_markdown_styles() {
     assert!(emphasis.style.italic);
 }
 
+/// Ensures reported emphasis forms map to italic and combined bold+italic
+/// styling without stripping Markdown delimiters.
+#[test]
+fn final_render_styles_italic_and_bold_italic_emphasis() {
+    let theme = markdown_test_theme();
+    let source = "You can write text in **bold**, _italic_, or ***bold italic***.";
+    let block = markdown_block(&theme, names::SHELL_OUTPUT, source);
+    let spans = block.content.spans();
+
+    assert_eq!(rendered_text(&block), source);
+
+    let bold = spans.iter().find(|span| span.text == "**bold**").unwrap();
+    assert!(bold.style.bold);
+    assert!(!bold.style.italic);
+
+    let italic = spans.iter().find(|span| span.text == "_italic_").unwrap();
+    assert!(!italic.style.bold);
+    assert!(italic.style.italic);
+
+    let bold_italic = spans
+        .iter()
+        .find(|span| span.text == "***bold italic***")
+        .unwrap();
+    assert!(bold_italic.style.bold);
+    assert!(bold_italic.style.italic);
+}
+
 /// Ensures nested ordered list markers are list markers instead of indented
 /// code.
 #[test]
