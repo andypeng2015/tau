@@ -21,9 +21,44 @@ pub(super) struct Attempt {
     pub(super) deadline: Instant,
     /// Correlation checked again after result delivery races cancellation.
     pub(super) request: Option<ArtifactRequestId>,
+    /// Current original in a validated bundle; finalized predecessors are never
+    /// uploaded again on an explicit retry.
+    pub(super) artifact_index: usize,
+    /// Completed references withheld from the editor until every file finishes.
+    pub(super) references: String,
 }
 
 impl Attempt {
+    /// Retains finalized references privately and advances to the next
+    /// original.
+    ///
+    /// Cancellation can leave finalized immutable originals; it does not insert
+    /// this partial list into the prompt or promise backing-store rollback.
+    pub(super) fn finish_artifact(&mut self) -> Option<String> {
+        let descriptor = self.upload.descriptor().expect("finalized original");
+        if !self.references.is_empty() {
+            self.references.push('\n');
+        }
+        self.references.push_str(&paste_reference_at(
+            &descriptor.key,
+            &self.text,
+            self.artifact_index,
+        ));
+        self.artifact_index += 1;
+        if self.artifact_index == self.text.artifact_count() {
+            return Some(std::mem::take(&mut self.references));
+        }
+        self.upload = tau_client::ArtifactUpload::new(
+            self.text
+                .artifact(self.artifact_index)
+                .expect("validated next original")
+                .bytes
+                .to_vec(),
+        )
+        .expect("aggregate admission bounds each original");
+        self.request = None;
+        None
+    }
     /// Reports failure without forgetting retry-safe transfer identity.
     pub(super) fn fail(&mut self, error: impl ToString) {
         self.paused = true;

@@ -46,6 +46,14 @@ prompt drafts, history, or event presentation. Failure retains it for explicit
 retry/discard without submitting the original text. Cancellation leaves the
 original draft unchanged and may leave a committed shared original.
 
+Validated native clipboard file bundles upload exact original bodies through
+the same UI authority, without granting remote path resolution. Per-use filename
+and media hints do not become digest metadata or content authority. A multi-file
+paste inserts its complete reference list only after every original finalizes;
+this grouped editor update does not make backing-store publication transactional.
+Failure/cancellation may retain finalized predecessors, and explicit retry
+resumes retained unfinished transfer state without rereading the clipboard.
+
 Objects are bounded to 16 MiB and raw chunks to 1 MiB, with the complete encoded
 frame bounded separately in both directions. A bounded off-loop worker owns
 filesystem I/O. Artifact response retention remains bounded through writer acknowledgement or

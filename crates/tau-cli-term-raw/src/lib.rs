@@ -15,8 +15,10 @@
 
 mod block_layout_state;
 mod clipboard_fence;
+mod clipboard_files;
 mod clipboard_paste;
 mod pending_paste;
+pub use clipboard_files::{ClipboardFiles, PasteArtifact};
 pub use clipboard_paste::PasteContent;
 mod presentation_mutation_generation;
 mod presentation_observation_state;
@@ -1017,6 +1019,13 @@ fn key_binding_for_event(key: KeyEvent, ctrl: bool) -> Option<KeyBinding> {
 }
 /// High-level events surfaced to the downstream event loop.
 pub enum Event {
+    /// Upload opaque native originals without exposing bodies to drafts.
+    PasteArtifactsUpload {
+        /// Exact local upload attempt identity.
+        id: u64,
+        /// Complete validated bundle retained for explicit retry.
+        content: PasteContent,
+    },
     /// Upload complete PNG bytes without inserting binary content in the draft.
     PastePngUpload {
         /// Exact local upload attempt identity.
@@ -3157,7 +3166,11 @@ impl Term {
         }
         match effects.content {
             Some(PasteContent::Text(text)) => Ok(self.apply_text_paste(text.to_string())),
-            Some(content @ PasteContent::Png(_)) => {
+            Some(
+                content @ (PasteContent::Png(_)
+                | PasteContent::Files(_)
+                | PasteContent::Opaque { .. }),
+            ) => {
                 let mut st = self.handle.lock();
                 if st.editor.pending_paste.is_some() {
                     return Ok(Some(Event::Notice("Paste busy; draft unchanged.".into())));
@@ -4363,6 +4376,9 @@ fn paste_upload_event(id: u64, content: PasteContent) -> Event {
     match content {
         PasteContent::Text(text) => Event::PasteUpload { id, text },
         PasteContent::Png(bytes) => Event::PastePngUpload { id, bytes },
+        content @ (PasteContent::Files(_) | PasteContent::Opaque { .. }) => {
+            Event::PasteArtifactsUpload { id, content }
+        }
     }
 }
 

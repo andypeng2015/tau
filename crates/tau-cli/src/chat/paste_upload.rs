@@ -208,14 +208,21 @@ fn run(
                     attempt = Some(Attempt {
                         id,
                         session,
-                        upload: tau_client::ArtifactUpload::new(text.bytes().to_vec())
-                            .expect("source validated before worker admission"),
+                        upload: tau_client::ArtifactUpload::new(
+                            text.artifact(0)
+                                .expect("one validated original")
+                                .bytes
+                                .to_vec(),
+                        )
+                        .expect("source validated before worker admission"),
                         text,
                         handle: handle.clone(),
                         available: false,
                         paused: false,
                         deadline: Instant::now() + Duration::from_secs(60),
                         request: None,
+                        artifact_index: 0,
+                        references: String::new(),
                     });
                 }
                 let current = attempt.as_mut().expect("started attempt");
@@ -235,12 +242,15 @@ fn run(
                     current.fail("upload timed out");
                 } else if let Err(error) = current.accept(result) {
                     current.fail(error);
-                } else if let Some(descriptor) = current.upload.descriptor() {
-                    current.handle.finish_paste_upload(
-                        current.id,
-                        Ok(paste_reference(&descriptor.key, &current.text)),
-                    );
-                    attempt = None;
+                } else if current.upload.descriptor().is_some() {
+                    if let Some(references) = current.finish_artifact() {
+                        current
+                            .handle
+                            .finish_paste_upload(current.id, Ok(references));
+                        attempt = None;
+                    } else {
+                        current.send_next(&writer, &expected);
+                    }
                 } else {
                     current.send_next(&writer, &expected);
                 }
@@ -259,13 +269,41 @@ fn run(
 
 /// Keeps known source media beside the editable reference, not in blob
 /// identity.
+#[cfg(test)]
 fn paste_reference(key: &tau_proto::ArtifactKey, content: &tau_cli_term::PasteContent) -> String {
-    let mime_type = match content {
-        tau_cli_term::PasteContent::Text(_) => "text/plain;charset=utf-8",
-        tau_cli_term::PasteContent::Png(_) => "image/png",
-    };
-    format!(
-        "{} (mime_type: {mime_type})",
-        tau_proto::artifact_reference(key)
-    )
+    paste_reference_at(key, content, 0)
+}
+
+/// Formats untrusted per-use hints without permitting names to inject prompt
+/// text. No filename is invented when the clipboard supplied none.
+fn paste_reference_at(
+    key: &tau_proto::ArtifactKey,
+    content: &tau_cli_term::PasteContent,
+    index: usize,
+) -> String {
+    let artifact = content.artifact(index).expect("validated artifact index");
+    let mut hints = Vec::new();
+    if let Some(filename) = artifact.filename {
+        let filename: String = filename
+            .chars()
+            .take(128)
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        hints.push(format!("filename: {filename}"));
+    }
+    if let Some(mime_type) = artifact.mime_type {
+        hints.push(format!("mime_type: {mime_type}"));
+    }
+    let reference = tau_proto::artifact_reference(key);
+    if hints.is_empty() {
+        reference
+    } else {
+        format!("{reference} ({})", hints.join(", "))
+    }
 }

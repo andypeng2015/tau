@@ -55,6 +55,16 @@ connection and captured session generation, including the initial owned stdio
 UI's ordinary socket-class admission. Paste originals remain outside prompt
 drafts, histories, semantic journals, raw-input tracing, and event broadcasts.
 
+Native clipboard copied-file bundles carry workstation-captured regular-file
+bytes, not permission to open terminal-supplied paths on the Tau execution host.
+Only a completed gesture-correlated read and fully validated bounded bundle can
+start uploads. Basename/media metadata remains untrusted per-use hints; Tau does
+not extract, execute, sniff, or dereference URI lists. References enter the draft
+together after all file uploads finish, but canceled/failed groups can leave
+finalized immutable originals. The separately configured terminal owns local
+file resolution and gesture-time capture, including when SSH transports those
+bytes to remote Tau. See [artifact transfers](docs/artifacts.md).
+
 Provider-hosted web search runs inside the selected inference provider and does
 not cross Tau's registered-tool dispatch boundary. Search queries, actions,
 returned content, URLs, titles, and citation metadata are untrusted external

@@ -4,6 +4,296 @@ use std::os::unix::net::UnixStream;
 use super::*;
 use crate::chat::{UiIoMeter, UiWriter};
 
+/// Arbitrary native audio bytes use the existing artifact wire and carry only
+/// an untrusted media hint, not an invented source filename.
+#[test]
+fn opaque_audio_uses_existing_original_upload_and_safe_hint() {
+    let (ui, peer) = UnixStream::pair().expect("socket pair");
+    peer.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    let writer = Arc::new(Mutex::new(UiWriter::new(ui, UiIoMeter::default())));
+    let (control, worker) = PasteUpload::spawn(writer);
+    let mut reader = tau_proto::HarnessInputReader::new(BufReader::new(peer));
+    let (_term, handle, _input) = tau_cli_term_raw::Term::new_virtual(
+        80,
+        24,
+        "> ",
+        Box::new(std::io::sink()),
+        tau_cli_term_raw::CursorShape::Bar,
+    );
+    let content = tau_cli_term::PasteContent::Opaque {
+        bytes: Arc::from(&b"\0\xffMP3"[..]),
+        mime_type: Arc::from("audio/mpeg"),
+    };
+    control.start_content("s1".parse().expect("session"), 1, content.clone(), handle);
+    reply(&control, read_request(&mut reader), Ok(ArtifactValue::Done));
+    let key = finish_original(&control, &mut reader, b"\0\xffMP3", "audio");
+    assert_eq!(
+        paste_reference(&key, &content),
+        format!(
+            "{} (mime_type: audio/mpeg)",
+            tau_proto::artifact_reference(&key)
+        )
+    );
+    control.stop();
+    worker.join().expect("worker exit");
+}
+
+/// Builds two opaque originals with per-use metadata, not remote paths.
+fn file_source() -> tau_cli_term::PasteContent {
+    let mut bytes = b"TAUFILES\0".to_vec();
+    bytes.extend_from_slice(&2u32.to_be_bytes());
+    for (name, mime, body) in [
+        ("song.mp3", "audio/mpeg", &b"\0\xffMP3"[..]),
+        ("café <ref>.dat", "", &b"second"[..]),
+    ] {
+        bytes.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&(mime.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(mime.as_bytes());
+        bytes.extend_from_slice(body);
+    }
+    tau_cli_term::PasteContent::Files(Arc::new(
+        tau_cli_term::ClipboardFiles::parse(bytes.into()).expect("fixture files"),
+    ))
+}
+
+/// Drives one small original through the real worker's artifact request stream.
+fn finish_original(
+    control: &PasteUpload,
+    reader: &mut tau_proto::HarnessInputReader<BufReader<UnixStream>>,
+    bytes: &[u8],
+    upload: &str,
+) -> tau_proto::ArtifactKey {
+    let begin = read_request(reader);
+    assert!(matches!(begin.op, ArtifactOp::Begin { ref size } if size.get() == bytes.len() as u64));
+    reply(
+        control,
+        begin,
+        Ok(ArtifactValue::Upload {
+            upload: upload.parse().expect("upload identity"),
+        }),
+    );
+    let write = read_request(reader);
+    assert!(
+        matches!(write.op, ArtifactOp::Write { offset: 0, bytes: ref actual, .. } if actual == bytes)
+    );
+    reply(
+        control,
+        write,
+        Ok(ArtifactValue::Written {
+            next_offset: bytes.len() as u64,
+        }),
+    );
+    let finalize = read_request(reader);
+    assert!(matches!(finalize.op, ArtifactOp::Finalize { .. }));
+    let key: tau_proto::ArtifactKey = format!("blake3:{}", blake3::hash(bytes).to_hex())
+        .parse()
+        .expect("original key");
+    reply(
+        control,
+        finalize,
+        Ok(ArtifactValue::Descriptor(tau_proto::ArtifactDescriptor {
+            key: key.clone(),
+            size: tau_proto::ArtifactSize::new(bytes.len() as u64).expect("original size"),
+        })),
+    );
+    key
+}
+
+/// The worker uploads each file's body (not the envelope), retains the first
+/// finalized original on second-file retry, and inserts all references
+/// together. A frozen editor is established through its existing paste path;
+/// file-specific acquisition/source retention has its own raw-input oracle.
+#[test]
+fn copied_files_upload_sequentially_and_retry_without_partial_prompt_insertion() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tau_cli_term_raw::{Event, RawEvent};
+    let (ui, peer) = UnixStream::pair().expect("socket pair");
+    peer.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    let writer = Arc::new(Mutex::new(UiWriter::new(ui, UiIoMeter::default())));
+    let (control, worker) = PasteUpload::spawn(writer);
+    let mut reader = tau_proto::HarnessInputReader::new(BufReader::new(peer));
+    let (term, handle, input) = tau_cli_term_raw::Term::new_virtual(
+        80,
+        24,
+        "> ",
+        Box::new(std::io::sink()),
+        tau_cli_term_raw::CursorShape::Bar,
+    );
+    handle.enable_paste_uploads(1);
+    handle.set_buffer("draft: ".into(), 7);
+    input
+        .send(RawEvent::Paste("freeze".into()))
+        .expect("freeze editor");
+    let Event::PasteUpload { id, .. } = term.get_next_event().expect("pending paste") else {
+        panic!("pending paste");
+    };
+    let content = file_source();
+    control.start_content(
+        "s1".parse().expect("session"),
+        id,
+        content.clone(),
+        handle.clone(),
+    );
+    let available = read_request(&mut reader);
+    assert!(matches!(available.op, ArtifactOp::Available));
+    reply(&control, available, Ok(ArtifactValue::Done));
+    let first_key = finish_original(&control, &mut reader, b"\0\xffMP3", "first-file");
+    assert_eq!(handle.get_buffer(), "draft: ");
+    let begin = read_request(&mut reader);
+    assert!(matches!(begin.op, ArtifactOp::Begin { ref size } if size.get() == 6));
+    reply(
+        &control,
+        begin,
+        Ok(ArtifactValue::Upload {
+            upload: "second-file".parse().expect("upload"),
+        }),
+    );
+    let first_write = read_request(&mut reader);
+    assert!(matches!(first_write.op, ArtifactOp::Write { ref bytes, .. } if bytes == b"second"));
+    reply(
+        &control,
+        first_write.clone(),
+        Err(tau_proto::ArtifactError::Busy),
+    );
+    assert!(matches!(
+        term.get_next_event().expect("failure"),
+        Event::Notice(_)
+    ));
+    assert_eq!(handle.get_buffer(), "draft: ");
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("retry");
+    let Event::PasteUpload { id: retry_id, .. } = term.get_next_event().expect("retry") else {
+        panic!("explicit retry");
+    };
+    control.start_content(
+        "s1".parse().expect("session"),
+        retry_id,
+        content.clone(),
+        handle.clone(),
+    );
+    let retry = read_request(&mut reader);
+    assert_eq!(
+        retry.op, first_write.op,
+        "no repeated first-file upload or second Begin"
+    );
+    assert_ne!(retry.request_id, first_write.request_id);
+    reply(
+        &control,
+        retry,
+        Ok(ArtifactValue::Written { next_offset: 6 }),
+    );
+    let finalize = read_request(&mut reader);
+    assert!(matches!(finalize.op, ArtifactOp::Finalize { .. }));
+    let second_key = format!("blake3:{}", blake3::hash(b"second").to_hex())
+        .parse()
+        .expect("key");
+    reply(
+        &control,
+        finalize,
+        Ok(ArtifactValue::Descriptor(tau_proto::ArtifactDescriptor {
+            key: second_key,
+            size: tau_proto::ArtifactSize::new(6).expect("size"),
+        })),
+    );
+    assert!(matches!(
+        term.get_next_event().expect("group completion"),
+        Event::BufferChanged
+    ));
+    assert_eq!(
+        handle.get_buffer(),
+        format!(
+            "draft: {}\n{}",
+            paste_reference_at(&first_key, &content, 0),
+            paste_reference_at(
+                &format!("blake3:{}", blake3::hash(b"second").to_hex())
+                    .parse()
+                    .expect("key"),
+                &content,
+                1
+            )
+        ),
+    );
+    assert!(handle.get_buffer().contains("filename: caf___ref_.dat"));
+    control.stop();
+    worker.join().expect("worker exit");
+}
+
+/// Canceling after the first file finalized aborts only the current unfinished
+/// upload; no partial group enters the draft and immutable originals are not
+/// deleted as an invented rollback operation.
+#[test]
+fn copied_files_cancel_preserves_draft_and_aborts_only_unfinished_original() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tau_cli_term_raw::{Event, RawEvent};
+    let (ui, peer) = UnixStream::pair().expect("socket pair");
+    peer.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    let writer = Arc::new(Mutex::new(UiWriter::new(ui, UiIoMeter::default())));
+    let (control, worker) = PasteUpload::spawn(writer);
+    let mut reader = tau_proto::HarnessInputReader::new(BufReader::new(peer));
+    let (term, handle, input) = tau_cli_term_raw::Term::new_virtual(
+        80,
+        24,
+        "> ",
+        Box::new(std::io::sink()),
+        tau_cli_term_raw::CursorShape::Bar,
+    );
+    handle.enable_paste_uploads(1);
+    handle.set_buffer("draft".into(), 5);
+    input
+        .send(RawEvent::Paste("freeze".into()))
+        .expect("freeze");
+    let Event::PasteUpload { id, .. } = term.get_next_event().expect("pending") else {
+        panic!("pending");
+    };
+    control.start_content(
+        "s1".parse().expect("session"),
+        id,
+        file_source(),
+        handle.clone(),
+    );
+    reply(&control, read_request(&mut reader), Ok(ArtifactValue::Done));
+    finish_original(&control, &mut reader, b"\0\xffMP3", "first-file");
+    reply(
+        &control,
+        read_request(&mut reader),
+        Ok(ArtifactValue::Upload {
+            upload: "second-file".parse().expect("upload"),
+        }),
+    );
+    let outstanding = read_request(&mut reader);
+    assert!(matches!(outstanding.op, ArtifactOp::Write { .. }));
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )))
+        .expect("discard");
+    assert!(matches!(
+        term.get_next_event().expect("cancel"),
+        Event::PasteCancelled { .. }
+    ));
+    control.cancel(id);
+    let abort = read_request(&mut reader);
+    assert!(matches!(abort.op, ArtifactOp::Abort { upload } if upload.as_str() == "second-file"));
+    assert_eq!(handle.get_buffer(), "draft");
+    reply(
+        &control,
+        outstanding,
+        Ok(ArtifactValue::Written { next_offset: 6 }),
+    );
+    control.stop();
+    worker.join().expect("worker exit");
+}
+
 /// Both protocol states below 8.1 and absent version knowledge disable uploads.
 #[test]
 fn paste_upload_version_gate() {

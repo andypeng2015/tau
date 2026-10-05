@@ -3350,6 +3350,26 @@ impl<'a> TerminalInputSession<'a> {
         use tau_cli_term::Event as TermEvent;
 
         match event {
+            TermEvent::PasteArtifactsUpload { id, content } => {
+                if !paste_upload::supported(self.ctx.harness_protocol_version) {
+                    self.term.handle().finish_paste_upload(
+                        id,
+                        Err(
+                            "harness does not support UI uploads (requires protocol 8.1)"
+                                .to_owned(),
+                        ),
+                    );
+                } else {
+                    self.output.command_feedback("Uploading clipboard originals as shared artifacts (retained independently of session history); Ctrl-C cancels. References enter the prompt together after all uploads finish; the prompt is not submitted.");
+                    self.ctx.paste_upload.start_content(
+                        self.session_id.clone(),
+                        id,
+                        content,
+                        self.term.handle().clone(),
+                    );
+                }
+                Ok(None)
+            }
             TermEvent::PastePngUpload { id, bytes } => {
                 if !paste_upload::supported(self.ctx.harness_protocol_version) {
                     self.term.handle().finish_paste_upload(
@@ -3433,6 +3453,7 @@ impl<'a> TerminalInputSession<'a> {
             | TermEvent::CancelPrompt
             | TermEvent::PasteUpload { .. }
             | TermEvent::PastePngUpload { .. }
+            | TermEvent::PasteArtifactsUpload { .. }
             | TermEvent::PasteCancelled { .. } => {}
         }
         Ok(())

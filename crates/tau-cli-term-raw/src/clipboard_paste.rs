@@ -9,6 +9,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use super::clipboard_fence::ClipboardFence;
+use super::clipboard_files::{ClipboardFiles, FILES_MIME, PasteArtifact};
 
 #[cfg(test)]
 mod tests;
@@ -18,21 +19,34 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum independently decoded read chunk, as defined by OSC5522.
 const MAX_CHUNK: usize = 4096;
 
-/// Completed clipboard content; PNG never enters the editable text buffer.
+/// Completed clipboard content; binary originals never enter the editable
+/// draft.
 #[derive(Clone)]
 pub enum PasteContent {
     /// Normalized text follows the existing text-paste threshold policy.
     Text(Arc<str>),
     /// Opaque PNG bytes uploaded through the ordinary artifact protocol.
     Png(Arc<[u8]>),
+    /// Validated copied-file originals, without remote path authority.
+    Files(Arc<ClipboardFiles>),
+    /// Arbitrary native MIME bytes, uploaded without interpreting their type.
+    Opaque {
+        /// Completed exact original bytes.
+        bytes: Arc<[u8]>,
+        /// Untrusted type/subtype hint, without request parameters.
+        mime_type: Arc<str>,
+    },
 }
 
 impl PasteContent {
-    /// Borrows the exact bytes transferred by the artifact client.
+    /// Borrows the retained source for aggregate admission. For copied files
+    /// this includes framing; [`Self::artifact`] borrows each original body.
     pub fn bytes(&self) -> &[u8] {
         match self {
             Self::Text(text) => text.as_bytes(),
             Self::Png(bytes) => bytes,
+            Self::Files(files) => files.encoded(),
+            Self::Opaque { bytes, .. } => bytes,
         }
     }
 
@@ -41,7 +55,47 @@ impl PasteContent {
         match (self, other) {
             (Self::Text(a), Self::Text(b)) => Arc::ptr_eq(a, b),
             (Self::Png(a), Self::Png(b)) => Arc::ptr_eq(a, b),
+            (Self::Files(a), Self::Files(b)) => Arc::ptr_eq(a, b),
+            (
+                Self::Opaque {
+                    bytes: a,
+                    mime_type: ma,
+                },
+                Self::Opaque {
+                    bytes: b,
+                    mime_type: mb,
+                },
+            ) => Arc::ptr_eq(a, b) && ma == mb,
             _ => false,
+        }
+    }
+
+    /// Counts originals uploaded sequentially before grouped prompt insertion.
+    pub fn artifact_count(&self) -> usize {
+        match self {
+            Self::Files(files) => files.len(),
+            Self::Text(_) | Self::Png(_) | Self::Opaque { .. } => 1,
+        }
+    }
+
+    /// Borrows one exact original and its untrusted per-use hints.
+    pub fn artifact(&self, index: usize) -> Option<PasteArtifact<'_>> {
+        match self {
+            Self::Files(files) => files.file(index),
+            Self::Opaque { bytes, mime_type } if index == 0 => Some(PasteArtifact {
+                bytes,
+                filename: None,
+                mime_type: Some(mime_type),
+            }),
+            Self::Text(_) | Self::Png(_) if index == 0 => Some(PasteArtifact {
+                bytes: self.bytes(),
+                filename: None,
+                mime_type: Some(match self {
+                    Self::Text(_) => "text/plain;charset=utf-8",
+                    _ => "image/png",
+                }),
+            }),
+            _ => None,
         }
     }
 }
@@ -356,13 +410,31 @@ impl ClipboardPaste {
         if transfer.id.is_none() {
             return self.request_content(transfer, now);
         }
-        let content = if transfer.mime == "image/png" {
+        let content = if transfer.mime == FILES_MIME {
+            match ClipboardFiles::parse(transfer.bytes.into()) {
+                Ok(files) => PasteContent::Files(Arc::new(files)),
+                Err(error) => return Self::failure(error),
+            }
+        } else if transfer.mime == "image/png" {
             PasteContent::Png(transfer.bytes.into())
-        } else {
+        } else if matches!(
+            transfer.mime.as_str(),
+            "text/plain" | "text/plain;charset=utf-8"
+        ) {
             let Ok(text) = String::from_utf8(transfer.bytes) else {
                 return Self::failure("Clipboard text is not UTF-8; draft unchanged.");
             };
             PasteContent::Text(text.into())
+        } else {
+            PasteContent::Opaque {
+                bytes: transfer.bytes.into(),
+                mime_type: transfer
+                    .mime
+                    .split(';')
+                    .next()
+                    .expect("MIME essence")
+                    .into(),
+            }
         };
         Effects {
             content: Some(content),
@@ -370,18 +442,26 @@ impl ClipboardPaste {
         }
     }
 
-    /// Requests only one supported MIME using the original gesture's authority.
+    /// Prefers files/PNG/plaintext, otherwise requests opaque native bytes with
+    /// the original gesture's authority. References/control metadata are not
+    /// mistaken for file bodies.
     fn request_content(&mut self, transfer: Transfer, now: Instant) -> Effects {
         let Ok(inventory) = std::str::from_utf8(&transfer.bytes) else {
             return Self::failure("Invalid clipboard MIME inventory.");
         };
         let mimes: Vec<_> = inventory.split_ascii_whitespace().collect();
-        let mime = ["image/png", "text/plain;charset=utf-8", "text/plain"]
-            .into_iter()
-            .find(|mime| mimes.contains(mime));
+        let mime = [
+            FILES_MIME,
+            "image/png",
+            "text/plain;charset=utf-8",
+            "text/plain",
+        ]
+        .into_iter()
+        .find(|mime| mimes.contains(mime))
+        .or_else(|| mimes.iter().copied().find(|mime| opaque_mime(mime)));
         let Some(mime) = mime else {
             return Self::failure(
-                "Clipboard has no supported PNG or UTF-8 plain text. File URIs are not uploaded.",
+                "Clipboard offers only unsupported reference/control metadata. File URIs are not opened on this host.",
             );
         };
         self.serial += 1;
@@ -415,4 +495,27 @@ impl ClipboardPaste {
             ..Effects::default()
         }
     }
+}
+
+/// Identifies native payload media without granting authority to URI lists,
+/// file-manager references, portal tokens, or selection-control metadata.
+fn opaque_mime(mime: &str) -> bool {
+    let essence = mime.split(';').next().unwrap_or_default();
+    let normalized = essence.to_ascii_lowercase();
+    !essence.is_empty()
+        && super::clipboard_files::valid_mime(essence.as_bytes())
+        && !normalized.starts_with("application/vnd.tau.files-")
+        && !matches!(
+            normalized.as_str(),
+            "text/uri-list"
+                | "x-special/gnome-copied-files"
+                | "application/x-kde4-urilist"
+                | "application/x-kde-urilist"
+                | "application/x-kde-cutselection"
+                | "application/vnd.portal.filetransfer"
+                | "text/x-moz-url"
+                | "text/x-moz-url-data"
+                | "text/x-moz-url-desc"
+                | "application/x-qt-windows-mime"
+        )
 }

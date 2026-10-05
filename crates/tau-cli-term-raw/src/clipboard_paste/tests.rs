@@ -3,6 +3,199 @@ use std::sync::mpsc::Sender;
 
 use super::*;
 
+/// Native non-text media become opaque originals without UTF-8 conversion;
+/// MIME parameters affect wire correlation, not textual hint authority.
+#[test]
+fn opaque_native_media_preserve_bytes_and_existing_preference() {
+    for inventory in ["audio/mpeg", "audio/mpeg;codecs=mp3 image/jpeg"] {
+        let (mut owner, now, request) = offered(inventory.as_bytes());
+        let mime = inventory.split_ascii_whitespace().next().expect("MIME");
+        assert!(request.contains(&STANDARD.encode(mime)));
+        let id = read_id(&owner);
+        owner.receive(&packet("OK", Some(&id), None, b""), now, false);
+        owner.receive(
+            &packet("DATA", Some(&id), Some(mime), b"\0\xffMP3"),
+            now,
+            false,
+        );
+        let effects = owner.receive(&packet("DONE", Some(&id), None, b""), now, false);
+        let Some(PasteContent::Opaque { bytes, mime_type }) = effects.content else {
+            panic!("opaque original");
+        };
+        assert_eq!(&*bytes, b"\0\xffMP3");
+        assert_eq!(&*mime_type, "audio/mpeg");
+    }
+    for (inventory, expected) in [
+        ("audio/mpeg image/png text/plain", "image/png"),
+        ("audio/mpeg text/plain", "text/plain"),
+    ] {
+        let (owner, _, _) = offered(inventory.as_bytes());
+        assert_eq!(owner.transfer.as_ref().expect("read").mime, expected);
+    }
+}
+
+/// File-manager references, URI inventories and selection/portal control tokens
+/// must not masquerade as uploaded file bodies or grant remote path authority.
+#[test]
+fn reference_and_control_metadata_do_not_become_opaque_files() {
+    for inventory in [
+        "text/uri-list",
+        "TEXT/URI-LIST",
+        "x-special/gnome-copied-files",
+        "application/x-kde4-urilist application/x-kde-cutselection",
+        "application/vnd.portal.filetransfer",
+        "TARGETS MULTIPLE TIMESTAMP SAVE_TARGETS",
+        "application/vnd.tau.files-v2",
+        "text/x-moz-url application/x-qt-windows-mime;value=FileNameW",
+    ] {
+        let now = Instant::now();
+        let mut owner = ClipboardPaste::default();
+        owner.probe(now);
+        owner.mode_report(true, now);
+        owner.receive(&packet("OK", None, None, b""), now, false);
+        owner.receive(
+            &packet("DATA", None, Some("."), inventory.as_bytes()),
+            now,
+            false,
+        );
+        let effects = owner.receive(&packet("DONE", None, None, b""), now, false);
+        assert!(effects.output.is_empty());
+        assert!(effects.content.is_none());
+        assert!(effects.notice.is_some());
+        assert!(!owner.busy());
+    }
+}
+
+/// Opaque audio follows the existing frozen-draft retry/cancel path, retaining
+/// complete bytes without new clipboard reads or accidental prompt submission.
+#[test]
+fn opaque_input_owner_retains_source_on_retry_and_discard() {
+    use crate::{CursorShape, Event, KeyCode, KeyEvent, KeyModifiers, RawEvent, Term};
+    let (term, handle, input) =
+        Term::new_virtual(80, 24, "> ", Box::new(std::io::sink()), CursorShape::Bar);
+    handle.set_buffer("draft".into(), 5);
+    let id = begin_read(&term, &handle, &input, "audio/mpeg");
+    for body in [
+        packet("OK", Some(&id), None, b""),
+        packet("DATA", Some(&id), Some("audio/mpeg"), b"\0\xffMP3"),
+        packet("DONE", Some(&id), None, b""),
+    ] {
+        input.send(RawEvent::Osc(body)).expect("audio response");
+    }
+    let Event::PasteArtifactsUpload { id, content } = term.get_next_event().expect("opaque upload")
+    else {
+        panic!("opaque upload");
+    };
+    assert_eq!(content.artifact(0).expect("original").bytes, b"\0\xffMP3");
+    assert_eq!(handle.get_buffer(), "draft");
+    handle.finish_paste_upload(id, Err("retry fixture".into()));
+    assert!(matches!(
+        term.get_next_event().expect("failure"),
+        Event::Notice(_)
+    ));
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("retry");
+    let Event::PasteArtifactsUpload {
+        content: retried, ..
+    } = term.get_next_event().expect("retry")
+    else {
+        panic!("opaque retry");
+    };
+    assert!(content.same_source(&retried));
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )))
+        .expect("discard");
+    assert!(matches!(
+        term.get_next_event().expect("discard"),
+        Event::PasteCancelled { .. }
+    ));
+    assert_eq!(handle.get_buffer(), "draft");
+}
+
+/// File bundles outrank URI/plaintext inventory entries, require matching DONE,
+/// and retain the exact source across failed-upload retry without rereading.
+#[test]
+fn copied_files_require_done_and_preserve_retry_source() {
+    use crate::{CursorShape, Event, KeyCode, KeyEvent, KeyModifiers, RawEvent, Term};
+    let (term, handle, input) =
+        Term::new_virtual(80, 24, "> ", Box::new(std::io::sink()), CursorShape::Bar);
+    handle.set_buffer("draft".into(), 5);
+    let id = begin_read(
+        &term,
+        &handle,
+        &input,
+        &format!("text/uri-list text/plain {FILES_MIME} image/png"),
+    );
+    assert_eq!(
+        handle
+            .lock()
+            .editor
+            .clipboard
+            .transfer
+            .as_ref()
+            .expect("read")
+            .mime,
+        FILES_MIME
+    );
+    let mut bundle = b"TAUFILES\0".to_vec();
+    bundle.extend_from_slice(&1u32.to_be_bytes());
+    bundle.extend_from_slice(&8u16.to_be_bytes());
+    bundle.extend_from_slice(&0u16.to_be_bytes());
+    bundle.extend_from_slice(&3u64.to_be_bytes());
+    bundle.extend_from_slice(b"song.mp3\0\xffx");
+    for body in [
+        packet("OK", Some(&id), None, b""),
+        packet("DATA", Some(&id), Some(FILES_MIME), &bundle),
+        packet("DONE", Some("stale"), None, b""),
+    ] {
+        input.send(RawEvent::Osc(body)).expect("inject file read");
+    }
+    input.send(RawEvent::Resize(80, 24)).expect("pump marker");
+    assert!(matches!(
+        term.get_next_event().expect("incomplete read"),
+        Event::Resize { .. }
+    ));
+    assert_eq!(handle.get_buffer(), "draft");
+    input
+        .send(RawEvent::Osc(packet("DONE", Some(&id), None, b"")))
+        .expect("complete read");
+    let Event::PasteArtifactsUpload {
+        id,
+        content: PasteContent::Files(files),
+    } = term.get_next_event().expect("files")
+    else {
+        panic!("completed files must upload");
+    };
+    assert_eq!(files.file(0).expect("original").bytes, b"\0\xffx");
+    assert_eq!(handle.get_buffer(), "draft");
+    handle.finish_paste_upload(id, Err("retry fixture".into()));
+    assert!(matches!(
+        term.get_next_event().expect("failure"),
+        Event::Notice(_)
+    ));
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .expect("retry");
+    let Event::PasteArtifactsUpload {
+        content: PasteContent::Files(retried),
+        ..
+    } = term.get_next_event().expect("retry files")
+    else {
+        panic!("retry retains file bundle");
+    };
+    assert!(Arc::ptr_eq(&files, &retried));
+}
+
 /// Matches Kitty's read-response grammar and WezTerm's ClipboardResponse
 /// serializer: only DATA carries a payload separator.
 fn packet(status: &str, id: Option<&str>, mime: Option<&str>, bytes: &[u8]) -> Vec<u8> {

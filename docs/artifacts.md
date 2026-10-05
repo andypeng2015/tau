@@ -180,13 +180,61 @@ bracketed paste on capable terminals. The opt-in `terminal-responses` feature
 of `dpc-tau-crossterm` supplies responses through the existing sole Unix terminal
 reader; non-Unix input currently retains the text fallback.
 
-Tau prefers `image/png`, then UTF-8 `text/plain;charset=utf-8`, then `text/plain`
+Tau prefers the copied-file bundle described below, then `image/png`, then UTF-8 `text/plain;charset=utf-8`, then `text/plain`
 (strictly decoded as UTF-8). PNG bytes always become an artifact, regardless of
 size and inserts `<tau-artifact:FULL_KEY> (mime_type: image/png)` into the draft;
 no original filename is available. `Paste event` is a permission label, never a
 filename hint. Text still uses the normalization and 8 KiB threshold above. MIME claims
-are hints, not image validation. No filesystem paths or `text/uri-list` offers
-are dereferenced, and copied-file byte transfer is not implemented.
+are hints, not image validation. Other native MIME payloads, such as `audio/mpeg`
+and `image/jpeg`, become opaque artifacts without UTF-8 conversion or a media
+whitelist. URI/file-manager reference formats, portal tokens and selection-control
+metadata are not mistaken for original file bytes. Opaque hints retain the media
+type/subtype, not request parameters. Tau never dereferences filesystem paths or
+`text/uri-list` offers on its execution host.
+
+### Copied files, including over SSH
+
+The matching terminal fork can augment an ordinary paste gesture's native MIME
+offer with `application/vnd.tau.files-v1`. Its explicit file-paste configuration
+allows **the workstation terminal** to resolve copied local regular files and
+capture their bytes at the gesture. Normal symlinks are supported; directories,
+devices, network fetching, and cut/deletion effects are not. Remote Tau receives
+file bodies through the same OSC5522 stream, including SSH and opted-in tmux
+hops, not workstation paths or filesystem authority. Plain URI lists do not
+transfer file bodies.
+
+Tau validates the entire completed bundle before uploading any original. There
+is no file-extension or media whitelist, archive extraction, execution, automatic
+image rendering, or prompt submission. Files upload sequentially through the
+existing artifact client. Their canonical references enter the unchanged draft
+together only after every upload finishes, with bounded sanitized basename and
+optional untrusted media hints. Duplicate names remain separate ordered entries;
+identical bodies naturally share a digest. Upload retries retain exact originals
+and resume the unfinished file rather than rereading the clipboard or uploading
+finalized predecessors again.
+
+Grouped prompt insertion is **not atomic artifact publication**. Failure or
+cancellation can leave already-finalized immutable originals, as with ordinary
+artifact uploads; no deletion/rollback is promised.
+
+The private v1 MIME encoding uses the **nine-byte** literal `TAUFILES\0`, followed
+by an unsigned big-endian 32-bit file count. Each entry has big-endian 16-bit
+basename and MIME-hint lengths and a 64-bit body length, then UTF-8 basename,
+optional ASCII type/subtype hint, and exact opaque body bytes. Names cannot be
+empty, `.` or `..`, or contain separators/control characters. Hint parameters are
+not part of this encoding. The declared count and lengths must consume the
+encoding exactly; unknown versions, truncation, trailing data, and malformed
+metadata are rejected. There is no discretionary sixteen-file limit: framing
+and the existing aggregate acquisition bound constrain admission.
+
+The existing 16 MiB acquisition cap includes **all bundle framing and bodies**;
+the artifact API separately caps each original at 16 MiB. Neither cap is an
+OSC5522 requirement. Existing fixed acquisition/upload deadlines still apply,
+so slow SSH transfers can fail explicitly. Terminal file snapshots are ordinary
+bounded filesystem reads, not atomic snapshots or a promise to interrupt a
+blocking filesystem syscall.
+
+### Acquisition and terminal ownership
 
 Each read preserves the offer's primary/default location and optional paste
 grant, supplies the name `Paste event`, and uses a fresh request ID. Only matching
