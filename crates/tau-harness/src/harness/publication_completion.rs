@@ -1967,6 +1967,10 @@ impl Harness {
             return true;
         };
         let completion_live = match &pending.completion {
+            PendingPeerReceiveCompletion::Cli { client_id } => {
+                self.peer_messaging.cli_connections.get(client_id)
+                    == Some(&self.session_runtime.current_session_generation)
+            }
             PendingPeerReceiveCompletion::Remote { client_id, .. } => self
                 .peer_messaging
                 .external_message_peers
@@ -2171,6 +2175,9 @@ impl Harness {
             return;
         }
         match pending.completion {
+            PendingPeerReceiveCompletion::Cli { client_id } => {
+                self.fail_cli_message(&client_id, error.to_owned());
+            }
             PendingPeerReceiveCompletion::Remote {
                 client_id,
                 request_id,
@@ -2221,6 +2228,9 @@ impl Harness {
             .remove(&pending.recipient_id);
         self.record_peer_route(&pending.recipient_id);
         match pending.completion {
+            PendingPeerReceiveCompletion::Cli { client_id } => {
+                self.acknowledge_cli_message(&client_id, message_id.clone(), pending.recipient_id);
+            }
             PendingPeerReceiveCompletion::Remote {
                 client_id,
                 request_id,

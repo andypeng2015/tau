@@ -109,6 +109,7 @@ fn authenticated_internal_notices_are_consistent_live_and_replayed() {
             .expect("test identifier must satisfy its grammar"),
         sender_id: agent_id("watched-agent"),
         sender_session_id: None,
+        cli_origin: None,
         recipient_id: agent.clone(),
         kind: tau_proto::AgentMessageKind::WatchProviderStatus,
         watch_provider_status: Some(tau_proto::AgentWatchProviderStatusNotification {

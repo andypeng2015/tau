@@ -93,7 +93,9 @@ impl Harness {
         now: Instant,
     ) {
         self.cancel_connection_history(connection_id);
-        self.ui_runtime.artifact_admissions.remove(connection_id);
+        self.ui_runtime
+            .exact_session_admissions
+            .remove(connection_id);
         if let Some(artifacts) = &mut self.runtime_io.artifacts {
             artifacts.disconnect(connection_id);
         }
@@ -337,6 +339,10 @@ impl Harness {
         self.peer_messaging
             .external_message_peer_versions
             .remove(connection_id);
+        self.peer_messaging.cli_connections.remove(connection_id);
+        self.peer_messaging
+            .cli_replies
+            .retain(|_, endpoint| &endpoint.connection != connection_id);
         let canceled_peer_receives = self
             .peer_messaging
             .pending_external_receive_acks
@@ -345,6 +351,7 @@ impl Harness {
                 matches!(
                     &pending.completion,
                     PendingPeerReceiveCompletion::Remote { client_id, .. }
+                    | PendingPeerReceiveCompletion::Cli { client_id }
                         if client_id == connection_id
                 )
                 .then_some((

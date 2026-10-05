@@ -7918,6 +7918,7 @@ fn reactive_compaction_includes_coalesced_agent_message_wakes() {
                     .expect("test identifier must satisfy its grammar"),
                 sender_id: crate::parse_agent_id("manager"),
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: crate::parse_agent_id(&agent_id),
                 kind: tau_proto::AgentMessageKind::Message,
                 watch_provider_status: None,

@@ -561,6 +561,33 @@ fn validate_v2_action(
     barriers: &mut HashMap<String, (usize, std::collections::HashSet<String>)>,
 ) -> ClientResult<()> {
     match action {
+        ScenarioActionV2::CliMessage {
+            response, call_id, ..
+        } => {
+            if response.is_some()
+                && !matches!(lane.actions.get(action_index + 1),
+                Some(ScenarioActionV2::CliResponseResult { call_id: next }) if next == call_id)
+            {
+                return Err(ClientError::handler(
+                    "CLI reply requires its adjacent result",
+                ));
+            }
+            Ok(())
+        }
+        ScenarioActionV2::CliResponseResult { call_id } => {
+            if !action_index
+                .checked_sub(1)
+                .and_then(|previous| lane.actions.get(previous))
+                .is_some_and(|action| {
+                    matches!(action, ScenarioActionV2::CliMessage {
+                    response: Some(_), call_id: prior, ..
+                } if prior == call_id)
+                })
+            {
+                return Err(ClientError::handler("CLI reply result lacks its call"));
+            }
+            Ok(())
+        }
         ScenarioActionV2::OutputLengthReasoning { .. }
         | ScenarioActionV2::OutputLengthContinuation { .. } => {
             validate_v2_output_action(lane, action_index, action)

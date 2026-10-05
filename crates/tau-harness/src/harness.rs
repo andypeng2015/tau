@@ -1587,6 +1587,7 @@ mod agent_watch;
 mod agent_watch_provider_deliveries;
 mod artifact_requests;
 mod bridge_receiver;
+mod cli_messaging;
 mod compaction_runtime;
 mod compaction_runtime_state;
 #[cfg(test)]
@@ -2731,6 +2732,8 @@ impl Harness {
         in_process_cleanup_grace: Duration,
     ) -> Result<(), HarnessError> {
         self.cancel_ui_interactions_for_shutdown();
+        self.peer_messaging.cli_replies.clear();
+        self.peer_messaging.cli_connections.clear();
         if !self.session_runtime.shutdown_published {
             self.fail_start_operations_for_session_shutdown();
             self.fail_all_pending_initial_prompts(
@@ -3161,9 +3164,9 @@ impl Harness {
                         return Ok(ClientMessageDisposition::CloseAfterReply);
                     }
                     if socket_connection && hello.client_kind == ClientKind::Ui {
-                        self.ui_runtime.artifact_admissions.insert(
+                        self.ui_runtime.exact_session_admissions.insert(
                             client_id.clone(),
-                            artifact_requests::UiArtifactAdmission {
+                            ui_runtime::UiSessionAdmission {
                                 session_id: expected_session_id,
                                 generation: self.session_runtime.current_session_generation,
                             },
@@ -3275,6 +3278,10 @@ impl Harness {
                 if self.is_attached_socket_ui(client_id) {
                     self.handle_unload_session_agent(client_id, request);
                 }
+                Ok(ClientMessageDisposition::Continue)
+            }
+            HarnessInputMessage::CliMessage(request) => {
+                self.handle_cli_message(client_id, request);
                 Ok(ClientMessageDisposition::Continue)
             }
             HarnessInputMessage::ArtifactRequest(request) => {

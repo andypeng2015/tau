@@ -18,6 +18,11 @@ availability parity. See the
 
 ## A durable terminal coding workflow
 
+Send messages from scripts with `tau message <recipient> [message]`, or pipe
+stdin and use `--wait-response` for one final response on stdout. One-way delivery
+has no reply address; waiting uses a temporary local address, not a sender agent
+or session. See [CLI messaging](docs/cli-message.md).
+
 Tau's terminal UI keeps the conversation, tools, and project context together
 without surrounding them with heavy chrome. It includes:
 

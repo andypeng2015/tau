@@ -55,6 +55,21 @@ pub struct ScenarioLaneV2 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScenarioActionV2 {
+    /// Consume one exact live CLI receipt, optionally submitting its final
+    /// reply.
+    CliMessage {
+        /// Exact literal CLI payload from the harness-owned receive fact.
+        message: String,
+        /// Final tool response, or deliberately no reply to the caller.
+        response: Option<String>,
+        /// Fixed message-tool call identity when a response is requested.
+        call_id: ToolCallId,
+    },
+    /// Consume the successful CLI reply tool continuation.
+    CliResponseResult {
+        /// Exact prior CLI response call identity.
+        call_id: ToolCallId,
+    },
     /// Complete normally with assistant text.
     Text {
         /// Exact latest user text.

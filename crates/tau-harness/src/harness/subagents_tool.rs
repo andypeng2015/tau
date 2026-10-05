@@ -280,7 +280,7 @@ impl PeerEntrypointResolutionError {
         }
     }
 
-    fn into_diagnostic(self) -> String {
+    pub(super) fn into_diagnostic(self) -> String {
         match self {
             Self::NoReceiver => INTER_SESSION_UNAVAILABLE.to_owned(),
             Self::Rejected(diagnostic) => diagnostic,
@@ -1246,6 +1246,7 @@ impl Harness {
             message_id: message_id.clone(),
             sender_id: sender_id.clone(),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: recipient_id.clone(),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,
@@ -1633,6 +1634,7 @@ impl Harness {
                 message_id: message_id.clone(),
                 sender_id: sender_id.clone(),
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: watcher_id.clone(),
                 kind: tau_proto::AgentMessageKind::WatchLifecycle,
                 watch_provider_status: None,
@@ -1919,6 +1921,7 @@ impl Harness {
                 message_id: next_agent_message_id(&sender_id),
                 sender_id,
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: crate::parse_agent_id(watcher_id),
                 kind: tau_proto::AgentMessageKind::WatchWorkStatus,
                 watch_provider_status: None,
@@ -1958,6 +1961,7 @@ impl Harness {
                 message_id: next_agent_message_id(&sender_id),
                 sender_id,
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: crate::parse_agent_id(watcher_id),
                 kind: tau_proto::AgentMessageKind::WatchLongWait,
                 watch_provider_status: None,
@@ -2225,6 +2229,7 @@ impl Harness {
                 message_id: next_agent_message_id(&sender_id),
                 sender_id,
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: crate::parse_agent_id(watcher_id),
                 kind: tau_proto::AgentMessageKind::WatchProviderStatus,
                 watch_provider_status: Some(status),
@@ -2290,6 +2295,7 @@ impl Harness {
                 message_id: message_id.clone(),
                 sender_id,
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id,
                 kind,
                 watch_provider_status: None,
@@ -2577,6 +2583,7 @@ impl Harness {
             message_id: message_id.clone(),
             sender_id: request.sender_id,
             sender_session_id: Some(request.sender_session_id),
+            cli_origin: None,
             recipient_id: recipient_id.clone(),
             kind: request.kind,
             watch_provider_status: None,
@@ -2667,6 +2674,7 @@ impl Harness {
                 message_id: request.message_id,
                 sender_id: request.sender_id,
                 sender_session_id: Some(request.sender_session_id),
+                cli_origin: None,
                 recipient_id: recipient_id.clone(),
                 kind: request.kind,
                 watch_provider_status: None,

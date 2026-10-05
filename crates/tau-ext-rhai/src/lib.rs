@@ -624,6 +624,7 @@ fn handle_harness_message(
         | HarnessOutputMessage::ExtensionDataResult(_)
         | HarnessOutputMessage::BridgeReceiverResult(_)
         | HarnessOutputMessage::ArtifactResult(_)
+        | HarnessOutputMessage::CliMessageResult(_)
         | HarnessOutputMessage::ExternalAgentMessageResult(_)
         | HarnessOutputMessage::ExternalAgentMessageAuthResult(_)
         | HarnessOutputMessage::PeerSessionProbeResult(_)

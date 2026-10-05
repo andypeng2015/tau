@@ -125,6 +125,7 @@ fn semantic_items_share_global_journal_timing_and_order() {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: AgentId::parse("agent-a").expect("agent"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: AgentId::parse("agent-b").expect("agent"),
             kind: AgentMessageKind::Message,
             watch_provider_status: None,

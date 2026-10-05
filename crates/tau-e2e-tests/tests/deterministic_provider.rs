@@ -13,6 +13,8 @@ use tau_proto::{
 };
 use tau_socket::SocketPeer;
 
+#[path = "deterministic_provider/cli_message.rs"]
+mod cli_message;
 #[path = "deterministic_provider/daemon_support.rs"]
 mod daemon_support;
 #[path = "deterministic_provider/persistence_barrier.rs"]

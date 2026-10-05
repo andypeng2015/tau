@@ -1303,6 +1303,11 @@ fn handle_message_tool_call(
     let call_id = call.id.clone();
     host.ensure_internal_tool_tracking(conversation_id, call, &visible_tool_name);
     let result = parse_message_args(&call.arguments).and_then(|parsed| {
+        if parsed.recipient_id.starts_with("!cli-") {
+            return host
+                .publish_cli_response(&parsed.recipient_id, parsed.message)
+                .map(|()| MessageToolFlow::CliResponse);
+        }
         match parse_message_recipient(&parsed.recipient_id, &host.current_session_id())? {
             MessageRecipientAddress::LocalAgent(agent_id) => host
                 .publish_agent_message(conversation_id, agent_id.to_string(), parsed.message)
@@ -1335,6 +1340,16 @@ fn handle_message_tool_call(
         }
     });
     match result {
+        Ok(MessageToolFlow::CliResponse) => host.finish_tool_with_cbor_result(
+            conversation_id,
+            call_id,
+            visible_tool_name,
+            call.tool_type,
+            CborValue::Text(
+                "Final response accepted for the CLI caller; reply address consumed".to_owned(),
+            ),
+            Some(message_success_display(&call.arguments)),
+        ),
         Ok(MessageToolFlow::Finished(message_id)) => finish_message_success(
             host,
             conversation_id,
@@ -1359,6 +1374,7 @@ fn handle_message_tool_call(
 }
 
 enum MessageToolFlow {
+    CliResponse,
     Finished(tau_proto::AgentMessageId),
     PendingPeer,
     PendingExternal,
@@ -2057,7 +2073,7 @@ fn agent_start_tool_spec() -> ToolSpec {
 }
 
 fn message_tool_spec() -> ToolSpec {
-    ToolSpec { provider_scope: None, name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Commit an async message to another agent or another session. Success returns the stable message id and confirms acceptance, not recipient inference, reply, or completion. Use a local agent id, `&<session-id>`, `&<session-id>/@<agent-id>`, or `<session-id>/<agent-id>` as `recipient_id`. In exact session/agent addresses, `&` and `@` are independently optional. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient local agent id, another session as `&session`, or an agent in another session as `&session/@agent` or `session/agent`; in exact session/agent addresses, `&` and `@` are independently optional."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, tags: Vec::new(), enabled_by_default: true, background_support: Some(BackgroundSupport::Never), examples: Vec::new() }
+    ToolSpec { provider_scope: None, name: ToolName::new(MESSAGE_TOOL_NAME), model_visible_name: None, description: Some("Commit an async message to another agent or another session. Success returns the stable message id and confirms acceptance, not recipient inference, reply, or completion. Use a local agent id, `&<session-id>`, `&<session-id>/@<agent-id>`, or `<session-id>/<agent-id>` as `recipient_id`. In exact session/agent addresses, `&` and `@` are independently optional. A received CLI message may instead provide a local `!cli-...` address: use it exactly once, only for the final response, never progress; acceptance consumes it without creating a sender fact. Requires `recipient_id` and `message`.".to_owned()), tool_type: ToolType::Function, parameters: Some(serde_json::json!({"type":"object","properties":{"recipient_id":{"type":"string","description":"Recipient local agent id, another session as `&session`, or an agent in another session as `&session/@agent` or `session/agent`; in exact session/agent addresses, `&` and `@` are independently optional. Also accepts an explicitly provided local one-shot CLI reply address."},"message":{"type":"string","description":"Message body."}},"required":["recipient_id","message"],"additionalProperties":false})), format: None, tags: Vec::new(), enabled_by_default: true, background_support: Some(BackgroundSupport::Never), examples: Vec::new() }
 }
 
 fn agent_watch_tool_spec() -> ToolSpec {

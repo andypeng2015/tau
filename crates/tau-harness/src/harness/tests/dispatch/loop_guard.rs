@@ -263,6 +263,7 @@ fn loop_guard_block_preserves_canonical_agent_message_wake() {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: crate::parse_agent_id("manager"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: crate::parse_agent_id(&recipient_id),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,

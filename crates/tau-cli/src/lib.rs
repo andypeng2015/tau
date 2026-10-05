@@ -21,6 +21,7 @@ mod line_output;
 mod list_agents;
 mod list_sessions;
 mod markdown_render;
+mod message;
 mod message_fact_render;
 mod papercut;
 mod peer_exit;
@@ -926,6 +927,9 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                     | cli::DevCommand::PrintTools
                     | cli::DevCommand::PreviewDeclarations,
             }) => {}
+            DispatchCommand::Other(cli::Command::Message { .. }) => {
+                reject_harness_config_overrides(&harness_config_overrides, "message")?;
+            }
             DispatchCommand::Other(cli::Command::Session { command }) => {
                 let command_name = match command {
                     cli::SessionCommand::List(_) => "session list",
@@ -1103,6 +1107,11 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 }
             }
 
+            DispatchCommand::Other(cli::Command::Message {
+                recipient,
+                message,
+                wait_response,
+            }) => crate::message::run(&recipient, message, wait_response),
             DispatchCommand::Other(cli::Command::Session {
                 command: cli::SessionCommand::Kill { session_id },
             }) => {

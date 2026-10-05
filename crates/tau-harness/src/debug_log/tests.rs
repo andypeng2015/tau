@@ -10,6 +10,34 @@ use tau_proto::{
 use super::*;
 use crate::event::HarnessEvent;
 
+/// Raw CLI requests have no selected recipient yet and must never leak an
+/// ephemeral recipient's content through the generic debug projection.
+#[test]
+fn cli_message_ingress_debug_projection_is_content_free() {
+    let message = HarnessInputMessage::CliMessage(tau_proto::CliMessageRequest {
+        session_id: "test-session".parse().expect("session"),
+        recipient: tau_proto::ExternalAgentMessageRecipient::BareEntrypoint,
+        message: "cli-private-ingress-canary".to_owned(),
+        wait_response: true,
+    });
+    assert_eq!(
+        debug_harness_input_json(&message),
+        serde_json::json!({"message": "cli_message", "payload": "<omitted>"})
+    );
+    let temp = tempfile::tempdir().expect("temp");
+    let mut log = DebugEventLog::open(temp.path()).expect("debug log");
+    log.log_harness_event(&HarnessEvent::from_connection_for_test(
+        crate::test_connection_id("cli"),
+        message,
+    ))
+    .expect("log ingress");
+    assert!(
+        std::fs::read_to_string(log.path())
+            .expect("debug bytes")
+            .is_empty()
+    );
+}
+
 fn read_lines(path: &Path) -> Vec<serde_json::Value> {
     let raw = std::fs::read_to_string(path).expect("read events.jsonl");
     raw.lines()

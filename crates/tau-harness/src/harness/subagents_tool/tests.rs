@@ -13,6 +13,7 @@ fn external_message_admission_bytes_include_both_notice_snapshots() {
         message_id: tau_proto::AgentMessageId::parse("notice-weight").expect("message id"),
         sender_id: tau_proto::AgentId::parse("sender").expect("agent id"),
         sender_session_id: Some(tau_proto::SessionId::parse("sender-session").expect("session id")),
+        cli_origin: None,
         recipient_id: tau_proto::AgentId::parse("recipient").expect("agent id"),
         kind: tau_proto::AgentMessageKind::Message,
         watch_provider_status: None,

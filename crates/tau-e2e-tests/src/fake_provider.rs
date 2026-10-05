@@ -144,6 +144,8 @@ impl ScenarioConfig {
 /// Mutable validated scenario, lane, hold, barrier, and checkpoint state.
 #[derive(Default)]
 struct FakeState {
+    /// One bounded CLI receipt per already-bound scenario agent.
+    cli_messages: HashMap<tau_proto::AgentId, AgentMessageReceived>,
     /// Validated configured scenario.
     scenario: Option<ScenarioConfig>,
     /// Next exact turn index.
@@ -703,6 +705,23 @@ impl FakeState {
     }
 
     fn record_watch_notification(&mut self, message: &AgentMessageReceived) -> ClientResult<()> {
+        if message.cli_origin.is_some() {
+            let lane = self
+                .agent_lanes
+                .get(&message.recipient_id)
+                .copied()
+                .ok_or_else(|| ClientError::handler("CLI receipt has no seeded lane"))?;
+            let cursor = self.lane_cursors[lane];
+            if !matches!(&self.v2()?.lanes[lane].actions.get(cursor),
+                Some(ScenarioActionV2::CliMessage { message: expected, .. }) if expected == &message.message)
+                || self.cli_messages.contains_key(&message.recipient_id)
+            {
+                return Err(ClientError::handler("unexpected CLI receipt"));
+            }
+            self.cli_messages
+                .insert(message.recipient_id.clone(), message.clone());
+            return Ok(());
+        }
         let model_visible = matches!(
             message.kind,
             tau_proto::AgentMessageKind::WatchResponse | tau_proto::AgentMessageKind::WatchPrompt
@@ -1794,6 +1813,46 @@ impl FakeState {
         action: ScenarioActionV2,
     ) -> ClientResult<()> {
         match action {
+            ScenarioActionV2::CliMessage {
+                response, call_id, ..
+            } => {
+                let receipt = self
+                    .cli_messages
+                    .remove(&prompt.agent_id)
+                    .ok_or_else(|| ClientError::handler("missing validated CLI receipt"))?;
+                match (response, receipt.cli_origin) {
+                    (
+                        Some(response),
+                        Some(tau_proto::CliMessageOrigin::FinalResponse { recipient }),
+                    ) => emit_tool_call(
+                        handle,
+                        prompt,
+                        call_id,
+                        "message",
+                        cbor_map(vec![
+                            ("recipient_id", CborValue::Text(recipient)),
+                            ("message", CborValue::Text(response)),
+                        ]),
+                    ),
+                    (None, Some(_)) => {
+                        handle.emit_transient(Event::ProviderResponseFinishedReported(finished(
+                            prompt,
+                            vec![assistant_message("one-way accepted".to_owned())],
+                            ProviderStopReason::EndTurn,
+                        )))
+                    }
+                    _ => Err(ClientError::handler(
+                        "CLI reply policy differs from fixture",
+                    )),
+                }
+            }
+            ScenarioActionV2::CliResponseResult { .. } => {
+                handle.emit_transient(Event::ProviderResponseFinishedReported(finished(
+                    prompt,
+                    vec![assistant_message("reply accepted".to_owned())],
+                    ProviderStopReason::EndTurn,
+                )))
+            }
             ScenarioActionV2::OutputLengthReasoning {
                 reasoning,
                 report_usage,
@@ -2398,6 +2457,8 @@ impl FakeState {
             }
             ScenarioActionV2::MessageCall { .. }
             | ScenarioActionV2::MessageSenderResult { .. }
+            | ScenarioActionV2::CliMessage { .. }
+            | ScenarioActionV2::CliResponseResult { .. }
             | ScenarioActionV2::MessageInbound { .. }
             | ScenarioActionV2::MessageInboundAfterHeld { .. }
             | ScenarioActionV2::MessageAndRawInboundAfterHeld { .. }
@@ -2664,6 +2725,41 @@ impl FakeState {
         action: &ScenarioActionV2,
     ) -> ClientResult<()> {
         match action {
+            ScenarioActionV2::CliMessage {
+                message, response, ..
+            } => {
+                let receipt = self
+                    .cli_messages
+                    .get(&prompt.agent_id)
+                    .ok_or_else(|| ClientError::handler("CLI prompt lacks live receipt"))?;
+                if receipt.message != *message
+                    || (response.is_some()
+                        && !matches!(
+                            receipt.cli_origin,
+                            Some(tau_proto::CliMessageOrigin::FinalResponse { .. })
+                        )) || !prompt.context.flatten_iter().any(|item| {
+                    matches!(item,
+                        ContextItem::Message(item) if item.content.iter().any(|part| matches!(part,
+                            ContentPart::Text { text } if text.starts_with("<tau_internal>")
+                                && text.contains("local CLI caller")
+                                && text.ends_with("</tau_internal>")
+                        ))
+                    )
+                }) {
+                    return Err(self.mismatch(cursor, "CLI prompt provenance mismatch"));
+                }
+                Ok(())
+            }
+            ScenarioActionV2::CliResponseResult { call_id } => {
+                if !prompt.context.flatten_iter().any(|item| {
+                    matches!(item,
+                    ContextItem::ToolResult(result) if result.call_id == *call_id
+                        && result.status == tau_proto::ToolResultStatus::Success)
+                }) {
+                    return Err(self.mismatch(cursor, "CLI reply tool failed"));
+                }
+                Ok(())
+            }
             ScenarioActionV2::MessageCall { .. } => {
                 self.validate_v2_message_call_action(cursor, prompt, action)
             }
@@ -4099,6 +4195,8 @@ impl ScenarioActionV2 {
             | Self::BarrierParallelDummyTools { user_text, .. }
             | Self::ProviderContextRawMessageCall { user_text, .. } => Some(user_text),
             Self::OutputLengthContinuation { .. }
+            | Self::CliMessage { .. }
+            | Self::CliResponseResult { .. }
             | Self::StandaloneCompaction { narrative: _ }
             | Self::StandaloneOpaqueCompaction
             | Self::CompactedOpaqueCheckpoint { .. }

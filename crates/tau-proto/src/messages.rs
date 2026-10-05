@@ -403,6 +403,42 @@ pub enum ExternalAgentMessageRecipient {
     Exact(AgentId),
 }
 
+/// One local CLI delivery over an exact-session admitted UI connection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliMessageRequest {
+    /// Session pinned during admission; never implicitly retargeted.
+    pub session_id: SessionId,
+    /// Existing agent or configured session entrypoint.
+    pub recipient: ExternalAgentMessageRecipient,
+    /// Literal UTF-8 message body.
+    pub message: String,
+    /// Register a connection-owned single final-response address.
+    pub wait_response: bool,
+}
+
+/// Ordered local CLI outcomes; delivery must precede any final response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliMessageResult {
+    /// The recipient's durable receive fact committed.
+    Delivered {
+        /// Logical receive occurrence correlation.
+        message_id: AgentMessageId,
+        /// Concrete selected recipient.
+        recipient_id: AgentId,
+    },
+    /// The request was rejected before delivery.
+    Rejected {
+        /// Fixed harness diagnostic rather than sender-controlled payload.
+        reason: String,
+    },
+    /// One final response submitted through the recipient's message tool.
+    Response {
+        /// Exact response bytes represented as UTF-8, with no added newline.
+        message: String,
+    },
+}
+
 /// Peer-to-harness RPC that asks the active target harness to publish a
 /// harness-owned external agent-message delivery.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1615,6 +1651,8 @@ pub enum HarnessInputMessage {
     BridgeReceiverRequest(crate::BridgeReceiverRequest),
     /// Directed shared original-byte artifact transfer, never a journal event.
     ArtifactRequest(crate::ArtifactRequest),
+    /// Local CLI ingress without peer callback authentication.
+    CliMessage(CliMessageRequest),
     ExternalAgentMessage(ExternalAgentMessageRequest),
     ExternalAgentMessageAuth(ExternalAgentMessageAuthRequest),
     PeerSessionProbe(PeerSessionProbe),
@@ -1668,6 +1706,8 @@ pub enum HarnessOutputMessage {
     BridgeReceiverResult(crate::BridgeReceiverResult),
     /// Directed bounded original-byte transfer result.
     ArtifactResult(Box<crate::ArtifactResult>),
+    /// Local CLI delivery acknowledgement or single final response.
+    CliMessageResult(CliMessageResult),
     ExternalAgentMessageResult(ExternalAgentMessageResult),
     ExternalAgentMessageAuthResult(ExternalAgentMessageAuthResult),
     PeerSessionProbeResult(PeerSessionProbeResult),

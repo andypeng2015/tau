@@ -17,6 +17,7 @@ fn received_event(recipient_id: tau_proto::AgentId) -> Event {
         message_id: tau_proto::AgentMessageId::parse("unload-race-message").expect("message id"),
         sender_id: crate::parse_agent_id("sender"),
         sender_session_id: None,
+        cli_origin: None,
         recipient_id,
         kind: tau_proto::AgentMessageKind::Message,
         watch_provider_status: None,

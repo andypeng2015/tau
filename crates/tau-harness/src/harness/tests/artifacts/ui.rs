@@ -53,7 +53,11 @@ fn ui_artifact_upload_uses_existing_initial_and_attached_ingress() {
             Some(HarnessOutputMessage::CurrentSessionResult(_))
         ));
         h.handle_disconnect(&connection);
-        assert!(!h.ui_runtime.artifact_admissions.contains_key(&connection));
+        assert!(
+            !h.ui_runtime
+                .exact_session_admissions
+                .contains_key(&connection)
+        );
     }
 }
 

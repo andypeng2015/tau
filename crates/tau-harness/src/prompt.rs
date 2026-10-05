@@ -1826,6 +1826,7 @@ fn assemble_prompt_context_window(
                 direction,
                 sender_id,
                 sender_session_id,
+                cli_origin,
                 recipient: _,
                 kind,
                 watch_provider_status,
@@ -1847,23 +1848,37 @@ fn assemble_prompt_context_window(
                         continue;
                     }
                     contains_payload_envelope_provenance_projection = true;
-                    let message_text = match sender_session_id {
-                        Some(sender_session_id) => render_peer_agent_message(
-                            sender_session_id,
-                            sender_id,
-                            sender_notice.as_deref(),
-                            recipient_notice.as_deref(),
-                            message,
-                        ),
-                        None => {
-                            let body = tau_proto::escape_exact_sentinel_close(
+                    let message_text = if let Some(origin) = cli_origin {
+                        let policy = match origin {
+                            tau_proto::CliMessageOrigin::OneWay =>
+                                "This is a one-way CLI message. There is no reply address; do not reply."
+                                    .to_owned(),
+                            tau_proto::CliMessageOrigin::FinalResponse { recipient } => format!(
+                                "This CLI sender is waiting for exactly one final response. Use the message tool with recipient_id `{recipient}` once, for your final response only. Do not send acknowledgements or progress. This address is local to this harness and expires when the caller disconnects; it is not an agent or session."
+                            ),
+                        };
+                        crate::internal_envelope::frame(&format!(
+                            "You have received a message from a local CLI caller (not an agent).\n{policy}\n\n{message}"
+                        ))
+                    } else {
+                        match sender_session_id {
+                            Some(sender_session_id) => render_peer_agent_message(
+                                sender_session_id,
+                                sender_id,
+                                sender_notice.as_deref(),
+                                recipient_notice.as_deref(),
                                 message,
-                                MESSAGE_CLOSE,
-                                MESSAGE_CLOSE_VISIBLE,
-                            );
-                            crate::internal_envelope::frame(&format!(
-                                "You have received a message from {sender_id}\n\n<message>\n{body}\n</message>"
-                            ))
+                            ),
+                            None => {
+                                let body = tau_proto::escape_exact_sentinel_close(
+                                    message,
+                                    MESSAGE_CLOSE,
+                                    MESSAGE_CLOSE_VISIBLE,
+                                );
+                                crate::internal_envelope::frame(&format!(
+                                    "You have received a message from {sender_id}\n\n<message>\n{body}\n</message>"
+                                ))
+                            }
                         }
                     };
                     blocks.push(tau_proto::ContextBlock::UserInput(

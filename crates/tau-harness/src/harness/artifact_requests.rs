@@ -3,14 +3,6 @@
 use super::*;
 use crate::artifact_worker::ArtifactWorker;
 
-/// Exact session binding accepted by the UI's existing Hello handshake.
-pub(super) struct UiArtifactAdmission {
-    /// Textual session name is not enough to survive a binding replacement.
-    pub(super) session_id: tau_proto::SessionId,
-    /// Process-local generation captured at successful exact-session admission.
-    pub(super) generation: SessionGeneration,
-}
-
 impl Harness {
     /// Admits upload-only requests from the authenticated attached socket UI.
     pub(super) fn handle_ui_artifact_request(
@@ -36,7 +28,7 @@ impl Harness {
             }
             let admission = self
                 .ui_runtime
-                .artifact_admissions
+                .exact_session_admissions
                 .get(connection)
                 .ok_or(ArtifactError::Permission)?;
             if request.expected_session_id != self.session_runtime.current_session_id

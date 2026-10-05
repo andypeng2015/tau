@@ -384,6 +384,7 @@ fn public_compact_exports_project_persisted_explicit_observations() {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: AgentId::parse("agent-remote").expect("agent"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: agent_id.clone(),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,

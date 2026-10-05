@@ -1165,6 +1165,7 @@ fn settled_empty_model_inventory_terminalizes_message_wake_and_later_recovers() 
                 message_id: tau_proto::AgentMessageId::parse(message_id).expect("message id"),
                 sender_id: crate::parse_agent_id("sender"),
                 sender_session_id: None,
+                cli_origin: None,
                 recipient_id: agent_id.clone(),
                 kind: tau_proto::AgentMessageKind::Message,
                 watch_provider_status: None,

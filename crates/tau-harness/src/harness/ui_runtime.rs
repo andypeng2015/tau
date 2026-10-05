@@ -8,6 +8,14 @@ use super::start_coordinator::StartPhase;
 use super::ui_interaction::UiInteractionAdmission;
 use super::*;
 
+/// Exact session binding accepted by a local UI connection's Hello handshake.
+pub(super) struct UiSessionAdmission {
+    /// Textual session name is not enough to survive a binding replacement.
+    pub(super) session_id: tau_proto::SessionId,
+    /// Process-local generation captured at successful exact-session admission.
+    pub(super) generation: SessionGeneration,
+}
+
 /// Runtime-only state for attached clients and human-UI command routes.
 ///
 /// Lifetimes intentionally differ within this owner: client writers follow
@@ -19,9 +27,8 @@ use super::*;
 /// explicitly close a socket writer; the lifecycle owns no join handle or drop
 /// side effect. This state does not own the generic event bus.
 pub(crate) struct UiRuntimeState {
-    /// Existing UI Hello's exact session/generation for upload-only RPC.
-    pub(super) artifact_admissions:
-        HashMap<tau_proto::ConnectionId, super::artifact_requests::UiArtifactAdmission>,
+    /// Existing UI Hello's exact session/generation for directed local RPCs.
+    pub(super) exact_session_admissions: HashMap<tau_proto::ConnectionId, UiSessionAdmission>,
     /// Monotonic explicit navigation writes; delayed implicit writes cannot
     /// override them.
     pub(super) explicit_navigation_epoch: u64,
@@ -83,7 +90,7 @@ pub(crate) struct UiRuntimeState {
 impl Default for UiRuntimeState {
     fn default() -> Self {
         Self {
-            artifact_admissions: HashMap::new(),
+            exact_session_admissions: HashMap::new(),
             explicit_navigation_epoch: 0,
             pending_bootstrap_creates: HashMap::new(),
             shutdown_cause: None,

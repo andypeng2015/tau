@@ -162,6 +162,9 @@ impl TestProtocolItem {
             HarnessOutputMessage::ArtifactResult(message) => {
                 Self::Message(TestMessage::ArtifactResult(message))
             }
+            HarnessOutputMessage::CliMessageResult(_) => {
+                panic!("CLI messages use their dedicated socket reader in tests")
+            }
             HarnessOutputMessage::ExternalAgentMessageResult(message) => {
                 Self::Message(TestMessage::ExternalAgentMessageResult(message))
             }
@@ -2795,6 +2798,7 @@ mod agent_unload;
 mod agent_watch_wait;
 mod artifacts;
 mod bridge_receiver;
+mod cli_messaging;
 mod config_error;
 mod dedup;
 mod dispatch;

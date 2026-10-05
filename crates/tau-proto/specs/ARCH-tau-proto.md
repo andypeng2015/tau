@@ -1,5 +1,10 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 10.4 adds exact-session local CLI messaging DTOs and optional typed
+CLI-origin metadata on received message facts. Their ephemeral reply capabilities
+are not sessions or agents; existing extensions can ignore the optional field.
+See [SPEC-agent-message-delivery](../../../specs/SPEC-agent-message-delivery.md).
+
 Protocol 10.3 carries optional display-only provider error categories in terminal
 reports and canonical responses. Older peers omit or ignore them; unknown future
 values degrade to unclassified diagnostics. They do not change failure, retry,

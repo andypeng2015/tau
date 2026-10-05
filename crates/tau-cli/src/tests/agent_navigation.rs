@@ -1879,6 +1879,7 @@ fn no_agent_overview_deduplicates_agent_message_projections() {
                 .expect("test message id must satisfy its grammar"),
             sender_id: agent_id("sender-agent"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: agent_id("recipient-agent"),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,

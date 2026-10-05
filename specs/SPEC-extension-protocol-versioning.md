@@ -8,6 +8,15 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 10.4 adds optional typed CLI-origin reply policy to recipient message
+facts and a directed local CLI message request/result. The request is sent only
+after exact-session UI admission advertises 10.4 or newer; older harnesses fail
+locally without delivery. Older extensions ignore the optional receive metadata
+and retain ordinary message observation. CLI connections create no configured
+extension, sender session, or peer callback handshake. Historical facts without
+the field retain their previous meaning. See
+[SPEC-agent-message-delivery](SPEC-agent-message-delivery.md).
+
 Protocol 10.3 adds optional display-only `error_category` to provider terminal
 reports and canonical terminals. Older peers ignore the field; omission and
 future unknown category values degrade to unclassified diagnostics. The existing

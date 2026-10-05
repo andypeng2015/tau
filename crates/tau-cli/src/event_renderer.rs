@@ -5770,7 +5770,9 @@ impl EventRenderer {
                 }
             }
             Event::AgentMessageReceived(message) => {
-                self.remember_agent(message.sender_id.clone());
+                if message.cli_origin.is_none() {
+                    self.remember_agent(message.sender_id.clone());
+                }
                 self.mark_agent_live(message.recipient_id.clone());
                 if let Some(status) = &message.watch_work_status {
                     self.handle_watched_agent_work_status(message, status);
@@ -6274,10 +6276,12 @@ impl EventRenderer {
             }
             Event::AgentMessageReceived(message) => {
                 let sender = self.agent_message_received_sender_label(message, use_local_names);
-                let sender_identity = Some(message.sender_session_id.as_ref().map_or_else(
-                    || format!("@{}", message.sender_id),
-                    |session_id| format!("{session_id}/@{}", message.sender_id),
-                ));
+                let sender_identity = message.cli_origin.is_none().then(|| {
+                    message.sender_session_id.as_ref().map_or_else(
+                        || format!("@{}", message.sender_id),
+                        |session_id| format!("{session_id}/@{}", message.sender_id),
+                    )
+                });
                 let sender = (sender, sender_identity);
                 let recipient =
                     self.message_agent_display_label(&message.recipient_id, use_local_names);
@@ -6286,9 +6290,7 @@ impl EventRenderer {
                     sender,
                     recipient,
                     message.kind,
-                    message
-                        .sender_session_id
-                        .is_none()
+                    (message.cli_origin.is_none() && message.sender_session_id.is_none())
                         .then_some(message.sender_id.as_str()),
                     Some(message.recipient_id.as_str()),
                 )
@@ -6456,6 +6458,9 @@ impl EventRenderer {
         message: &tau_proto::AgentMessageReceived,
         use_local_names: bool,
     ) -> String {
+        if message.cli_origin.is_some() {
+            return "CLI caller".to_owned();
+        }
         message.sender_session_id.as_ref().map_or_else(
             || self.message_agent_display_label(&message.sender_id, use_local_names),
             |session_id| format!("{session_id}/@{}", message.sender_id),

@@ -761,7 +761,10 @@ transient runtime observations and never enter semantic replay. See
   `external_agent { session_id, agent_id }`), optional external
   `sender_notice`, and `message`.
 - **`agent.message_received`** — Harness-owned immutable recipient-side
-  projection for an agent-to-agent message. Carries the same stable
+  projection for an agent-to-agent or local CLI message. Protocol 10.4 adds
+  optional `cli_origin`: one-way or a single-use final-response address. Its
+  presence identifies a CLI caller, not a sender agent; replay preserves the
+  policy but never recreates its runtime endpoint. Carries the same stable
   `message_id`, the `sender_id`, optional `sender_session_id` for external
   senders, the receiving `recipient_id`, optional external `sender_notice` and
   recipient-local `recipient_notice`, and `message`. UI subscribers filter,

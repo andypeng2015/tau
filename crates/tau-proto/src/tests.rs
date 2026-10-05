@@ -4,6 +4,43 @@ use ciborium::value as path_ciborium_value;
 
 use super::*;
 
+/// Optional CLI origin survives CBOR while an older derived receive schema
+/// ignores it and continues observing the unchanged sender/body fields.
+#[test]
+fn cli_message_metadata_is_additive_for_legacy_observers() {
+    /// Original mandatory message fields used by a protocol-10.3 observer.
+    #[derive(serde::Deserialize)]
+    struct LegacyReceived {
+        /// Existing logical correlation.
+        message_id: AgentMessageId,
+        /// Existing opaque sender label.
+        sender_id: AgentId,
+        /// Existing recipient identity.
+        recipient_id: AgentId,
+        /// Existing unescaped body.
+        message: String,
+    }
+    let received: AgentMessageReceived = serde_json::from_value(serde_json::json!({
+        "message_id": "cli-test",
+        "sender_id": "cli-caller",
+        "recipient_id": "recipient",
+        "message": "literal body",
+        "cli_origin": {"final_response": {"recipient": "!cli-test"}}
+    }))
+    .expect("typed metadata");
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&received, &mut encoded).expect("encode");
+    let replay: AgentMessageReceived =
+        ciborium::de::from_reader(encoded.as_slice()).expect("replay");
+    assert_eq!(received, replay);
+    let legacy: LegacyReceived =
+        ciborium::de::from_reader(encoded.as_slice()).expect("legacy observer");
+    assert_eq!(legacy.message_id, received.message_id);
+    assert_eq!(legacy.sender_id, received.sender_id);
+    assert_eq!(legacy.recipient_id, received.recipient_id);
+    assert_eq!(legacy.message, received.message);
+}
+
 /// Shared maintenance prefixes preserve hosted options in JSON and CBOR, while
 /// omitted legacy fields retain the empty-hosted interpretation.
 #[test]
@@ -1623,6 +1660,7 @@ fn representative_events() -> Vec<Event> {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: agent_id("engineer_abcd1234"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: agent_id("reviewer_efgh5678"),
             kind: AgentMessageKind::Message,
             watch_provider_status: None,
@@ -3366,6 +3404,7 @@ fn agent_message_events_have_names_and_persistence_defaults() {
             .expect("test identifier must satisfy its grammar"),
         sender_id: agent_id("engineer_abcd1234"),
         sender_session_id: None,
+        cli_origin: None,
         recipient_id: agent_id("reviewer_efgh5678"),
         kind: AgentMessageKind::Message,
         watch_provider_status: None,
@@ -3409,12 +3448,14 @@ fn agent_message_kind_defaults_and_serializes_only_when_non_default() {
     assert_eq!(legacy.kind, AgentMessageKind::Message);
     assert_eq!(legacy.sender_notice, None);
     assert_eq!(legacy.recipient_notice, None);
+    assert_eq!(legacy.cli_origin, None);
 
     let explicit_message = AgentMessageReceived {
         message_id: AgentMessageId::parse("msg-message")
             .expect("test identifier must satisfy its grammar"),
         sender_id: agent_id("engineer_abcd1234"),
         sender_session_id: None,
+        cli_origin: None,
         recipient_id: agent_id("reviewer_efgh5678"),
         kind: AgentMessageKind::Message,
         watch_provider_status: None,
@@ -4441,7 +4482,7 @@ fn configure_requires_instance_name_and_keeps_state_dir_optional() {
     );
     assert_eq!(
         json["harness_protocol_version"],
-        serde_json::json!({"major": 10, "minor": 3})
+        serde_json::json!({"major": 10, "minor": 4})
     );
     let decoded: Configure = serde_json::from_value(json).expect("decode configure");
     assert_eq!(decoded, with_state);
@@ -4480,7 +4521,7 @@ fn configure_protocol_revision_advertisement_is_additive() {
     let decoded: Configure = serde_json::from_value(legacy.clone()).expect("old configure");
     assert_eq!(decoded.harness_protocol_version, None);
     let mut newer = legacy;
-    newer["harness_protocol_version"] = serde_json::json!({"major": 10, "minor": 3});
+    newer["harness_protocol_version"] = serde_json::json!({"major": 10, "minor": 4});
     newer["absent_optional_secrets"] = serde_json::json!(["optional_key"]);
     let old: OldConfigure = serde_json::from_value(newer.clone()).expect("old decoder");
     assert_eq!(old.instance_name.as_str(), "std-utils");
@@ -4550,7 +4591,7 @@ fn directional_message_wire_form_uses_flat_message_tag() {
     assert!(input_json.get("payload").is_some());
     assert_eq!(
         input_json["payload"]["protocol_version"],
-        serde_json::json!({"major": 10, "minor": 3})
+        serde_json::json!({"major": 10, "minor": 4})
     );
 
     let output = HarnessOutputMessage::Disconnect(Disconnect {
@@ -4642,7 +4683,7 @@ fn ui_session_admission_wire_round_trip() {
     );
     assert_eq!(
         accepted_json["payload"]["harness_protocol_version"],
-        serde_json::json!({"major": 10, "minor": 3})
+        serde_json::json!({"major": 10, "minor": 4})
     );
     assert_eq!(
         serde_json::from_value::<HarnessOutputMessage>(accepted_json)

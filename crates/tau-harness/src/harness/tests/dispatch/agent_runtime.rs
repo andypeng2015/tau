@@ -62,6 +62,7 @@ fn terminating_agent_route_rejects_direct_work() {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: tau_proto::AgentId::parse("sender").expect("agent id"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: tau_proto::AgentId::parse(&recipient_id).expect("agent id"),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,

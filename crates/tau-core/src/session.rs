@@ -222,6 +222,8 @@ pub enum AgentEntry {
         /// Active session id for an external sender, if this inbound message
         /// originated in another harness session.
         sender_session_id: Option<tau_proto::SessionId>,
+        /// Local CLI reply policy; no agent identity or replayed live endpoint.
+        cli_origin: Option<tau_proto::CliMessageOrigin>,
         /// Recipient agent.
         recipient: AgentMessageRecipient,
         /// Delivery source semantics.
@@ -3791,6 +3793,7 @@ impl AgentTree {
             direction: AgentMessageDirection::Outbound,
             sender_id: message.sender_id.clone(),
             sender_session_id: None,
+            cli_origin: None,
             recipient: message.recipient.clone(),
             kind: message.kind,
             watch_provider_status: None,
@@ -3814,6 +3817,7 @@ impl AgentTree {
             direction: AgentMessageDirection::Inbound,
             sender_id: message.sender_id.clone(),
             sender_session_id: message.sender_session_id.clone(),
+            cli_origin: message.cli_origin.clone(),
             recipient: AgentMessageRecipient::Agent {
                 agent_id: message.recipient_id.clone(),
             },
@@ -4097,6 +4101,15 @@ impl AgentTree {
                 Some(if !payload_matches_kind {
                     Err(AgentEventValidationError::new(
                         "watch payload must be present exactly for its matching watch message kind",
+                    ))
+                } else if message.cli_origin.is_some()
+                    && (message.kind != AgentMessageKind::Message
+                        || message.sender_session_id.is_some()
+                        || message.sender_notice.is_some()
+                        || message.recipient_notice.is_some())
+                {
+                    Err(AgentEventValidationError::new(
+                        "CLI origin requires an ordinary local message without peer notices",
                     ))
                 } else if !lifecycle_body_valid {
                     Err(AgentEventValidationError::new(

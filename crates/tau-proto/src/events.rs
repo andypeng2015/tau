@@ -2163,6 +2163,10 @@ pub struct AgentMessageReceived {
     /// senders and for legacy records written before cross-harness messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_session_id: Option<SessionId>,
+    /// Local CLI origin, rather than an agent sender. Absent on ordinary
+    /// messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_origin: Option<CliMessageOrigin>,
     /// Recipient agent id that received the message.
     pub recipient_id: AgentId,
     /// Delivery source semantics.
@@ -2190,6 +2194,19 @@ pub struct AgentMessageReceived {
     pub recipient_notice: Option<InterSessionNotice>,
     /// Message body. Must be empty for [`AgentMessageKind::WatchLifecycle`].
     pub message: String,
+}
+
+/// Harness-authored reply policy for a local CLI message, persisted for replay.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliMessageOrigin {
+    /// The caller requested delivery only and cannot receive replies.
+    OneWay,
+    /// A connection-owned address accepts exactly one final response.
+    FinalResponse {
+        /// Opaque address usable only in this recipient harness's message tool.
+        recipient: String,
+    },
 }
 
 /// Provider-owned reason that an unchanged logical request will be retried.

@@ -2851,6 +2851,7 @@ fn non_tool_extension_query_pending_message_still_terminalizes_tool_call() {
                 .expect("test identifier must satisfy its grammar"),
             sender_id: tau_proto::AgentId::parse("manager").expect("sender id"),
             sender_session_id: None,
+            cli_origin: None,
             recipient_id: durable_agent_id.clone(),
             kind: tau_proto::AgentMessageKind::Message,
             watch_provider_status: None,

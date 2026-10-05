@@ -23,10 +23,32 @@ semantic projection for its direction. Its identity is:
 - `NodeId` for the occurrence's materialized branch position; and
 - peer `request_id` and capability only for live callback authentication.
 
-The harness-owned `message` tool accepts only local agent, local session,
-remote session, and remote agent recipient forms. The exact raw recipient
+The harness-owned `message` tool accepts local agent, local session,
+remote session, remote agent, and local CLI final-response recipient forms. The exact raw recipient
 `user` is unsupported and fails before routing or creating either durable
 projection.
+
+## Local CLI messages
+
+An exact-session admitted local CLI connection can publish one recipient-side
+receive fact without constructing a sender agent or session. Its optional typed
+CLI origin distinguishes a one-way message from a single final-response address;
+the sender label is not an agent identity. Core folding preserves that provenance
+on replay, and the shared `tau_internal` envelope explicitly states the reply
+policy. Payload text cannot supply or change it.
+
+CLI receipt uses the ordinary recipient admission and durable commit path.
+Delivery acknowledgement precedes any final response on the caller's connection,
+including a response submitted while receive publication is pending. Response
+addresses are opaque, single-use, receiving-harness-local capabilities, usable
+through the existing `message` tool. They exist only for the connection lifetime
+and are not restored from journal facts. A reply does not fabricate a sender fact
+targeting a nonexistent agent; the ordinary tool arguments and result record it.
+
+Disconnect after receipt commits only expires the response address: it neither
+retracts the message nor cancels recipient work. Missing or consumed response
+addresses fail explicitly. There is no implicit resend or mandatory response
+timeout, and losing the connection before delivery ACK leaves delivery uncertain.
 
 No delivery-created prompt, tool output, wake, or control event repeats the
 body. A self-send creates outbound then inbound occurrences with distinct

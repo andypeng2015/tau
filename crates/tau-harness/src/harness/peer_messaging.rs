@@ -8,7 +8,7 @@ use super::start_coordinator::StartPhase;
 use super::*;
 
 /// Runtime-only authentication, delivery, and fair routing state for
-/// cooperative inter-harness peers.
+/// cooperative inter-harness peers and exact-session local CLI callers.
 ///
 /// Socket admission follows connection lifetime. Callback capabilities,
 /// receive acknowledgements, rate admission, auto-start tracking, I/O
@@ -20,6 +20,10 @@ use super::*;
 /// coordinator, and this state has no independent drop side effects.
 #[derive(Default)]
 pub(super) struct PeerMessagingState {
+    /// One request per CLI socket, with its pinned session generation.
+    pub(super) cli_connections: HashMap<tau_proto::ConnectionId, SessionGeneration>,
+    /// Single-use local reply capabilities, never restored from journals.
+    pub(super) cli_replies: HashMap<String, super::cli_messaging::CliReplyEndpoint>,
     /// Socket clients authenticated for the external-message RPC.
     pub(super) external_message_peers: HashSet<tau_proto::ConnectionId>,
     /// Negotiated protocol revision for each authenticated external-message
@@ -95,6 +99,11 @@ pub(crate) struct PendingExternalReceiveAck {
 
 /// Live-only completion waiting for one exact peer receive commit.
 pub(crate) enum PendingPeerReceiveCompletion {
+    /// Exact-session local CLI delivery acknowledgement, without a sender fact.
+    Cli {
+        /// Caller connection owning this delivery and optional reply endpoint.
+        client_id: tau_proto::ConnectionId,
+    },
     /// Remote socket acknowledgement.
     Remote {
         /// Socket connection awaiting the result.

@@ -226,7 +226,7 @@ pub(super) fn spawn_daemon_for_cli_unload(
     )
 }
 
-fn spawn_daemon_inner_with_cli_override(
+pub(super) fn spawn_daemon_inner_with_cli_override(
     fixture: &DeterministicFixture,
     socket: &Path,
     status: tau_harness::SessionLaunchStatus,

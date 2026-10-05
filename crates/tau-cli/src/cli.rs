@@ -140,6 +140,18 @@ pub struct RunArgs {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Deliver a message to a running agent or session without starting a CLI
+    /// agent.
+    Message {
+        /// Agent id, `&session-id`, or `[&]session-id/[@]agent-id`.
+        recipient: String,
+        /// Literal message; omit to read UTF-8 stdin through EOF.
+        message: Option<String>,
+        /// Wait indefinitely for exactly one final response; stdout contains
+        /// only it.
+        #[arg(long)]
+        wait_response: bool,
+    },
     /// Run an interactive agent session.
     ///
     /// `tau` spawns a new harness daemon and attaches for this process.

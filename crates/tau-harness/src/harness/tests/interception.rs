@@ -6386,6 +6386,7 @@ fn agent_message_received_event(sender_id: AgentId, recipient_id: AgentId) -> Ev
             .expect("test identifier must satisfy its grammar"),
         sender_id,
         sender_session_id: None,
+        cli_origin: None,
         recipient_id,
         kind: tau_proto::AgentMessageKind::Message,
         watch_provider_status: None,

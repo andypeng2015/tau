@@ -530,6 +530,7 @@ fn agent_message_status_activation_class_covers_watch_prompt() {
         message_id: "message-1".parse().expect("message id"),
         sender_id: "sender".parse().expect("sender id"),
         sender_session_id: None,
+        cli_origin: None,
         recipient_id: "recipient".parse().expect("recipient id"),
         kind,
         watch_provider_status: None,

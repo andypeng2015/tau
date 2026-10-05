@@ -1999,6 +1999,7 @@ impl Harness {
             // Messages sent by clients only — extensions shouldn't round-trip
             // these. Ignore silently.
             HarnessInputMessage::Disconnect(_)
+            | HarnessInputMessage::CliMessage(_)
             | HarnessInputMessage::InspectionComplete(_)
             | HarnessInputMessage::GetRenderedSystemPrompt(_)
             | HarnessInputMessage::GetRenderedPrompt(_)

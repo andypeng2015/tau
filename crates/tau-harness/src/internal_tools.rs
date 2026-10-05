@@ -1209,6 +1209,11 @@ impl<'a> InternalToolHost<'a> {
             .publish_agent_message_from_agent(conversation_id, recipient_id, message)
     }
 
+    /// Send a single final response to a live local CLI endpoint.
+    pub fn publish_cli_response(&mut self, recipient: &str, message: String) -> Result<(), String> {
+        self.harness.publish_cli_response(recipient, message)
+    }
+
     /// Return the harness's active session id.
     pub fn current_session_id(&self) -> tau_proto::SessionId {
         self.harness.session_runtime.current_session_id.clone()

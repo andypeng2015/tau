@@ -2,6 +2,13 @@
 
 The deterministic and VCR fixture families have different trust boundaries.
 
+The CLI-message fixture adds two closed fake-provider actions. They accept only
+one exact live, harness-authored CLI receipt for an already seeded lane and reply
+through the production `message` tool to its typed final-response address.
+Prompt text does not mint reply authority. The CLI subprocesses inherit only
+fixture-owned paths and locale; no sender agent, credential, real session, or
+production messaging endpoint participates.
+
 `ProviderBuiltinFixture` is a separate hermetic production-provider
 acceptance family. It launches only the configured same-UID
 `provider-builtin` extension from an exact Cargo-built path and accepts only a
