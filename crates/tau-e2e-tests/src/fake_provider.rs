@@ -4013,6 +4013,7 @@ fn finished(
     stop_reason: ProviderStopReason,
 ) -> ProviderResponseFinishedReport {
     ProviderResponseFinishedReport {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

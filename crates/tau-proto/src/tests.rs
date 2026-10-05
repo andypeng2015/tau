@@ -1894,6 +1894,7 @@ fn representative_events() -> Vec<Event> {
             originator: PromptOriginator::User,
         }),
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -4440,7 +4441,7 @@ fn configure_requires_instance_name_and_keeps_state_dir_optional() {
     );
     assert_eq!(
         json["harness_protocol_version"],
-        serde_json::json!({"major": 10, "minor": 2})
+        serde_json::json!({"major": 10, "minor": 3})
     );
     let decoded: Configure = serde_json::from_value(json).expect("decode configure");
     assert_eq!(decoded, with_state);
@@ -4479,7 +4480,7 @@ fn configure_protocol_revision_advertisement_is_additive() {
     let decoded: Configure = serde_json::from_value(legacy.clone()).expect("old configure");
     assert_eq!(decoded.harness_protocol_version, None);
     let mut newer = legacy;
-    newer["harness_protocol_version"] = serde_json::json!({"major": 10, "minor": 2});
+    newer["harness_protocol_version"] = serde_json::json!({"major": 10, "minor": 3});
     newer["absent_optional_secrets"] = serde_json::json!(["optional_key"]);
     let old: OldConfigure = serde_json::from_value(newer.clone()).expect("old decoder");
     assert_eq!(old.instance_name.as_str(), "std-utils");
@@ -4549,7 +4550,7 @@ fn directional_message_wire_form_uses_flat_message_tag() {
     assert!(input_json.get("payload").is_some());
     assert_eq!(
         input_json["payload"]["protocol_version"],
-        serde_json::json!({"major": 10, "minor": 2})
+        serde_json::json!({"major": 10, "minor": 3})
     );
 
     let output = HarnessOutputMessage::Disconnect(Disconnect {
@@ -4641,7 +4642,7 @@ fn ui_session_admission_wire_round_trip() {
     );
     assert_eq!(
         accepted_json["payload"]["harness_protocol_version"],
-        serde_json::json!({"major": 10, "minor": 2})
+        serde_json::json!({"major": 10, "minor": 3})
     );
     assert_eq!(
         serde_json::from_value::<HarnessOutputMessage>(accepted_json)
@@ -5063,6 +5064,7 @@ fn execution_events_use_provider_wire_family() {
         ),
         (
             Event::ProviderResponseFinished(ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 estimated_api_cost_rates: None,
                 estimated_api_cost_increment: None,
@@ -5125,6 +5127,7 @@ fn provider_execution_reports_use_distinct_transient_wires() {
         ),
         (
             Event::ProviderResponseFinishedReported(ProviderResponseFinishedReport {
+                error_category: None,
                 automatic_compaction_decision: None,
                 estimated_api_cost_rates: None,
                 estimated_api_cost_increment: None,
@@ -7232,6 +7235,7 @@ fn provider_failure_kind_wire_contract_is_backward_compatible() {
     );
 
     let mut value = serde_json::to_value(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -7275,6 +7279,140 @@ fn provider_failure_kind_wire_contract_is_backward_compatible() {
         none_value.get("failure_kind").is_none(),
         "None must preserve the legacy omitted wire shape"
     );
+}
+
+/// Safe error categories must remain optional for old payloads and ignorable by
+/// older receivers; future values must not fail JSON or CBOR terminal decoding.
+#[test]
+fn provider_error_category_wire_contract_degrades_safely() {
+    #[derive(serde::Deserialize)]
+    struct OldTerminal {
+        /// Original display field, unrelated to the new safe category.
+        error: Option<String>,
+        /// Original authority-bearing category, kept independent.
+        failure_kind: Option<ProviderFailureKind>,
+    }
+
+    let mut response = representative_events()
+        .into_iter()
+        .find_map(|event| match event {
+            Event::ProviderResponseFinished(response) => Some(response),
+            _ => None,
+        })
+        .expect("representative terminal");
+    response.error = Some("private provider prose".to_owned());
+    response.failure_kind = None;
+    response.error_category = Some(ProviderErrorCategory::Transport);
+    let report = ProviderResponseFinishedReport::from(response.clone());
+    assert_eq!(
+        report
+            .clone()
+            .into_canonical(FinalStatusDisposition::Accepted)
+            .error_category,
+        response.error_category
+    );
+    let mut wire = serde_json::to_value(report).expect("report JSON");
+    assert_eq!(wire["error_category"], serde_json::json!("transport"));
+    let old: OldTerminal = serde_json::from_value(wire.clone()).expect("old receiver");
+    assert_eq!(old.error, response.error);
+    assert_eq!(old.failure_kind, None);
+
+    for category in [None, Some(serde_json::json!("future_category"))] {
+        if let Some(category) = category {
+            wire["error_category"] = category;
+        } else {
+            wire.as_object_mut()
+                .expect("object")
+                .remove("error_category");
+        }
+        let expected = wire
+            .get("error_category")
+            .map(|_| ProviderErrorCategory::Unknown);
+        let from_json: ProviderResponseFinishedReport =
+            serde_json::from_value(wire.clone()).expect("degraded JSON report");
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&wire, &mut cbor).expect("encode CBOR report");
+        let from_cbor: ProviderResponseFinishedReport =
+            ciborium::from_reader(cbor.as_slice()).expect("degraded CBOR report");
+        assert_eq!(from_json.error_category, expected);
+        assert_eq!(from_cbor.error_category, expected);
+        let canonical = from_cbor.into_canonical(FinalStatusDisposition::Accepted);
+        let canonical_wire = serde_json::to_value(&canonical).expect("canonical JSON");
+        assert_eq!(canonical.error_category, expected);
+        assert_eq!(
+            serde_json::from_value::<ProviderResponseFinished>(canonical_wire)
+                .expect("canonical roundtrip")
+                .error_category,
+            expected
+        );
+    }
+    response.error_category = None;
+    assert!(
+        serde_json::to_value(response)
+            .expect("omitted category")
+            .get("error_category")
+            .is_none()
+    );
+
+    for (category, wire, detail) in [
+        (
+            ProviderErrorCategory::Transport,
+            "transport",
+            "transport/network failure",
+        ),
+        (
+            ProviderErrorCategory::Timeout,
+            "timeout",
+            "request timed out",
+        ),
+        (
+            ProviderErrorCategory::Authentication,
+            "authentication",
+            "authentication/authorization failure",
+        ),
+        (
+            ProviderErrorCategory::InvalidResponse,
+            "invalid_response",
+            "invalid provider response",
+        ),
+        (
+            ProviderErrorCategory::RequestRejected,
+            "request_rejected",
+            "provider rejected the request",
+        ),
+        (
+            ProviderErrorCategory::Unknown,
+            "unknown",
+            "unclassified provider failure",
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(category).expect("category JSON"), wire);
+        assert_eq!(category.description(), detail);
+    }
+}
+
+/// Durable reasons must retain distinct human-facing diagnostics, including
+/// interrupted, canceled, capacity, and logical-output failures.
+#[test]
+fn standalone_failure_reason_descriptions_are_informative() {
+    use StandaloneCompactionFailureReason as Reason;
+    for (reason, detail) in [
+        (Reason::ProviderError, "provider error"),
+        (Reason::InvalidWindow, "invalid compaction output"),
+        (Reason::OutputLengthExceeded, "summary output limit reached"),
+        (Reason::RouteFailed, "provider route unavailable"),
+        (Reason::Cancelled, "cancelled"),
+        (Reason::StaleBranch, "transcript branch changed"),
+        (Reason::Interrupted, "interrupted before completion"),
+        (Reason::PrefixTooLarge, "compaction prefix too large"),
+        (
+            Reason::ContextWindowExceeded,
+            "provider context window exceeded",
+        ),
+        (Reason::ContextIrreducible, "no smaller compaction prefix"),
+    ] {
+        assert_eq!(reason.description(), detail);
+    }
 }
 
 /// Canonical completion authority must survive both codecs, while historical
@@ -7737,6 +7875,7 @@ fn standalone_compaction_and_context_recovery_wire_contract() {
     }
 
     let mut response = ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

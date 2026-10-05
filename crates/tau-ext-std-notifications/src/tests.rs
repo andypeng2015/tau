@@ -631,6 +631,7 @@ fn assistant_finished_response_for_agent(
     originator: tau_proto::PromptOriginator,
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -671,6 +672,7 @@ fn tool_call_finished_response(
     originator: tau_proto::PromptOriginator,
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

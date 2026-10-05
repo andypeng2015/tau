@@ -296,6 +296,32 @@ impl LlmError {
 }
 
 impl LlmError {
+    /// Classify typed evidence for safe presentation independently of policy.
+    /// Generic I/O, JSON, and validation errors also cover local request/worker
+    /// failures, so they stay unknown rather than falsely blaming the response.
+    #[must_use]
+    pub fn error_category(&self) -> tau_proto::ProviderErrorCategory {
+        use tau_proto::ProviderErrorCategory as Category;
+        match self.root_error() {
+            Self::Outbound(error) => match error.kind() {
+                tau_provider::OutboundErrorKind::Transport => Category::Transport,
+                tau_provider::OutboundErrorKind::Deadline => Category::Timeout,
+                tau_provider::OutboundErrorKind::ProxyAuthentication => Category::Authentication,
+                tau_provider::OutboundErrorKind::Protocol => Category::InvalidResponse,
+                tau_provider::OutboundErrorKind::InvalidConfiguration => Category::Unknown,
+            },
+            Self::WsClosed(_) => Category::Transport,
+            Self::HttpStatus(401 | 403, _) | Self::HttpStatusRetryAfter(401 | 403, _, _) => {
+                Category::Authentication
+            }
+            Self::WsUpgradeRequired | Self::RequestRejected { .. } => Category::RequestRejected,
+            _ if self.failure_kind() == Some(ProviderFailureKind::RequestRejected) => {
+                Category::RequestRejected
+            }
+            _ => Category::Unknown,
+        }
+    }
+
     /// Returns the canonical structured WebSocket error code, when present.
     #[must_use]
     pub(crate) fn stream_error_code(&self) -> Option<&str> {

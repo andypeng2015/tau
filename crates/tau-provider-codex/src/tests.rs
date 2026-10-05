@@ -312,6 +312,7 @@ fn compact_admission_coalesces_rejection_for_all_waiters() {
 #[test]
 fn debug_response_producer_submits_typed_compressed_capture_job() {
     let response = tau_proto::ProviderResponseFinishedReport {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

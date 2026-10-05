@@ -129,6 +129,7 @@ fn aggregation_uses_response_local_usage_and_captured_dispatch_fields() {
         record(
             3,
             Event::ProviderResponseFinished(ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 agent_prompt_id: prompt_id,
                 agent_id: agent_id.clone(),
@@ -273,6 +274,7 @@ fn aggregation_groups_typed_tool_names_and_preserves_lexical_json_order() {
     let model = "openai/gpt-5".parse().expect("model id");
     let response = |agent_prompt_id: AgentPromptId, calls: &[(&str, &str)]| {
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             agent_prompt_id,
             agent_id: agent_id.clone(),
@@ -489,6 +491,7 @@ fn aggregation_treats_present_zero_accounting_as_complete() {
                     rates: Option<tau_proto::EstimatedApiCostRates>,
                     cost: Option<EstimatedApiCost>| {
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             agent_prompt_id: id
                 .parse::<tau_proto::AgentPromptId>()

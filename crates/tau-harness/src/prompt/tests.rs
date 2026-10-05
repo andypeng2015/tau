@@ -2805,6 +2805,7 @@ fn assert_preflight_matches_materialization(tree: &tau_core::AgentTree, expected
 
 fn finished_tool_call(prompt_id: &str, call_id: &str) -> Event {
     Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -2939,6 +2940,7 @@ fn assemble_conversation_preserves_agent_phase() {
     tree.apply_event(&user_prompt("hi"));
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -3344,6 +3346,7 @@ fn assemble_conversation_replays_reasoning_items_before_text() {
     .to_string();
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -3405,6 +3408,7 @@ fn assemble_conversation_persists_reasoning_on_tool_only_turn() {
     .to_string();
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,

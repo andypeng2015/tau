@@ -54,7 +54,7 @@ fn standalone_rejections_do_not_mutate_context_or_compaction_authority() {
     let cases = [
         (
             "provider error",
-            Some("provider error"),
+            Some("private provider prose"),
             None,
             tau_proto::ProviderStopReason::EndTurn,
             vec![valid_replacement()],
@@ -305,6 +305,8 @@ fn standalone_rejections_do_not_mutate_context_or_compaction_authority() {
         };
 
         h.handle_provider_response_finished(ProviderResponseFinished {
+            error_category: (label == "provider error")
+                .then_some(tau_proto::ProviderErrorCategory::Transport),
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -341,6 +343,19 @@ fn standalone_rejections_do_not_mutate_context_or_compaction_authority() {
             ws_pool_delta: None,
         })
         .unwrap_or_else(|error| panic!("{label}: {error}"));
+
+        if label == "provider error" {
+            assert!(event_log_contains_any_source(&h, |event| matches!(
+                event, Event::HarnessNotice(notice)
+                    if notice.message.contains("(ProviderError): transport/network failure;")
+                        && !notice.message.contains("private provider prose")
+            )));
+        } else if label == "unknown failure" {
+            assert!(event_log_contains_any_source(&h, |event| matches!(
+                event, Event::HarnessNotice(notice)
+                    if notice.message.contains("(ProviderError): unclassified provider failure;")
+            )));
+        }
 
         assert_eq!(
             (

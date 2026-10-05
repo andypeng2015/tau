@@ -1293,6 +1293,7 @@ impl Harness {
                     )
                 });
             let response = ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision,
                 agent_prompt_id: canceled_prompt_id.clone(),
                 agent_id: self

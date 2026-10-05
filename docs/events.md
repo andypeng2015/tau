@@ -453,6 +453,10 @@ their selected models.
   together; provider report payloads retain their prior shape. Terminal request
   rejection may carry a machine-readable `failure_kind`; notably,
   `context_window_exceeded` is independent of bounded display `error` prose.
+  Protocol 10.3 optionally carries display-only `error_category` in terminal
+  reports and canonical responses. It supplies closed safe diagnostic text, not
+  retry, recovery, or watch authority. Omission and unknown future categories
+  preserve unclassified presentation; older peers ignore the field.
   Such a rejection may also carry harness-authored `context_limit_telemetry`:
   provider-qualified model and operation, optional provider-reported input
   tokens, optional exact serialized transcript-growth bytes, the advertised

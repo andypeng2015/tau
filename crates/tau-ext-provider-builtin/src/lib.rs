@@ -8029,6 +8029,7 @@ fn simple_finished(
     text: impl Into<String>,
 ) -> ProviderResponseFinishedReport {
     ProviderResponseFinishedReport {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -9269,6 +9270,7 @@ fn compact_finished_response(
     provider_attempt: tau_proto::ProviderAttempt,
 ) -> ProviderResponseFinishedReport {
     ProviderResponseFinishedReport {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -9817,6 +9819,7 @@ fn finish_stream<S: ProviderReportSink>(
     let provider_response_id = state.response_id().map(str::to_owned);
     let output_items = state.into_output_items();
     let finished = ProviderResponseFinishedReport {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -9921,6 +9924,7 @@ fn finish_error<S: ProviderReportSink>(
         },
         error: Some(bounded_provider_error(&format!("LLM error: {error}"))),
         failure_kind: error.failure_kind(),
+        error_category: Some(error.error_category()),
         context_limit_telemetry: None,
         recovery_disposition: tau_proto::ContextRecoveryDisposition::None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,

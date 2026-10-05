@@ -1091,6 +1091,7 @@ fn model_status_shows_active_agents_then_tools_context_and_quota() {
     // tool progress. Quota remains final, while side-conversation calls stay
     // rolled up under their delegate.
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1687,6 +1688,7 @@ fn watched_agent_response_finished_keeps_status_row() {
     ));
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1947,6 +1949,7 @@ fn watched_agent_provider_response_update_hides_unreported_row_after_terminal() 
     assert!(eventually_screen_contains(&vt, 100, "❓✨ @engineer_1",));
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -3044,6 +3047,7 @@ fn watched_agent_provider_prompt_terminal_hides_unreported_row() {
     assert!(eventually_screen_contains(&vt, 100, "❓✨ @engineer_1",));
 
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -7401,7 +7405,7 @@ fn self_compaction_failure_and_rejection_reuse_their_tool_rows() {
     sync(&handle);
 
     let text = vt.screen_text(100).join("\n");
-    assert_eq!(text.matches("err: failed").count(), 1, "{text}");
+    assert_eq!(text.matches("err: provider error").count(), 1, "{text}");
     assert_eq!(text.matches("err: rejected").count(), 1, "{text}");
     assert_eq!(text.matches("err: stopped").count(), 1, "{text}");
     assert!(!text.contains("compact complete"), "{text}");

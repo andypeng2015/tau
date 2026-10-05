@@ -2981,7 +2981,7 @@ fn standalone_compaction_terminal_failures_clear_private_progress() {
         },
     ));
     sync(&handle);
-    assert!(vt.screen_contains(100, "compact err: failed"));
+    assert!(vt.screen_contains(100, "compact err: provider error"));
     assert!(!vt.screen_contains(100, "Compacting…"));
     assert!(!renderer.agent_has_active_prompt_for_test(&agent_id("main")));
     assert!(!renderer.main_agent_turn_active_for_test());
@@ -3011,6 +3011,41 @@ fn standalone_compaction_terminal_failures_clear_private_progress() {
     sync(&handle);
     assert!(!vt.screen_contains(100, "3/3"));
     assert!(!vt.screen_contains(100, "3/?"));
+}
+
+/// Logical compaction-output rejection must show its durable reason rather than
+/// looking indistinguishable from a provider or transport failure.
+#[test]
+fn standalone_compaction_invalid_output_has_informative_reason() {
+    let (_term, handle, vt) = setup(100, 24);
+    let mut renderer = EventRenderer::new(
+        handle.clone(),
+        tau_cli_term::CompletionData::new(),
+        cli_test_theme(),
+    );
+    renderer.switch_agent(agent_id("main"));
+    renderer.handle(&Event::AgentStandaloneCompactionStarted(
+        standalone_compaction_started("ct-invalid", "ap-invalid"),
+    ));
+    renderer.handle(&Event::AgentPromptStarted(
+        standalone_compaction_prompt_started("ap-invalid"),
+    ));
+    renderer.handle(&Event::AgentStandaloneCompactionFailed(
+        AgentStandaloneCompactionFailed {
+            agent_id: agent_id("main"),
+            transaction_id: tau_proto::CompactionTransactionId::parse("ct-invalid")
+                .expect("test transaction"),
+            cut: tau_proto::AgentHead::Root,
+            reason: tau_proto::StandaloneCompactionFailureReason::InvalidWindow,
+            resume_through: None,
+            context_retreat: None,
+            output_length_continuation: None,
+            incomplete_response: None,
+        },
+    ));
+    sync(&handle);
+    assert!(vt.screen_contains(100, "compact err: invalid compaction output"));
+    assert!(!renderer.agent_has_active_prompt_for_test(&agent_id("main")));
 }
 
 /// Ensures normal inference continues to render provider deltas when an
@@ -4447,6 +4482,7 @@ fn watched_agent_terminal_event_wins_over_delayed_prompt_start() {
         },
     ));
     renderer.handle(&Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,

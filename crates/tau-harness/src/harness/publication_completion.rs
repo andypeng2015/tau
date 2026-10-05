@@ -1643,6 +1643,7 @@ impl Harness {
                     .expect("dormant terminal owner carries continuation");
                 (
                     Event::ProviderResponseFinished(ProviderResponseFinished {
+                        error_category: None,
                         automatic_compaction_decision: None,
                         agent_prompt_id: owner.agent_prompt_id,
                         agent_id: agent_id.clone(),

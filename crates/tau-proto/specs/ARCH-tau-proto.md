@@ -1,5 +1,10 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 10.3 carries optional display-only provider error categories in terminal
+reports and canonical responses. Older peers omit or ignore them; unknown future
+values degrade to unclassified diagnostics. They do not change failure, retry,
+recovery, watch, or standalone-compaction authority.
+
 Protocol 10.1 adds optional-to-use, User-scope papercut history read and
 conditional archive operations to the existing extension-data request/reply
 contract. Configure optionally advertises the harness revision so a newer

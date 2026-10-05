@@ -425,6 +425,12 @@ impl CodexError {
         self.0.failure_kind()
     }
 
+    /// Returns display-only evidence without changing retry or recovery policy.
+    #[must_use]
+    pub fn error_category(&self) -> tau_proto::ProviderErrorCategory {
+        self.0.error_category()
+    }
+
     /// Returns repetition evidence for the dedicated terminal projection.
     #[must_use]
     pub fn repetition(&self) -> Option<&tau_provider::StreamRepetition> {

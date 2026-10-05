@@ -91,6 +91,7 @@ fn response_with_originator(
     originator: PromptOriginator,
 ) -> Event {
     Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         agent_prompt_id: prompt_id.parse().expect("prompt id"),
         agent_id: agent_id.clone(),
         output_items: vec![

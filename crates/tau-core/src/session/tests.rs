@@ -73,6 +73,7 @@ fn hosted_search_citations_and_opaque_call_survive_live_cold_restart() {
         &live,
         2,
         Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -899,6 +900,7 @@ fn provider_image_content_rejects_per_agent_aggregate_overflow() {
 fn provider_response_rejects_input_side_tool_result_items() {
     let tree = AgentTree::from_events(agent_id(), &[]);
     let response = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: Some(tau_proto::ESTIMATED_API_COST_FALLBACK),
         estimated_api_cost_increment: None,
@@ -1892,6 +1894,7 @@ fn closed_provider_prefix_retreats_only_from_tool_calling_assistant() {
         let mut tree = AgentTree::from_events(agent_id(), &[]);
         let parent = append_user_input(&mut tree, "parent");
         let response = tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -2009,6 +2012,7 @@ fn closed_provider_prefix_retreats_only_from_tool_calling_assistant() {
     let mut tree = AgentTree::from_events(agent_id(), &[]);
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -2467,6 +2471,7 @@ fn corrected_compaction_successor_owns_replay_checkpoint() {
     );
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,
@@ -2522,6 +2527,7 @@ fn reactive_overflow_recovery_is_claimed_exactly_once() {
         .expect("ordinary checkpoint is valid");
     tree.apply_event(&Event::AgentInferenceDispatchStarted(checkpoint.clone()));
     let response = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -2596,6 +2602,7 @@ fn reactive_overflow_claim_rejects_invalid_source_correlations() {
         output_length_continuation: None,
     };
     let planned_response = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -3799,6 +3806,7 @@ fn provider_tool_round_waits_for_all_terminal_results() {
         .apply_event_at(
             AgentEventParent::Under(NodeId::new(0)),
             &Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 estimated_api_cost_rates: None,
                 estimated_api_cost_increment: None,
@@ -5550,6 +5558,7 @@ fn tool_calling_response(
     call_ids: Vec<ToolCallId>,
 ) -> tau_proto::ProviderResponseFinished {
     tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -6363,6 +6372,7 @@ fn output_length_recovery_fixture() -> OutputLengthRecoveryFixture {
         ctx_id: None,
     };
     let response = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         agent_prompt_id: source_prompt_id.clone(),
         agent_id: agent_id.clone(),
@@ -6425,6 +6435,7 @@ fn output_length_recovery_fixture() -> OutputLengthRecoveryFixture {
         ctx_id: None,
     };
     let terminal = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         agent_prompt_id: owner.agent_prompt_id.clone(),
         agent_id: agent_id.clone(),
@@ -6753,6 +6764,7 @@ fn output_length_reactive_descendant_resolves_exact_owner() {
         .expect("continuation owner")
         .clone();
     let rejection = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         agent_prompt_id: owner.agent_prompt_id.clone(),
         agent_id: fixture.agent_id().clone(),
@@ -6856,6 +6868,7 @@ fn output_length_reactive_descendant_resolves_exact_owner() {
         .expect("descendant prompt-start");
     tree.apply_event(&Event::AgentPromptStarted(descendant_started));
     let terminal = tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         agent_prompt_id: descendant_prompt_id,
         agent_id: fixture.agent_id().clone(),
@@ -7324,6 +7337,7 @@ fn output_length_recovery_repairs_dormant_branch_without_selecting_it() {
         .as_ref()
         .expect("continuation owner");
     let terminal = Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         agent_prompt_id: owner.agent_prompt_id.clone(),
         agent_id: fixture.agent_id().clone(),
@@ -7466,6 +7480,7 @@ fn output_length_terminal_incomplete_does_not_cross_newer_selected_dispatch() {
 
     tree.apply_event(&Event::ProviderResponseFinished(
         tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             agent_prompt_id: later_prompt_id,
             agent_id: fixture.agent_id().clone(),
@@ -8856,6 +8871,7 @@ fn reactive_progress_reaches_prior_suffix_preserving_boundary_live_and_cold() {
     let persisted = record(
         records.len() as u64,
         Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,

@@ -4582,6 +4582,26 @@ pub enum StandaloneCompactionFailureReason {
     ContextIrreducible,
 }
 
+impl StandaloneCompactionFailureReason {
+    /// Fixed human-readable failure detail, independent of provider error
+    /// prose.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::ProviderError => "provider error",
+            Self::InvalidWindow => "invalid compaction output",
+            Self::OutputLengthExceeded => "summary output limit reached",
+            Self::RouteFailed => "provider route unavailable",
+            Self::Cancelled => "cancelled",
+            Self::StaleBranch => "transcript branch changed",
+            Self::Interrupted => "interrupted before completion",
+            Self::PrefixTooLarge => "compaction prefix too large",
+            Self::ContextWindowExceeded => "provider context window exceeded",
+            Self::ContextIrreducible => "no smaller compaction prefix",
+        }
+    }
+}
+
 /// Durable start record for one standalone-compaction transaction.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentStandaloneCompactionStarted {
@@ -6168,6 +6188,42 @@ pub enum ProviderFailureKind {
     Unknown,
 }
 
+/// Display-only provider failure evidence, never retry or recovery authority.
+/// Unknown future wire values deliberately degrade to an unclassified failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderErrorCategory {
+    /// Network I/O or connection establishment failed.
+    Transport,
+    /// A transport or operation deadline expired.
+    Timeout,
+    /// Authentication or authorization failed.
+    Authentication,
+    /// A response violated the provider's wire or output contract.
+    InvalidResponse,
+    /// The provider rejected the request.
+    RequestRejected,
+    /// No more specific display-safe category is available.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ProviderErrorCategory {
+    /// Fixed safe text for human-facing diagnostics; never includes provider
+    /// prose.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Transport => "transport/network failure",
+            Self::Timeout => "request timed out",
+            Self::Authentication => "authentication/authorization failure",
+            Self::InvalidResponse => "invalid provider response",
+            Self::RequestRejected => "provider rejected the request",
+            Self::Unknown => "unclassified provider failure",
+        }
+    }
+}
+
 /// Content-free evidence captured when a provider rejects a prompt for context
 /// length. This is durable diagnostic telemetry, not an automatic calibration
 /// command: advertised limits and policy thresholds remain configuration-owned.
@@ -6473,6 +6529,10 @@ pub struct ProviderResponseFinishedReport {
     /// Typed provider failure category.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<ProviderFailureKind>,
+    /// Optional display-only evidence. It grants no retry or recovery
+    /// authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<ProviderErrorCategory>,
     /// Untrusted telemetry claim, cleared and rederived by the harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_limit_telemetry: Option<ContextLimitTelemetry>,
@@ -6533,6 +6593,7 @@ impl ProviderResponseFinishedReport {
             stop_reason: self.stop_reason,
             error: self.error,
             failure_kind: self.failure_kind,
+            error_category: self.error_category,
             context_limit_telemetry: self.context_limit_telemetry,
             recovery_disposition: self.recovery_disposition,
             output_length_disposition: self.output_length_disposition,
@@ -6560,6 +6621,7 @@ impl From<ProviderResponseFinished> for ProviderResponseFinishedReport {
             stop_reason: response.stop_reason,
             error: response.error,
             failure_kind: response.failure_kind,
+            error_category: response.error_category,
             context_limit_telemetry: response.context_limit_telemetry,
             recovery_disposition: response.recovery_disposition,
             output_length_disposition: response.output_length_disposition,
@@ -6618,6 +6680,10 @@ pub struct ProviderResponseFinished {
     /// prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<ProviderFailureKind>,
+    /// Optional display-only evidence. It grants no retry or recovery
+    /// authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<ProviderErrorCategory>,
     /// Sanitized harness-authored context-limit diagnostic on canonical
     /// responses. Reports may carry an untrusted value, which the terminal
     /// pipeline discards and rederives before canonical publication.

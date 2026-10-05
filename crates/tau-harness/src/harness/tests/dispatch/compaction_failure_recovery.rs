@@ -374,6 +374,7 @@ fn reactive_replay_terminalizes_plan_suppressed_by_prior_failure_once() {
                 None,
                 tau_core::AgentEventParent::InheritHead,
                 Event::ProviderResponseFinished(ProviderResponseFinished {
+                    error_category: None,
                     automatic_compaction_decision: None,
                     output_length_disposition: tau_proto::OutputLengthDisposition::None,
                     estimated_api_cost_rates: None,

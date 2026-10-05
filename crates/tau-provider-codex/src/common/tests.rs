@@ -1,5 +1,114 @@
 use super::*;
 
+/// Display categories must use typed evidence, distinguish protocol from
+/// network failure, and leave the existing retry and recovery classifiers
+/// unchanged.
+#[test]
+fn provider_error_category_uses_typed_evidence_without_policy_changes() {
+    use std::io as path_std_io;
+
+    use tau_proto::ProviderErrorCategory as Category;
+    use tau_provider::OutboundPhase;
+
+    use crate::attempt_failure::{
+        AttemptFailureEvidence, TransportFailureKind, TransportPhase, WsTermination,
+    };
+
+    let network = crate::test_network_policy();
+    let target = "https://private.invalid/secret";
+    let proxy = tau_provider::OutboundNetworkPolicy::from_environment(
+        [("HTTP_PROXY".to_owned(), "http://proxy.invalid".to_owned())].into(),
+        None,
+    );
+    let cases = [
+        (
+            LlmError::Outbound(network.request_error(target, OutboundPhase::Request)),
+            Category::Transport,
+        ),
+        (
+            LlmError::Outbound(network.deadline_error(target, OutboundPhase::Connect)),
+            Category::Timeout,
+        ),
+        (
+            LlmError::Outbound(network.protocol_error(target, OutboundPhase::Request)),
+            Category::InvalidResponse,
+        ),
+        (
+            LlmError::Outbound(
+                proxy
+                    .proxy_response_error("http://private.invalid/secret", 407)
+                    .expect("proxy auth"),
+            ),
+            Category::Authentication,
+        ),
+        (
+            LlmError::InvalidResponse("worker completion lock poisoned".to_owned()),
+            Category::Unknown,
+        ),
+        (
+            LlmError::Json(serde_json::from_str::<serde_json::Value>("{").expect_err("bad JSON")),
+            Category::Unknown,
+        ),
+        (
+            LlmError::Json(
+                serde_json::to_value(BTreeMap::from([(vec![1_u8], 1)]))
+                    .expect_err("invalid outgoing request map key"),
+            ),
+            Category::Unknown,
+        ),
+        (
+            LlmError::WsClosed(WsTermination::CleanEof),
+            Category::Transport,
+        ),
+        (
+            LlmError::HttpStatus(401, "private body".to_owned()),
+            Category::Authentication,
+        ),
+        (
+            LlmError::HttpStatusRetryAfter(403, "private body".to_owned(), Duration::from_secs(1)),
+            Category::Authentication,
+        ),
+        (
+            LlmError::HttpStatus(400, String::new()),
+            Category::RequestRejected,
+        ),
+        (
+            LlmError::Io(path_std_io::Error::other("worker spawn failed")),
+            Category::Unknown,
+        ),
+        (
+            LlmError::HttpStatus(500, "network timeout authentication failed".to_owned()),
+            Category::Unknown,
+        ),
+        (
+            LlmError::StreamError {
+                body: "network timeout authentication failed".to_owned(),
+                code: None,
+                retry_after: None,
+            },
+            Category::Unknown,
+        ),
+        (
+            LlmError::Outbound(network.request_error(target, OutboundPhase::Request)).observed(
+                AttemptFailureEvidence::transport(
+                    TransportPhase::PreUpgrade,
+                    false,
+                    TransportFailureKind::Outbound,
+                ),
+            ),
+            Category::Transport,
+        ),
+    ];
+    for (error, expected) in cases {
+        let retry_before = error.retry_decision();
+        let failure_before = error.failure_kind();
+        assert_eq!(error.error_category(), expected);
+        assert_eq!(error.retry_decision(), retry_before);
+        assert_eq!(error.failure_kind(), failure_before);
+        assert!(!error.error_category().description().contains("private"));
+    }
+}
+
 /// Tool-path classification must match materialized callable output without
 /// confusing empty, invalid-name, or ordinary text accumulators with tools.
 #[test]

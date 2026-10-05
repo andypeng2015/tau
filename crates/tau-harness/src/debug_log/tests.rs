@@ -87,6 +87,7 @@ fn compacted_json_bytes(value: serde_json::Value) -> Vec<u8> {
 
 fn debug_provider_finished(output_items: Vec<tau_proto::ContextItem>) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -438,6 +439,7 @@ fn published_line_preserves_enriched_token_usage() {
     let mut log = DebugEventLog::open(td.path()).expect("open");
     let model: ModelId = "openai/gpt-5".parse().expect("model id");
     let event = Event::ProviderResponseFinished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -1354,6 +1356,7 @@ fn provider_debug_captures_are_not_logged() {
 fn provider_finished_report_clears_image_bytes_before_debug_serialization() {
     let event =
         Event::ProviderResponseFinishedReported(tau_proto::ProviderResponseFinishedReport {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,

@@ -769,6 +769,7 @@ impl Harness {
             ctx_id: None,
         };
         let response = ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             agent_prompt_id: continuation.plan.agent_prompt_id.clone(),
             agent_id: agent_id.clone(),
@@ -926,6 +927,7 @@ impl Harness {
                         }
                     });
                 Event::ProviderResponseFinished(ProviderResponseFinished {
+                    error_category: None,
                     automatic_compaction_decision: None,
                     estimated_api_cost_rates: None,
                     estimated_api_cost_increment: None,
@@ -1027,6 +1029,7 @@ impl Harness {
                     .local_route_failures
                     .insert(agent_prompt_id.clone());
                 Event::ProviderResponseFinished(ProviderResponseFinished {
+                    error_category: None,
                     automatic_compaction_decision: None,
                     estimated_api_cost_rates: None,
                     estimated_api_cost_increment: None,

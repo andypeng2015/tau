@@ -8,6 +8,12 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 10.3 adds optional display-only `error_category` to provider terminal
+reports and canonical terminals. Older peers ignore the field; omission and
+future unknown category values degrade to unclassified diagnostics. The existing
+failure, retry, recovery, fallback, watch, and compaction-record semantics remain
+unchanged.
+
 Protocol 10.2 adds extension-scoped optional-secret absence metadata to
 Configure. Omission preserves strict missing-reference handling; older
 extensions ignore the field and retain their previous behavior. No credential

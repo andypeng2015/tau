@@ -741,6 +741,7 @@ fn finished_response(
         ProviderStopReason::EndTurn
     };
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

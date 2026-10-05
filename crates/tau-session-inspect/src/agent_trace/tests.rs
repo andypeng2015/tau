@@ -243,6 +243,7 @@ fn public_compact_exports_project_persisted_explicit_observations() {
         &mut store,
         declaration,
         Event::ProviderResponseFinished(tau_proto::ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             agent_prompt_id: "prompt-tools"
                 .parse::<tau_proto::AgentPromptId>()

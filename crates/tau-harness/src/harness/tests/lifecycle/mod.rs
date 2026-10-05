@@ -815,6 +815,7 @@ pub(super) fn reasoning_only_length_response(
     response_received_tokens: u64,
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,

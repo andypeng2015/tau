@@ -9638,7 +9638,7 @@ impl EventRenderer {
                         if failed.output_length_continuation.is_some() {
                             Some(("continuing", CompactionStatus::Progress))
                         } else {
-                            Some(("failed", CompactionStatus::Failure))
+                            Some((failed.reason.description(), CompactionStatus::Failure))
                         },
                     );
                 }

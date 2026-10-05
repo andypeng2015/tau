@@ -1728,6 +1728,7 @@ fn provider_response_contains_text(finished: &ProviderResponseFinished, needle: 
 
 fn response_with_tool_calls(call_ids: &[&str]) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -3285,6 +3286,7 @@ fn ui_observer_replays_requested_durable_facts_but_not_transient_progress() {
     h.publish_event(
         None,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -3441,6 +3443,7 @@ fn late_joining_ui_client_replays_terminal_tool_events() {
         h.publish_for_agent(
             &cid,
             Event::ProviderResponseFinished(ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 output_length_disposition: tau_proto::OutputLengthDisposition::None,
                 estimated_api_cost_rates: None,
@@ -3713,6 +3716,7 @@ fn resumed_harness_replays_persisted_session_history() {
             .expect("first prompt agent id")
             .clone();
         h.handle_provider_response_finished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -4121,6 +4125,7 @@ fn reasoning_is_persisted_and_replayed_as_typed_items_not_assistant_text() {
             .expect("assistant output"),
     ];
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,

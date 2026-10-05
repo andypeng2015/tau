@@ -52,6 +52,7 @@ fn seed_sensitive_tool_context(h: &mut Harness, cid: &AgentId) {
     let prompt_id = test_agent_prompt_id("privacy-canary-prompt");
     let call_id: ToolCallId = "privacy-canary-call".into();
     let response = ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         estimated_api_cost_rates: None,
         estimated_api_cost_increment: None,
@@ -1160,6 +1161,7 @@ fn response_id_anchors_next_prompt_with_previous_response() {
     let spid1 = prompt1.agent_prompt_id.clone();
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1238,6 +1240,7 @@ fn system_prompt_drift_invalidates_chain_anchor() {
     let prompt1 = read_nth_prompt_created(&h, 0);
     let spid1 = prompt1.agent_prompt_id.clone();
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1345,6 +1348,7 @@ fn queued_prompt_extends_completed_first_prompt() {
     assert_eq!(second, PromptSubmission::Queued);
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1874,6 +1878,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         }),
     );
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -1941,6 +1946,7 @@ fn recursive_delegate_prompt_contains_only_leaf_instruction() {
         .find_map(|(spid, prompt_cid)| (prompt_cid.as_str() != "default").then_some(spid.clone()))
         .expect("top prompt id");
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -4331,6 +4337,7 @@ fn old_prompt_missing_provider_wins_over_strict_schema_validation() {
         .unregister_connection(&crate::test_connection_id("conn-strict-old-tool"));
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,

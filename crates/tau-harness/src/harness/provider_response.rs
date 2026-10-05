@@ -2347,8 +2347,15 @@ impl Harness {
         self.clear_prompt_tool_snapshot(&response.agent_prompt_id);
         if !has_successor {
             self.settle_standalone_provider_watch_status(cid, response);
+            let detail = match reason {
+                tau_proto::StandaloneCompactionFailureReason::ProviderError => response
+                    .error_category
+                    .unwrap_or(tau_proto::ProviderErrorCategory::Unknown)
+                    .description(),
+                _ => reason.description(),
+            };
             self.emit_info_important(&format!(
-                "standalone compaction failed for agent `{cid}` ({reason:?}); retry with :compact, switch model/role, or rewind"
+                "standalone compaction failed for agent `{cid}` ({reason:?}): {detail}; retry with :compact, switch model/role, or rewind"
             ));
         }
         self.publish_event_for_agent_with_completion(

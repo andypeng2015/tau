@@ -5543,6 +5543,7 @@ fn deferred_tool_result_report_keeps_tracking_until_report_commit() {
     h.publish_for_agent(
         &cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             estimated_api_cost_rates: None,
             estimated_api_cost_increment: None,

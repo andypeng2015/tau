@@ -2086,6 +2086,7 @@ where
                 writer.write_message(&HarnessInputMessage::emit_transient(
                     Event::ProviderResponseFinishedReported(
                         tau_proto::ProviderResponseFinishedReport {
+                            error_category: None,
                             automatic_compaction_decision: None,
                             estimated_api_cost_rates: None,
                             estimated_api_cost_increment: None,
@@ -2175,6 +2176,7 @@ where
                 writer.write_message(&HarnessInputMessage::emit_transient(
                     Event::ProviderResponseFinishedReported(
                         tau_proto::ProviderResponseFinishedReport {
+                            error_category: None,
                             automatic_compaction_decision: None,
                             estimated_api_cost_rates: None,
                             estimated_api_cost_increment: None,

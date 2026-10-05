@@ -440,6 +440,7 @@ fn assistant_finished(
     stop_reason: ProviderStopReason,
 ) -> ProviderResponseFinished {
     ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -485,6 +486,7 @@ fn one_shot_output_waits_through_tool_calls_and_keeps_final_snapshots() {
 
     assert!(
         !output.capture_finished(&ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -665,6 +667,7 @@ fn one_shot_output_falls_back_to_latest_streaming_text() {
 
     assert!(
         output.capture_finished(&ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -706,6 +709,7 @@ fn one_shot_output_status_clear_resets_streaming_fallback() {
 
     assert!(
         output.capture_finished(&ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,

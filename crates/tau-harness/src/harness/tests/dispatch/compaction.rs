@@ -578,6 +578,7 @@ fn ordinary_inference_rejects_private_compaction_output_before_persistence() {
         .count();
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -720,6 +721,7 @@ fn reactive_context_overflow_after_tool_round_uses_closed_prefix() {
     h.publish_for_agent(
         &cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -2099,6 +2101,7 @@ fn scheduler_compact_publishes_one_placeholder_and_keeps_publication_live() {
         .insert(prompt_id.clone(), cid.clone());
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -2228,6 +2231,7 @@ fn scheduler_agent_compact_publishes_one_placeholder_and_keeps_publication_live(
         .insert(prompt_id.clone(), caller_cid.clone());
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -3548,6 +3552,7 @@ fn manual_self_compaction_background_terminal_prefix_checkpoints_once() {
             None,
             tau_core::AgentEventParent::InheritHead,
             Event::ProviderResponseFinished(ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 output_length_disposition: tau_proto::OutputLengthDisposition::None,
                 estimated_api_cost_rates: None,
@@ -4282,6 +4287,7 @@ fn manual_cross_compaction_started_prefix_is_interrupted_once_without_redispatch
             None,
             tau_core::AgentEventParent::InheritHead,
             Event::ProviderResponseFinished(ProviderResponseFinished {
+                error_category: None,
                 automatic_compaction_decision: None,
                 output_length_disposition: tau_proto::OutputLengthDisposition::None,
                 estimated_api_cost_rates: None,
@@ -7431,6 +7437,7 @@ fn reactive_context_overflow_replay_claims_and_dispatches_once() {
         }),
     );
     let planned = ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -7590,6 +7597,7 @@ fn reactive_context_overflow_replay_drift_allows_manual_compact() {
     append_seed_agent_event(
         &mut store,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -8289,6 +8297,7 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
     );
     let compact = read_nth_prompt_created(&h, 0);
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -8422,6 +8431,7 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
     assert_ne!(starts[1].transaction_id, starts[0].transaction_id);
     let successor = read_nth_prompt_created(&h, 2);
     h.handle_provider_response_finished(ProviderResponseFinished {
+        error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -8489,6 +8499,8 @@ fn standalone_compaction_accepts_canonical_opaque_provider_item() {
     );
 
     h.handle_provider_response_finished(ProviderResponseFinished {
+        // Display evidence alone cannot turn a successful terminal into failure.
+        error_category: Some(tau_proto::ProviderErrorCategory::Transport),
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
         estimated_api_cost_rates: None,
@@ -8550,6 +8562,7 @@ fn failed_ui_compaction_replay_restores_nonblocking_suppression() {
         );
         let compact = read_nth_prompt_created(&h, 0);
         h.handle_provider_response_finished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -9165,6 +9178,7 @@ fn standalone_dispatch_uncertain_replay_projects_compaction_category() {
             .expect("test model")
             .standalone_compaction_threshold = Some(tau_proto::TokenCount::new(u64::MAX));
         h.handle_provider_response_finished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -9425,6 +9439,7 @@ fn standalone_auto_compaction_includes_complete_mixed_tool_round() {
     h.publish_for_agent(
         &cid,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
@@ -9658,6 +9673,7 @@ fn reactive_context_overflow_compact_success_resumes_one_checkpoint() {
     append_seed_agent_event(
         &mut store,
         Event::ProviderResponseFinished(ProviderResponseFinished {
+            error_category: None,
             automatic_compaction_decision: None,
             output_length_disposition: tau_proto::OutputLengthDisposition::None,
             estimated_api_cost_rates: None,
