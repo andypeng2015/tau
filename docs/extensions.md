@@ -1,10 +1,12 @@
 # Configuring extensions
 
-This checkout declares protocol **10.1** in `crates/tau-proto/src/lib.rs`.
+This checkout declares protocol **10.4** in `crates/tau-proto/src/lib.rs`.
 Configured extensions must use a compatible protocol major; an executable
 built for an older major is rejected before configuration. Separately
 maintained extension inputs may have their own release and compatibility
 status: check their pinned revisions and owning projects before enabling them.
+Equal majors with different minors are admitted best-effort with a warning;
+Cargo SDK package versions do not identify wire revisions.
 
 ## Tau-state access
 
@@ -160,8 +162,9 @@ explicit Zulip site, bot credentials, stable identity key, and route policy.
 Running a separate executable does not widen its ingress, reply, reaction,
 proactive-send, or catch-up authority.
 
-The automatic-receive revision requires a current Tau build with the
-receiver-admission fix plus compatible protocol-9/SDK-0.7 extension binaries. In
+The automatic-receive revision requires a Tau build with the receiver-admission
+fix and an extension binary compatible with the harness protocol major. Verify
+the installed binary against its owning project's compatibility guidance. In
 receive mode, `register_on_start` defaults to `false`: a saved eligible manual
 designation resumes, but Tau does not select or create an initial receiver. Set it
 to `true` to select an existing eligible receiver automatically; optional `role`
