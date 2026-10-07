@@ -1049,6 +1049,9 @@ fn standalone_compaction_failure_message(
 ) -> &'static str {
     match reason {
         tau_proto::StandaloneCompactionFailureReason::ProviderError => "provider_error",
+        tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted => {
+            "transient_compaction_exhausted"
+        }
         tau_proto::StandaloneCompactionFailureReason::InvalidWindow => "invalid_window",
         tau_proto::StandaloneCompactionFailureReason::OutputLengthExceeded => {
             "output_length_exceeded"

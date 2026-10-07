@@ -1,6 +1,28 @@
-//! Transient retry-status construction for provider prompt attempts.
+//! Retry-status and exhausted-compaction reporting for provider prompt
+//! attempts.
 
 use super::*;
+
+/// Reports one exhausted pre-output compaction cycle with durable typed
+/// evidence.
+pub(super) fn emit_compaction_retry_exhausted(
+    job: PromptJob,
+    attempt: tau_proto::ProviderAttempt,
+    handle: &ClientHandle,
+) -> ClientResult<()> {
+    let mut finished = simple_finished(
+        job.agent_prompt_id,
+        job.prompt.agent_id,
+        job.prompt.originator,
+        "provider retry budget exhausted during standalone compaction",
+    );
+    finished.provider_attempt = attempt;
+    finished.failure_kind = Some(tau_proto::ProviderFailureKind::TransientCompactionExhausted);
+    finished.backend = job.observed_backend;
+    handle.send(HarnessInputMessage::emit_transient(
+        Event::ProviderResponseFinishedReported(finished),
+    ))
+}
 
 /// Emits the initiating user's transient status for one scheduled retry.
 pub(super) fn emit_retry_status(

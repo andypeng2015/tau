@@ -1,5 +1,234 @@
 use super::*;
 
+/// Construct the provider's typed bounded-exhaustion terminal with no output.
+fn transient_exhaustion_response(
+    prompt: &tau_proto::AgentPromptCreated,
+) -> ProviderResponseFinished {
+    let mut response = provider_text_response(&prompt.agent_prompt_id, prompt.agent_id.clone(), "");
+    response.output_items.clear();
+    response.stop_reason = tau_proto::ProviderStopReason::Error;
+    response.error = Some("bounded transient attempts exhausted".to_owned());
+    response.failure_kind = Some(tau_proto::ProviderFailureKind::TransientCompactionExhausted);
+    response.provider_attempt = tau_proto::ProviderAttempt::new(5).expect("attempt");
+    response
+}
+
+/// Exhausted pre-output transient work rearms only on a fresh ordinary
+/// terminal, including an output-free overflow without usage. Queue polling
+/// cannot repeat paid work; success clears the preserved failure chain and
+/// cold replay cannot dispatch another compactor.
+#[test]
+fn transient_exhaustion_rearms_on_fresh_overflow_and_not_queue_polling() {
+    let td = TempDir::new().expect("tempdir");
+    let state = td.path().join("state");
+    let agent_id;
+    {
+        let mut h = quiet_provider_harness(&state).expect("start");
+        enable_remote_compaction_for_test_model(&mut h);
+        let info = h
+            .provider_runtime
+            .model_info
+            .get_mut(&"test/model".into())
+            .expect("model");
+        info.supports_compaction = false;
+        info.supports_standalone_compaction = true;
+        let cid = ensure_test_user_agent(&mut h);
+        agent_id = durable_agent_id_for_conversation(&h, &cid);
+        seed_reactive_compaction_prefix(&mut h, &cid);
+        h.handle_compact_request(
+            crate::harness::harness_connection_id(),
+            test_session_id("s1"),
+            Some(agent_id.as_str()),
+        );
+        let compact = read_nth_prompt_created(&h, 0);
+        h.handle_provider_response_finished(transient_exhaustion_response(&compact))
+            .expect("fail compaction");
+        for _ in 0..3 {
+            h.drain_publish_idle_dispatches();
+            assert!(!h.schedule_standalone_auto_compaction(&cid));
+        }
+        let failed = event_log_events(&h)
+            .into_iter()
+            .find_map(|event| match event {
+                Event::AgentStandaloneCompactionFailed(failed) => Some(failed),
+                _ => None,
+            })
+            .expect("durable failure");
+        assert_eq!(
+            failed.reason,
+            tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+        );
+        h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("new overflow".to_owned()))
+            .expect("fresh inference");
+        let inference = event_log_events(&h)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentPromptCreated(prompt)
+                    if prompt.operation == tau_proto::PromptOperation::Inference =>
+                {
+                    Some(prompt)
+                }
+                _ => None,
+            })
+            .last()
+            .expect("ordinary prompt");
+        let overflow = context_overflow_response(&inference);
+        assert!(overflow.usage.is_none());
+        h.handle_provider_response_finished(overflow.clone())
+            .expect("overflow");
+        h.handle_provider_response_finished(overflow)
+            .expect("duplicate terminal");
+        for _ in 0..3 {
+            h.drain_publish_idle_dispatches();
+        }
+        let events = event_log_events(&h);
+        let terminal = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ProviderResponseFinished(response)
+                    if response.agent_prompt_id == inference.agent_prompt_id =>
+                {
+                    Some(response)
+                }
+                _ => None,
+            })
+            .expect("canonical overflow");
+        assert_eq!(
+            terminal.recovery_disposition,
+            tau_proto::ContextRecoveryDisposition::ReactiveCompactionPlanned
+        );
+        let telemetry = terminal
+            .context_limit_telemetry
+            .as_ref()
+            .expect("telemetry");
+        assert!(telemetry.recovery_eligible);
+        assert_eq!(
+            telemetry.observation,
+            tau_proto::ContextLimitObservation::InsufficientEvidence
+        );
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::AgentStandaloneCompactionStarted(started) => Some(started),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[1].supersedes.as_ref(), Some(&failed.transaction_id));
+        let successor = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentPromptCreated(prompt)
+                    if prompt.operation == tau_proto::PromptOperation::StandaloneCompaction =>
+                {
+                    Some(prompt)
+                }
+                _ => None,
+            })
+            .last()
+            .expect("successor");
+        h.handle_provider_response_finished(transient_exhaustion_response(&successor))
+            .expect("reactive exhaustion");
+        let prompts_after_exhaustion =
+            event_log_count(&h, |event| matches!(event, Event::AgentPromptCreated(_)));
+        for _ in 0..3 {
+            h.reconcile_pending_context_recoveries(true);
+            h.drain_publish_idle_dispatches();
+        }
+        assert_eq!(
+            event_log_count(&h, |event| matches!(event, Event::AgentPromptCreated(_))),
+            prompts_after_exhaustion,
+            "a failed reactive successor must not redispatch owed inference"
+        );
+        assert_eq!(
+            event_log_count(&h, |event| matches!(
+                event,
+                Event::AgentStandaloneCompactionStarted(_)
+            )),
+            2
+        );
+        h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("later fresh overflow".to_owned()))
+            .expect("later fresh inference");
+        let later = event_log_events(&h)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentPromptCreated(prompt)
+                    if prompt.operation == tau_proto::PromptOperation::Inference =>
+                {
+                    Some(prompt)
+                }
+                _ => None,
+            })
+            .last()
+            .expect("later prompt");
+        h.handle_provider_response_finished(context_overflow_response(&later))
+            .expect("later overflow");
+        assert_eq!(
+            event_log_count(&h, |event| matches!(
+                event,
+                Event::AgentStandaloneCompactionStarted(_)
+            )),
+            3
+        );
+        let successor = event_log_events(&h)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentPromptCreated(prompt)
+                    if prompt.operation == tau_proto::PromptOperation::StandaloneCompaction =>
+                {
+                    Some(prompt)
+                }
+                _ => None,
+            })
+            .last()
+            .expect("later successor");
+        h.handle_provider_response_finished(provider_text_response(
+            &successor.agent_prompt_id,
+            successor.agent_id,
+            "small summary",
+        ))
+        .expect("success");
+        let continued = event_log_events(&h)
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::AgentPromptCreated(prompt)
+                    if prompt.operation == tau_proto::PromptOperation::Inference =>
+                {
+                    Some(prompt)
+                }
+                _ => None,
+            })
+            .last()
+            .expect("continuation");
+        h.handle_provider_response_finished(provider_text_response(
+            &continued.agent_prompt_id,
+            continued.agent_id,
+            "continued",
+        ))
+        .expect("finish continuation");
+        let head = h.selected_head_for_agent(&cid).expect("head");
+        assert!(
+            h.matching_durable_failed_recovery(agent_id.as_str(), &"test/model".into(), head)
+                .is_none()
+        );
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&state, "s1");
+    let mut resumed =
+        quiet_provider_harness_with_start_reason(&state, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    resumed.reconcile_pending_context_recoveries(true);
+    resumed.drain_publish_idle_dispatches();
+    assert_eq!(
+        loaded_agent_events(&resumed, "s1")
+            .iter()
+            .filter(|event| matches!(event, Event::AgentStandaloneCompactionStarted(_)))
+            .count(),
+        3
+    );
+    resumed.shutdown().expect("shutdown");
+}
+
 /// Branch drift permits an unrelated automatic transaction, but returning to
 /// the failed branch restores suppression across that success and cold replay;
 /// only a successful exact successor clears it.

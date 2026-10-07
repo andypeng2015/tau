@@ -589,7 +589,7 @@ pub(crate) fn run_selected_prompt_attempt<S: ProviderReportSink>(
             progress,
             canonical_unauthorized,
         } => {
-            if chatgpt_plan {
+            if chatgpt_plan && compact_prompt.is_none() {
                 return invalid_compaction(
                     agent_prompt_id,
                     prompt,

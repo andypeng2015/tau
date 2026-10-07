@@ -1559,6 +1559,8 @@ fn install_provider_evidence(
     tree.inference_dispatches.insert(
         prompt_id.clone(),
         InferenceDispatchFold {
+            durable_event_seq: PersistedAgentEventSeq::new(0),
+            cancelled_terminal_head: None,
             checkpoint: tau_proto::AgentInferenceDispatchStarted {
                 agent_id: agent_id(),
                 transaction_id: None,
@@ -1880,6 +1882,110 @@ fn fail_compaction(tree: &mut AgentTree, started: &tau_proto::AgentStandaloneCom
             incomplete_response: None,
         },
     ));
+}
+
+/// A fresh cancellation is a canonical ordinary terminal even without a
+/// response node. Live and cold fold must rearm identically, while a pending
+/// dispatch, an older dispatch, another model, and an unclassified historical
+/// failure cannot grant committed retry authority.
+#[test]
+fn transient_compaction_retry_cancellation_is_live_cold_equivalent() {
+    fn append(
+        tree: &mut AgentTree,
+        records: &mut Vec<PersistedAgentEvent>,
+        event: Event,
+        fold_semantics: AgentJournalFoldSemantics,
+    ) {
+        let record = PersistedAgentEvent {
+            observation_id: tau_proto::ObservationId::from_bytes([records.len() as u8; 16]),
+            seq: tree.next_event_seq(),
+            source: None,
+            event,
+            parent: AgentEventParent::InheritHead,
+            fold_semantics,
+            recorded_at: UnixMicros::new(records.len() as u64),
+        };
+        tree.apply_persisted_record(&record).expect("append");
+        records.push(record);
+    }
+    let mut live = AgentTree::from_events(agent_id(), &[]);
+    let mut records = Vec::new();
+    let started = compaction_start("ct-transient");
+    append(
+        &mut live,
+        &mut records,
+        Event::AgentStandaloneCompactionStarted(started.clone()),
+        AgentJournalFoldSemantics::CommitOrder,
+    );
+    let failed = tau_proto::AgentStandaloneCompactionFailed {
+        agent_id: agent_id(),
+        transaction_id: started.transaction_id.clone(),
+        cut: started.cut,
+        reason: tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted,
+        resume_through: started.resume_through,
+        context_retreat: None,
+        output_length_continuation: None,
+        incomplete_response: None,
+    };
+    append(
+        &mut live,
+        &mut records,
+        Event::AgentStandaloneCompactionFailed(failed.clone()),
+        AgentJournalFoldSemantics::CommitOrder,
+    );
+    let checkpoint = tau_proto::AgentInferenceDispatchStarted {
+        agent_id: agent_id(),
+        transaction_id: None,
+        agent_prompt_id: "ap-fresh-cancel".parse().expect("prompt"),
+        through: AgentHead::Root,
+        model: started.model.clone(),
+        operation: tau_proto::PromptOperation::Inference,
+        activation_cut: AgentHead::Root,
+        output_length_continuation: None,
+    };
+    append(
+        &mut live,
+        &mut records,
+        Event::AgentInferenceDispatchStarted(checkpoint.clone()),
+        AgentJournalFoldSemantics::InferenceDeferredInputV1,
+    );
+    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(live.transient_compaction_retry_is_ready(
+        &failed,
+        AgentHead::Root,
+        Some(&checkpoint.agent_prompt_id)
+    ));
+    append(
+        &mut live,
+        &mut records,
+        Event::AgentPromptTerminated(tau_proto::AgentPromptTerminated {
+            agent_id: agent_id(),
+            agent_prompt_id: checkpoint.agent_prompt_id.clone(),
+            reason: tau_proto::AgentPromptTerminationReason::Canceled,
+            originator: PromptOriginator::User,
+            automatic_compaction_decision: None,
+        }),
+        AgentJournalFoldSemantics::CommitOrder,
+    );
+    assert!(live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    let cold = AgentTree::try_from_events(agent_id(), &records).expect("cold replay");
+    assert!(cold.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    let mut unknown = failed.clone();
+    unknown.reason = tau_proto::StandaloneCompactionFailureReason::ProviderError;
+    assert!(!cold.transient_compaction_retry_is_ready(&unknown, AgentHead::Root, None));
+    live.inference_dispatches
+        .get_mut(&checkpoint.agent_prompt_id)
+        .expect("dispatch")
+        .checkpoint
+        .model = "other/model".into();
+    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    let dispatch = live
+        .inference_dispatches
+        .get_mut(&checkpoint.agent_prompt_id)
+        .expect("dispatch");
+    dispatch.checkpoint.model = started.model;
+    dispatch.durable_event_seq = PersistedAgentEventSeq::new(0);
+    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
 }
 
 /// Provider-prefix normalization must keep function, custom, and mixed parallel
@@ -2725,6 +2831,8 @@ fn reactive_overflow_claim_rejects_invalid_source_correlations() {
         tree.inference_dispatches.insert(
             checkpoint.agent_prompt_id.clone(),
             InferenceDispatchFold {
+                durable_event_seq: PersistedAgentEventSeq::new(0),
+                cancelled_terminal_head: None,
                 head_move_generation: HeadMoveGeneration::default(),
                 fold_semantics: crate::AgentJournalFoldSemantics::CommitOrder,
                 checkpoint: checkpoint.clone(),
@@ -6671,6 +6779,8 @@ fn output_length_rearm_boundary_rejects_non_action_responses() {
     tree.inference_dispatches.insert(
         off_branch_checkpoint.agent_prompt_id.clone(),
         InferenceDispatchFold {
+            durable_event_seq: PersistedAgentEventSeq::new(0),
+            cancelled_terminal_head: None,
             checkpoint: off_branch_checkpoint,
             fold_semantics: AgentJournalFoldSemantics::InferenceDeferredInputV1,
             head_move_generation: tree.head_move_generation,

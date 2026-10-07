@@ -19,6 +19,13 @@ replacement-boundary cut meaning and requested protocol minor revision `3.1`;
 there is no legacy cut discriminator or migration.
 The user also approved the native Codex semantic-progress retry and cost
 boundary for ticket `gtdq`, satisfying the same gate.
+The user approved bounded pre-output transient retries for local as well as
+native standalone compaction for ticket `71od`, and rearming exhausted transient
+failures on fresh ordinary inference terminals. Historical failures without
+typed no-output evidence remain conservative.
+The user separately approved letting that typed fresh-terminal automatic
+successor compact the current eligible history rather than only the failed cut;
+manual and post-semantic-output recovery retain their existing cut safeguards.
 The user separately approved protocol revision `4.0` for typed local-summary
 continuation requests and their durable successor trigger, including rejection
 of all `3.x` extensions and UI clients until compatible rebuilds or updates.
@@ -273,7 +280,8 @@ for a route/account generation. A definitive compaction-specific rejection
 before accepted semantic output marks only the native route unavailable and
 immediately permits one local-summary request in the same transaction. This
 exact extra-attempt behavior was explicitly approved by the user. The local
-attempt has no transparent repair or logical retry. Cancellation and failure
+attempt has no transparent repair; pre-output transient failures use the shared
+bounded logical scheduler. Cancellation and failure
 after accepted semantic output never select another implementation.
 An unchanged negative identity goes directly local without another native
 network probe. A changed identity permits one fresh serialized native probe;
@@ -296,8 +304,23 @@ policy, continuation, and reactive recovery so queued ingress cannot create a
 hidden repeat loop. Explicit UI, self, and cross-agent requests remain recovery
 authorities. Model or branch drift permits a fresh independent transaction
 without rewriting the failed history; returning to the failed model and branch
-restores suppression. Only a successful explicit successor clears the matching
+restores suppression. Only a successful authorized successor clears the matching
 durable failure chain.
+A typed exhausted-transient standalone failure records that every failed
+attempt accepted no semantic output. It does not immediately dispatch another
+transaction. A fresh canonical ordinary inference terminal on the matching
+model and selected lineage may authorize one new automatic transaction through
+ordinary threshold/policy evidence or canonical no-output context rejection.
+Ingress, queue polling, and restart alone do not rearm it. The terminal commits
+before any reactive successor start; replay claims that successor at most once.
+The automatic successor supersedes the typed failure and may advance its cut
+within the same selected lineage to the current provider-closed prefix.
+It preserves the owed resume ancestry and post-cut suffix. Only successful
+publication clears the failure chain; unknown/post-progress failures never
+gain this advancing-cut authority.
+Post-progress, deterministic, canceled, interrupted, and historical unclassified
+failures retain explicit-only recovery. Grok's unary compactor currently lacks
+reliable transient classification and therefore retains conservative failures.
 When a failed transaction carries `resume_through`, that watermark must be an
 ancestor of the successor watermark; a sibling branch with superficial
 nonemptiness is invalid. Only a failed standalone transaction may be
@@ -376,7 +399,7 @@ cannot rewrite a committed start. If the captured model route disappears, the
 transaction durably fails before any provider request is delivered. Success installs a
 cut/suffix-bearing boundary so facts
 committed during compaction survive after the replacement window. Terminal
-failure records a safe durable category, suppresses automatic retry, and leaves
+failure records a safe durable category, suppresses immediate automatic retry, and leaves
 the agent addressable for ordinary prompts and explicit `:compact` or authorized
 `agent_compact` recovery. A transaction remains runtime-blocked only while it
 owes a durable continuation or background completion. Self/manual, cross-agent,
@@ -385,6 +408,8 @@ the owed completion is staged or delivered at its owning durable boundary.
 Terminal failures with no remaining continuation obligation become usable
 immediately; replay reconstructs the same result and never redispatches the
 terminal provider request.
+Typed exhausted-transient failures follow the fresh-terminal rearming exception
+above; they never repeat the same terminal provider request.
 Inference resumes only after a durable dispatch watermark commits.
 While that checkpoint is interceptable or waiting to persist, an explicit
 `AwaitingCheckpoint` runtime state blocks every ordinary dispatch path.

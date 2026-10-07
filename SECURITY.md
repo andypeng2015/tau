@@ -1250,7 +1250,7 @@ architecture, routing, testing, and security documentation.
 
 Standalone compaction and its continuation are harness-owned durable work. Every
 new provider cut must be a closed transcript prefix; a tool-calling assistant
-response and its complete terminal results node are indivisible. Native Codex
+response and its complete terminal results node are indivisible. Native and local-summary
 transient standalone failures use the shared scheduler for at most five total
 attempts only before semantic compact output is accepted. An error processed
 first in an event accepts no content and remains retryable. Once compact output
@@ -1261,11 +1261,19 @@ background completion, ordinary input proceeds, while durable failure history
 suppresses automatic threshold, policy, continuation, and reactive recovery for
 the same provider-qualified model and branch. Model or branch drift permits
 fresh independent work; returning restores suppression until a successful
-matching explicit successor clears the failed chain.
+matching authorized successor clears the failed chain. Typed exhausted
+pre-output transient failures are the narrow exception: a fresh ordinary
+inference terminal on the matching model and lineage can authorize one automatic
+successor, including a canonical no-output context-window rejection. Polling,
+ingress, and restart alone cannot rearm it. Historical unclassified and
+post-progress failures retain explicit-only recovery.
 
 An explicit successor may retreat its cut to retain more exact suffix, but it
 must preserve same-branch coverage of any resume watermark and cannot replace
 that watermark with an ancestor or sibling selected by later head navigation.
+The typed fresh-terminal automatic successor may instead select the current
+provider-closed prefix on that lineage while preserving the resume ancestry and
+post-cut suffix.
 Ordinary input and `:cancel` do not clear durable failure authority. Core
 validation and warm/cold exact-once replay regressions prevent duplicate provider
 dispatch, terminal delivery, and continuation checkpoints.

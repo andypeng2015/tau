@@ -2607,7 +2607,8 @@ fn papercut_history_on_old_harness_fails_before_storage_rpc() {
         None,
         Some(tau_proto::ProtocolVersion::new(10, 0)),
         Some(tau_proto::ProtocolVersion::new(9, 99)),
-        Some(tau_proto::ProtocolVersion::new(11, 0)),
+        Some(tau_proto::ProtocolVersion::new(10, 4)),
+        Some(tau_proto::ProtocolVersion::new(12, 0)),
     ] {
         assert!(!supports_papercut_history(version));
         let mut rt = runtime();
@@ -2632,7 +2633,7 @@ fn papercut_history_on_old_harness_fails_before_storage_rpc() {
     }
     assert!(supports_papercut_history(Some(tau_proto::PROTOCOL_VERSION)));
     assert!(supports_papercut_history(Some(
-        tau_proto::ProtocolVersion::new(10, 2)
+        tau_proto::ProtocolVersion::new(11, 1)
     )));
 }
 

@@ -1378,9 +1378,9 @@ fn codex_local_summary_preserves_ordinary_prefix_and_usage() {
     }
 }
 
-/// A local summary failure is one finite attempt, not another repair/retry
-/// chain. Tentative semantic output and pre-progress failures both remain
-/// private.
+/// Local summary never repairs inside a finite attempt, but pre-output
+/// transport failures reach the bounded scheduler. Accepted semantic output
+/// prohibits another paid dispatch.
 #[test]
 fn codex_local_summary_failure_never_repairs() {
     for mode in [
@@ -1396,12 +1396,65 @@ fn codex_local_summary_failure_never_repairs() {
         let agent = tau_proto::AgentId::parse("local-failure-agent").expect("agent");
         let context = compact_trigger_context();
         let request = test_prompt_payload(&session, &agent, &context);
-        assert!(matches!(
-            runtime.compact("local-failure", &config, &request, &mut NeverAbort),
-            CompactOutcome::Terminal { .. }
-        ));
+        let outcome = runtime.compact("local-failure", &config, &request, &mut NeverAbort);
+        match mode {
+            LoopbackResponseMode::RepairThenSuccess => assert!(matches!(
+                outcome,
+                CompactOutcome::Retry {
+                    backend_reached: true,
+                    ..
+                }
+            )),
+            LoopbackResponseMode::SemanticThenClose => {
+                assert!(matches!(outcome, CompactOutcome::Terminal { .. }));
+            }
+            _ => unreachable!(),
+        }
         assert_eq!(server.counts.requests.lock().expect("requests").len(), 1);
     }
+}
+
+/// A failed request transport before WebSocket dispatch must reach the
+/// bounded local-summary scheduler, not publish a durable terminal failure
+/// after just one attempt as in the production incident.
+#[test]
+fn codex_local_summary_request_transport_failure_is_retryable() {
+    let server = spawn_ws_disconnect_server();
+    let config = ResolvedConfig {
+        inner: test_config(server.base_url()),
+    };
+    let runtime = CodexRuntime::new(Arc::new(crate::test_network_policy()));
+    let session = tau_proto::SessionId::parse("local-transport-session").expect("session");
+    let agent = tau_proto::AgentId::parse("local-transport-agent").expect("agent");
+    let context = compact_trigger_context();
+    let request = test_prompt_payload(&session, &agent, &context);
+    let CompactOutcome::Retry {
+        decision,
+        backend_reached,
+    } = runtime.compact("local-transport", &config, &request, &mut NeverAbort)
+    else {
+        panic!("pre-dispatch request transport failure must reach the scheduler");
+    };
+    assert!(!backend_reached);
+    assert_eq!(
+        decision.class,
+        tau_provider::retry_policy::RetryClass::Transport
+    );
+    assert_eq!(
+        server
+            .counts()
+            .http_post_requests
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(
+        server
+            .counts()
+            .requests
+            .lock()
+            .expect("requests")
+            .is_empty()
+    );
 }
 
 /// Native compact success remains exactly one canonical compaction item

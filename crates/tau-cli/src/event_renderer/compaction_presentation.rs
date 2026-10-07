@@ -75,25 +75,22 @@ impl EventRenderer {
         after: Option<tau_proto::TokenCount>,
     ) -> String {
         match (original, after) {
-            (Some(original), Some(after)) if original.get() != 0 => {
-                let retained = (u128::from(after.get()) * 100 + u128::from(original.get()) / 2)
-                    / u128::from(original.get());
-                format!(
-                    "{} → {} ({retained}%) ok",
-                    Self::compaction_token_chip(original.get()),
-                    Self::compaction_token_chip(after.get()),
-                )
-            }
             (Some(original), Some(after)) => format!(
-                "{} → {} ok",
+                "input {}; context {} ok",
                 Self::compaction_token_chip(original.get()),
                 Self::compaction_token_chip(after.get()),
             ),
             (Some(original), None) => {
-                format!("{} → ? ok", Self::compaction_token_chip(original.get()))
+                format!(
+                    "input {}; context ? ok",
+                    Self::compaction_token_chip(original.get())
+                )
             }
             (None, Some(after)) => {
-                format!("? → {} ok", Self::compaction_token_chip(after.get()))
+                format!(
+                    "input ?; context {} ok",
+                    Self::compaction_token_chip(after.get())
+                )
             }
             (None, None) => "ok".to_owned(),
         }

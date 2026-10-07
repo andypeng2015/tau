@@ -15,7 +15,10 @@ but the fifth total attempt terminalizes that transaction without scheduling a
 sixth. Its terminal fifth-attempt evidence still extends the matching shared
 cooldown for other logical prompts. Ordinary inference retains unbounded retry
 authority.
-The local Chat Completions summary compactor is a narrow exception: once any
+The exhausted standalone terminal carries typed pre-output evidence for
+future-inference recovery; unclassified and post-output failures do not.
+Native and local-summary compaction share the semantic-output safety boundary:
+once any
 semantic output has arrived, any retryable outcome terminalizes the
 standalone transaction rather than risking an ambiguous summary resend. Only
 pre-semantic-output failures enter the scheduler.

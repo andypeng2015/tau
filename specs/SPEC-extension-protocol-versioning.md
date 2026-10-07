@@ -8,6 +8,10 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 11.0 introduces typed exhausted-transient standalone compaction
+failure variants with future-inference recovery authority. Configured
+extensions require compatible rebuilds; no historical failure is reclassified.
+
 Protocol 10.4 adds optional typed CLI-origin reply policy to recipient message
 facts and a directed local CLI message request/result. The request is sent only
 after exact-session UI admission advertises 10.4 or newer; older harnesses fail

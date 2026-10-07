@@ -41,6 +41,8 @@ pub(crate) enum StandaloneCompactionTerminalPlan {
 pub(crate) enum StandaloneCompactionRejection {
     /// The provider explicitly reported a terminal failure.
     ProviderError,
+    /// Bounded retries exhausted with reliable no-semantic-output evidence.
+    TransientCompactionExhausted,
     /// The provider canonically rejected an output-free request for context
     /// size.
     ContextWindowExceeded,
@@ -58,6 +60,9 @@ impl StandaloneCompactionRejection {
     pub(super) fn durable_reason(self) -> tau_proto::StandaloneCompactionFailureReason {
         match self {
             Self::ProviderError => tau_proto::StandaloneCompactionFailureReason::ProviderError,
+            Self::TransientCompactionExhausted => {
+                tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+            }
             Self::ContextWindowExceeded => {
                 tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
             }

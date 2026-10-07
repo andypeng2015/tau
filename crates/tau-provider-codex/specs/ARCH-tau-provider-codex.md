@@ -84,7 +84,8 @@ It keeps semantic output private, rejects tool/unknown output, discards
 reasoning, and accepts one bounded narrative. The private Codex wire has no
 supported output-token cap; acceptance byte bounds do not cap remote generation.
 Existing WebSocket receive/retained-state bounds and cancellation still apply.
-Local summary never repairs or retries. Native transient retry remains unchanged;
+Local summary never repairs transparently. Pre-output transient failures use
+the same bounded logical scheduler as native compaction;
 cancellation and post-content native failures never fall back.
 
 The model publishes no inferred historical-prefix byte budget. Tau initially
@@ -104,8 +105,10 @@ only while the attempt has accepted no semantic compact output. Once the parser
 accepts a compact item, any later failure discards the tentative item and
 terminalizes that logical request without another paid dispatch. An error event
 is processed before any item-shaped fields in that event, so such an error is
-non-progress and remains retry-eligible. A later explicit compaction request is
-a distinct paid operation. Ordinary inference retry policy is unchanged.
+non-progress and remains retry-eligible. After pre-output transient exhaustion,
+a fresh ordinary inference terminal may authorize a new transaction. Failures
+after accepted semantic output require an explicit request. Ordinary inference
+retry policy is unchanged.
 This boundary implements
 [SPEC-compaction-and-context-recovery](../../../specs/SPEC-compaction-and-context-recovery.md).
 The writer sends a 25-second `websocket_control_ping` WebSocket control frame

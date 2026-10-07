@@ -1001,9 +1001,17 @@ terminal silently no-op. See
   validation. Historical failed open-prefix starts remain replay-valid only for
   explicit recovery by a normalized successor; their immutable events are not
   rewritten.
+  A typed `transient_compaction_exhausted` failure is the narrow exception:
+  after a fresh ordinary inference terminal on the matching model and lineage,
+  an automatic successor may select current provider-closed history while
+  preserving the old outcome and owed resume ancestry.
 - **`agent.standalone_compaction_failed`** — Harness-owned terminal transaction
-  failure with a safe categorical reason and retained resume obligation. A
-  public Responses or Chat Completions local-summary output-limit failure also retains its typed partial output,
+  failure with a safe categorical reason and retained resume obligation. The
+  `transient_compaction_exhausted` reason records bounded retries before accepted
+  semantic output. Queue polling and restart do not retry it; fresh ordinary
+  inference terminal evidence can authorize one automatic successor. Historical
+  `provider_error` failures remain unclassified and require explicit recovery.
+  A public Responses or Chat Completions local-summary output-limit failure also retains its typed partial output,
   usage, response id, attempt, and backend in a non-context projection; replay
   requires the matching `output_length_exceeded` reason and never treats that
   projection as a replacement window. Raw provider

@@ -1309,7 +1309,12 @@ impl Harness {
                 != Some(&model)
             || !selected_or_continuation_model_matches
             || !tree.is_ancestor_head(checkpoint.through, current_head)
-            || self.durable_recovery_blocks_automatic(agent_id.as_str(), &model, current_head)
+            || self.durable_recovery_blocks_automatic_for_terminal(
+                agent_id.as_str(),
+                &model,
+                current_head,
+                Some(&response.agent_prompt_id),
+            )
             || !self
                 .provider_runtime
                 .model_info
@@ -1665,6 +1670,7 @@ impl Harness {
                 failed_agent_prompt_id: checkpoint.agent_prompt_id.clone(),
             },
         );
+        let supersedes = self.automatic_compaction_supersedes(&agent_id, &model, active_head);
         self.publish_event_for_agent_with_completion(
             cid,
             source,
@@ -1677,7 +1683,7 @@ impl Harness {
                 model,
                 operation: tau_proto::PromptOperation::StandaloneCompaction,
                 originator,
-                supersedes: None,
+                supersedes,
                 trigger,
             }),
             Some(AgentPublishCompletion::ReactiveContextRecoveryStart {
@@ -1734,6 +1740,22 @@ impl Harness {
         response: &ProviderResponseFinished,
     ) -> ProviderTerminalPlan {
         if response.error.is_some() || response.failure_kind.is_some() {
+            if response.failure_kind
+                == Some(tau_proto::ProviderFailureKind::TransientCompactionExhausted)
+                && response.stop_reason == ProviderStopReason::Error
+                && response.output_items.is_empty()
+                && !self
+                    .prompt_coordination
+                    .prompt_runtime
+                    .semantic_output
+                    .contains(&response.agent_prompt_id)
+            {
+                return ProviderTerminalPlan::StandaloneCompaction(
+                    StandaloneCompactionTerminalPlan::Rejected(
+                        StandaloneCompactionRejection::TransientCompactionExhausted,
+                    ),
+                );
+            }
             if response.failure_kind == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
                 && response.stop_reason == ProviderStopReason::Error
                 && response.output_items.is_empty()
@@ -2088,7 +2110,8 @@ impl Harness {
         source: Option<&tau_proto::ConnectionId>,
     ) {
         match rejection {
-            StandaloneCompactionRejection::ProviderError => self.emit_info(&format!(
+            StandaloneCompactionRejection::ProviderError
+            | StandaloneCompactionRejection::TransientCompactionExhausted => self.emit_info(&format!(
                 "provider failed standalone compaction for agent_prompt_id={}",
                 response.agent_prompt_id
             )),
@@ -2354,8 +2377,15 @@ impl Harness {
                     .description(),
                 _ => reason.description(),
             };
+            let recovery = if reason
+                == tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+            {
+                "a fresh inference terminal can retry automatically; :compact retries explicitly"
+            } else {
+                "retry with :compact, switch model/role, or rewind"
+            };
             self.emit_info_important(&format!(
-                "standalone compaction failed for agent `{cid}` ({reason:?}): {detail}; retry with :compact, switch model/role, or rewind"
+                "standalone compaction failed for agent `{cid}` ({reason:?}): {detail}; {recovery}"
             ));
         }
         self.publish_event_for_agent_with_completion(

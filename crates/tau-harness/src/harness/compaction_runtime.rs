@@ -1279,8 +1279,49 @@ impl Harness {
         model: &tau_proto::ModelId,
         current_head: tau_proto::AgentHead,
     ) -> bool {
+        self.durable_recovery_blocks_automatic_for_terminal(agent_id, model, current_head, None)
+    }
+
+    /// Include the exact fresh ordinary terminal being prepared without
+    /// granting authority to unrelated ingress or another provider prompt.
+    pub(super) fn durable_recovery_blocks_automatic_for_terminal(
+        &self,
+        agent_id: &str,
+        model: &tau_proto::ModelId,
+        current_head: tau_proto::AgentHead,
+        preparing_terminal: Option<&tau_proto::AgentPromptId>,
+    ) -> bool {
         self.matching_durable_failed_recovery(agent_id, model, current_head)
-            .is_some()
+            .is_some_and(|failed| {
+                !self
+                    .session_runtime
+                    .agent_store
+                    .agent(agent_id)
+                    .is_some_and(|tree| {
+                        tree.transient_compaction_retry_is_ready(
+                            &failed,
+                            current_head,
+                            preparing_terminal,
+                        )
+                    })
+            })
+    }
+
+    /// Claim the latest typed transient failure only after a fresh ordinary
+    /// terminal commits. The successor may select current closed history while
+    /// retaining the old outcome and owed resume lineage.
+    pub(super) fn automatic_compaction_supersedes(
+        &self,
+        agent_id: &str,
+        model: &tau_proto::ModelId,
+        current_head: tau_proto::AgentHead,
+    ) -> Option<tau_proto::CompactionTransactionId> {
+        let failed = self.matching_durable_failed_recovery(agent_id, model, current_head)?;
+        self.session_runtime
+            .agent_store
+            .agent(agent_id)?
+            .transient_compaction_retry_is_ready(&failed, current_head, None)
+            .then_some(failed.transaction_id)
     }
 
     /// Inserts one automatic standalone compaction boundary before inference
@@ -1453,7 +1494,12 @@ impl Harness {
             .identity
             .head
             .map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node);
-        if self.durable_recovery_blocks_automatic(agent_id, &model, selected_head) {
+        if self.durable_recovery_blocks_automatic_for_terminal(
+            agent_id,
+            &model,
+            selected_head,
+            (!historical_evidence).then_some(&provider_prompt_id),
+        ) {
             return prepared;
         }
         let logical_status = Self::finalizing_outer_turn_policy_status(
@@ -1650,6 +1696,7 @@ impl Harness {
                 decision_id: decision.transaction_id.clone(),
             },
         );
+        let supersedes = self.automatic_compaction_supersedes(&agent_id, &decision.model, selected);
         self.publish_for_agent(
             cid,
             Event::AgentStandaloneCompactionStarted(tau_proto::AgentStandaloneCompactionStarted {
@@ -1661,7 +1708,7 @@ impl Harness {
                 model: decision.model,
                 operation: tau_proto::PromptOperation::StandaloneCompaction,
                 originator,
-                supersedes: None,
+                supersedes,
                 trigger,
             }),
         );
@@ -1839,6 +1886,7 @@ impl Harness {
                 },
             },
         );
+        let supersedes = self.automatic_compaction_supersedes(&agent_id, &model, selected_head);
         self.publish_for_agent(
             cid,
             Event::AgentStandaloneCompactionStarted(tau_proto::AgentStandaloneCompactionStarted {
@@ -1850,7 +1898,7 @@ impl Harness {
                 resume_through,
                 model,
                 originator,
-                supersedes: None,
+                supersedes,
                 trigger,
             }),
         );

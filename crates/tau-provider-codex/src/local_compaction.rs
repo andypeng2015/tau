@@ -17,9 +17,10 @@ impl CodexRuntime {
     /// Execute one local-summary request for the original standalone
     /// transaction.
     ///
-    /// No logical retry or transparent repair follows this attempt, including
-    /// when it follows a definitive native-route rejection. All semantic output
-    /// stays private until the complete narrative passes validation.
+    /// Pre-output transient failures return to the bounded logical scheduler.
+    /// No transparent repair follows this attempt. Once semantic output is
+    /// accepted, failure is terminal. All semantic output stays private until
+    /// the complete narrative passes validation.
     pub fn local_compact_numbered(
         &self,
         agent_prompt_id: &str,
@@ -143,9 +144,25 @@ impl CodexRuntime {
                         Err(error) => invalid_output(error, backend_reached),
                     }
                 }
-                Err(error) => CompactOutcome::Terminal {
-                    error: CodexError(error),
-                    backend_reached,
+                Err(error) => match (error.retry_decision(), attempt.progress()) {
+                    (Some(decision), crate::SemanticProgress::None) => {
+                        attempt.finalize_retry_failure(crate::attempt_context::RetryFailureInput {
+                            agent_prompt_id,
+                            request,
+                            decision: &decision,
+                            evidence: error.evidence(),
+                            access_token: config.wire().api_key.as_str(),
+                            account_id: config.wire().account_id.as_deref(),
+                        });
+                        CompactOutcome::Retry {
+                            decision,
+                            backend_reached,
+                        }
+                    }
+                    _ => CompactOutcome::Terminal {
+                        error: CodexError(error),
+                        backend_reached,
+                    },
                 },
             }
         };

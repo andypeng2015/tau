@@ -988,7 +988,8 @@ struct CompletedCompactionPresentation {
     progress: Option<(Option<u64>, Option<u64>)>,
     /// History block repainted when exact continuation usage arrives.
     block_id: Option<tau_cli_term::BlockId>,
-    /// Compact request input usage shown on the left side of the reduction.
+    /// Compact request input usage, distinct from the full continuation
+    /// context.
     original_input_tokens: Option<tau_proto::TokenCount>,
     /// Self-compaction tool row, or `None` for an independent compaction row.
     self_tool_call_id: Option<tau_proto::ToolCallId>,

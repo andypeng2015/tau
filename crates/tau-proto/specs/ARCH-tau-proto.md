@@ -1,5 +1,11 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 11.0 adds typed exhausted-pre-output transient compaction failure
+authority to provider terminals and durable standalone failures. Configured
+peers require compatible rebuilds; historical unclassified failures retain
+explicit-only recovery. See
+[SPEC-compaction-and-context-recovery](../../../specs/SPEC-compaction-and-context-recovery.md).
+
 Protocol 10.4 adds exact-session local CLI messaging DTOs and optional typed
 CLI-origin metadata on received message facts. Their ephemeral reply capabilities
 are not sessions or agents; existing extensions can ignore the optional field.

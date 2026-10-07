@@ -149,6 +149,18 @@ backends can supply optional current/total counts in consistent units; omission
 retains generic activity. These updates contain no compaction content and are
 not persisted.
 
+Native Codex and local-summary standalone compaction retry pre-output transient
+failures with the shared backoff scheduler, up to five total attempts. Exhaustion
+does not permanently disable automatic compaction: a fresh ordinary inference
+terminal may authorize another transaction, including a canonical no-output
+context-window rejection. No queue-polling or restart-only retry loop is allowed.
+Failures after accepted semantic output and historical unclassified failures
+require explicit recovery. Grok's unary native compactor currently lacks reliable
+transient classification and retains conservative failure handling.
+The CLI labels compact request input separately from the transaction-owned
+continuation's full context size; a preserved suffix makes a reduction ratio
+between those values misleading.
+
 Native Codex compaction tolerates unknown identity/ordering-only notifications
 in compaction/notification namespaces. Unsupported output, payload-bearing
 events, errors, and ambiguous lifecycle changes still fail closed. Normal

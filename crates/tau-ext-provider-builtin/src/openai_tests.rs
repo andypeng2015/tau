@@ -18,6 +18,7 @@ use super::*;
 use crate::tests::SharedTraceWriter;
 
 mod cache_refresh_admission_tests;
+mod compaction_transport_retry_tests;
 
 /// Shared byte sink used by tests that run tau-client's writer thread.
 #[derive(Clone, Default)]
@@ -3566,6 +3567,7 @@ fn standalone_compaction_retry_policy_terminalizes_after_five_attempts() {
                 Some(Event::ProviderResponseFinishedReported(finished))
                     if finished.stop_reason == ProviderStopReason::Error
                         && finished.provider_attempt.get() == 5
+                        && finished.failure_kind == Some(tau_proto::ProviderFailureKind::TransientCompactionExhausted)
                         && finished.backend.as_ref().is_some_and(|backend| {
                             backend.kind == ProviderBackendKind::ChatCompletions
                                 && backend.base_url == "https://chat.example/v1"

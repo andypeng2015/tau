@@ -589,6 +589,9 @@ struct OuterTurnFold {
 #[derive(Clone, Debug, PartialEq)]
 struct InferenceDispatchFold {
     checkpoint: tau_proto::AgentInferenceDispatchStarted,
+    /// Durable dispatch order used to distinguish fresh inference
+    /// opportunities.
+    durable_event_seq: PersistedAgentEventSeq,
     /// Journal projection semantics selected by the checkpoint record.
     fold_semantics: AgentJournalFoldSemantics,
     /// Selected-head generation in which this owner was opened.
@@ -612,6 +615,9 @@ struct InferenceDispatchFold {
     output_length_steer_node: Option<NodeId>,
     /// Transcript node containing this dispatch's terminal response.
     response_node: Option<NodeId>,
+    /// Selected lineage of a canonical cancellation terminal with no response
+    /// node, retained for fresh-terminal transient-compaction eligibility.
+    cancelled_terminal_head: Option<AgentHead>,
 }
 
 /// Derives the durable action boundary that starts a new reasoning-only run.
@@ -735,6 +741,8 @@ struct CompactionTransactionFold {
     active_head: AgentHead,
     started: tau_proto::AgentStandaloneCompactionStarted,
     outcome: Option<CompactionTransactionOutcome>,
+    /// Durable failure order; absent until a failure commits.
+    failure_event_seq: Option<PersistedAgentEventSeq>,
     checkpoint: Option<tau_proto::AgentInferenceDispatchStarted>,
     inference_finished: bool,
     standalone_context_rejection: Option<tau_proto::ProviderResponseFinished>,
@@ -1361,7 +1369,7 @@ impl AgentTree {
     /// selected branch.
     ///
     /// Unrelated later transactions do not clear this authority. A successful
-    /// explicit successor clears the failed transaction and its superseded
+    /// authorized successor clears the failed transaction and its superseded
     /// failure chain.
     #[must_use]
     pub fn unresolved_standalone_compaction_failure(
@@ -1388,6 +1396,45 @@ impl AgentTree {
                 .then_some(failed)
             })
             .next()
+    }
+
+    /// Whether a typed exhausted-transient failure has a fresh ordinary
+    /// inference terminal on the selected lineage. The optional prompt is the
+    /// exact terminal currently being prepared; it must own a newer dispatch.
+    /// Ingress, queue polling, and cold replay alone cannot create eligibility.
+    #[must_use]
+    pub fn transient_compaction_retry_is_ready(
+        &self,
+        failed: &tau_proto::AgentStandaloneCompactionFailed,
+        current_head: tau_proto::AgentHead,
+        preparing_terminal: Option<&tau_proto::AgentPromptId>,
+    ) -> bool {
+        if failed.reason
+            != tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+        {
+            return false;
+        }
+        let Some(transaction) = self.compaction_transactions.get(&failed.transaction_id) else {
+            return false;
+        };
+        let Some(failure_seq) = transaction.failure_event_seq else {
+            return false;
+        };
+        self.inference_dispatches
+            .iter()
+            .any(|(prompt_id, dispatch)| {
+                dispatch.durable_event_seq.get() > failure_seq.get()
+                    && dispatch.checkpoint.operation == tau_proto::PromptOperation::Inference
+                    && dispatch.checkpoint.model == transaction.started.model
+                    && self.is_ancestor_head(dispatch.checkpoint.through, current_head)
+                    && ((preparing_terminal == Some(prompt_id) && !dispatch.finished)
+                        || (dispatch.finished
+                            && dispatch
+                                .response_node
+                                .map(AgentHead::Node)
+                                .or(dispatch.cancelled_terminal_head)
+                                .is_some_and(|head| self.is_ancestor_head(head, current_head))))
+            })
     }
 
     /// Returns model-requested compaction state in durable acceptance order.
@@ -2824,7 +2871,12 @@ impl AgentTree {
         self.retained_provider_image_bytes = self
             .retained_provider_image_bytes
             .saturating_add(durable_event_provider_image_bytes(event));
-        self.apply_compaction_control_event(event, fold_semantics, resolved_parent);
+        self.apply_compaction_control_event(
+            event,
+            fold_semantics,
+            resolved_parent,
+            durable_event_seq,
+        );
         if let Event::AgentPromptTerminated(terminated) = event
             && let Some(decision) = &terminated.automatic_compaction_decision
         {
@@ -3014,6 +3066,7 @@ impl AgentTree {
         event: &Event,
         fold_semantics: AgentJournalFoldSemantics,
         parent: Option<NodeId>,
+        durable_event_seq: PersistedAgentEventSeq,
     ) {
         match event {
             Event::AgentManualCompactionRequested(requested) => {
@@ -3051,6 +3104,7 @@ impl AgentTree {
                         active_head: parent.map_or(AgentHead::Root, AgentHead::Node),
                         started: started.clone(),
                         outcome: None,
+                        failure_event_seq: None,
                         checkpoint: None,
                         inference_finished: false,
                         standalone_context_rejection: None,
@@ -3131,6 +3185,7 @@ impl AgentTree {
                 {
                     transaction.outcome =
                         Some(CompactionTransactionOutcome::Failed(failed.clone()));
+                    transaction.failure_event_seq = Some(durable_event_seq);
                 } else if let Some(decision) = self
                     .automatic_compaction_decisions
                     .get_mut(&failed.transaction_id)
@@ -3184,6 +3239,7 @@ impl AgentTree {
                     checkpoint.agent_prompt_id.clone(),
                     InferenceDispatchFold {
                         checkpoint: checkpoint.clone(),
+                        durable_event_seq,
                         fold_semantics,
                         head_move_generation: self.head_move_generation,
                         finished: false,
@@ -3196,6 +3252,7 @@ impl AgentTree {
                         output_length_plan_node: None,
                         output_length_steer_node: None,
                         response_node: None,
+                        cancelled_terminal_head: None,
                     },
                 );
                 if let Some(transaction_id) = &checkpoint.transaction_id
@@ -3247,6 +3304,8 @@ impl AgentTree {
                     .get_mut(&terminated.agent_prompt_id)
                 {
                     dispatch.finished = true;
+                    dispatch.cancelled_terminal_head =
+                        Some(parent.map_or(AgentHead::Root, AgentHead::Node));
                 }
             }
             _ => {}
@@ -4745,7 +4804,12 @@ impl AgentTree {
                 || !self.is_ancestor_head(started.cut, decision.cut)
                 || started.model != decision.decision.model
                 || started.resume_through != Some(head)
-                || started.supersedes.is_some()
+                || started.supersedes.as_ref().is_some_and(|id| {
+                    !self.compaction_transactions.get(id).is_some_and(|transaction| {
+                        matches!(&transaction.outcome, Some(CompactionTransactionOutcome::Failed(failed))
+                            if self.transient_compaction_retry_is_ready(failed, head, None))
+                    })
+                })
             {
                 return Err(AgentEventValidationError::new(
                     "automatic compaction does not uniquely claim its terminal decision",
@@ -4780,8 +4844,20 @@ impl AgentTree {
                     failed_transaction_id,
                 } if failed_transaction_id == id
             );
+            let transient_retry = matches!(
+                &started.trigger,
+                tau_proto::StandaloneCompactionTrigger::AutomaticThresholdEvidence { .. }
+                    | tau_proto::StandaloneCompactionTrigger::AutomaticPolicy { .. }
+                    | tau_proto::StandaloneCompactionTrigger::AutomaticPreflightFailure { .. }
+                    | tau_proto::StandaloneCompactionTrigger::ReactiveContextOverflow { .. }
+                    | tau_proto::StandaloneCompactionTrigger::ReactivePreflightFailure { .. }
+            ) && self.compaction_transactions.get(id).is_some_and(|transaction| {
+                matches!(&transaction.outcome, Some(CompactionTransactionOutcome::Failed(failed))
+                    if self.transient_compaction_retry_is_ready(failed, head, None))
+            });
             if !automatic_retreat
                 && !output_continuation
+                && !transient_retry
                 && !matches!(
                     started.trigger,
                     tau_proto::StandaloneCompactionTrigger::Manual
@@ -4881,7 +4957,9 @@ impl AgentTree {
             // A replacement boundary is physically newer than its preserved
             // suffix, but logically precedes it. The exact retreat plan above
             // already validates that provider-order relation.
-            if (!automatic_retreat && !self.is_ancestor_head(started.cut, previous.started.cut))
+            if (!automatic_retreat
+                && !transient_retry
+                && !self.is_ancestor_head(started.cut, previous.started.cut))
                 || !preserves_resume
             {
                 return Err(AgentEventValidationError::new(

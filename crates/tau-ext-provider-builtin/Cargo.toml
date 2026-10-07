@@ -50,6 +50,7 @@ proptest.workspace = true
 tau-core.workspace = true
 tau-provider-codex = { workspace = true, features = ["test-support"] }
 tracing-subscriber.workspace = true
+tungstenite.workspace = true
 [[bin]]
 name = "tau-ext-provider-builtin"
 path = "src/main.rs"

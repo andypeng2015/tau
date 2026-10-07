@@ -4576,6 +4576,9 @@ pub struct AgentCompactionTriggered {
 pub enum StandaloneCompactionFailureReason {
     /// The provider returned a terminal error.
     ProviderError,
+    /// Bounded transient retries ended before any semantic compact output.
+    /// A fresh ordinary inference terminal may authorize another transaction.
+    TransientCompactionExhausted,
     /// The provider returned a malformed replacement window.
     InvalidWindow,
     /// The provider exhausted its output-token budget before completing a
@@ -4606,6 +4609,7 @@ impl StandaloneCompactionFailureReason {
     pub const fn description(self) -> &'static str {
         match self {
             Self::ProviderError => "provider error",
+            Self::TransientCompactionExhausted => "transient compaction retries exhausted",
             Self::InvalidWindow => "invalid compaction output",
             Self::OutputLengthExceeded => "summary output limit reached",
             Self::RouteFailed => "provider route unavailable",
@@ -6201,6 +6205,9 @@ pub enum ProviderFailureKind {
     /// The provider deterministically rejected the unchanged request for
     /// another reason.
     RequestRejected,
+    /// Standalone compaction exhausted bounded transient retries without
+    /// accepting semantic output in any failed attempt.
+    TransientCompactionExhausted,
     /// A terminal provider failure without a more specific safe classification.
     Unknown,
 }
@@ -6388,6 +6395,7 @@ impl ProviderFailureKind {
     /// Stable wire-compatible label used in safe presentation.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TransientCompactionExhausted => "transient_compaction_exhausted",
             Self::ContextWindowExceeded => "context_window_exceeded",
             Self::RequestRejected => "request_rejected",
             Self::Unknown => "unknown",

@@ -152,6 +152,13 @@ attempts; transient failures use the same scheduler and shared cooldown, while
 deterministic failures stop immediately. Unknown inference failures retry
 conservatively; billing, quota, credits, usage windows, and reloadable
 auth/configuration retry slowly.
+Pre-output transient compaction exhaustion remains eligible for a new automatic
+transaction after a fresh ordinary inference terminal, including a canonical
+no-output context-window rejection. Queue polling, ingress, and restart alone
+never rearm it. Post-output and historical unclassified failures require
+explicit recovery. Standalone rows label compact request input and full
+continuation context separately; preserved suffixes prevent interpreting their
+ratio as context reduction.
 
 Delayed work is parked in one in-memory scheduler and does not consume a
 provider worker. Tau shows a retry status with the reason, next delay, and
@@ -620,7 +627,8 @@ compaction item. The harness preserves the exact post-cut suffix. All Codex
 models support standalone compaction: native where available, otherwise local
 summary through the same ordinary Responses mode. A definitive native rejection
 before semantic output permits one local request in the same transaction;
-known native absence goes directly local. Local attempts never repair or retry,
+known native absence goes directly local. Local attempts never repair
+transparently; pre-output transient failures use bounded logical retries,
 and cancellation or post-content native failure never falls back. Native absence
 clears only the native default threshold, not configured numeric/reserve
 policies. There is no surface-switch fallback.

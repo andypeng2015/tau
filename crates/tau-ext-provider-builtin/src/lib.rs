@@ -5218,17 +5218,7 @@ where
                             end_reason = "retry_budget_exhausted",
                             "provider prompt retry ended",
                         );
-                        let mut finished = simple_finished(
-                            job.agent_prompt_id,
-                            job.prompt.agent_id,
-                            job.prompt.originator,
-                            "provider retry budget exhausted during standalone compaction",
-                        );
-                        finished.provider_attempt = attempt;
-                        finished.backend = job.observed_backend;
-                        handle.send(HarnessInputMessage::emit_transient(
-                            Event::ProviderResponseFinishedReported(finished),
-                        ))?;
+                        retry_status::emit_compaction_retry_exhausted(job, attempt, handle)?;
                         continue;
                     }
                     tracing::info!(

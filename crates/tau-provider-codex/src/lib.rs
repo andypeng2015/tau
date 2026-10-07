@@ -244,6 +244,15 @@ impl InferenceProfileIdentity {
 }
 
 impl ResolvedConfig {
+    /// Redirect a resolved configuration to a deterministic loopback provider.
+    /// Available only to cross-crate tests, never production configuration.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_test_base_url(mut self, base_url: String) -> Self {
+        self.inner.base_url = base_url;
+        self
+    }
+
     /// Returns ordinary inference's application-message silence limit.
     #[must_use]
     pub fn application_idle_timeout(&self) -> Duration {
