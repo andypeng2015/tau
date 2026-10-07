@@ -1,5 +1,86 @@
 use crate::{CursorShape, Event, KeyCode, KeyEvent, KeyModifiers, RawEvent, Term};
 
+/// Upload status lives only in the editor canvas, disappears on every terminal
+/// outcome, and returns on explicit retry without suppressing failure feedback.
+#[test]
+fn upload_notice_tracks_success_failure_retry_and_cancel() {
+    let (term, handle, input) =
+        Term::new_virtual(80, 24, "> ", Box::new(std::io::sink()), CursorShape::Bar);
+    handle.enable_paste_uploads(8);
+    let status_visible = || {
+        let st = handle.lock();
+        let tail = crate::layout_tail(&st, 0);
+        let rows: Vec<_> = tail
+            .sources
+            .iter()
+            .zip(&tail.lines)
+            .filter(|(source, _)| matches!(source, crate::LineSource::PasteUpload))
+            .collect();
+        assert!(
+            st.layout.history.is_empty(),
+            "status must not enter history"
+        );
+        if rows.is_empty() {
+            return false;
+        }
+        assert_eq!(
+            rows[0].1.iter().map(|cell| cell.ch).collect::<String>(),
+            "Uploading artifact; Ctrl-C to cancel"
+        );
+        true
+    };
+    assert!(!status_visible());
+    input.send(RawEvent::Paste("long paste".into())).unwrap();
+    let Event::PasteUpload { id, .. } = term.get_next_event().unwrap() else {
+        panic!("upload expected");
+    };
+    assert!(status_visible());
+    handle.finish_paste_upload(id, Ok("<tau-artifact:key>".into()));
+    assert!(matches!(
+        term.get_next_event().unwrap(),
+        Event::BufferChanged
+    ));
+    assert!(!status_visible());
+    input.send(RawEvent::Paste("long paste".into())).unwrap();
+    let Event::PasteUpload { id, .. } = term.get_next_event().unwrap() else {
+        panic!("upload expected");
+    };
+    assert!(status_visible());
+    handle.finish_paste_upload(id, Err("unavailable".into()));
+    assert!(
+        matches!(term.get_next_event().unwrap(), Event::Notice(message) if message.contains("unavailable"))
+    );
+    assert!(!status_visible());
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+    let Event::PasteUpload { id, .. } = term.get_next_event().unwrap() else {
+        panic!("retry expected");
+    };
+    assert!(status_visible());
+    input
+        .send(RawEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+    assert!(matches!(
+        term.get_next_event().unwrap(),
+        Event::PasteCancelled { .. }
+    ));
+    assert!(!status_visible());
+    handle.finish_paste_upload(id, Ok("WRONG".into()));
+    input.send(RawEvent::Paste("ok".into())).unwrap();
+    assert!(matches!(
+        term.get_next_event().unwrap(),
+        Event::BufferChanged
+    ));
+    assert!(!status_visible());
+}
+
 /// Normalization precedes the byte threshold; only completed references enter
 /// the editor, and cancellation preserves the original draft and cursor.
 #[test]

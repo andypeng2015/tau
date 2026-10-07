@@ -2867,6 +2867,8 @@ impl Term {
                             {
                                 let id = paste.id;
                                 st.editor.pending_paste = None;
+                                drop(st);
+                                self.handle.redraw();
                                 return Ok(Event::PasteCancelled { id });
                             }
                             if key.code == KeyCode::Enter && paste.failed {
@@ -2878,6 +2880,8 @@ impl Term {
                                     content: content.clone(),
                                     failed: false,
                                 });
+                                drop(st);
+                                self.handle.redraw();
                                 return Ok(paste_upload_event(id, content));
                             }
                             // Upload ownership freezes edits, bindings,
@@ -2953,6 +2957,8 @@ impl Term {
                     match result {
                         Err(error) => {
                             paste.failed = true;
+                            drop(st);
+                            self.handle.redraw();
                             return Ok(Event::Notice(format!(
                                 "Paste upload failed: {error}. Enter retries; Ctrl-C discards. Draft unchanged."
                             )));
@@ -3182,6 +3188,8 @@ impl Term {
                     content: content.clone(),
                     failed: false,
                 });
+                drop(st);
+                self.handle.redraw();
                 Ok(Some(paste_upload_event(id, content)))
             }
             None => Ok(None),
@@ -3216,6 +3224,8 @@ impl Term {
                     content: PasteContent::Text(text.clone()),
                     failed: false,
                 });
+                drop(st);
+                self.handle.redraw();
                 return Some(Event::PasteUpload { id, text });
             }
             st.editor.revision = st.editor.revision.wrapping_add(1);
@@ -4536,6 +4546,8 @@ enum LineSource {
         wrapped_row: usize,
     },
     InputScrollIndicator,
+    /// Transient status derived from the editor's active paste upload.
+    PasteUpload,
 }
 
 /// Lays out blocks referenced by an id list, skipping missing ids
@@ -5122,6 +5134,18 @@ fn layout_tail(st: &SharedState, history_height: usize) -> TailLayout {
     {
         sources.push(LineSource::Input { wrapped_row });
         lines.push(line.into());
+    }
+    if st
+        .editor
+        .pending_paste
+        .as_ref()
+        .is_some_and(|paste| !paste.failed)
+    {
+        let notice = StyledText::from("Uploading artifact; Ctrl-C to cancel");
+        for line in layout_lines().content(&notice).width(width).call() {
+            sources.push(LineSource::PasteUpload);
+            lines.push(line.into());
+        }
     }
     layout_id_list(
         &st.layout.suggestions,
@@ -6024,6 +6048,7 @@ fn describe_line_source(source: Option<&LineSource>) -> String {
         }) => format!("block {:?} `{}` row {}", id, debug_id, wrapped_row),
         Some(LineSource::Input { wrapped_row }) => format!("input row {wrapped_row}"),
         Some(LineSource::InputScrollIndicator) => "input scroll indicator".to_owned(),
+        Some(LineSource::PasteUpload) => "paste upload status".to_owned(),
         None => "<missing>".to_owned(),
     }
 }

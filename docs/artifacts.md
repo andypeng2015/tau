@@ -145,6 +145,9 @@ The governing non-local contract is
 ## Large terminal text pastes
 
 A single paste of at least 8 KiB of normalized UTF-8 becomes an artifact.
+While an upload runs, the prompt shows `Uploading artifact; Ctrl-C to cancel`.
+This progress notice disappears on success, failure, or cancellation; failures
+still report retry/discard guidance.
 CRLF and bare CR become LF before measuring and uploading; no other trimming
 occurs. Smaller pastes, including pasted file paths, remain ordinary text.
 The maximum artifact is 16 MiB. Tau does not read paths or fetch pasted URLs.

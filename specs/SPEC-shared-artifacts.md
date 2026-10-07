@@ -22,7 +22,10 @@ untrusted Internet ingress.
 
 Persistent ephemeral sessions may explicitly create and read shared artifacts.
 Consumers must disclose that this persists original bytes independently of
-ephemeral transcripts. Memory-only harnesses reject artifact operations before
+ephemeral transcripts in user-facing documentation or tool guidance. The CLI
+paste upload notice is a short, transient progress indicator and need not repeat
+that disclosure; [artifact documentation](../docs/artifacts.md) explains paste
+retention. Memory-only harnesses reject artifact operations before
 persistent root access and perform no artifact cleanup. Availability is an
 explicit preflight before an expensive producer effect, not a reservation or
 proof that a later filesystem write will succeed.

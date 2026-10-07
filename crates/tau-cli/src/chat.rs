@@ -3360,7 +3360,6 @@ impl<'a> TerminalInputSession<'a> {
                         ),
                     );
                 } else {
-                    self.output.command_feedback("Uploading clipboard originals as shared artifacts (retained independently of session history); Ctrl-C cancels. References enter the prompt together after all uploads finish; the prompt is not submitted.");
                     self.ctx.paste_upload.start_content(
                         self.session_id.clone(),
                         id,
@@ -3380,7 +3379,6 @@ impl<'a> TerminalInputSession<'a> {
                         ),
                     );
                 } else {
-                    self.output.command_feedback("Uploading PNG paste as a shared artifact (retained independently of session history); Ctrl-C cancels. The prompt is not submitted.");
                     self.ctx.paste_upload.start_content(
                         self.session_id.clone(),
                         id,
@@ -3400,7 +3398,6 @@ impl<'a> TerminalInputSession<'a> {
                         ),
                     );
                 } else {
-                    self.output.command_feedback("Uploading paste as a shared artifact (retained independently of session history); Ctrl-C cancels.");
                     self.ctx.paste_upload.start(
                         self.session_id.clone(),
                         id,
