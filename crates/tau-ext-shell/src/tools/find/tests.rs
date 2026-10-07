@@ -129,7 +129,8 @@ fn find_rejects_non_positive_limit() {
 
 /// Ensures find reports only the requested number of matches while still
 /// detecting the sentinel match needed to add the user-visible limit
-/// notice.
+/// notice. UI match metadata must count the same limited records as the raw
+/// result, not the sentinel or notice lines.
 #[test]
 fn find_limit_bounds_collected_matches() {
     let tempdir = tempfile::TempDir::new().expect("tempdir");
@@ -151,7 +152,9 @@ fn find_limit_bounds_collected_matches() {
         ),
     ]);
 
-    let result = run_find(&args).expect("find").result;
+    let tool_output = run_find(&args).expect("find");
+    assert_eq!(tool_output.display.stats.matches, Some(1));
+    let result = tool_output.result;
     let CborValue::Map(entries) = &result else {
         panic!("expected result map");
     };

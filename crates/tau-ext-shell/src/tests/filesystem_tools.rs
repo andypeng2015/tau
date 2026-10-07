@@ -1532,6 +1532,8 @@ fn run_find_double_star_matches_top_level_files() {
     assert!(!output.contains("README.md"));
 }
 
+/// Nonempty find results retain their match count in both the raw result and UI
+/// metadata, instead of showing the count only when no files match.
 #[test]
 fn run_find_returns_matching_files() {
     let tempdir = TempDir::new().expect("tempdir");
@@ -1554,7 +1556,9 @@ fn run_find_returns_matching_files() {
             CborValue::Text(tempdir.path().display().to_string()),
         ),
     ]);
-    let result = run_find(&args).expect("find").result;
+    let tool_output = run_find(&args).expect("find");
+    assert_eq!(tool_output.display.stats.matches, Some(2));
+    let result = tool_output.result;
 
     assert!(cbor_map_field(&result, "path").is_none());
     assert!(cbor_map_field(&result, "pattern").is_none());

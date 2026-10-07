@@ -14,6 +14,9 @@ The real extension's nonzero-exit result retains `Error / 7` display metadata;
 signal and timeout producers likewise retain their distinct error labels while
 returning captured output as results. CLI terminal projection tests cover these
 labels in foreground results and error severity in background and wait rows.
+Real filesystem `find` tests require UI match counts to equal the raw result's
+returned-record count for ordinary, limited, and empty searches; limit notices
+and sentinel matches do not increase that count.
 
 The internal `replace` / provider-visible `edit` tests cover strict object
 shape, alias registration, snapshot-wide exact matching, all-or-nothing

@@ -217,6 +217,7 @@ fn render_find_output(request: FindRequest, matches: Vec<String>) -> ToolOutput 
 
     let mut display = crate::display::ok_display(request.display_args);
     display.stats = text_stats(&output_text);
+    display.stats.matches = Some(displayed.len() as u64);
     let mut result_entries = vec![
         (
             CborValue::Text("matches".to_owned()),
