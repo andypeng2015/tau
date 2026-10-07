@@ -1248,6 +1248,7 @@ fn message_initial_display_includes_message_payload() {
 
     assert_eq!(display.args, "agent-a");
     assert_eq!(display.status, ToolUseStatus::InProgress);
+    assert_eq!(display.stats, ToolUseStats::for_text("please check this"));
     assert_eq!(
         display.payload,
         Some(ToolUsePayload::Text {
@@ -1355,6 +1356,7 @@ fn finish_message_success_passes_recipient_display_without_message_payload() {
     assert_eq!(display.args, "agent-a");
     assert_eq!(display.status, ToolUseStatus::Success);
     assert_eq!(display.status_text, "ok");
+    assert_eq!(display.stats, ToolUseStats::for_text("please check this"));
     assert_eq!(display.payload, None);
 }
 
@@ -1395,7 +1397,58 @@ fn finish_message_error_passes_recipient_display_without_message_payload() {
     assert_eq!(display.args, "agent-a");
     assert_eq!(display.status, ToolUseStatus::Error);
     assert_eq!(display.status_text, "`message` must be a string");
+    assert_eq!(display.stats, ToolUseStats::default());
     assert_eq!(display.payload, None);
+}
+
+/// Pending and terminal headers count UTF-8 body bytes and logical lines, not
+/// recipient or encoded arguments, and never repeat the body on completion.
+#[test]
+fn message_display_counts_multiline_unicode_body() {
+    let call = message_call("&session/@agent-a", "héllo\n世界\n");
+    let expected = ToolUseStats {
+        lines: Some(2),
+        bytes: Some(14),
+        matches: None,
+    };
+    let pending = BuiltinState::default()
+        .initial_display(&call)
+        .expect("message display");
+    let success = message_success_display(&call.arguments);
+    let error = message_error_display(&call.arguments, "delivery failed");
+    for display in [pending, success.clone(), error.clone()] {
+        assert_eq!(display.args, "&session/@agent-a");
+        assert_eq!(display.stats, expected);
+    }
+    assert_eq!(success.payload, None);
+    assert_eq!(error.payload, None);
+}
+
+/// Incomplete or malformed arguments have no fabricated body size.
+#[test]
+fn message_display_omits_stats_without_text_body() {
+    for arguments in [
+        CborValue::Map(Vec::new()),
+        CborValue::Map(vec![(
+            CborValue::Text("message".to_owned()),
+            CborValue::Integer(1.into()),
+        )]),
+    ] {
+        let mut call = message_call("agent-a", "unused");
+        call.arguments = arguments;
+        let pending = BuiltinState::default()
+            .initial_display(&call)
+            .expect("message display");
+        assert_eq!(pending.stats, ToolUseStats::default());
+        assert_eq!(
+            message_success_display(&call.arguments).stats,
+            ToolUseStats::default()
+        );
+        assert_eq!(
+            message_error_display(&call.arguments, "invalid").stats,
+            ToolUseStats::default()
+        );
+    }
 }
 
 /// A valid recipient remains visible when other message arguments are missing,

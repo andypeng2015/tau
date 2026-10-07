@@ -196,6 +196,11 @@ impl BuiltinState {
         };
         Some(ToolUseState {
             args,
+            stats: if call.name.as_str() == MESSAGE_TOOL_NAME {
+                message_display_stats(&call.arguments)
+            } else {
+                ToolUseStats::default()
+            },
             status: ToolUseStatus::InProgress,
             status_text: status_text.to_owned(),
             payload,
@@ -1547,9 +1552,17 @@ fn message_display_args(arguments: &CborValue) -> String {
         .unwrap_or_default()
 }
 
+/// Count only the message body, using the shared text-statistics convention.
+fn message_display_stats(arguments: &CborValue) -> ToolUseStats {
+    tau_proto::cbor_text_field(arguments, "message")
+        .map(|text| ToolUseStats::for_text(&text))
+        .unwrap_or_default()
+}
+
 fn message_success_display(arguments: &CborValue) -> ToolUseState {
     ToolUseState {
         args: message_display_args(arguments),
+        stats: message_display_stats(arguments),
         status: ToolUseStatus::Success,
         status_text: "ok".to_owned(),
         ..Default::default()
@@ -1559,6 +1572,7 @@ fn message_success_display(arguments: &CborValue) -> ToolUseState {
 fn message_error_display(arguments: &CborValue, message: &str) -> ToolUseState {
     ToolUseState {
         args: message_display_args(arguments),
+        stats: message_display_stats(arguments),
         status: ToolUseStatus::Error,
         status_text: error_chip_text(message),
         ..Default::default()

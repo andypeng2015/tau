@@ -7477,6 +7477,50 @@ fn self_compaction_failure_and_rejection_reuse_their_tool_rows() {
     }
 }
 
+/// Message completion uses generic metadata to show recipient and body size
+/// alongside timing/status without repeating the delivered message.
+#[test]
+fn message_tool_completion_renders_recipient_and_body_stats() {
+    for (body, stats) in [("hello", "1L, 5B"), ("héllo\n世界\n", "2L, 14B")] {
+        let (_term, handle, vt) = setup(160, 24);
+        let mut renderer = EventRenderer::new(
+            handle.clone(),
+            tau_cli_term::CompletionData::new(),
+            cli_test_theme(),
+        );
+        renderer.handle_recorded_at(
+            &tool_started("message-call", "message", CborValue::Map(Vec::new())),
+            tau_proto::UnixMicros::new(1_000_000),
+        );
+        renderer.handle_recorded_at(
+            &Event::ToolResult(ToolResult {
+                presentation: Default::default(),
+                call_id: "message-call".into(),
+                tool_name: tau_proto::ToolName::new("message"),
+                tool_type: tau_proto::ToolType::Function,
+                result: CborValue::Null,
+                provider_content: Vec::new(),
+                kind: tau_proto::ToolResultKind::Final,
+                display: Some(tau_proto::ToolUseState {
+                    args: "&session/@agent-a".into(),
+                    stats: tau_proto::ToolUseStats::for_text(body),
+                    status_text: "ok".into(),
+                    ..Default::default()
+                }),
+                originator: tau_proto::PromptOriginator::User,
+            }),
+            tau_proto::UnixMicros::new(1_500_000),
+        );
+        sync(&handle);
+        let text = vt.screen_text(160).join("\n");
+        assert!(text.contains("&session/@agent-a"), "{text}");
+        assert!(text.contains(stats), "{text}");
+        assert!(text.contains("0s"), "{text}");
+        assert!(text.contains("ok"), "{text}");
+        assert!(!text.contains(body), "{text}");
+    }
+}
+
 /// Inter-session receiver rejection must retain its actionable fixed detail in
 /// the terminal's ordinary tool-error presentation.
 #[test]
