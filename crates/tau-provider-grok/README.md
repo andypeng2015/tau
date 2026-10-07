@@ -34,8 +34,13 @@ account.
   prefix through the same typed converter, sends the system instruction as
   first input on initial compact, or after the prior opaque item on
   re-compaction, and installs only the validated opaque item. Canceled, rejected,
-  malformed, and ambiguous replies install nothing and never cause an
-  automatic second paid summary request.
+  malformed, and unclassified replies install nothing and never select another
+  summary implementation. Proven request/body transport and absolute-deadline
+  failures before semantic acceptance return to Tau's bounded five-attempt
+  compaction scheduler. Raw receive bytes are not accepted output: one complete
+  validated opaque item is accepted only after the bounded unary body finishes.
+  No fallible protocol work follows that parse; final cancellation discards it
+  without retry.
 
 The caller supplies bounded Secret read/CAS callbacks; the
 crate opens no state or credential files. Production ownership must comply with

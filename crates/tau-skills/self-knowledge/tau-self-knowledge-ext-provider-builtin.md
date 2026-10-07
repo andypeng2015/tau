@@ -65,8 +65,10 @@ aliases default to function tools; other routes need explicit capability
 configuration. Native tool images are explicit opt-in and not live verified.
 Grok standalone compaction uses xAI's native opaque compact endpoint and replays
 its single encrypted item. OAuth compact entitlement and live fidelity remain
-unverified. A failed native attempt does not silently retry with a second paid
-summary call. No Fast/quota,
+unverified. Proven pre-output request/body transport and absolute-deadline
+failures use the bounded compaction scheduler. Unknown status/output failures
+remain terminal, and no native failure selects a second paid summary
+implementation. No Fast/quota,
 subscription-entitlement, free/unlimited or extra-usage safety promise exists.
 See `docs/providers.md` for the public client-ID caveat, pricing and partial-limit
 behavior. Never initiate login, live inference or paid traffic without consent.

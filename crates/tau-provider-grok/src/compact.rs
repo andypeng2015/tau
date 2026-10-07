@@ -1,10 +1,12 @@
-//! One-shot xAI opaque compaction, independent of streaming inference.
+//! One finite xAI opaque compaction attempt, independent of streaming
+//! inference.
 
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use tau_proto::{ContextItem, OpaqueProviderItem, ProviderTokenUsage, ValidatedCompactionWindow};
+use tau_provider::retry_policy::{RetryClass, RetryDecision};
 use tokio::runtime::Builder;
 use tokio::time::Instant;
 
@@ -22,7 +24,8 @@ pub struct Success {
     pub response_id: Option<String>,
 }
 
-/// One non-retryable native compaction attempt.
+/// One finite native compaction attempt; the caller owns bounded logical
+/// retries.
 pub enum Outcome {
     /// Validated output ready for the harness transaction.
     Completed(Box<Success>),
@@ -31,6 +34,23 @@ pub enum Outcome {
     /// A redacted failure; `dispatched` records whether paid work may have
     /// begun.
     Failed { dispatched: bool },
+    /// Proven transient failure before any complete semantic item was accepted.
+    Retryable {
+        /// Shared scheduler classification without remote error prose.
+        decision: RetryDecision,
+        /// Whether this request may have reached the backend.
+        dispatched: bool,
+    },
+}
+
+/// Private failure attribution before the sole complete-response parse.
+#[derive(Debug)]
+enum Failure {
+    /// Proven request/body transport or absolute deadline failure.
+    Transient(RetryDecision),
+    /// Configuration, known status rejection, resource bound, or invalid
+    /// output.
+    Terminal,
 }
 
 /// Submit once with no implicit HTTP retry and a bounded, cancelable response.
@@ -57,7 +77,9 @@ pub fn run(
     let mut response_observed = false;
     let url = format!("{}/responses/compact", base_url.trim_end_matches('/'));
     let result = runtime.block_on(async {
-        let client = network.client_for_without_retries(&url).map_err(|_| ())?;
+        let client = network
+            .client_for_without_retries(&url)
+            .map_err(|_| Failure::Terminal)?;
         let request = client
             .post(&url)
             .header("content-type", "application/json")
@@ -69,14 +91,15 @@ pub fn run(
         let deadline = Instant::now() + DEADLINE;
         let mut response = wait(request.send(), deadline, is_canceled)
             .await?
-            .map_err(|_| ())?;
+            .map_err(|error| request_failure(network, &url, &error))?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let mut bytes = Vec::new();
             while bytes.len() < MAX_ERROR_BODY_BYTES {
                 let chunk = wait(response.chunk(), deadline, is_canceled)
-                    .await?
-                    .map_err(|_| ())?;
+                    .await
+                    .map_err(|_| Failure::Terminal)?
+                    .map_err(|_| Failure::Terminal)?;
                 let Some(chunk) = chunk else { break };
                 if chunk.len() > MAX_ERROR_BODY_BYTES.saturating_sub(bytes.len()) {
                     break;
@@ -85,26 +108,30 @@ pub fn run(
             }
             diagnostics.rejected(status, &bytes);
             response_observed = true;
-            return Err(());
+            return Err(Failure::Terminal);
         }
         let mut bytes = Vec::new();
         loop {
             let chunk = wait(response.chunk(), deadline, is_canceled)
                 .await?
-                .map_err(|_| ())?;
+                .map_err(|error| request_failure(network, &url, &error))?;
             let Some(chunk) = chunk else { break };
             if chunk.len() > MAX_BODY_BYTES.saturating_sub(bytes.len()) {
-                return Err(());
+                return Err(Failure::Terminal);
             }
             bytes.extend_from_slice(&chunk);
         }
-        let parsed = parse(&bytes);
+        // Raw receive bytes are not accepted semantic output. Only this
+        // complete, bounded response parse can accept the one opaque item.
+        // No fallible protocol work follows accepted output; cancellation below
+        // may discard it but can never turn it into another paid dispatch.
+        let parsed = parse(&bytes).map_err(|_| Failure::Terminal);
         diagnostics.response(&bytes, parsed.is_ok());
         response_observed = true;
         parsed
     });
     let outcome = classify(result, is_canceled(), dispatched);
-    if matches!(outcome, Outcome::Failed { .. }) && !response_observed {
+    if matches!(outcome, Outcome::Failed { .. } | Outcome::Retryable { .. }) && !response_observed {
         diagnostics.failed("transport_or_timeout");
     }
     diagnostics.finish(
@@ -115,13 +142,36 @@ pub fn run(
 }
 
 /// Give cancellation precedence over completed or ambiguous provider work.
-fn classify(result: Result<Success, ()>, canceled: bool, dispatched: bool) -> Outcome {
+fn classify(result: Result<Success, Failure>, canceled: bool, dispatched: bool) -> Outcome {
     if canceled {
         return Outcome::Canceled;
     }
     match result {
         Ok(success) => Outcome::Completed(Box::new(success)),
-        Err(()) => Outcome::Failed { dispatched },
+        Err(Failure::Terminal) => Outcome::Failed { dispatched },
+        Err(Failure::Transient(decision)) => Outcome::Retryable {
+            decision,
+            dispatched,
+        },
+    }
+}
+
+/// Preserve positive transport evidence, not request-builder or decoding
+/// errors.
+fn request_failure(
+    network: &tau_provider::OutboundNetworkPolicy,
+    target: &str,
+    error: &reqwest::Error,
+) -> Failure {
+    if error.is_builder() || error.is_decode() {
+        return Failure::Terminal;
+    }
+    let error = network.reqwest_error(target, tau_provider::OutboundPhase::Request, error);
+    match error.kind() {
+        tau_provider::OutboundErrorKind::Transport | tau_provider::OutboundErrorKind::Deadline => {
+            Failure::Transient(RetryDecision::new(RetryClass::Transport))
+        }
+        _ => Failure::Terminal,
     }
 }
 
@@ -130,14 +180,15 @@ async fn wait<T>(
     future: impl std::future::Future<Output = T>,
     deadline: Instant,
     is_canceled: &mut impl FnMut() -> bool,
-) -> Result<T, ()> {
+) -> Result<T, Failure> {
     tokio::pin!(future);
     loop {
         tokio::select! {
             result = &mut future => return Ok(result),
-            () = tokio::time::sleep_until(deadline) => return Err(()),
+            () = tokio::time::sleep_until(deadline) =>
+                return Err(Failure::Transient(RetryDecision::new(RetryClass::Transport))),
             () = tokio::time::sleep(Duration::from_millis(250)) => {
-                if is_canceled() { return Err(()); }
+                if is_canceled() { return Err(Failure::Terminal); }
             }
         }
     }

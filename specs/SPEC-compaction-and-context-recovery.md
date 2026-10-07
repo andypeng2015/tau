@@ -319,8 +319,9 @@ It preserves the owed resume ancestry and post-cut suffix. Only successful
 publication clears the failure chain; unknown/post-progress failures never
 gain this advancing-cut authority.
 Post-progress, deterministic, canceled, interrupted, and historical unclassified
-failures retain explicit-only recovery. Grok's unary compactor currently lacks
-reliable transient classification and therefore retains conservative failures.
+failures retain explicit-only recovery. Grok's unary compactor retries only
+proven request/body transport or absolute-deadline failures before accepting its
+one complete opaque item. Unknown status/body/shape failures remain terminal.
 When a failed transaction carries `resume_through`, that watermark must be an
 ancestor of the successor watermark; a sibling branch with superficial
 nonemptiness is invalid. Only a failed standalone transaction may be

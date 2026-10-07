@@ -67,3 +67,40 @@ fn final_cancellation_wins_after_successful_parse() {
         Outcome::Canceled
     ));
 }
+
+/// An absolute deadline before semantic acceptance is retryable, but sticky
+/// cancellation still wins and unknown failure attribution never authorizes
+/// another paid request.
+#[test]
+fn pre_output_deadline_is_retryable_without_overriding_cancellation() {
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let failure = runtime
+        .block_on(wait(
+            std::future::pending::<()>(),
+            Instant::now() + Duration::from_millis(5),
+            &mut || false,
+        ))
+        .expect_err("absolute deadline");
+    assert!(
+        matches!(classify(Err(failure), false, true), Outcome::Retryable {
+        decision, dispatched: true,
+    } if decision.class == RetryClass::Transport)
+    );
+    assert!(matches!(
+        classify(
+            Err(Failure::Transient(RetryDecision::new(
+                RetryClass::Transport
+            ))),
+            true,
+            true
+        ),
+        Outcome::Canceled
+    ));
+    assert!(matches!(
+        classify(Err(Failure::Terminal), false, true),
+        Outcome::Failed { dispatched: true }
+    ));
+}

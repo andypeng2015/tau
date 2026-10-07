@@ -681,11 +681,56 @@ fn grok_native_compact_rejects_non_compaction_output_without_fallback() {
     let rejected = "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
     let (outcome, _) = run_loopback_selected_attempt(&prompt, &model, Some(&native), rejected);
     assert!(matches!(outcome, PromptAttemptOutcome::Terminal { .. }));
-    // The server may have charged for work before dropping the response. A
-    // second request (including summary fallback) must not be dispatched.
+    // Raw body bytes never pass the unary parser before complete receipt.
+    // Reqwest reports incomplete bodies as decoding failures. Preserve that
+    // conservative category rather than guessing from the raw bytes.
     let ambiguous = "HTTP/1.1 200 OK\r\ncontent-length: 1000\r\nconnection: close\r\n\r\n{}";
     let (outcome, _) = run_loopback_selected_attempt(&prompt, &model, Some(&native), ambiguous);
     assert!(matches!(outcome, PromptAttemptOutcome::Terminal { .. }));
+}
+
+/// Typed request transport reaches the shared bounded scheduler. Decoding and
+/// unknown-status failures remain terminal even with complete-looking raw JSON.
+#[test]
+fn grok_native_compact_transport_preserves_pre_output_retry_evidence() {
+    let mut prompt = crate::openai_tests::prompt();
+    prompt.operation = tau_proto::PromptOperation::StandaloneCompaction;
+    prompt
+        .context
+        .blocks
+        .push(tau_proto::ContextBlock::UserInput(
+            tau_proto::UserInputBlock {
+                items: vec![tau_proto::ContextItem::CompactionTrigger],
+            },
+        ));
+    let model: ResponsesModel =
+        serde_json::from_value(serde_json::json!({"id":"grok-4.7","context_window":500000}))
+            .expect("model");
+    let native: crate::GrokModel =
+        serde_json::from_value(serde_json::json!({"id":"grok-4.7","context_window":500000}))
+            .expect("native");
+    let body = r#"{"object":"response.compaction","id":"cmp_1","output":[{"type":"compaction","id":"cmp_1","encrypted_content":"sealed"}]}"#;
+    let (outcome, _) = run_loopback_selected_attempt(&prompt, &model, Some(&native), "");
+    assert!(matches!(outcome, PromptAttemptOutcome::Retry {
+        decision, progress, backend_reached: true, ..
+    } if decision.class == tau_provider::retry_policy::RetryClass::Transport
+        && !progress.has_timed_semantic_output && progress.output_items.is_empty()));
+    let incomplete = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len() + 1
+    );
+    let (outcome, _) = run_loopback_selected_attempt(&prompt, &model, Some(&native), &incomplete);
+    assert!(
+        matches!(outcome, PromptAttemptOutcome::Terminal { .. }),
+        "decoding failure stays conservative even with complete-looking raw JSON"
+    );
+    let rejected =
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 1000\r\nconnection: close\r\n\r\n{}";
+    let (outcome, _) = run_loopback_selected_attempt(&prompt, &model, Some(&native), rejected);
+    assert!(
+        matches!(outcome, PromptAttemptOutcome::Terminal { .. }),
+        "known status rejection must not turn into a transport retry when its body breaks"
+    );
 }
 
 /// Cancellation just after a complete native reply must not turn the paid

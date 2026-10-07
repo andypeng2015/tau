@@ -52,6 +52,17 @@ loopback HTTP or controlled clocks. Authentication-origin changes, retry changes
 or credential-storage integration require revisiting these boundaries and their
 focused tests.
 
+Native unary compaction makes one HTTP request per finite attempt, with
+transparent retries and redirects disabled. Positively typed transport or
+absolute deadline failures may return to the caller's bounded logical scheduler
+only before semantic acceptance. The complete bounded response is parsed once;
+raw body bytes confer no acceptance, and no fallible protocol work follows a
+successful parse. Sticky final cancellation discards the accepted item without
+retry. Unknown HTTP rejection, invalid output, builder and decoding errors
+(including incomplete bodies classified as decoding errors) remain terminal.
+This does not change the explicit no-retry rule for ambiguous OAuth refreshes or
+permit a different paid summary fallback.
+
 Model discovery joins the fixed public `https://api.x.ai/v1/models` and
 `https://api.x.ai/v1/language-models` endpoints by exact canonical ID using one
 caller-supplied bearer generation. Each request has its own 30-second deadline,

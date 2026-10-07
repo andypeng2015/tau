@@ -726,6 +726,19 @@ fn run_grok_compact(
             },
             backend_reached: true,
         },
+        GrokCompactOutcome::Retryable {
+            decision,
+            dispatched,
+        } => PromptAttemptOutcome::Retry {
+            decision,
+            progress: tau_provider_responses::AttemptProgress {
+                output_items: Vec::new(),
+                response_bytes_received: 0,
+                has_timed_semantic_output: false,
+            },
+            backend_reached: dispatched,
+            canonical_unauthorized: false,
+        },
         GrokCompactOutcome::Failed { dispatched } => invalid_compaction(
             agent_prompt_id,
             prompt,

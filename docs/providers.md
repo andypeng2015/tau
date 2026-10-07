@@ -155,8 +155,10 @@ does not permanently disable automatic compaction: a fresh ordinary inference
 terminal may authorize another transaction, including a canonical no-output
 context-window rejection. No queue-polling or restart-only retry loop is allowed.
 Failures after accepted semantic output and historical unclassified failures
-require explicit recovery. Grok's unary native compactor currently lacks reliable
-transient classification and retains conservative failure handling.
+require explicit recovery. Grok's unary native compactor uses the same bounded
+scheduler for proven request/body transport and absolute-deadline failures before
+accepting its complete opaque item. Unknown HTTP/status/output failures remain
+terminal; native failure never selects a different paid summary implementation.
 The CLI labels compact request input separately from the transaction-owned
 continuation's full context size; a preserved suffix makes a reduction ratio
 between those values misleading.
