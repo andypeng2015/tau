@@ -462,6 +462,8 @@ fn terminal_defaults(finished: &tau_proto::ProviderResponseFinished) -> bool {
         && finished.estimated_api_cost_increment.is_none()
 }
 
+/// Verify the sole production accepted start retains the concrete child and
+/// prompt statistics without retaining prompt text in its terminal display.
 fn assert_durable_agent_start(
     snapshot: &DurableSessionSnapshot,
     identities: &Identities,
@@ -508,6 +510,21 @@ fn assert_durable_agent_start(
                             &identities.main,
                             &identities.worker,
                         )
+                        // Inspect the accepted-event producer, not just its
+                        // display helper: retained stats describe the fixture's
+                        // one-line prompt without exposing its body.
+                        && result.display.as_ref().is_some_and(|display| {
+                            display.args.is_empty()
+                                && display.info_chips == [format!("@{}", identities.worker)]
+                                && display.stats == tau_proto::ToolUseStats {
+                                    matches: None,
+                                    lines: Some(1),
+                                    bytes: Some(super::WORKER_PROMPT.len() as u64),
+                                }
+                                && display.status == tau_proto::ToolUseStatus::Success
+                                && display.status_text == "ok"
+                                && display.payload.is_none()
+                        })
             )
             .then_some(index)
         })
