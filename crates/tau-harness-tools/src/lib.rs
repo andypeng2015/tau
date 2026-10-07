@@ -187,10 +187,13 @@ impl BuiltinState {
                 tau_proto::PROGRESS_INDICATOR_TEXT,
                 None,
             ),
-            CANCEL_TOOL_NAME => match parse_cancel_args(&call.arguments) {
-                Ok(target) => (target.to_string(), tau_proto::PROGRESS_INDICATOR_TEXT, None),
-                Err(_) => (String::new(), tau_proto::PROGRESS_INDICATOR_TEXT, None),
-            },
+            CANCEL_TOOL_NAME => {
+                return Some(cancel_display(
+                    &call.arguments,
+                    ToolUseStatus::InProgress,
+                    tau_proto::PROGRESS_INDICATOR_TEXT,
+                ));
+            }
             STATUS_TOOL_NAME => return status::initial_display(&call.arguments),
             _ => return None,
         };
@@ -1521,24 +1524,45 @@ impl BuiltinTools {
             Ok(())
         });
         match result {
-            Ok(()) => host.finish_tool_with_result(
+            Ok(()) => host.finish_tool_with_cbor_result(
                 conversation_id,
                 call_id,
                 visible_tool_name,
                 call.tool_type,
-                "Tool cancellation requested".to_owned(),
-                None,
+                CborValue::Text("Tool cancellation requested".to_owned()),
+                Some(cancel_display(
+                    &call.arguments,
+                    ToolUseStatus::Success,
+                    "ok",
+                )),
             ),
-            Err(message) => host.finish_tool_with_error(
-                conversation_id,
-                call_id,
-                visible_tool_name,
-                call.tool_type,
-                message,
-                Some(call.arguments.clone()),
-            ),
+            Err(message) => {
+                let display = cancel_display(&call.arguments, ToolUseStatus::Error, &message);
+                host.finish_tool_with_display_error(
+                    conversation_id,
+                    call_id,
+                    visible_tool_name,
+                    call.tool_type,
+                    message,
+                    Some(call.arguments.clone()),
+                    Some(display),
+                );
+            }
         }
         Ok(())
+    }
+}
+
+/// Retain only the parsed cancellation target, never the raw argument payload.
+/// Success acknowledges a request; it does not claim the target has terminated.
+fn cancel_display(arguments: &CborValue, status: ToolUseStatus, status_text: &str) -> ToolUseState {
+    ToolUseState {
+        args: parse_cancel_args(arguments)
+            .map(|target| target.to_string())
+            .unwrap_or_default(),
+        status,
+        status_text: status_text.to_owned(),
+        ..Default::default()
     }
 }
 
