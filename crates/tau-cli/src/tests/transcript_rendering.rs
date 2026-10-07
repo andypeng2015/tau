@@ -1033,6 +1033,7 @@ fn agent_context_initialization_is_visible_only_in_selected_agent_transcript() {
                 argument_hint: None,
             }],
             agents_files: vec![tau_proto::DiscoveryAgentsFileSummary {
+                display_path: None,
                 file_path: path.into(),
                 lines: 6,
                 bytes: 550,

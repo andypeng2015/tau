@@ -1970,7 +1970,14 @@ pub(crate) fn agent_context_initialized_block(
         text.push(info, "\nAGENTS.md:");
         for file in &initialized.agents_files {
             text.push(info, "\n  ");
-            text.push(path_style, file.file_path.display().to_string());
+            text.push(
+                path_style,
+                file.display_path
+                    .as_ref()
+                    .unwrap_or(&file.file_path)
+                    .display()
+                    .to_string(),
+            );
             text.push(
                 stats_style,
                 format!(

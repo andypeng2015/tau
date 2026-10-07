@@ -1255,6 +1255,7 @@ fn agent_context_initialization_skill_stats_measure_prompt_description() {
             },
         ],
         agents_files: vec![tau_proto::DiscoveryAgentsFileSummary {
+            display_path: None,
             file_path: "/empty/AGENTS.md".into(),
             lines: 0,
             bytes: 0,

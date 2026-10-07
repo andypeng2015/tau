@@ -3397,6 +3397,7 @@ fn rendered_prompt_with_seeded_agents_md_includes_synthetic_agents_message() {
         .context_discovery
         .agents_files
         .push(DiscoveredAgentsFile {
+            display_path: None,
             source_id: crate::test_connection_id("shell"),
             file_path: td.path().join("AGENTS.md"),
             content: "seeded AGENTS instructions\n".to_owned(),

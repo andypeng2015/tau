@@ -3115,6 +3115,7 @@ fn cold_attach_suppresses_routine_snapshots_and_announces_session_once() {
                 agent_initialization_id: "init-a".parse().expect("valid initialization id"),
                 listed_skills: Vec::new(),
                 agents_files: vec![tau_proto::DiscoveryAgentsFileSummary {
+                    display_path: None,
                     file_path: "/tmp/AGENTS.md".into(),
                     lines: 1,
                     bytes: 10,

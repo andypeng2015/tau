@@ -7,8 +7,14 @@ use std::{collections as path_std_collections, io as path_std_io};
 
 const MAX_AGENTS_FILE_BYTES: u64 = 1024 * 1024;
 
+/// Sampled instructions with separate canonical identity and discovery
+/// spelling.
 pub(crate) struct DiscoveredAgentsFile {
+    /// Resolved identity used for deduplication and model context.
     pub(crate) file_path: PathBuf,
+    /// Original discovered path, retained only for user-facing display.
+    pub(crate) display_path: PathBuf,
+    /// Bounded contents read through the discovered path.
     pub(crate) content: String,
 }
 
@@ -41,11 +47,17 @@ pub(crate) fn discover_agents_files_from_roots(
                 continue;
             }
 
-            let file_path = candidate.canonicalize().unwrap_or(candidate);
+            let file_path = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone());
             if !seen.insert(file_path.clone()) {
                 continue;
             }
-            discovered.push(DiscoveredAgentsFile { file_path, content });
+            discovered.push(DiscoveredAgentsFile {
+                file_path,
+                display_path: candidate,
+                content,
+            });
         }
     }
 

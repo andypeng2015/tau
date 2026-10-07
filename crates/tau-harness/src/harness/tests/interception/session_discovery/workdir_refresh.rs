@@ -650,6 +650,7 @@ fn initialize_source(
                 user_candidates: vec![user.clone()],
                 retained_user_state: vec![1, 2, 3],
                 user_agents_files: vec![tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: user.file_path.with_file_name("AGENTS.user.md"),
                     content: format!("user instructions {source}"),
                 }],
@@ -660,10 +661,12 @@ fn initialize_source(
             skills: vec![user.clone(), project.clone()],
             agents_files: vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: user.file_path.with_file_name("AGENTS.user.md"),
                     content: format!("user instructions {source}"),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: project.file_path.with_file_name("AGENTS.project.md"),
                     content: format!("old project instructions {source}"),
                 },

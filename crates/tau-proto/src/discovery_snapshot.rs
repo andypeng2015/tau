@@ -67,6 +67,9 @@ pub struct DiscoverySkillCandidate {
 pub struct DiscoveryAgentsFile {
     /// Absolute path to the AGENTS.md file.
     pub file_path: PathBuf,
+    /// Original discovery path for UI display only; omission uses `file_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_path: Option<PathBuf>,
     /// Complete bounded file contents sampled by the discovery owner.
     pub content: String,
 }
@@ -113,6 +116,9 @@ pub struct DiscoveryEffectiveSkill {
 pub struct DiscoveryAgentsFileSummary {
     /// Absolute path to the AGENTS.md file.
     pub file_path: PathBuf,
+    /// Original discovery path for UI display only; omission uses `file_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_path: Option<PathBuf>,
     /// Number of logical text lines in the sampled contents.
     pub lines: u64,
     /// Number of bytes in the sampled contents.

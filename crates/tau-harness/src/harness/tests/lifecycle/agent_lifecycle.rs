@@ -105,6 +105,7 @@ fn agents_context_is_injected_when_agent_is_created() {
         .context_discovery
         .agents_files
         .push(DiscoveredAgentsFile {
+            display_path: None,
             source_id: crate::test_connection_id(tools_connection_id.clone()),
             file_path: PathBuf::from("/repo/AGENTS.md"),
             content: "# Root\n- root rule\n".to_owned(),
@@ -113,6 +114,7 @@ fn agents_context_is_injected_when_agent_is_created() {
         .context_discovery
         .agents_files
         .push(DiscoveredAgentsFile {
+            display_path: None,
             source_id: crate::test_connection_id(tools_connection_id.clone()),
             file_path: PathBuf::from("/repo/pkg/AGENTS.md"),
             content: "# Package\n- package rule\n".to_owned(),

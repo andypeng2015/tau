@@ -609,7 +609,8 @@ fn context_skill_completion_follows_selected_agent_projection() {
 /// The initialization UI must use real line breaks, expose only advertised
 /// skill names, aggregate other skills, and put each bootstrap path on its own
 /// concise line with prompt-context size statistics but without leaking skill
-/// descriptions.
+/// descriptions. Original discovery paths replace resolved symlink targets;
+/// ordinary summaries without display metadata keep their existing paths.
 #[test]
 fn agent_context_initialization_summary_is_concise_and_literal() {
     let advertised = tau_proto::DiscoveryEffectiveSkill {
@@ -634,11 +635,13 @@ fn agent_context_initialization_summary_is_concise_and_literal() {
         listed_skills: vec![advertised],
         agents_files: vec![
             tau_proto::DiscoveryAgentsFileSummary {
-                file_path: "/home/dpc/.config/agents/AGENTS.md".into(),
+                display_path: Some("/home/dpc/.config/agents/AGENTS.md".into()),
+                file_path: "/home/dpc/nix/dot/.config/agents/AGENTS.md".into(),
                 lines: 10,
                 bytes: 100,
             },
             tau_proto::DiscoveryAgentsFileSummary {
+                display_path: None,
                 file_path: "/repo/AGENTS.md".into(),
                 lines: 20,
                 bytes: 200,
@@ -739,6 +742,7 @@ fn agent_context_initialization_event_aggregates_session_skills() {
                 .expect("test identifier must be valid"),
             listed_skills: vec![skill("advertised")],
             agents_files: vec![tau_proto::DiscoveryAgentsFileSummary {
+                display_path: None,
                 file_path: "/repo/AGENTS.md".into(),
                 lines: 20,
                 bytes: 200,
@@ -785,6 +789,7 @@ fn catch_up_agent_context_initialization_waits_for_agent_selection() {
                 .expect("test identifier must be valid"),
             listed_skills: Vec::new(),
             agents_files: vec![tau_proto::DiscoveryAgentsFileSummary {
+                display_path: None,
                 file_path: "/restored/AGENTS.md".into(),
                 lines: 6,
                 bytes: 550,

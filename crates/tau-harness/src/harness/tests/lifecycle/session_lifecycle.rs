@@ -82,6 +82,7 @@ fn resumed_session_init_does_not_reinject_agents_context() {
         .context_discovery
         .agents_files
         .push(DiscoveredAgentsFile {
+            display_path: None,
             source_id: crate::test_connection_id(tools_connection_id.clone()),
             file_path: PathBuf::from("/repo/AGENTS.md"),
             content: format!("# Root\n- {marker}\n"),

@@ -925,6 +925,7 @@ fn system_prompt_excludes_disable_model_invocation_skills() {
 #[test]
 fn render_effective_prompt_wraps_system_and_agents_context() {
     let agents = [DiscoveredAgentsFile {
+        display_path: None,
         source_id: crate::test_connection_id("core-shell"),
         file_path: "/repo/AGENTS.md".into(),
         content: "Read the docs.".to_owned(),

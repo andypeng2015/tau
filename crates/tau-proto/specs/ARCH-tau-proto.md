@@ -1,5 +1,9 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 11.1 adds optional UI-only original discovery paths to AGENTS file
+declarations and initialization summaries. Omission falls back to the resolved
+file path; identity, deduplication, and model-visible instructions are unchanged.
+
 Protocol 11.0 adds typed exhausted-pre-output transient compaction failure
 authority to provider terminals and durable standalone failures. Configured
 peers require compatible rebuilds; historical unclassified failures retain

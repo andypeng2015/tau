@@ -56,6 +56,7 @@ impl CapturedScope {
             .into_iter()
             .map(|file| DiscoveryAgentsFile {
                 file_path: file.file_path,
+                display_path: Some(file.display_path),
                 content: file.content,
             })
             .collect();

@@ -2,6 +2,8 @@
 
 use super::*;
 
+/// Ordinary discovery retains its original spelling as well as canonical
+/// identity.
 #[test]
 fn discover_agents_files_walks_ancestor_chain_in_order() {
     let tempdir = TempDir::new().expect("tempdir");
@@ -27,6 +29,7 @@ fn discover_agents_files_walks_ancestor_chain_in_order() {
 
     let discovered = discover_agents_files_from(&nested);
     assert_eq!(discovered.len(), 4);
+    assert_eq!(discovered[0].display_path, root_agents);
     assert_eq!(
         discovered[0].file_path,
         root_agents.canonicalize().expect("canonical root")
@@ -53,6 +56,8 @@ fn discover_agents_files_walks_ancestor_chain_in_order() {
     assert!(discovered[3].content.contains("rule zeta"));
 }
 
+/// Symlinked instruction files display their discovery path without losing
+/// resolved identity.
 #[test]
 fn discover_agents_files_follows_symlinked_candidates() {
     // AGENTS.md files are trusted prompt input. Tau follows symlinks here so
@@ -66,13 +71,14 @@ fn discover_agents_files_follows_symlinked_candidates() {
     fs::write(root.join("AGENTS.good.md"), "# Good\n").expect("write good agents");
     symlink(&shared, root.join("AGENTS.md")).expect("symlink agents");
 
-    let discovered = discover_agents_files_from_roots(vec![root]);
+    let discovered = discover_agents_files_from_roots(vec![root.clone()]);
     assert_eq!(discovered.len(), 2);
     assert_eq!(
         discovered[0].file_path,
         shared.canonicalize().expect("canonical shared")
     );
     assert!(discovered[0].content.contains("linked rule"));
+    assert_eq!(discovered[0].display_path, root.join("AGENTS.md"));
     assert!(discovered[1].file_path.ends_with("AGENTS.good.md"));
 }
 
@@ -91,6 +97,10 @@ fn discover_agents_files_follows_symlinked_agent_roots() {
 
     let discovered = discover_agents_files_from_roots(vec![repo.join(".agents.local")]);
     assert_eq!(discovered.len(), 1);
+    assert_eq!(
+        discovered[0].display_path,
+        repo.join(".agents.local/AGENTS.md")
+    );
     assert!(discovered[0].content.contains("linked root"));
 }
 

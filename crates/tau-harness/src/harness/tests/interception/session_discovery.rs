@@ -101,14 +101,17 @@ fn context_role_policy_freezes_winners_and_independent_agents_files() {
             vec![restricted, shared],
             vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: tmp.path().join("AGENTS.md"),
                     content: "common instructions".to_owned(),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: tmp.path().join("AGENTS.other.md"),
                     content: "---\nonly-role-groups: [actual-context-group]\n---\nother-only instructions".to_owned(),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: tmp.path().join("AGENTS.invalid.md"),
                     content: "---\nonly-roles: invalid\n---\nrecovered instructions".to_owned(),
                 },
@@ -697,10 +700,12 @@ fn invalid_and_duplicate_items_are_omitted_without_rejecting_valid_replacement()
             ],
             vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: agents.clone(),
                     content: "first".to_owned(),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: canonical_duplicate,
                     content: "duplicate".to_owned(),
                 },
@@ -730,6 +735,48 @@ fn invalid_and_duplicate_items_are_omitted_without_rejecting_valid_replacement()
     );
 }
 
+/// Display metadata must survive validation without changing canonical
+/// deduplication or model-visible instruction paths.
+#[test]
+fn agents_display_paths_preserve_canonical_identity_and_prompt() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = quiet_provider_harness(tmp.path()).expect("harness");
+    let resolved = tmp.path().join("resolved/AGENTS.md");
+    std::fs::create_dir(resolved.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&resolved, "resolved instructions").expect("write");
+    let original = tmp.path().join("logical/AGENTS.md");
+    h.apply_session_discovery_snapshot(
+        &crate::test_connection_id("source"),
+        snapshot(
+            vec![],
+            vec![
+                tau_proto::DiscoveryAgentsFile {
+                    file_path: resolved.clone(),
+                    display_path: Some(original.clone()),
+                    content: "resolved instructions".to_owned(),
+                },
+                tau_proto::DiscoveryAgentsFile {
+                    file_path: resolved.clone(),
+                    display_path: None,
+                    content: "duplicate instructions".to_owned(),
+                },
+            ],
+        ),
+    );
+    let files = &h.prompt_coordination.context_discovery.agents_files;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].display_path.as_ref(), Some(&original));
+    assert_eq!(
+        files[0].file_path,
+        resolved.canonicalize().expect("canonical")
+    );
+    let prompt = crate::prompt::render_agents_context_message(files.iter());
+    assert!(prompt.contains(&resolved.display().to_string()));
+    assert!(!prompt.contains(&original.display().to_string()));
+    assert!(prompt.contains("resolved instructions"));
+    assert!(!prompt.contains("duplicate instructions"));
+}
+
 /// AGENTS.md ordering follows the complete producer snapshot and an empty
 /// replacement clears the source.
 #[test]
@@ -748,6 +795,7 @@ fn agents_files_keep_declared_order_and_empty_snapshot_removes_them() {
         snapshot(
             vec![],
             vec![tau_proto::DiscoveryAgentsFile {
+                display_path: None,
                 file_path: nested.clone(),
                 content: "old nested".to_owned(),
             }],
@@ -759,10 +807,12 @@ fn agents_files_keep_declared_order_and_empty_snapshot_removes_them() {
             vec![],
             vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: broad.clone(),
                     content: "broad".to_owned(),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: nested.clone(),
                     content: "nested".to_owned(),
                 },
@@ -1450,6 +1500,7 @@ fn oversized_startup_snapshot_replacement_fails_activation() {
     .expect("park startup snapshot");
     let mut oversized = snapshot(Vec::new(), Vec::new());
     oversized.agents_files.push(tau_proto::DiscoveryAgentsFile {
+        display_path: None,
         file_path: tmp.path().join("AGENTS.md"),
         content: "x".repeat(crate::harness::MAX_EXTENSION_ACTIVATION_BYTES),
     });
@@ -1707,10 +1758,12 @@ fn configured_snapshot_omits_items_beyond_all_discovery_bounds() {
             Vec::new(),
             vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: oversized_agents,
                     content: "x".repeat(super::super::super::MAX_DISCOVERY_AGENTS_FILE_BYTES + 1),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: accepted_agents,
                     content: "accepted".to_owned(),
                 },

@@ -1952,6 +1952,7 @@ impl Harness {
         let agents_files = filtered_agents_files
             .iter()
             .map(|file| tau_proto::DiscoveryAgentsFileSummary {
+                display_path: file.display_path.clone(),
                 file_path: file.file_path.clone(),
                 lines: file.content.lines().count() as u64,
                 bytes: file.content.len() as u64,

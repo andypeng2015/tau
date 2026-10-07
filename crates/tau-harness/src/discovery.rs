@@ -50,7 +50,12 @@ pub(crate) struct DiscoveredSkill {
 /// One AGENTS.md file discovered by an extension.
 #[derive(Clone)]
 pub(crate) struct DiscoveredAgentsFile {
+    /// Extension owning the sampled instructions.
     pub(crate) source_id: tau_proto::ConnectionId,
+    /// Canonical identity used by validation and model context.
     pub(crate) file_path: PathBuf,
+    /// Optional discovery spelling used only by the UI.
+    pub(crate) display_path: Option<PathBuf>,
+    /// Bounded sampled instruction contents.
     pub(crate) content: String,
 }

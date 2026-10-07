@@ -41,10 +41,12 @@ fn context_role_preview_uses_requested_role_for_skills_and_agents() {
             }],
             agents_files: vec![
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: td.path().join("AGENTS.requested.md"),
                     content: format!("---\nonly-roles: [{requested}]\n---\nREQUESTED BOOTSTRAP"),
                 },
                 tau_proto::DiscoveryAgentsFile {
+                    display_path: None,
                     file_path: td.path().join("AGENTS.selected.md"),
                     content: format!("---\nonly-roles: [{selected}]\n---\nSELECTED BOOTSTRAP"),
                 },

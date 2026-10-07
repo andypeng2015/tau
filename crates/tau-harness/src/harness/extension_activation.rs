@@ -566,6 +566,11 @@ impl Harness {
                 .file_path
                 .as_os_str()
                 .len()
+                .saturating_add(
+                    file.display_path
+                        .as_ref()
+                        .map_or(0, |path| path.as_os_str().len()),
+                )
                 .saturating_add(file.content.len());
             if MAX_DISCOVERY_SNAPSHOT_BYTES < accepted_bytes.saturating_add(item_bytes) {
                 self.emit_info_important(&format!(
@@ -605,6 +610,7 @@ impl Harness {
             validated_files.push(DiscoveredAgentsFile {
                 source_id: source_id.clone(),
                 file_path: path,
+                display_path: file.display_path.filter(|path| path.is_absolute()),
                 content: file.content,
             });
         }
