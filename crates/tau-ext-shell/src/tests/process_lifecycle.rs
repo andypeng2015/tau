@@ -1773,6 +1773,8 @@ fn shell_tool_reports_signal_termination_details() {
     assert!(cbor_map_field(&output.result, "status").is_none());
 }
 
+/// Nonzero shell exits still return captured output as a result, with an error
+/// descriptor that consumers must not interpret as successful execution.
 #[test]
 fn shell_tool_reports_failures_with_details() {
     let (mut reader, mut writer) = spawn_extension();
@@ -1800,6 +1802,9 @@ fn shell_tool_reports_failures_with_details() {
         panic!("expected tool result");
     };
     assert_eq!(result.tool_name, SHELL_TOOL_NAME);
+    let display = result.display.as_ref().expect("failed shell display");
+    assert_eq!(display.status, ToolUseStatus::Error);
+    assert_eq!(display.status_text, "7");
     assert_eq!(cbor_int_field(&result.result, "status"), Some(7));
     assert_eq!(
         cbor_map_text(&result.result, "termination_reason"),

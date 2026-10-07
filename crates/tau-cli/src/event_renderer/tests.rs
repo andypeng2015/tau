@@ -1453,7 +1453,7 @@ fn large_diff_terminals_retain_one_payload_with_exact_legacy_header() {
         {
             let legacy_descriptor = super::normalize_terminal_tool_use_state(
                 descriptor.clone(),
-                super::TerminalToolOutcome::SuccessResult,
+                super::TerminalToolOutcome::Result,
             );
             let legacy_display =
                 crate::tool_render::render_tool_use_state("edit", &legacy_descriptor);
@@ -1756,8 +1756,8 @@ fn large_background_error_borrows_descriptor_and_details() {
     );
 }
 
-/// Canonical terminal outcomes replace contradictory status hints while
-/// preserving valid warnings, aligned error labels, and unrelated metadata.
+/// Results retain completed operation severity while terminal errors replace
+/// contradictory hints; neither may discard unrelated presentation metadata.
 #[test]
 fn canonical_terminal_outcome_owns_status_matrix() {
     use tau_proto::ToolUseStatus::{Error, InProgress, Success, Warning};
@@ -1766,35 +1766,30 @@ fn canonical_terminal_outcome_owns_status_matrix() {
         (
             Success,
             "custom-success",
-            super::TerminalToolOutcome::SuccessResult,
+            super::TerminalToolOutcome::Result,
             Success,
             "ok",
         ),
-        (
-            Error,
-            "false-error",
-            super::TerminalToolOutcome::SuccessResult,
-            Success,
-            "ok",
-        ),
+        (Error, "7", super::TerminalToolOutcome::Result, Error, "7"),
+        (Error, " ", super::TerminalToolOutcome::Result, Error, "err"),
         (
             InProgress,
             "still-running",
-            super::TerminalToolOutcome::SuccessResult,
+            super::TerminalToolOutcome::Result,
             Success,
             "ok",
         ),
         (
             Warning,
             "timeout",
-            super::TerminalToolOutcome::SuccessResult,
+            super::TerminalToolOutcome::Result,
             Warning,
             "timeout",
         ),
         (
             Warning,
             "",
-            super::TerminalToolOutcome::SuccessResult,
+            super::TerminalToolOutcome::Result,
             Warning,
             "warn",
         ),
@@ -1862,8 +1857,8 @@ fn canonical_terminal_outcome_owns_status_matrix() {
     }
 }
 
-/// The foreground builders apply canonical status classes while retaining
-/// terminal metadata and the existing compact status wording.
+/// Foreground results retain failed-operation labels, while error events
+/// replace stale success hints with the canonical failure wording.
 #[test]
 fn terminal_builders_render_canonical_status_wording() {
     let result = tau_proto::ToolResultDisplay {
@@ -1874,7 +1869,7 @@ fn terminal_builders_render_canonical_status_wording() {
         display: Some(tau_proto::ToolUseState {
             args: "terminal-args".to_owned(),
             status: tau_proto::ToolUseStatus::Error,
-            status_text: "false-error".to_owned(),
+            status_text: "7".to_owned(),
             ..Default::default()
         }),
         originator: tau_proto::PromptOriginator::User,
@@ -1885,7 +1880,7 @@ fn terminal_builders_render_canonical_status_wording() {
             result.display.as_ref(),
             None,
         )),
-        "generic terminal-args ok"
+        "generic terminal-args err: 7"
     );
 
     let error = tau_proto::ToolError {
@@ -1942,8 +1937,61 @@ fn delegate_error_fallback_retains_stats_and_canonical_wording() {
     );
 }
 
-/// Background result and error handlers pass contradictory descriptors through
-/// the same canonical terminal normalization as foreground completions.
+/// Failed shell operations and waits return output rather than ToolError.
+/// Their final event rows must retain error severity, not repaint it as `ok`.
+#[test]
+fn foreground_result_events_preserve_operation_failures_and_wait_severity() {
+    for (tool_name, args, label) in [
+        ("shell_command", "exit 7", "7"),
+        ("shell_command", "kill -TERM $$", "signal 15"),
+        ("shell_command", "sleep 2", "timeout"),
+        // WaitTracker keeps source severity, but replaces the source arguments
+        // with its tool name and removes source stats/payload.
+        ("wait", "shell", "1"),
+    ] {
+        let mut renderer = renderer_for_agent_id_tests();
+        let agent = agent_id("foreground-agent");
+        renderer.switch_agent(agent.clone());
+        renderer.handle(&tau_proto::Event::ToolStarted(tau_proto::ToolStarted {
+            invocation_policy: tau_proto::ToolInvocationPolicy::default(),
+            call_id: "foreground-result".into(),
+            tool_name: tau_proto::ToolName::new(tool_name),
+            arguments: tau_proto::CborValue::Map(Vec::new()),
+            agent_id: agent,
+            originator: tau_proto::PromptOriginator::User,
+        }));
+        renderer.handle(&tau_proto::Event::ToolResultDisplay(
+            tau_proto::ToolResultDisplay {
+                call_id: "foreground-result".into(),
+                tool_name: tau_proto::ToolName::new(tool_name),
+                tool_type: tau_proto::ToolType::Function,
+                kind: tau_proto::ToolResultKind::Final,
+                display: Some(tau_proto::ToolUseState {
+                    args: args.to_owned(),
+                    status: tau_proto::ToolUseStatus::Error,
+                    status_text: label.to_owned(),
+                    ..Default::default()
+                }),
+                originator: tau_proto::PromptOriginator::User,
+            },
+        ));
+
+        assert!(renderer.transcript.runtime.tool_calls.is_empty());
+        assert_eq!(renderer.transcript.history.tool_history.len(), 1);
+        let display = &renderer.transcript.history.tool_history[0].display;
+        assert_eq!(
+            rendered_tool_header(display),
+            format!("{tool_name} {args} 0s err: {label}")
+        );
+        assert!(display.suffixes.iter().any(|suffix| {
+            suffix.status == crate::tool_render::ToolStatus::Error
+                && suffix.text == format!("err: {label}")
+        }));
+    }
+}
+
+/// Background results preserve failed-operation labels and error events replace
+/// stale success hints, through the same normalization as foreground results.
 #[test]
 fn background_terminal_handlers_normalize_status() {
     let mut renderer = renderer_for_agent_id_tests();
@@ -1982,7 +2030,7 @@ fn background_terminal_handlers_normalize_status() {
             display: Some(tau_proto::ToolUseState {
                 args: "result-metadata".to_owned(),
                 status: tau_proto::ToolUseStatus::Error,
-                status_text: "false-error".to_owned(),
+                status_text: "signal 15".to_owned(),
                 ..Default::default()
             }),
             originator: tau_proto::PromptOriginator::User,
@@ -2016,7 +2064,7 @@ fn background_terminal_handlers_normalize_status() {
         .iter()
         .map(|entry| rendered_tool_header(&entry.display))
         .collect::<Vec<_>>();
-    assert_eq!(headers[0], "generic result-metadata 0s ok");
+    assert_eq!(headers[0], "generic result-metadata 0s err: signal 15");
     assert_eq!(
         headers[1],
         "generic error-metadata 0s err: background-failure"

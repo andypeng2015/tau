@@ -10,6 +10,10 @@ examples with `tau_core::validate_tool_examples`; custom/freeform examples recei
 separate semantic coverage. Runtime tests lock startup subscriptions and
 publications before `Ready`. UI tests assert `ToolUseState` progress and terminal
 projection, including inferred directory-lock modes.
+The real extension's nonzero-exit result retains `Error / 7` display metadata;
+signal and timeout producers likewise retain their distinct error labels while
+returning captured output as results. CLI terminal projection tests cover these
+labels in foreground results and error severity in background and wait rows.
 
 The internal `replace` / provider-visible `edit` tests cover strict object
 shape, alias registration, snapshot-wide exact matching, all-or-nothing

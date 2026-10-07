@@ -4543,6 +4543,8 @@ fn exact_tool_progress_noop_skips_block_replacement_and_redraw() {
     assert!(vt.screen_contains(80, "checking"));
 }
 
+/// A background shell stays running through its placeholder, then settles with
+/// the producer's failure label even though its completion returns output.
 #[test]
 fn backgrounded_tool_stays_visibly_running_until_background_result() {
     let (_term, handle, vt) = setup(80, 24);
@@ -4637,7 +4639,7 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
             display: Some(tau_proto::ToolUseState {
                 args: "ro sleep 10".into(),
                 status: tau_proto::ToolUseStatus::Error,
-                status_text: "false-error".into(),
+                status_text: "timeout".into(),
                 ..Default::default()
             }),
             originator: tau_proto::PromptOriginator::User,
@@ -4646,7 +4648,8 @@ fn backgrounded_tool_stays_visibly_running_until_background_result() {
     );
     sync(&handle);
     assert!(!in_progress.load(std::sync::atomic::Ordering::Relaxed));
-    assert!(vt.screen_contains(80, "shell ro sleep 10 3/300s ok"));
+    assert!(vt.screen_contains(80, "shell ro sleep 10 3/300s err: timeout"));
+    assert!(!vt.screen_contains(80, "shell ro sleep 10 3/300s ok"));
     assert!(vt.screen_contains(80, "1/1"));
 }
 

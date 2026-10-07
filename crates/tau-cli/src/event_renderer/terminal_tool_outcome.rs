@@ -5,8 +5,9 @@ use crate::tool_render::synthesize_fallback_display;
 /// Canonical outcome that owns a terminal tool row's displayed status.
 #[derive(Clone, Copy)]
 pub(super) enum TerminalToolOutcome<'a> {
-    /// The terminal event reports successful completion.
-    SuccessResult,
+    /// The terminal event returns output, which can describe an operation
+    /// failure.
+    Result,
     /// The terminal event reports failure with this canonical message.
     Error { canonical_message: &'a str },
     /// The terminal event reports cancellation.
@@ -29,21 +30,29 @@ pub(super) struct BorrowedToolError<'a> {
     pub(super) originator_is_user: bool,
 }
 
-/// Makes a producer descriptor's status agree with its canonical terminal
-/// event.
+/// Settles a producer descriptor's status for its canonical terminal event.
 ///
-/// The descriptor still owns all non-status presentation metadata. A successful
-/// terminal may retain a completed warning, while an error descriptor may
-/// retain its nonempty label only when it already described an error.
+/// Results carry output, not proof that the underlying operation succeeded:
+/// completed error and warning descriptors retain their severity and labels.
+/// Stale progress becomes success. Error and cancellation events override
+/// conflicting hints, without changing unrelated presentation metadata.
 pub(super) fn normalize_terminal_tool_use_state(
     mut descriptor: ToolUseState,
     outcome: TerminalToolOutcome<'_>,
 ) -> ToolUseState {
     match outcome {
-        TerminalToolOutcome::SuccessResult => {
-            if descriptor.status == ToolUseStatus::Warning {
+        TerminalToolOutcome::Result => {
+            if matches!(
+                descriptor.status,
+                ToolUseStatus::Error | ToolUseStatus::Warning
+            ) {
                 if descriptor.status_text.trim().is_empty() {
-                    descriptor.status_text = "warn".to_owned();
+                    descriptor.status_text = if descriptor.status == ToolUseStatus::Error {
+                        "err"
+                    } else {
+                        "warn"
+                    }
+                    .to_owned();
                 }
             } else {
                 descriptor.status = ToolUseStatus::Success;

@@ -8672,8 +8672,7 @@ impl EventRenderer {
             (Some(descriptor), None) => descriptor.clone(),
             (None, _) => synthesize_fallback_display(tool_name, None),
         };
-        let descriptor =
-            normalize_terminal_tool_use_state(descriptor, TerminalToolOutcome::SuccessResult);
+        let descriptor = normalize_terminal_tool_use_state(descriptor, TerminalToolOutcome::Result);
         if let Some(diff) = diff {
             render_tool_use_state_payload_free(tool_name, &descriptor, diff)
         } else {
