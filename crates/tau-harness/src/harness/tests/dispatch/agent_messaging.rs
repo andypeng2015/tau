@@ -4,6 +4,167 @@ use tau_config::settings::{AgentWatchRetryNotificationPolicy, HarnessSettings};
 
 use super::*;
 
+/// Bare-session calls retain original recipient spelling and UTF-8 body counts
+/// through receive interception, on both committed delivery and rejection.
+#[test]
+fn local_peer_message_terminal_preserves_compact_metadata() {
+    for reject in [false, true] {
+        let td = TempDir::new().expect("tempdir");
+        let mut h = echo_harness(td.path().join("state")).expect("start");
+        h.config.selected_model = Some("test/model".into());
+        let peer_role = h.config.available_roles["engineer"].clone();
+        h.config
+            .available_roles
+            .insert("peer".to_owned(), peer_role);
+        configure_inter_session_receiver(&mut h, "peer", true);
+        let cid = ensure_test_user_agent(&mut h);
+        let recipient = format!("&{}", h.session_runtime.current_session_id);
+        let body = "héllo\n世界\n";
+        let _interceptor = connect_test_tool(&mut h, "message-interceptor");
+        h.handle_extension_event(
+            "message-interceptor",
+            TestProtocolItem::Message(TestMessage::Intercept(Intercept {
+                selectors: vec![EventSelector::Exact(
+                    tau_proto::EventName::AGENT_MESSAGE_RECEIVED,
+                )],
+                priority: InterceptionPriority::new(0),
+            })),
+        )
+        .expect("register interceptor");
+        let call = message_tool_call("bare-message-call", &recipient, body);
+        h.tool_routing
+            .tool_runtime
+            .tool_agents
+            .insert(call.id.clone(), cid.clone());
+        let mut host = crate::InternalToolHost::new(&mut h);
+        host.publish_local_peer_message(
+            &cid,
+            body.to_owned(),
+            call.id,
+            call.name,
+            call.tool_type,
+            crate::message_tool_display(&call.arguments),
+        )
+        .expect("route message through production host");
+        assert_eq!(h.peer_messaging.pending_external_receive_acks.len(), 1);
+        h.handle_extension_event(
+            "message-interceptor",
+            TestProtocolItem::Message(TestMessage::InterceptReply(InterceptReply {
+                action: if reject {
+                    InterceptAction::Drop
+                } else {
+                    InterceptAction::Pass(None)
+                },
+            })),
+        )
+        .expect("complete receive");
+        let display = event_log_events(&h)
+            .into_iter()
+            .find_map(|event| match event {
+                Event::ToolResult(result) if result.call_id.as_str() == "bare-message-call" => {
+                    assert!(!reject);
+                    result.display
+                }
+                Event::ToolError(error) if error.call_id.as_str() == "bare-message-call" => {
+                    assert!(reject);
+                    error.display
+                }
+                _ => None,
+            })
+            .expect("terminal metadata");
+        assert_eq!(display.args, recipient);
+        assert_eq!(display.stats.lines, Some(2));
+        assert_eq!(display.stats.bytes, Some(14));
+        assert_eq!(display.payload, None);
+        assert_eq!(
+            display.status,
+            if reject {
+                tau_proto::ToolUseStatus::Error
+            } else {
+                tau_proto::ToolUseStatus::Success
+            }
+        );
+        h.shutdown().expect("shutdown");
+    }
+}
+
+/// External completion producers retain original address spelling and body
+/// counts on success and failure, without placing the body in terminal display.
+#[test]
+fn external_message_terminal_preserves_compact_metadata() {
+    for failed in [false, true] {
+        let td = TempDir::new().expect("tempdir");
+        let mut h = echo_harness(td.path().join("state")).expect("start");
+        let cid = ensure_test_user_agent(&mut h);
+        let call = message_tool_call(
+            "external-metadata-call",
+            "&other-session/@recipient",
+            "héllo\n世界\n",
+        );
+        h.tool_routing
+            .tool_runtime
+            .tool_agents
+            .insert(call.id.clone(), cid.clone());
+        h.handle_harness_command(
+            path_crate_event::HarnessCommand::ExternalMessageToolCompleted(Box::new(
+                crate::event::ExternalMessageToolCompletedCommand {
+                    _permit: None,
+                    conversation_id: cid,
+                    session_generation: h.session_runtime.current_session_generation,
+                    call_id: call.id.clone(),
+                    tool_name: call.name,
+                    tool_type: call.tool_type,
+                    result: if failed {
+                        Err(path_crate_event::ExternalMessageDeliveryError::Target(
+                            tau_proto::ExternalAgentMessageFailure::NoInterSessionReceiver,
+                        ))
+                    } else {
+                        Ok((crate::parse_agent_id("recipient"), false))
+                    },
+                    protocol_warning: None,
+                    details: call.arguments,
+                    auth_message_id: tau_proto::AgentMessageId::parse("metadata-message")
+                        .expect("id"),
+                    publish_sent: true,
+                    sender_id: crate::parse_agent_id("sender"),
+                    recipient_session_id: test_session_id("other-session"),
+                    kind: tau_proto::AgentMessageKind::Message,
+                    sender_notice: None,
+                    message: "héllo\n世界\n".to_owned(),
+                },
+            )),
+        )
+        .expect("complete external delivery");
+        let display = event_log_events(&h)
+            .into_iter()
+            .find_map(|event| match event {
+                Event::ToolResult(result) if result.call_id == call.id => {
+                    assert!(!failed);
+                    result.display
+                }
+                Event::ToolError(error) if error.call_id == call.id => {
+                    assert!(failed);
+                    error.display
+                }
+                _ => None,
+            })
+            .expect("terminal metadata");
+        assert_eq!(display.args, "&other-session/@recipient");
+        assert_eq!(display.stats.lines, Some(2));
+        assert_eq!(display.stats.bytes, Some(14));
+        assert_eq!(display.payload, None);
+        assert_eq!(
+            display.status,
+            if failed {
+                tau_proto::ToolUseStatus::Error
+            } else {
+                tau_proto::ToolUseStatus::Success
+            }
+        );
+        h.shutdown().expect("shutdown");
+    }
+}
+
 /// A failed delegated operation must use bounded truthful wording without
 /// exposing raw provider diagnostics or claiming that the agent endpoint died.
 #[test]
@@ -832,7 +993,7 @@ fn external_message_send_failure_does_not_publish_sent_projection() {
         &cid,
         test_session_id("missing-session"),
         tau_proto::ExternalAgentMessageRecipient::Exact(crate::parse_agent_id("recipient_agent")),
-        "hello".to_owned(),
+        "héllo\n世界\n".to_owned(),
         tau_proto::AgentMessageKind::Message,
         Some(
             path_crate_harness::subagents_tool::ExternalMessageToolCompletion {
@@ -841,7 +1002,12 @@ fn external_message_send_failure_does_not_publish_sent_projection() {
                 call_id: call_id.clone(),
                 tool_name: ToolName::new(path_crate_harness::subagents_tool::MESSAGE_TOOL_NAME),
                 tool_type: tau_proto::ToolType::Function,
-                details: CborValue::Null,
+                details: message_tool_call(
+                    "external-message-call",
+                    "&missing-session/@recipient_agent",
+                    "héllo\n世界\n",
+                )
+                .arguments,
             },
         ),
     )
@@ -866,11 +1032,17 @@ fn external_message_send_failure_does_not_publish_sent_projection() {
 
     assert!(session_agent_message_sent_events(&h).is_empty());
     assert!(h.peer_messaging.pending_external_message_auth.is_empty());
-    assert!(
-        event_log_events(&h)
-            .into_iter()
-            .any(|event| { matches!(event, Event::ToolError(error) if error.call_id == call_id) })
-    );
+    let display = event_log_events(&h)
+        .into_iter()
+        .find_map(|event| match event {
+            Event::ToolError(error) if error.call_id == call_id => error.display,
+            _ => None,
+        })
+        .expect("worker completion display");
+    assert_eq!(display.args, "&missing-session/@recipient_agent");
+    assert_eq!(display.stats.lines, Some(2));
+    assert_eq!(display.stats.bytes, Some(14));
+    assert_eq!(display.payload, None);
 
     h.shutdown().expect("shutdown");
 }

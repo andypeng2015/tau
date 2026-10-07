@@ -630,6 +630,7 @@ impl Harness {
                     );
                     return Ok(());
                 }
+                let mut display = crate::message_tool_display(&command.details);
                 match command.result {
                     Ok((recipient_id, _started)) => {
                         if command.publish_sent {
@@ -681,7 +682,7 @@ impl Harness {
                                     )),
                                 ),
                             ]),
-                            None,
+                            Some(display),
                         );
                     }
                     Err(error) => {
@@ -689,13 +690,21 @@ impl Harness {
                             Some(warning) => format!("{warning}\n\n{}", error.tool_message()),
                             None => error.tool_message(),
                         };
-                        self.finish_harness_owned_tool_with_error(
+                        display.status = tau_proto::ToolUseStatus::Error;
+                        display.status_text = message
+                            .lines()
+                            .map(str::trim)
+                            .find(|line| !line.is_empty())
+                            .unwrap_or("")
+                            .to_owned();
+                        self.finish_harness_owned_tool_with_display_error(
                             &command.conversation_id,
                             command.call_id,
                             command.tool_name,
                             command.tool_type,
                             message,
                             Some(command.details),
+                            Some(display),
                         );
                     }
                 }

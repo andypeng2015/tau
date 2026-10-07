@@ -2200,15 +2200,26 @@ impl Harness {
                 call_id,
                 tool_name,
                 tool_type,
+                mut display,
                 ..
-            } => self.finish_harness_owned_tool_with_error(
-                &conversation_id,
-                call_id,
-                tool_name,
-                tool_type,
-                error.to_owned(),
-                None,
-            ),
+            } => {
+                display.status = tau_proto::ToolUseStatus::Error;
+                display.status_text = error
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("")
+                    .to_owned();
+                self.finish_harness_owned_tool_with_display_error(
+                    &conversation_id,
+                    call_id,
+                    tool_name,
+                    tool_type,
+                    error.to_owned(),
+                    None,
+                    Some(*display),
+                );
+            }
         }
     }
 
@@ -2255,6 +2266,7 @@ impl Harness {
                 tool_type,
                 sender_id,
                 message,
+                display,
             } => {
                 self.publish_for_agent_from(
                     &conversation_id,
@@ -2298,7 +2310,7 @@ impl Harness {
                             tau_proto::CborValue::Bool(pending.started),
                         ),
                     ]),
-                    None,
+                    Some(*display),
                 );
             }
         }

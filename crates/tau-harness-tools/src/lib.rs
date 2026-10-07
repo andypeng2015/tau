@@ -1324,6 +1324,7 @@ fn handle_message_tool_call(
                     call_id.clone(),
                     visible_tool_name.clone(),
                     call.tool_type,
+                    message_success_display(&call.arguments),
                 )
                 .map(|()| MessageToolFlow::PendingPeer),
             MessageRecipientAddress::OtherSession {
@@ -1546,36 +1547,20 @@ struct MessageArgs {
     message: String,
 }
 
-fn message_display_args(arguments: &CborValue) -> String {
-    tau_proto::cbor_text_field(arguments, "recipient_id")
-        .filter(|recipient_id| !recipient_id.trim().is_empty())
-        .unwrap_or_default()
-}
-
 /// Count only the message body, using the shared text-statistics convention.
 fn message_display_stats(arguments: &CborValue) -> ToolUseStats {
-    tau_proto::cbor_text_field(arguments, "message")
-        .map(|text| ToolUseStats::for_text(&text))
-        .unwrap_or_default()
+    tau_harness::message_tool_display(arguments).stats
 }
 
 fn message_success_display(arguments: &CborValue) -> ToolUseState {
-    ToolUseState {
-        args: message_display_args(arguments),
-        stats: message_display_stats(arguments),
-        status: ToolUseStatus::Success,
-        status_text: "ok".to_owned(),
-        ..Default::default()
-    }
+    tau_harness::message_tool_display(arguments)
 }
 
 fn message_error_display(arguments: &CborValue, message: &str) -> ToolUseState {
     ToolUseState {
-        args: message_display_args(arguments),
-        stats: message_display_stats(arguments),
         status: ToolUseStatus::Error,
         status_text: error_chip_text(message),
-        ..Default::default()
+        ..tau_harness::message_tool_display(arguments)
     }
 }
 

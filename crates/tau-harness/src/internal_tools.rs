@@ -1220,6 +1220,7 @@ impl<'a> InternalToolHost<'a> {
     }
 
     /// Resolve and publish one bare message through this session's entrypoint.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_local_peer_message(
         &mut self,
         conversation_id: &AgentId,
@@ -1227,6 +1228,7 @@ impl<'a> InternalToolHost<'a> {
         call_id: ToolCallId,
         tool_name: ToolName,
         tool_type: tau_proto::ToolType,
+        display: tau_proto::ToolUseState,
     ) -> Result<(), String> {
         self.harness.publish_peer_entrypoint_message_from_agent(
             conversation_id,
@@ -1234,6 +1236,7 @@ impl<'a> InternalToolHost<'a> {
             call_id,
             tool_name,
             tool_type,
+            display,
         )
     }
 

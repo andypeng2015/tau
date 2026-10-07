@@ -125,6 +125,8 @@ pub(crate) enum PendingPeerReceiveCompletion {
         sender_id: tau_proto::AgentId,
         /// Original message body for the sent projection.
         message: String,
+        /// Body-free compact metadata retained until terminal publication.
+        display: Box<tau_proto::ToolUseState>,
     },
 }
 

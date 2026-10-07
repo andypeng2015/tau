@@ -2102,6 +2102,7 @@ fn local_peer_sent_projection_waits_for_receive_commit() {
         "local-peer-call".into(),
         ToolName::new("message"),
         tau_proto::ToolType::Function,
+        Default::default(),
     )
     .expect("queue local peer");
 
@@ -2147,6 +2148,7 @@ fn local_peer_oversized_message_rejects_before_auto_start() {
             "oversized-local-peer".into(),
             ToolName::new("message"),
             tau_proto::ToolType::Function,
+            Default::default(),
         )
         .expect_err("oversized local peer message rejected");
 
@@ -2185,6 +2187,7 @@ fn local_peer_auto_start_reports_started_only_after_receive_commit() {
         "local-auto-start-call".into(),
         ToolName::new("message"),
         tau_proto::ToolType::Function,
+        Default::default(),
     )
     .expect("queue local auto-start");
 
@@ -2256,6 +2259,7 @@ fn parked_local_and_remote_peer_sends_coalesce_on_one_auto_start() {
         "coalesce-local-call".into(),
         ToolName::new("message"),
         tau_proto::ToolType::Function,
+        Default::default(),
     )
     .expect("queue local auto-start");
     let recipient = h

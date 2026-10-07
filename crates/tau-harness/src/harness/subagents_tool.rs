@@ -1213,6 +1213,7 @@ impl Harness {
     }
 
     /// Resolve and publish one current-session bare entrypoint message.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_peer_entrypoint_message_from_agent(
         &mut self,
         conversation_id: &AgentId,
@@ -1220,6 +1221,7 @@ impl Harness {
         call_id: ToolCallId,
         tool_name: ToolName,
         tool_type: ToolType,
+        display: tau_proto::ToolUseState,
     ) -> Result<(), String> {
         let sender = self
             .ensure_agent_id_for_agent(conversation_id)
@@ -1275,6 +1277,7 @@ impl Harness {
                     tool_type,
                     sender_id: sender_id.clone(),
                     message: message.clone(),
+                    display: Box::new(display),
                 },
             },
         );
