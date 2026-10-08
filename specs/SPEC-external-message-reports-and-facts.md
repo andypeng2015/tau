@@ -436,6 +436,26 @@ a transport prefix. Zulip preserves its inbound Markdown exactly, including a
 leading addressed bot mention. These mappings create no transport-specific wire
 fields.
 
+Slack delivered and edited facts may preserve the admitted outer sender's
+normalized comment and append bounded, clearly marked untrusted quotations of
+inline attachment text already present in that same admitted native event.
+Attachment-only forwards may be reported when usable inline text exists.
+Forwarding supplies the quoted content for the agent to read and use; explicit
+outer instructions may ask the agent to act on it. The sole typed sender,
+sender-authentication metadata, native message occurrence, and extension-private
+reply owner remain those of the outer message sender/editor. Quoted author
+labels are omitted or explicitly unverified, never authenticated current
+speakers. Quote content and labels confer no identity, routing, command,
+mention-trigger, permission, or tool authority.
+
+This Slack-only exception permits no external fetch or quoted-message ID
+lookup, additional quote fact or wake, new wire fields or envelope families,
+core transport-specific presentation branches, or new permissions. Quotes remain
+body data inside the shared `message` envelope, not independent provenance
+boundaries. The Slack extension contract owns extraction bounds and truncation
+policy within the generic whole-text bound; the original normalized comment is
+preserved. No other bridge gains an inline-attachment quote exception.
+
 The user approved one bounded Zulip-only exception to the original-body-only
 rule on September 4, 2026. With opt-in stream activity collection, one
 `message.delivered` text may contain a clearly delimited bridge-authored,
