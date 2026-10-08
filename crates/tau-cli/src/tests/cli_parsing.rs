@@ -246,6 +246,7 @@ fn agent_trace_mode_validation_matches_format_semantics() {
         path_super_cli::AgentTraceFormat::TauJsonl,
         path_super_cli::AgentTraceFormat::OtlpJson,
         path_super_cli::AgentTraceFormat::AgentPerformanceJsonl,
+        path_super_cli::AgentTraceFormat::AgentContextJsonl,
     ] {
         let error =
             super::super::validate_agent_trace_mode(format, path_super_cli::AgentTraceMode::Full)

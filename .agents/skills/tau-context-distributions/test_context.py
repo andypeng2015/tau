@@ -1,0 +1,316 @@
+"""Deterministic measurement and presentation oracles, without private journals."""
+
+import collections
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import chart_context as chart
+
+
+def args(**values):
+    result = chart.parser().parse_args(["--out", "unused"])
+    for name, value in values.items():
+        setattr(result, name, value)
+    return result
+
+
+def evidence(facts, created=1, role="engineer", summary=None):
+    rows = [dict(schema="tau.agent_context", schema_version=0,
+                 record_type="header", content_included=False)]
+    rows.append(dict(record_type="agent_created", seq=0,
+                     recorded_at_unix_micros=created, role=role, agent_id="synthetic"))
+    for seq, (kind, at, fields) in enumerate(facts, 1):
+        rows.append(dict(record_type=kind, seq=seq, recorded_at_unix_micros=at,
+                         agent_id="synthetic", **fields))
+    rows.append(dict(record_type="journal_summary", agent_id="synthetic",
+                     clock_regressions=0, missing_timestamps=0, **(summary or {})))
+    return io.StringIO("\n".join(map(json.dumps, rows)))
+
+
+def start(at, prompt, model="provider/model"):
+    return "inference_started", at, dict(prompt_id=prompt, model=model)
+
+
+def finish(at, prompt, value):
+    return "inference_finished", at, dict(prompt_id=prompt, input_tokens=value)
+
+
+def compact(at, transaction="tx", value=200):
+    return "compacted", at, dict(transaction_id=transaction, model="provider/compact",
+                                compact_input_tokens=value)
+
+
+def collect(facts, ranges=((1, 100),), selection=None, created=1):
+    states = chart.read_trace(evidence(facts, created), ranges)
+    support, counts = {}, collections.Counter()
+    chart.aggregate(states, selection or args(), support, counts)
+    return states, support, counts
+
+
+class MeasurementTests(unittest.TestCase):
+    def test_segment_peaks_not_prompt_sums(self):
+        """Repeated overlapping inputs contribute a single high-water per segment."""
+        facts = [start(2, "a"), finish(3, "a", 10), start(4, "b"), finish(5, "b", 20),
+                 start(6, "c"), finish(7, "c", 18), compact(8),
+                 start(9, "d"), finish(10, "d", 4), start(11, "e"), finish(12, "e", 8)]
+        _, support, _ = collect(facts)
+        self.assertEqual(support[0, "segments", "All selected"].values, {20: 1, 8: 1})
+        self.assertEqual(support[0, "accumulated", "All selected"].values, {28: 1})
+        self.assertEqual(support[0, "compactions", "All selected"].values, {1: 1})
+        self.assertEqual(support[0, "segments", "All selected"].open, 1)
+
+    def test_prompt_spanning_boundary_and_empty_tail(self):
+        """Terminal ownership follows start, and an empty fresh tail is not zero."""
+        _, support, _ = collect([start(2, "a"), compact(3), finish(4, "a", 20)])
+        self.assertEqual(support[0, "segments", "All selected"].values, {20: 1})
+        self.assertEqual(support[0, "segments", "All selected"].open, 0)
+        self.assertEqual(support[0, "accumulated", "All selected"].values, {20: 1})
+        self.assertEqual(support[0, "accumulated", "All selected"].empty_tails, 1)
+
+    def test_strict_unknown_sum_keeps_measured_segments_and_count(self):
+        """An unknown nonempty segment invalidates only the whole-agent size sum."""
+        _, support, _ = collect([start(2, "a"), finish(3, "a", None),
+                                 compact(4), start(5, "b"), finish(6, "b", 0)])
+        self.assertEqual(support[0, "accumulated", "All selected"].missing, 1)
+        self.assertEqual(support[0, "segments", "All selected"].values, {0: 1})
+        self.assertEqual(support[0, "segments", "All selected"].missing, 1)
+        self.assertEqual(support[0, "compactions", "All selected"].values, {1: 1})
+
+    def test_partial_segment_keeps_observed_peak(self):
+        """Missing terminals within a measured segment mark coverage, not missing size."""
+        _, support, _ = collect([start(2, "a"), finish(3, "a", 0), start(4, "b")])
+        self.assertEqual(support[0, "accumulated", "All selected"].values, {0: 1})
+        self.assertEqual(support[0, "accumulated", "All selected"].partial, 1)
+        self.assertEqual(support[0, "accumulated", "All selected"].starts, 2)
+        self.assertEqual(support[0, "accumulated", "All selected"].measured, 1)
+
+    def test_no_inference_has_missing_size_real_zero_compactions(self):
+        """Valid no-work agents are not fabricated zero-size contexts."""
+        _, support, _ = collect([])
+        self.assertEqual(support[0, "compactions", "All selected"].values, {0: 1})
+        self.assertEqual(support[0, "accumulated", "All selected"].missing, 1)
+        self.assertNotIn((0, "segments", "All selected"), support)
+
+    def test_historical_endpoint_does_not_backfill(self):
+        """One scan reconstructs independent endpoints with no future model/boundary leakage."""
+        facts = [start(2, "a"), finish(10, "a", 20), compact(11),
+                 start(12, "b", "other/model"), finish(13, "b", 8)]
+        _, support, _ = collect(facts, ((1, 10), (1, 14)), args(breakdown="model"))
+        self.assertEqual(support[0, "accumulated", "provider/model"].missing, 1)
+        self.assertEqual(support[0, "compactions", "provider/model"].values, {0: 1})
+        self.assertEqual(support[1, "accumulated", chart.MIXED].values, {28: 1})
+        self.assertEqual(support[1, "compactions", chart.MIXED].values, {1: 1})
+
+    def test_creation_and_event_endpoints(self):
+        """Since is inclusive, until exclusive, and an at-until boundary stays future."""
+        _, support, counts = collect([start(3, "a"), finish(4, "a", 10), compact(10)],
+                                     ((2, 10),), created=2)
+        self.assertEqual(counts["A_selected_agents"], 1)
+        self.assertEqual(support[0, "compactions", "All selected"].values, {0: 1})
+        _, support, counts = collect([], ((1, 2),), created=2)
+        self.assertEqual(support, {})
+        self.assertEqual(counts["A_selected_agents"], 0)
+
+    def test_model_filters_do_not_remove_boundaries(self):
+        """Exact model selection applies after per-metric aggregation, not to raw rows."""
+        facts = [start(2, "a"), finish(3, "a", 20), compact(4),
+                 start(5, "b", "other/model"), finish(6, "b", 8)]
+        _, support, _ = collect(facts, selection=args(model=["provider/model"], breakdown="model"))
+        self.assertEqual(support[0, "segments", "provider/model"].values, {20: 1})
+        self.assertEqual(len(support), 1)
+        _, support, _ = collect(facts, selection=args(model=[chart.MIXED], breakdown="model"))
+        self.assertEqual(support[0, "accumulated", chart.MIXED].values, {28: 1})
+        self.assertEqual(support[0, "compactions", chart.MIXED].values, {1: 1})
+        self.assertEqual(chart.group_for("role", {"provider/a", "provider/b"}, "provider"), "provider")
+
+    def test_active_cohort_includes_prior_lifetime(self):
+        """Active selection retains earlier segments rather than clipping workload."""
+        facts = [start(2, "a"), finish(3, "a", 20), compact(4),
+                 start(11, "b"), finish(12, "b", 8)]
+        _, created, _ = collect(facts, ((10, 20),))
+        self.assertEqual(created, {})
+        _, active, _ = collect(facts, ((10, 20),), args(cohort="active"))
+        self.assertEqual(active[0, "accumulated", "All selected"].values, {28: 1})
+
+    def test_role_filters_use_creation_role(self):
+        """Exact role filters are independent from models and agent-name prefixes."""
+        _, support, _ = collect([start(2, "a")], selection=args(role=["reviewer"]))
+        self.assertEqual(support, {})
+        _, support, _ = collect([start(2, "a")], selection=args(breakdown="role"))
+        self.assertIn((0, "accumulated", "engineer"), support)
+
+    def test_unknown_and_mixed_segment_classes(self):
+        """No model means unknown; multiple starts in one segment are genuinely mixed."""
+        _, support, _ = collect([], selection=args(breakdown="model"))
+        self.assertIn((0, "compactions", chart.UNKNOWN), support)
+        _, support, _ = collect([start(2, "a"), finish(3, "a", 10),
+                                 start(4, "b", "other/model"), finish(5, "b", 20)],
+                                selection=args(breakdown="model"))
+        self.assertEqual(support[0, "segments", chart.MIXED].values, {20: 1})
+
+    def test_duplicates_and_clock_ambiguity_rejected(self):
+        """Ambiguous structural evidence never becomes repeated samples or zero counts."""
+        for facts in ([start(2, "a"), start(3, "a")],
+                      [start(2, "a"), finish(3, "a", 10), finish(4, "a", 10)],
+                      [compact(2), compact(3)],
+                      [start(3, "a"), finish(2, "a", 1)],
+                      [start(0, "a")]):
+            with self.subTest(facts=facts), self.assertRaises(ValueError):
+                collect(facts)
+        for field, reason in (("clock_regressions", "regressing_clock"), ("missing_timestamps", "missing_clock")):
+            stream = evidence([])
+            rows = list(stream)
+            summary = json.loads(rows[-1])
+            summary[field] = 1
+            rows[-1] = json.dumps(summary)
+            with self.assertRaisesRegex(ValueError, reason):
+                chart.read_trace(iter(rows), [(1, 100)])
+
+    def test_overflow_is_not_clamped(self):
+        """Strict sums and individual scalar counts reject unsupported integer overflow."""
+        with self.assertRaises(ValueError):
+            collect([start(2, "a"), finish(3, "a", chart.U64), compact(4),
+                     start(5, "b"), finish(6, "b", 1)])
+        for bad in (-1, 1.5, True, chart.U64 + 1):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                chart.checked(bad)
+
+    def test_ranges_require_zones_and_keep_precise_microseconds(self):
+        """Captured current-moment defaults and offset timestamps do not round to days."""
+        value = chart.instant("2026-10-08T12:34:56.123456Z")
+        self.assertEqual(chart.iso(value), "2026-10-08T12:34:56.123456Z")
+        self.assertEqual(chart.select_range(None, None, value), (value - 14 * chart.DAY, value))
+        self.assertEqual(chart.instant("2026-10-08T14:34:56.123456+02:00"), value)
+        for since, until in (("2026-10-08", None), (None, "1969-12-31T23:00:00Z"),
+                             ("2026-10-08T12:34:56Z", "2026-10-08T12:34:56Z")):
+            with self.assertRaises(ValueError):
+                chart.select_range(since, until, value)
+
+    def test_ties_zero_singleton_and_percentiles(self):
+        """ECDF support preserves exact multiplicities and a genuine zero vertical step."""
+        support = chart.Support()
+        for value in (0, 10, 10, 20):
+            support.add(value, [])
+        self.assertEqual(support.quantile(.5), 10)
+        self.assertEqual(support.quantile(.95), 20)
+        self.assertEqual(chart.step_data(support, False, 21),
+                         [(0., 0.), (0, 0.), (0, 25.), (10, 25.), (10, 75.),
+                          (20, 75.), (20, 100.), (21, 100.)])
+        singleton = chart.Support()
+        singleton.add(0, [])
+        self.assertEqual(chart.step_data(singleton, True, 1), [(0, 0), (0, 0), (0, 100), (1, 100)])
+        self.assertEqual(chart.step_data(chart.Support(), False, 1), [])
+
+    def test_literal_gnuplot_labels(self):
+        """Hostile labels cannot escape strings, become commands, or use enhanced markup."""
+        self.assertEqual(chart.gp('"; system "bad"\n\\x'), '"\\"; system \\"bad\\"\\n\\\\x"')
+
+    def test_gnuplot_backticks_are_literal_not_shell_substitution(self):
+        """Actual gnuplot evaluation must not execute role/model/filter label bytes."""
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "executed"
+            text = f"""role' "quoted" \\slash \\`touch {marker}`\n`touch {marker}`"""
+            result = chart.subprocess.run(["gnuplot", "-e", "print " + chart.gp(text)],
+                                          capture_output=True, text=True, check=True)
+            self.assertFalse(marker.exists())
+            self.assertEqual(result.stderr.rstrip("\n"), text)
+
+    def test_single_projection_feeds_two_ranges_without_error_leak(self):
+        """Each discovered journal is projected once, failures export only aggregate counts."""
+        with tempfile.TemporaryDirectory() as root:
+            for name in ("agent-a", "agent-b"):
+                directory = Path(root) / name
+                directory.mkdir()
+                (directory / "events.cbor").touch()
+            calls = []
+
+            def project(command, stdout, **kwargs):
+                calls.append(command)
+                if command[3] == "agent-b":
+                    return subprocess_result(1)
+                stdout.write(evidence([start(2, "a"), finish(3, "a", 10)]).getvalue())
+                return subprocess_result(0)
+
+            counts = collections.Counter()
+            with patch.object(chart.subprocess, "run", project):
+                support = chart.scan(args(agents_dir=Path(root)), [(1, 4), (1, 5)], counts)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(counts["failed_or_unsupported_journals"], 1)
+            self.assertEqual(support[0, "accumulated", "All selected"].values, {10: 1})
+            self.assertEqual(support[1, "accumulated", "All selected"].values, {10: 1})
+
+    def test_failure_categories_preserve_decode_uncertainty_and_hide_errors(self):
+        """Fixed coarse categories distinguish reader failures from new projector rejection."""
+        cases = {
+            b"failed to decode agent store record from /private/events.cbor: Semantic": "decode_incompatible_or_malformed_journals",
+            b"failed to read agent store /private/meta.json: No such file": "checkpoint_unavailable_or_invalid_journals",
+            b"unsupported agent checkpoint schema": "unsupported_checkpoint_journals",
+            b"invalid agent event sequence in private-path": "framing_or_sequence_journals",
+            b"agent journal not found at private-path": "missing_journal_artifact_journals",
+            b"failed to open agent store private-path": "io_or_snapshot_journals",
+            b"ambiguous context evidence: terminal without start": "unowned_terminal_journals",
+            b"ambiguous context evidence: prompt terminal": "context_projection_rejected_journals",
+            b"unknown private error body \xff": "other_trace_failure_journals",
+        }
+        for text, category in cases.items():
+            with self.subTest(category=category):
+                self.assertEqual(chart.trace_failure_category(text), category)
+
+
+def subprocess_result(code):
+    return type("Result", (), {"returncode": code})()
+
+
+def synthetic_support():
+    """Long/hostile labels, many groups, no data, missing, zeros and extreme tails."""
+    result = {}
+    for index in range(13):
+        group = f'provider-{index:02}/very-long_model-label-with-versions-and_"quotes"_and_underscores-2026'
+        for range_index in (0, 1):
+            for metric in chart.METRICS:
+                support = chart.Support()
+                if not (range_index == 1 and index >= 8):
+                    for value in ([0, 1 + index, 1 + index, 4 + index, 0, 12 + index]
+                                  if metric == "compactions"
+                                  else [0, 1 + index, 500 * (index + 1), 500 * (index + 1),
+                                        100_000 * (index + 1), 10**12]):
+                        support.add(value, [])
+                    support.add(None, [])
+                    support.open = 3
+                result[range_index, metric, group] = support
+    return result
+
+
+class RenderingTests(unittest.TestCase):
+    def test_render_edges_and_empty_selection(self):
+        """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
+        root = os.environ.get("CONTEXT_PREVIEW_DIR")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(root or temporary)
+            base.mkdir(exist_ok=True, parents=True)
+            selection = args(out=base / "synthetic", breakdown="model")
+            ranges = [(chart.instant("2026-09-10T12:00:00Z"), chart.instant("2026-09-24T12:00:00Z")),
+                      (chart.instant("2026-09-24T12:00:00Z"), chart.instant("2026-10-08T12:00:00Z"))]
+            chart.write_report(selection, ranges, synthetic_support(), collections.Counter(scanned_journals=17), synthetic=True)
+            programs = list(selection.out.glob("*.gnuplot"))
+            self.assertEqual(len(programs), 4)
+            for program in programs:
+                self.assertTrue(program.with_suffix(".png").stat().st_size > 10_000)
+                self.assertTrue(program.with_suffix(".svg").stat().st_size > 10_000)
+                self.assertIn("noenhanced", program.read_text())
+            axes = [line for line in programs[0].read_text().splitlines() if line.startswith("set xrange")]
+            self.assertEqual(axes, [line for line in programs[-1].read_text().splitlines() if line.startswith("set xrange")])
+            self.assertIn("No measured observations", (selection.out / "context-page-04.gnuplot").read_text())
+            self.assertEqual(selection.out.stat().st_mode & 0o777, 0o700)
+            chart.write_report(args(out=base / "empty"), ranges, {}, collections.Counter(), synthetic=True)
+            self.assertIn("No measured observations", (base / "empty/context-page-01.gnuplot").read_text())
+            self.assertTrue((base / "empty/context-page-01.png").stat().st_size > 10_000)
+
+
+if __name__ == "__main__":
+    unittest.main()

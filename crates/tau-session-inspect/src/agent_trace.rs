@@ -3,6 +3,7 @@
 use std::fs as path_std_fs;
 
 mod agent_tools;
+mod context;
 mod native;
 mod otlp;
 mod performance;
@@ -39,6 +40,9 @@ pub enum AgentTraceFormat {
     ),
     /// Content-free provider accounting and journal-wall timing JSON Lines.
     AgentPerformanceJsonl,
+    /// Content-free creation, ordinary input, and accepted replacement
+    /// evidence.
+    AgentContextJsonl,
 }
 
 /// Content detail retained by compact semantic trace formats.
@@ -132,6 +136,7 @@ fn prepare_agent_trace_with_after_capture(
         AgentTraceFormat::AgentPerformanceJsonl => {
             performance::write_jsonl(root_agent_id, &snapshot, &mut file)?
         }
+        AgentTraceFormat::AgentContextJsonl => context::write_jsonl(&snapshot, &mut file)?,
     }
     file.rewind()?;
     drop(snapshot);

@@ -88,6 +88,16 @@
             exec cargo -Zscript "$@"
           '';
         };
+        contextDiagnostics = pkgs.writeShellApplication {
+          name = "tau-context-diagnostics";
+          runtimeInputs = [
+            pkgs.python3
+            pkgs.gnuplot
+          ];
+          text = ''
+            exec python3 -B "$@"
+          '';
+        };
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
           config = {
@@ -598,6 +608,7 @@
           site = site;
           "cargo-crap" = cargoCrap;
           inherit diagnostics;
+          context-diagnostics = contextDiagnostics;
           inherit (tau-ext-pim.packages.${system}) tau-ext-pim;
           inherit (tau-ext-rostra.packages.${system}) tau-ext-rostra;
           inherit (tau-ext-slack.packages.${system}) tau-ext-slack;

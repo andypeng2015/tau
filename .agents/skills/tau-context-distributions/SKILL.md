@@ -1,0 +1,157 @@
+---
+name: tau-context-distributions
+description: Generate content-free context accumulation, individual segment size, and successful compaction ECDFs, with role/model filters and side-by-side date ranges.
+---
+
+# Context and compaction distributions
+
+Run the checked-in helper; do not research journals or export raw `tau-jsonl`.
+It invokes the validated `agent-context-jsonl` projection once per journal and
+feeds every chart and comparison from that scalar evidence. No providers or
+running harnesses are contacted.
+
+```sh
+cd "$(jj workspace root)"
+nix shell .#context-diagnostics -c tau-context-diagnostics \
+  .agents/skills/tau-context-distributions/chart_context.py \
+  --breakdown role --out tmp/context-last14days
+```
+
+The default captures UTC now once, then selects **agents created in the
+trailing fourteen days `[since, until)`**, observed throughout their lifetime
+before that endpoint. It does not round to midnight or clip lifetime totals to
+the range. `--cohort active` instead selects agents with ordinary prompt starts
+or accepted compactions in range, including their earlier lifetime through the
+endpoint; warn that those agents have different ages.
+
+Use `--tau /path/to/current/tau` if installed Tau lacks the projection.
+`--agents-dir` defaults to `$XDG_STATE_HOME/tau/agents` or
+`$HOME/.local/state/tau/agents`. Scanning all history is necessary: date bounds
+do not reduce journal bytes scanned. `--timeout 120` is a finite per-journal
+subprocess timeout, not a whole-report deadline. Temporary traces are anonymous
+private files, deleted automatically; memory holds current-journal scalar
+prompt/segment state and aggregate support counts, not raw traces or histories.
+The Nix runner uses Python's standard library and gnuplot from `flake.lock`;
+there are no downloaded Python dependencies or persistent diagnostic caches.
+
+## What the three rows mean
+
+1. **Accumulated context per agent:** sum of the observed ordinary-inference
+   input-token high-water in each accepted-compaction-delimited segment.
+2. **Individual context segments:** each segment's observed ordinary-input
+   peak, counted once independently.
+3. **Successful compactions per agent:** accepted `AgentCompacted` boundaries,
+   including real zero counts.
+
+Never sum overlapping prompt sizes. These are **observed request-input workload
+proxies**, not unique accumulated text, final context lengths, billed tokens, or
+context-window limits. Cached inputs are included. Output tokens and compact
+request inputs are excluded; compact requests can cover a different cut.
+Carried summaries and fixed system/tool material repeat across segments.
+Additions never included in an ordinary request remain invisible.
+Different models tokenize differently.
+
+Prompt **start** owns its segment even if its terminal crosses a boundary.
+Only evidence strictly before the endpoint is visible; late terminals and
+boundaries do not backfill historical observations. Failed/cancelled compaction
+attempts and accounting corrections do not split segments.
+
+Unknown nonempty segments omit the strict agent sum, not the known individual
+segments or valid compaction count. Partially measured segments retain their
+observed peaks with partial-coverage counts. Empty fresh tails do not add zero
+samples or invalidate measured totals. Measured open tails are included;
+“open” means no later boundary as of the endpoint, not currently running.
+Agents with no inference have missing size, not zero.
+
+## Filters, breakdowns, comparisons
+
+Use `--breakdown none|role|model|provider|role-model`.
+Repeat `--role` for exact immutable creation-role filters. Model categories
+use all ordinary models within **each metric unit**: one exact provider/model,
+`Mixed models`, or `Unknown model`. Repeat `--model` to select categories
+**after** complete structural aggregation. A mixed-model agent can still
+contribute a single-model individual segment. No model-row filtering, alias
+mapping or last-model attribution occurs. Provider breakdown uses the set of
+ordinary provider prefixes; mixed models on one provider remain that provider.
+
+```sh
+# Side-by-side cohorts, exact UTC endpoints and unchanged lifetime semantics:
+nix shell .#context-diagnostics -c tau-context-diagnostics \
+  .agents/skills/tau-context-distributions/chart_context.py \
+  --tau target/debug/tau \
+  --since 2026-09-10T12:00:00Z --until 2026-09-24T12:00:00Z \
+  --compare-since 2026-09-24T12:00:00Z --compare-until 2026-10-08T12:00:00Z \
+  --breakdown model --role engineer --role reviewer \
+  --out tmp/context-model-comparison
+
+# Select single-model units and mixed units explicitly; substitute an exact
+# provider-qualified model from your summary.csv, not an alias:
+nix shell .#context-diagnostics -c tau-context-diagnostics \
+  .agents/skills/tau-context-distributions/chart_context.py \
+  --model codex/model-version --model 'Mixed models' --breakdown role-model \
+  --cohort active --out tmp/context-active
+```
+
+Both comparison bounds are required. Bounds require explicit timezones,
+positive ranges after the Unix epoch, at most 366 days each. Reproducibility
+requires fixed endpoints and the same snapshot evidence; running checkpoints
+can advance or lag writes. Snapshots across agents are not globally atomic.
+
+## Artifacts and visual delivery
+
+The output directory must be new; its parent must exist. It is owner-only.
+Keep `distribution.csv`, `summary.csv`, `summary.json`, `README.md`, `pages.txt`,
+and every `context-page-NN.{gnuplot,svg,png}` together. Do not commit artifacts.
+Export contains no agent IDs, paths, prompt/transaction IDs, content or raw
+errors, but aggregate activity and exact roles/models remain sensitive.
+
+Read `summary.json` for skipped coverage; `summary.csv` includes eligible/n/
+missing/zero, open/partial segments, measured inputs and nearest-rank
+p50/p90/p95/max. `n + missing = eligible`; coverage fields refer to underlying
+evidence, so do not add them across different metrics. CSV model/role cells are
+literal text; do not let spreadsheet software interpret them as formulas.
+
+Charts use empirical CDF steps: share at or below x, ties jump by multiplicity.
+Tokens use zero-preserving `log10(1+x)` for wide ranges, labeled in original
+token units; narrow ranges are linear. Compactions are normally linear.
+No epsilon zeros, smoothing, fabricated missing samples, clipping or dropped
+groups. At most four groups share each page; all pages/ranges share metric X
+limits and report-wide colors. Exact labels survive in CSV and `pages.txt`
+when long display labels are shortened. Empty panels explicitly say no
+measured observations. Re-render with `gnuplot context-page-01.gnuplot` from
+the output directory; the saved program embeds only aggregate support.
+
+**Inspect the real rendered PNGs with `read_image` before delivery.**
+Confirm legible titles, labels and legends, shared axes/colors, zero mass,
+honest empty panels and enough room for long model labels. Deliver inspected
+PNG previews plus source artifacts/coverage caveats. Do not claim a visual
+pass if inspection was unavailable. Use a senior reviewer for substantial
+presentation changes, and send actual real outputs rather than synthetic-only
+previews.
+
+Unsupported/corrupt/timed-out journals and terminals without proven start
+ownership are skipped, never zero agents.
+`summary.json` reports fixed skip categories, including checkpoint failures,
+reader decode/framing failures and new projection rejections. Decode failures
+remain **incompatible-or-malformed**, since human CLI errors cannot prove legacy
+schema incompatibility versus corruption. Unknown failures are not guessed.
+The broad failed/unsupported count contains those subcategories; do not add it
+to them. All scan counters cover discovered history, not proven eligible agents.
+The visible chart footer preserves that distinction from per-metric missingness.
+The conservative clock policy skips any journal with missing or regressing
+append timestamps, including unrelated events, to avoid ambiguous cuts.
+Supported typed journal schema is the count authority: legacy serde defaults
+cannot independently prove raw serialized presence for every decoded zero.
+Do not promise arbitrary legacy fidelity. See `docs/agent-trace.md`.
+
+## Maintenance checks
+
+```sh
+nix shell .#context-diagnostics -c tau-context-diagnostics \
+  -m unittest discover -s .agents/skills/tau-context-distributions -p 'test_*.py'
+cargo nextest run -p dpc-tau-session-inspect -p dpc-tau-cli
+```
+
+Tests cover segment arithmetic, ownership, missing/zero fidelity, historical
+endpoints, filters, support ties and label escaping. Synthetic edge renders
+are private test artifacts, not source data or committed report outputs.

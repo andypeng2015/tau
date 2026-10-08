@@ -1579,6 +1579,210 @@ fn agent_performance_is_content_free_exact_and_per_agent() {
     assert!(child_summary.get("prompt_sent_tokens").is_none());
 }
 
+/// Scalar context export retains creation role, exact clocks and zero/missing
+/// ordinary inputs, but never private prompts/responses or standalone
+/// accounting.
+#[test]
+fn agent_context_projection_is_content_free_and_preserves_scalar_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    create_trace_agent(
+        temp.path(),
+        "context-agent",
+        tau_proto::AgentCreator::User,
+        None,
+        1,
+    );
+    append_trace_prompt(temp.path(), "context-agent", "private context sentinel", 2);
+    append_trace_prompt_lifecycle(temp.path(), "context-agent", "ordinary-zero", 3);
+    append_trace_provider_terminal(
+        temp.path(),
+        "context-agent",
+        "ordinary-zero",
+        4,
+        Some(tau_proto::ProviderTokenUsage::default()),
+        None,
+    );
+    append_trace_prompt_lifecycle(temp.path(), "context-agent", "ordinary-missing", 5);
+    append_trace_provider_terminal(
+        temp.path(),
+        "context-agent",
+        "ordinary-missing",
+        6,
+        None,
+        None,
+    );
+    append_trace_compaction_prompt(temp.path(), "context-agent", "prompt-compaction", 7);
+    append_trace_compaction_correction(temp.path(), "context-agent", 9);
+    append_context_boundary(temp.path(), "context-agent", "boundary-one", 14);
+    let output = export_trace(
+        temp.path(),
+        &AgentId::parse("context-agent").expect("agent"),
+        DescendantSelection::RootOnly,
+        AgentTraceFormat::AgentContextJsonl,
+    )
+    .expect("context trace");
+    assert!(!output.contains("private context sentinel"));
+    assert!(!output.contains("private response"));
+    assert!(!output.contains("private replacement sentinel"));
+    assert!(!output.contains("prompt-compaction"));
+    let rows = rows_or_empty(&output);
+    assert_eq!(rows[0]["schema"], "tau.agent_context");
+    assert_eq!(rows[0]["content_included"], false);
+    assert_eq!(rows[1]["role"], "trace-test");
+    assert_eq!(rows[1]["recorded_at_unix_micros"], 1);
+    let terminals = rows
+        .iter()
+        .filter(|row| row["record_type"] == "inference_finished")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 2);
+    assert_eq!(terminals[0]["input_tokens"], 0);
+    assert!(terminals[1]["input_tokens"].is_null());
+    let boundaries = rows
+        .iter()
+        .filter(|row| row["record_type"] == "compacted")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        boundaries.len(),
+        1,
+        "accounting and attempts are not boundaries"
+    );
+    assert_eq!(boundaries[0]["compact_input_tokens"], 200);
+    assert_eq!(boundaries[0]["recorded_at_unix_micros"], 14);
+    assert_eq!(rows.last().expect("summary")["clock_regressions"], 0);
+}
+
+/// Core rejects duplicate ordinary terminals, and scalar projection must keep
+/// only the accepted evidence rather than duplicating the attempted accounting.
+#[test]
+fn agent_context_projection_keeps_only_accepted_terminals() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    create_trace_agent(
+        temp.path(),
+        "context-agent",
+        tau_proto::AgentCreator::User,
+        None,
+        1,
+    );
+    append_trace_prompt_lifecycle(temp.path(), "context-agent", "duplicate", 2);
+    append_trace_provider_terminal(temp.path(), "context-agent", "duplicate", 3, None, None);
+    assert!(
+        try_append_trace_provider_terminal(
+            temp.path(),
+            "context-agent",
+            "duplicate",
+            4,
+            None,
+            None
+        )
+        .is_err()
+    );
+    let output = export_trace(
+        temp.path(),
+        &AgentId::parse("context-agent").expect("agent"),
+        DescendantSelection::RootOnly,
+        AgentTraceFormat::AgentContextJsonl,
+    )
+    .expect("accepted trace");
+    assert_eq!(
+        rows_or_empty(&output)
+            .iter()
+            .filter(|row| row["record_type"] == "inference_finished")
+            .count(),
+        1
+    );
+}
+
+/// Regression detection includes omitted content events, so consumers can
+/// reject ambiguous historical cuts even when scalar rows look monotonic.
+#[test]
+fn agent_context_projection_reports_whole_journal_clock_coverage() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    create_trace_agent(
+        temp.path(),
+        "context-agent",
+        tau_proto::AgentCreator::User,
+        None,
+        10,
+    );
+    append_trace_prompt(temp.path(), "context-agent", "private", 9);
+    append_trace_prompt(temp.path(), "context-agent", "private", 5);
+    let output = export_trace(
+        temp.path(),
+        &AgentId::parse("context-agent").expect("agent"),
+        DescendantSelection::RootOnly,
+        AgentTraceFormat::AgentContextJsonl,
+    )
+    .expect("context trace");
+    let rows = rows_or_empty(&output);
+    let summary = rows.last().expect("summary");
+    assert_eq!(summary["clock_regressions"], 1);
+    assert_eq!(summary["missing_timestamps"], 0);
+}
+
+/// Appends a typed successful boundary without exporting replacement content.
+fn append_context_boundary(
+    agents_dir: &std::path::Path,
+    agent_id: &str,
+    transaction: &str,
+    timestamp: u64,
+) {
+    let agent_id = AgentId::parse(agent_id).expect("agent");
+    let mut store = tau_core::AgentStore::open_fixture(agents_dir).expect("store");
+    let head = store
+        .load_agent(agent_id.as_str())
+        .expect("load")
+        .expect("tree")
+        .head()
+        .map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node);
+    store
+        .append_agent_event_at(
+            agent_id.as_str(),
+            None,
+            tau_core::AgentEventParent::InheritHead,
+            Event::AgentStandaloneCompactionStarted(tau_proto::AgentStandaloneCompactionStarted {
+                agent_id: agent_id.clone(),
+                transaction_id: tau_proto::CompactionTransactionId::parse(transaction)
+                    .expect("transaction"),
+                compact_prompt_id: "context-compact".parse().expect("prompt"),
+                cut: head,
+                resume_through: None,
+                model: "provider/model".into(),
+                operation: tau_proto::PromptOperation::StandaloneCompaction,
+                originator: tau_proto::PromptOriginator::User,
+                supersedes: None,
+                trigger: tau_proto::StandaloneCompactionTrigger::Manual,
+            }),
+            tau_proto::UnixMicros::new(timestamp),
+        )
+        .expect("standalone start");
+    store
+        .append_agent_event_at(
+            agent_id.as_str(),
+            None,
+            tau_core::AgentEventParent::InheritHead,
+            Event::AgentCompacted(tau_proto::AgentCompacted {
+                agent_id: agent_id.clone(),
+                transaction_id: tau_proto::CompactionTransactionId::parse(transaction)
+                    .expect("transaction"),
+                cut: head,
+                suffix_end: head,
+                compact_prompt_id: "context-compact".parse().expect("prompt"),
+                model: "provider/model".into(),
+                operation: tau_proto::PromptOperation::StandaloneCompaction,
+                original_input_tokens: Some(tau_proto::TokenCount::new(200)),
+                compaction_output_tokens: Some(tau_proto::TokenCount::new(3)),
+                replacement_window: vec![tau_proto::ContextItem::Compaction(
+                    tau_proto::OpaqueProviderItem::from_raw_json(
+                        r#"{"type":"compaction","encrypted_content":"private replacement sentinel"}"#,
+                    )
+                    .expect("opaque compaction"),
+                )],
+            }),
+            tau_proto::UnixMicros::new(timestamp),
+        )
+        .expect("boundary");
+}
+
 fn rows_or_empty(output: &str) -> Vec<serde_json::Value> {
     output
         .lines()

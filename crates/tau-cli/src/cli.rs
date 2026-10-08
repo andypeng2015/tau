@@ -599,6 +599,9 @@ pub enum AgentTraceFormat {
     /// Content-free provider, tool, wait, outer-turn, and compaction accounting
     /// as JSON Lines.
     AgentPerformanceJsonl,
+    /// Content-free context input and successful compaction evidence as JSON
+    /// Lines.
+    AgentContextJsonl,
 }
 
 /// Content detail for compact semantic trace formats.

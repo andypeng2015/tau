@@ -51,6 +51,12 @@ function job_lint() {
     selfci step fail
   fi
 
+  selfci step start "context distribution fixtures and rendering"
+  if ! nix shell .#context-diagnostics -c tau-context-diagnostics \
+    -m unittest discover -s .agents/skills/tau-context-distributions -p 'test_*.py'; then
+    selfci step fail
+  fi
+
   selfci step start "native packaging unit tests"
   if ! python3 packaging/test_native.py; then
     selfci step fail

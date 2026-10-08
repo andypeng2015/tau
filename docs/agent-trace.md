@@ -9,7 +9,7 @@ HTTP bodies, streaming deltas, or harness phase timing.
 ```console
 tau agent trace <agent-id> \
   [--include-descendants] \
-  [--format tau-jsonl|otlp-json|agent-tools-toon|agent-tools-jsonl|agent-performance-jsonl] \
+  [--format tau-jsonl|otlp-json|agent-tools-toon|agent-tools-jsonl|agent-performance-jsonl|agent-context-jsonl] \
   [--mode lite|full] \
   [--agents-dir <path>]
 ```
@@ -67,6 +67,49 @@ projected item bytes; a pathological frame-valid journal can exhaust memory or
 anonymous temporary storage. Projection still finishes before stdout delivery,
 and the final staged artifact remains delete-on-close.
 
+
+## Context distribution evidence
+
+`agent-context-jsonl` is an additive content-free scalar projection with schema
+`tau.agent_context`, version `0`. It uses the same validated finite snapshot and
+private staging as every trace format; existing performance consumers are unchanged.
+It streams each journal once and retains only typed prompt and transaction
+identities for duplicate checks, not content-bearing source events.
+
+The header declares `schema`, `schema_version`, `record_type: header` and
+`content_included: false`. Each evidence row carries `agent_id`, authoritative
+`seq`, and absolute `recorded_at_unix_micros`:
+
+* `agent_created`: sequence-zero immutable `role`.
+* `inference_started`: `prompt_id`, exact provider-qualified `model`; only
+  ordinary inference starts, never standalone compaction.
+* `inference_finished`: `prompt_id`, optional/null response-local `input_tokens`
+  (`ProviderResponseFinished.usage.prompt_sent_tokens`). Present zero stays zero;
+  absent usage stays null. Cached input is included, not subtracted.
+* `compacted`: accepted `AgentCompacted.transaction_id` as `transaction_id`,
+  `model`, and optional/null `compact_input_tokens`. Compact request tokens
+  describe a possibly different cut; they are not a resulting context size.
+* `journal_summary`: owning `agent_id`, whole-journal `clock_regressions` and
+  `missing_timestamps`, including events omitted from this projection.
+
+Duplicate creation, prompt starts/terminals or accepted transaction identities,
+and terminals without a known start fail staging. The latter have no proven
+operation/model/segment ownership; rejecting the journal preserves strict size
+coverage rather than silently ignoring possibly unmeasured inference.
+Sequence owns segmentation; a terminal belongs to its start's
+segment even when it arrives after an accepted boundary. Date selection and
+model classification remain the consumer's responsibility. No replacement
+content, prompts, provider errors or tool bodies enter this format. Identifiers
+are private correlation evidence; the chart helper exports only aggregates.
+
+The supported typed journal schema is the token-count authority. Serde defaults
+in old token structs do **not** independently prove raw field presence across
+arbitrary legacy files. Unsupported schemas remain rejected by the journal
+reader; this projection does not introduce a legacy migration or raw-field
+presence claim.
+
+Use the project `tau-context-distributions` skill for reusable ECDF charts,
+selection examples and the precise observed ordinary-input high-water metric.
 
 ## Native JSON Lines
 
