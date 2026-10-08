@@ -20,6 +20,22 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
+Protocol **11.1** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
+**0.11.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
+client-to-proto pin of `=0.11.0`. This line is not yet published. It packages the
+existing protocol 11.1 implementation; it does not change wire admission or
+persistence semantics.
+
+Since published SDK 0.10.0 / protocol 10.2, the public API gained provider error
+categories, CLI message DTOs and optional CLI-origin metadata, typed
+exhausted-transient compaction failure variants, and optional original discovery
+paths. These field and enum additions require a new pre-1.0 minor SDK line.
+Configured protocol-10 extensions are rejected before Configure/Ready by a
+protocol-11 harness and must migrate to the actual SDK API, not merely advertise
+a new wire version. The archive consumer check verifies protocol 11.1 and its
+typed failure variants under Rust 1.91; registry-only acceptance must follow
+publication before source-identifying package tags are created.
+
 Protocol **10.2** uses published `dpc-tau-proto` and `dpc-tau-client` **0.10.0**,
 with their unchanged leaf dependencies at 0.1.0. Configure's default-empty
 optional-secret absence metadata adds a public Rust field, so constructing it

@@ -76,7 +76,7 @@ expected_internal_dependencies = {
     },
     "dpc-tau-client": {
         "dpc-tau-blocking-notify-channel": "=0.1.0",
-        "dpc-tau-proto": "=0.10.0",
+        "dpc-tau-proto": "=0.11.0",
     },
 }
 
@@ -162,8 +162,41 @@ fn packaged_sdk_round_trips_the_advertised_protocol_version() {
     let decoded: tau_proto::ProtocolVersion =
         tau_proto::decode_message_from_slice(&encoded).expect("protocol version should decode");
 
-    assert_eq!(decoded, tau_proto::ProtocolVersion::new(10, 3));
+    assert_eq!(decoded, tau_proto::ProtocolVersion::new(11, 1));
     let _logging_initializer: fn(&'static str) = tau_client::init_logging_for;
+}
+
+/// Prevents a version-only SDK update from omitting protocol 11's new failure
+/// authority; both provider and canonical standalone failure DTOs must exist.
+#[test]
+fn packaged_sdk_preserves_protocol_11_failure_variants() {
+    let provider = tau_proto::ProviderFailureKind::TransientCompactionExhausted;
+    let encoded = tau_proto::encode_message_to_vec(&provider).expect("provider failure should encode");
+    let decoded: tau_proto::ProviderFailureKind =
+        tau_proto::decode_message_from_slice(&encoded).expect("provider failure should decode");
+    assert_eq!(decoded, provider);
+
+    let standalone = tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted;
+    let encoded =
+        tau_proto::encode_message_to_vec(&standalone).expect("standalone failure should encode");
+    let decoded: tau_proto::StandaloneCompactionFailureReason =
+        tau_proto::decode_message_from_slice(&encoded).expect("standalone failure should decode");
+    assert_eq!(decoded, standalone);
+}
+
+/// Ensures the archive includes protocol 11.1's actual source API and wire field,
+/// rather than just advertising that revision over the older discovery DTO.
+#[test]
+fn packaged_sdk_preserves_original_discovery_paths() {
+    let file = tau_proto::DiscoveryAgentsFile {
+        file_path: "/resolved/AGENTS.md".into(),
+        display_path: Some("/original/AGENTS.md".into()),
+        content: "instructions".into(),
+    };
+    let encoded = tau_proto::encode_message_to_vec(&file).expect("discovery file should encode");
+    let decoded: tau_proto::DiscoveryAgentsFile =
+        tau_proto::decode_message_from_slice(&encoded).expect("discovery file should decode");
+    assert_eq!(decoded, file);
 }
 EOF
 
