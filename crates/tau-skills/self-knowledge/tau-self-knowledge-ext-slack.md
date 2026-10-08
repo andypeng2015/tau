@@ -83,6 +83,23 @@ reactions require a recent Tau-authored post and covering
 receive policy. Proactive sends need no registration but still require live
 extension/session authority and effective tool policy.
 
+Forwarded/shared message previews supplied inline in the same Slack event now
+reach agents as labelled untrusted attachment quotes, with or without an outer
+note. Supported forms are attachment `text`, textual `blocks`, nested
+`message_blocks[].message.blocks` compatibility previews, and `fallback` when
+no richer body exists. The original author is not independently authenticated;
+the verified sender/editor and reply owner remain the forwarder. Agents may use
+quoted content under that sender's request, but quotes do not control bridge
+commands, mentions, routes or identity.
+
+The bridge never retrieves linked messages, arbitrary URLs, files or images.
+Slack's “Only show link” choice, inaccessible content, missing inline text, and
+unsupported blocks cannot recover the original body. With a note or another
+usable quote, missing inline content is marked explicitly; an attachment-only
+message needs usable text. Extraction is bounded and rejects malformed/oversized
+content instead of truncating; the final comment-plus-quotes must fit the
+configured message limit. No new Slack scopes, configuration or tools are needed.
+
 The 1,024-entry incoming native-owner index retains sources pinned by owned or
 in-flight agent reactions. Evicting an unpinned source also revokes its reply and
 reaction selectors and deferred activation, without consuming pending reports.
