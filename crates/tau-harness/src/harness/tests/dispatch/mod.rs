@@ -1025,6 +1025,25 @@ fn scheduled_test_tool_spec(
 /// Builds a harness with one configured owner and an in-flight routed tool
 /// call.
 pub(super) fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (TempDir, Harness) {
+    setup_routed_test_tool_calls(&[call_id], tool_name)
+}
+
+/// Declare and route sibling calls in one real provider tool round so tests can
+/// exercise independent completion ownership under shared admission pressure.
+pub(super) fn setup_routed_test_tool_calls(
+    call_ids: &[&str],
+    tool_name: &str,
+) -> (TempDir, Harness) {
+    setup_routed_test_tool_calls_with_background(call_ids, tool_name, None)
+}
+
+/// Route a real tool round with explicit background timing for scheduler tests.
+pub(super) fn setup_routed_test_tool_calls_with_background(
+    call_ids: &[&str],
+    tool_name: &str,
+    background_support: Option<tau_proto::BackgroundSupport>,
+) -> (TempDir, Harness) {
+    let call_id = call_ids[0];
     let td = TempDir::new().expect("tempdir");
     let sp = td.path().join("state");
     let mut h = echo_harness(&sp).expect("start");
@@ -1044,7 +1063,10 @@ pub(super) fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (Te
     );
     h.tool_routing.registry.register(
         &crate::test_connection_id("conn-owner"),
-        shared_test_tool_spec(tool_name),
+        ToolSpec {
+            background_support,
+            ..shared_test_tool_spec(tool_name)
+        },
     );
 
     let cid = ensure_test_user_agent(&mut h);
@@ -1064,14 +1086,19 @@ pub(super) fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (Te
 
         agent_prompt_id: spid,
         agent_id: tau_proto::AgentId::parse("main").expect("agent id"),
-        output_items: vec![ContextItem::ToolCall(ToolCallItem {
-            call_id: call_id.into(),
-            name: ToolName::new(tool_name),
-            tool_type: tau_proto::ToolType::Function,
-            arguments: CborValue::Map(Vec::new()),
-            raw_arguments_json: None,
-            responses_envelope: None,
-        })],
+        output_items: call_ids
+            .iter()
+            .map(|call_id| {
+                ContextItem::ToolCall(ToolCallItem {
+                    call_id: (*call_id).into(),
+                    name: ToolName::new(tool_name),
+                    tool_type: tau_proto::ToolType::Function,
+                    arguments: CborValue::Map(Vec::new()),
+                    raw_arguments_json: None,
+                    responses_envelope: None,
+                })
+            })
+            .collect(),
         stop_reason: tau_proto::ProviderStopReason::ToolCalls,
         error: None,
         failure_kind: None,
@@ -1088,14 +1115,16 @@ pub(super) fn setup_routed_test_tool_call(call_id: &str, tool_name: &str) -> (Te
         ws_pool_delta: None,
     })
     .expect("tool call routed");
-    assert_eq!(
-        h.tool_routing
-            .tool_runtime
-            .pending_tool_providers
-            .get(call_id)
-            .map(|provider_id| provider_id.as_str()),
-        Some("conn-owner")
-    );
+    for call_id in call_ids {
+        assert_eq!(
+            h.tool_routing
+                .tool_runtime
+                .pending_tool_providers
+                .get(*call_id)
+                .map(|provider_id| provider_id.as_str()),
+            Some("conn-owner")
+        );
+    }
 
     (td, h)
 }
@@ -2420,6 +2449,7 @@ fn assert_settled_delegate_owner(
     let valid = agent.identity.originator.is_user()
         && !foreground_round
         && retained.is_none()
+        && !h.retained_tool_terminal_agents().contains(cid)
         && match replacement_prompt {
             Some(prompt) => {
                 agent.dispatch.in_flight_prompt.as_ref() == Some(prompt)

@@ -1640,6 +1640,7 @@ mod publication;
 mod publication_completion;
 mod publication_state;
 mod reactive_context_recovery_reducer;
+mod retained_tool_terminal;
 mod runtime_io_state;
 mod runtime_loop;
 mod selected_branch_wake_view;

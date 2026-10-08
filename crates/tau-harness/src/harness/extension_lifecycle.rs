@@ -1285,6 +1285,10 @@ impl Harness {
         }
         self.tool_routing.tool_runtime.tool_agents.remove(call_id);
         self.tool_routing.tool_runtime.pending_tools.remove(call_id);
+        self.tool_routing
+            .tool_runtime
+            .retained_terminals
+            .remove(call_id);
         self.provider_runtime
             .cache_refresh_tool_window_calls
             .remove(call_id);

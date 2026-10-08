@@ -158,6 +158,10 @@ pub(crate) struct ToolRuntimeState {
     /// Envelope identities reserved for canonical tool terminals awaiting
     /// commit.
     pub(super) pending_terminal_observations: HashMap<ToolCallId, PendingTerminalObservation>,
+    /// Exact canonical payloads retained independently across admission
+    /// failure.
+    pub(super) retained_terminals:
+        HashMap<ToolCallId, super::retained_tool_terminal::RetainedToolTerminal>,
     /// Wait settlements retained until their canonical terminal commits.
     pub(super) pending_wait_settlements: HashMap<ToolCallId, subagents_tool::PendingWaitSettlement>,
     /// Calls whose committed terminal clears runtime state without advancing a
@@ -291,6 +295,14 @@ impl Harness {
         match action {
             ForegroundAction::None => {}
             ForegroundAction::Background { call_id } => {
+                if self
+                    .tool_routing
+                    .tool_runtime
+                    .retained_terminals
+                    .contains_key(&call_id)
+                {
+                    return;
+                }
                 if self
                     .tool_routing
                     .tool_runtime
@@ -454,6 +466,14 @@ impl Harness {
 
     pub(super) fn process_background_deadlines_at(&mut self, now: Instant) {
         for call_id in self.tool_routing.tool_runtime.tool_turn.background_due(now) {
+            if self
+                .tool_routing
+                .tool_runtime
+                .retained_terminals
+                .contains_key(&call_id)
+            {
+                continue;
+            }
             if self
                 .tool_routing
                 .tool_runtime

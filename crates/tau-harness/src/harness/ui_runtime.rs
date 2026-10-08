@@ -2655,9 +2655,22 @@ impl Harness {
                 AgentPublishCompletion::ToolTerminal { call_id, .. } => Some(call_id.clone()),
                 _ => None,
             });
-        to_cancel.retain(|target| Some(&target.call_id) != retained_terminal_call.as_ref());
+        to_cancel.retain(|target| {
+            Some(&target.call_id) != retained_terminal_call.as_ref()
+                && !self
+                    .tool_routing
+                    .tool_runtime
+                    .retained_terminals
+                    .contains_key(&target.call_id)
+        });
         for call_id in remaining_calls {
-            if retained_terminal_call.as_ref() == Some(&call_id) {
+            if retained_terminal_call.as_ref() == Some(&call_id)
+                || self
+                    .tool_routing
+                    .tool_runtime
+                    .retained_terminals
+                    .contains_key(&call_id)
+            {
                 continue;
             }
             if to_cancel.iter().any(|target| target.call_id == call_id) {
@@ -2760,6 +2773,7 @@ impl Harness {
             }
         }
         retained_terminal_call.is_some()
+            || self.retained_tool_terminal_agents().contains(cid)
             || foreground_call_ids
                 .iter()
                 .any(|call_id| self.tool_routing.tool_runtime.tool_agents.get(call_id) == Some(cid))

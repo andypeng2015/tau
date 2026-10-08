@@ -165,7 +165,8 @@ impl Harness {
             .pending_publish_completions
             .keys()
             .cloned()
-            .collect::<Vec<_>>();
+            .chain(self.retained_tool_terminal_agents())
+            .collect::<HashSet<_>>();
         for cid in retained {
             self.retry_pending_agent_publish_completion(&cid);
         }
@@ -1176,6 +1177,9 @@ impl Harness {
         semantic_parent: tau_core::AgentEventParent,
         source: Option<&tau_proto::ConnectionId>,
     ) {
+        if self.retain_rejected_tool_terminal(sync, event, semantic_parent, source) {
+            return;
+        }
         let Some((cid, mut completion)) = sync.and_then(|sync| {
             sync.completion()
                 .cloned()
@@ -1298,6 +1302,7 @@ impl Harness {
 
     /// Republish one retained completion envelope only on its owning branch.
     pub(super) fn retry_pending_agent_publish_completion(&mut self, cid: &AgentId) {
+        self.retry_retained_tool_terminals(cid);
         let Some(mut completion) = self
             .prompt_coordination
             .prompt_runtime
@@ -1456,7 +1461,8 @@ impl Harness {
             .pending_publish_completions
             .keys()
             .cloned()
-            .collect::<Vec<_>>();
+            .chain(self.retained_tool_terminal_agents())
+            .collect::<HashSet<_>>();
         for cid in pending {
             self.retry_pending_agent_publish_completion(&cid);
         }

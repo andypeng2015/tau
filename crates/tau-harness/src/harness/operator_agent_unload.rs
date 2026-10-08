@@ -183,6 +183,7 @@ impl Harness {
                 .prompt_runtime
                 .pending_publish_completions
                 .contains_key(cid)
+            || self.retained_tool_terminal_agents().contains(cid)
             || self
                 .prompt_coordination
                 .prompt_runtime

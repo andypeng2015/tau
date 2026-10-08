@@ -1,5 +1,12 @@
 use super::*;
-use crate::harness::tests::dispatch::{final_tool_result, setup_routed_test_tool_call, tool_error};
+use crate::harness::tests::dispatch::{
+    final_tool_result, setup_routed_test_tool_call, setup_routed_test_tool_calls,
+    setup_routed_test_tool_calls_with_background, tool_error,
+};
+use crate::harness::{
+    BackgroundCompletionPromptMode, ForegroundAction, HarnessCommand,
+    canonical_tool_terminal_call_id,
+};
 use crate::{event_log as path_crate_event_log, extension as path_crate_extension};
 
 /// Collect terminal reports and projections for one call in commit order.
@@ -671,8 +678,8 @@ fn parked_ownerless_disconnect_error_defers_teardown_until_canonical_commit() {
     );
 }
 
-/// A provider-terminal append error rejects that attempt without faulting the
-/// live epoch; the same report may retry after the path recovers.
+/// A provider-terminal append error retains the original payload until capacity
+/// recovery, without requiring the extension to resend its one-shot report.
 #[test]
 fn provider_terminal_append_failure_remains_retryable() {
     let (_tmp, mut harness) = setup_routed_test_tool_call("store-fault", "owned_tool");
@@ -722,9 +729,21 @@ fn provider_terminal_append_failure_remains_retryable() {
             .any(|call| call.call_id.as_str() == "store-fault")
     );
 
-    harness
-        .handle_extension_event("conn-owner", TestProtocolItem::Event(report))
-        .expect("later observation remains bounded");
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .contains_key("store-fault")
+    );
+    recover_terminal_capacity(&mut harness);
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
     assert!(harness.runtime_io.publication.pending_intercept.is_none());
     assert!(harness.runtime_io.publication.deferred.is_empty());
     assert!(
@@ -774,6 +793,289 @@ fn provider_terminal_append_failure_remains_retryable() {
     );
 }
 
+/// Exercise the production capacity wake rather than resubmitting a peer
+/// report.
+fn recover_terminal_capacity(harness: &mut Harness) {
+    harness
+        .session_runtime
+        .persistence_owner
+        .as_ref()
+        .expect("persistence owner")
+        .signal_capacity_ready_for_test();
+    harness
+        .handle_runtime_event(
+            HarnessEvent::Command(HarnessCommand::SemanticPersistenceProgress),
+            &mut 0,
+        )
+        .expect("capacity recovery");
+}
+
+/// An expired foreground timer must not spin the central scheduler while a
+/// terminal waits for capacity; the scheduler must return to consume that wake.
+#[test]
+fn retained_terminal_retires_background_deadline_without_settling_call() {
+    let call_id = ToolCallId::from("deadline-pressure");
+    let (_tmp, mut harness) = setup_routed_test_tool_calls_with_background(
+        &[call_id.as_str()],
+        "owned_tool",
+        Some(tau_proto::BackgroundSupport::MinForegroundSeconds(1)),
+    );
+    let cid = harness.tool_routing.tool_runtime.tool_agents[&call_id].clone();
+    let deadline = harness
+        .tool_routing
+        .tool_runtime
+        .tool_turn
+        .next_background_deadline()
+        .expect("real routed call has a foreground deadline");
+    reject_semantic_admissions(&harness, 1000);
+    harness
+        .handle_extension_event(
+            "conn-owner",
+            TestProtocolItem::Event(Event::ToolResultReported(final_tool_result(
+                call_id.as_str(),
+                "owned_tool",
+                "finished before deadline",
+            ))),
+        )
+        .expect("reported terminal");
+
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .contains_key(&call_id)
+    );
+    assert_eq!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .tool_turn
+            .next_background_deadline(),
+        None
+    );
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .tool_turn
+            .background_due(deadline)
+            .is_empty()
+    );
+    harness.process_runtime_deadlines_at(deadline);
+    assert_eq!(
+        harness.agent_runtime.agent_registry.agents[&cid]
+            .execution
+            .tools_in_flight,
+        1
+    );
+    assert!(
+        !harness
+            .tool_routing
+            .tool_runtime
+            .tool_turn
+            .is_backgrounded(&call_id)
+    );
+    assert!(
+        committed_terminal_events(&harness, call_id.as_str())
+            .iter()
+            .all(|(_, event)| !matches!(event, Event::ProviderToolResult(_)))
+    );
+
+    recover_terminal_capacity(&mut harness);
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
+    assert_eq!(
+        harness.agent_runtime.agent_registry.agents[&cid]
+            .execution
+            .tools_in_flight,
+        0
+    );
+    assert_eq!(committed_terminal_events(&harness, call_id.as_str()).iter().filter(|(_, event)|
+        matches!(event, Event::ProviderToolResult(result) if result.kind == tau_proto::ToolResultKind::Final)
+    ).count(), 1);
+}
+
+/// Sibling results, errors and cancellations must not overwrite one agent-wide
+/// retry slot, background a finished call, or require a second extension
+/// report.
+#[test]
+fn sibling_extension_terminals_recover_once_after_admission_pressure() {
+    let calls = ["pressure-result", "pressure-error", "pressure-cancel"];
+    let (_tmp, mut harness) = setup_routed_test_tool_calls(&calls, "owned_tool");
+    let cid = harness.tool_routing.tool_runtime.tool_agents[calls[0]].clone();
+    let agent_id = harness.agent_runtime.agent_registry.agents[&cid]
+        .identity
+        .agent_id
+        .clone()
+        .expect("durable agent");
+    let reports = [
+        Event::ToolResultReported(final_tool_result(
+            calls[0],
+            "owned_tool",
+            "original payload",
+        )),
+        Event::ToolErrorReported(tool_error(calls[1], "owned_tool", "original failure")),
+        Event::ToolCancelledReported(tau_proto::ToolCancelled {
+            presentation: Default::default(),
+            call_id: calls[2].into(),
+            tool_name: ToolName::new("owned_tool"),
+            tool_type: tau_proto::ToolType::Function,
+            display: None,
+        }),
+    ];
+    reject_semantic_admissions(&harness, 1000);
+    for report in &reports {
+        harness
+            .handle_extension_event("conn-owner", TestProtocolItem::Event(report.clone()))
+            .expect("extension terminal report");
+    }
+    assert_eq!(
+        harness.tool_routing.tool_runtime.retained_terminals.len(),
+        calls.len()
+    );
+    assert_eq!(
+        harness.agent_runtime.agent_registry.agents[&cid]
+            .execution
+            .tools_in_flight,
+        3
+    );
+    assert_eq!(
+        harness
+            .session_runtime
+            .agent_store
+            .agent(&agent_id)
+            .expect("live tree")
+            .unresolved_foreground_tool_calls()
+            .len(),
+        calls.len()
+    );
+    let rejected_records = harness
+        .session_runtime
+        .agent_store
+        .snapshot_agent_events_for_test(&agent_id)
+        .expect("rejected journal cut");
+    let rejected_replay =
+        tau_core::AgentTree::from_events(crate::parse_agent_id(&agent_id), &rejected_records);
+    assert_eq!(
+        rejected_replay.unresolved_foreground_tool_calls().len(),
+        calls.len()
+    );
+    for call in calls {
+        harness.apply_foreground_action(ForegroundAction::Background {
+            call_id: call.into(),
+        });
+        assert!(
+            !harness
+                .tool_routing
+                .tool_runtime
+                .tool_turn
+                .is_backgrounded(&call.into())
+        );
+        assert!(
+            committed_terminal_events(&harness, call)
+                .iter()
+                .all(|(_, event)| canonical_tool_terminal_call_id(event).is_none())
+        );
+    }
+    assert!(harness.cancel_remaining_tool_calls(
+        &cid,
+        calls.iter().map(|call| (*call).into()).collect(),
+        BackgroundCompletionPromptMode::QueueAndAdvance,
+    ));
+    assert_eq!(
+        harness.tool_routing.tool_runtime.retained_terminals.len(),
+        calls.len()
+    );
+
+    recover_terminal_capacity(&mut harness);
+    harness.retry_pending_agent_publications();
+    for report in reports {
+        harness
+            .handle_extension_event("conn-owner", TestProtocolItem::Event(report))
+            .expect("late duplicate report");
+    }
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
+    assert!(
+        harness
+            .prompt_coordination
+            .prompt_runtime
+            .pending_publish_completions
+            .is_empty()
+    );
+    assert_eq!(
+        harness.agent_runtime.agent_registry.agents[&cid]
+            .execution
+            .tools_in_flight,
+        0
+    );
+    assert!(!harness.agent_has_open_foreground_tool_round(&cid));
+    assert!(!matches!(
+        harness.agent_runtime.agent_registry.agents[&cid]
+            .turn
+            .turn_state,
+        AgentTurnState::ToolsRunning { .. }
+    ));
+    let records = harness
+        .session_runtime
+        .agent_store
+        .snapshot_agent_events_for_test(&agent_id)
+        .expect("durable terminals");
+    for call in calls {
+        assert!(
+            !harness
+                .tool_routing
+                .tool_runtime
+                .tool_agents
+                .contains_key(call)
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| canonical_tool_terminal_call_id(&record.event)
+                    .is_some_and(|id| id.as_str() == call))
+                .count(),
+            1
+        );
+    }
+    assert!(records.iter().any(|record| matches!(&record.event,
+        Event::ProviderToolResult(result)
+            if result.call_id.as_str() == calls[0]
+                && result.result == CborValue::Text("original payload".to_owned())
+    )));
+    assert!(records.iter().any(|record| matches!(&record.event,
+        Event::ProviderToolError(error)
+            if error.call_id.as_str() == calls[1] && error.message == "original failure"
+    )));
+    let replay = tau_core::AgentTree::from_events(crate::parse_agent_id(&agent_id), &records);
+    assert!(replay.unresolved_foreground_tool_calls().is_empty());
+    assert_eq!(
+        &replay,
+        harness
+            .session_runtime
+            .agent_store
+            .agent(&agent_id)
+            .expect("live tree")
+    );
+    assert!(
+        event_log_events(&harness)
+            .iter()
+            .any(|event| matches!(event, Event::AgentPromptCreated(_))),
+        "the closed tool round must release the continuation"
+    );
+}
+
 /// Transcript validation rejection is not a physical or integrity storage
 /// failure while later clean appends remain retryable.
 #[test]
@@ -815,10 +1117,10 @@ fn provider_terminal_validation_rejection_does_not_fail_stop() {
     );
 }
 
-/// A direct semantic append fault drops an already-deferred terminal instead of
-/// letting it park or retaining it as an online continuation.
+/// A direct append fault does not discard an already-deferred tool terminal;
+/// later ordinary progress retries its approved payload without interception.
 #[test]
-fn direct_append_fault_discards_deferred_terminal() {
+fn direct_append_fault_retains_deferred_terminal() {
     let (_tmp, mut harness) = setup_routed_test_tool_call("deferred-fault", "owned_tool");
     let cid = harness.tool_routing.tool_runtime.tool_agents["deferred-fault"].clone();
     let agent_id = harness.agent_runtime.agent_registry.agents[&cid]
@@ -863,11 +1165,18 @@ fn direct_append_fault_discards_deferred_terminal() {
     reply(&mut harness, InterceptAction::Pass(None));
     assert!(harness.runtime_io.publication.deferred.is_empty());
     assert!(
-        harness
+        !harness
             .tool_routing
             .tool_runtime
             .tool_agents
             .contains_key("deferred-fault")
+    );
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
     );
     harness.publish_terminal_tool_result(
         None,
@@ -1679,8 +1988,8 @@ fn parked_background_terminal_defers_cleanup_and_completion_prompt() {
     );
 }
 
-/// A failed canonical background append must leave runtime completion pending
-/// so a later identical provider report can commit and settle it once.
+/// A failed canonical background append retains the payload and settles once
+/// after capacity recovery, without another extension report.
 #[test]
 fn background_terminal_append_failure_remains_retryable() {
     let call_id = ToolCallId::from("background-store-fault");
@@ -1689,19 +1998,15 @@ fn background_terminal_append_failure_remains_retryable() {
     let tools_in_flight = harness.agent_runtime.agent_registry.agents[&cid]
         .execution
         .tools_in_flight;
+    harness.apply_foreground_action(ForegroundAction::Background {
+        call_id: call_id.clone(),
+    });
     assert!(
         harness
             .tool_routing
             .tool_runtime
             .tool_turn
-            .begin_backgrounding(&call_id)
-    );
-    assert!(
-        harness
-            .tool_routing
-            .tool_runtime
-            .tool_turn
-            .mark_backgrounded(&call_id)
+            .is_backgrounded(&call_id)
     );
     let report =
         Event::ToolResultReported(final_tool_result(call_id.as_str(), "owned_tool", "done"));
@@ -1731,9 +2036,14 @@ fn background_terminal_append_failure_remains_retryable() {
             .contains_key(&call_id)
     );
 
-    harness
-        .handle_extension_event("conn-owner", TestProtocolItem::Event(report))
-        .expect("retry report");
+    recover_terminal_capacity(&mut harness);
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
     assert!(
         !harness
             .tool_routing
@@ -1779,6 +2089,14 @@ fn failed_result_then_disconnect_commits_fresh_disconnected_classification() {
         .observation_id;
 
     harness.fail_pending_tool_calls_for_connection(&crate::test_connection_id("conn-owner"));
+    recover_terminal_capacity(&mut harness);
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
 
     let records = harness
         .session_runtime
@@ -1791,6 +2109,14 @@ fn failed_result_then_disconnect_commits_fresh_disconnected_classification() {
             if classified.terminal != losing
                 && classified.cause == tau_proto::ToolTerminalCause::ProviderDisconnected
     )));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| canonical_tool_terminal_call_id(&record.event) == Some(&call_id))
+            .count(),
+        1,
+        "a superseded retained result must never retry after disconnect completion"
+    );
 }
 
 /// A competing report cannot rewrite an exact terminal candidate until the
@@ -1821,10 +2147,10 @@ fn competing_terminal_cause_cannot_replace_unrejected_publication_owner() {
     assert!(!pending.append_rejected);
 }
 
-/// A competing cancellation after an append failure must receive a fresh
-/// terminal identity and retain the exact cancellation-request cause.
+/// Ordinary progress may admit the retained natural completion before a late
+/// cancellation report. The losing cancellation must not relabel that result.
 #[test]
-fn failed_result_then_cancellation_commits_fresh_cancellation_classification() {
+fn retained_result_wins_before_late_cancellation_report() {
     let call_id = ToolCallId::from("failed-result-cancel");
     let (_tmp, mut harness) = setup_routed_test_tool_call(call_id.as_str(), "owned_tool");
     let cid = harness.tool_routing.tool_runtime.tool_agents[&call_id].clone();
@@ -1844,7 +2170,7 @@ fn failed_result_then_cancellation_commits_fresh_cancellation_classification() {
             ))),
         )
         .expect("failed result report remains bounded");
-    let losing = harness
+    let terminal = harness
         .tool_routing
         .tool_runtime
         .pending_terminal_observations[&call_id]
@@ -1876,10 +2202,25 @@ fn failed_result_then_cancellation_commits_fresh_cancellation_classification() {
         .expect("agent records");
     assert!(records.iter().any(|record| matches!(
         &record.event,
-        Event::AgentToolTerminalClassified(classified)
-            if classified.terminal != losing
-                && classified.cause == tau_proto::ToolTerminalCause::Cancellation { request }
+        Event::ProviderToolResult(result) if result.call_id == call_id
     )));
+    assert!(records.iter().all(|record| !matches!(
+        &record.event,
+        Event::ToolCancelled(cancelled) if cancelled.call_id == call_id
+    )));
+    assert!(
+        records
+            .iter()
+            .filter(|record| canonical_tool_terminal_call_id(&record.event) == Some(&call_id))
+            .all(|record| record.observation_id == terminal)
+    );
+    assert!(
+        harness
+            .tool_routing
+            .tool_runtime
+            .retained_terminals
+            .is_empty()
+    );
 }
 
 /// A duplicate report remains an observable peer report, but completed-call

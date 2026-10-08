@@ -321,6 +321,15 @@ impl ToolTurnMachine {
         self.mark_complete(call_id)
     }
 
+    /// Retire only the operational background timer when a completed call's
+    /// terminal awaits persistence. Foreground and running ownership still
+    /// settle exclusively after canonical terminal admission.
+    pub(crate) fn clear_background_deadline(&mut self, call_id: &ToolCallId) {
+        if let Some(in_flight) = self.in_flight_tool_invocations.get_mut(call_id) {
+            in_flight.foreground_deadline = None;
+        }
+    }
+
     /// Reserve the sole provider-facing background placeholder for a call.
     ///
     /// The call remains foreground-pending until that placeholder commits.
