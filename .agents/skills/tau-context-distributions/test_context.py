@@ -458,6 +458,9 @@ class RenderingTests(unittest.TestCase):
 
     def test_semantic_family_order_and_stable_shades(self):
         self.assertEqual(chart.role_style("coordinator")[1], 55)
+        self.assertEqual(chart.role_style("reviewer")[1], 25)
+        self.assertNotEqual(chart.group_style("coordinator", "role")[1],
+                            chart.group_style("reviewer", "role")[1])
         self.assertNotEqual(chart.role_style("coordinator")[1], chart.role_style("engineer")[1])
         roles = ["engineer-senior", "reviewer", "engineer", "engineer-junior",
                  "researcher-senior", "researcher", "custom-ultra", "custom-junior"]
@@ -509,7 +512,7 @@ class RenderingTests(unittest.TestCase):
         models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol",
                   "gpt-6-astra", "gpt-6.1-astra", "grok-4.7", "deepseek-flash"]
         patterns = chart.model_patterns(models)
-        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(10,4)"})
+        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(20,4)"})
         self.assertEqual({patterns[m] for m in models if m.endswith("-astra")}, {"1"})
         self.assertEqual(len(set(patterns.values())), 4)
         offsets = chart.model_lightness(models)
@@ -528,6 +531,21 @@ class RenderingTests(unittest.TestCase):
             self.assertEqual(len(set(colors)), 3)
             self.assertEqual(colors, [chart.oklch_hex(base + offsets[m], .15, chart.role_style(role)[1])
                                      for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")])
+
+    def test_extended_sol_dashes_match_curve_and_legend(self):
+        _, supports, counts = collect(
+            [start(2, "a", "provider/gpt-6-sol"), finish(3, "a", 10)],
+            selection=args(breakdown="role-model"))
+        with tempfile.TemporaryDirectory() as temporary:
+            selection = args(out=Path(temporary) / "long-sol", breakdown="role-model")
+            chart.write_report(selection, [(1, 100)], supports, counts, synthetic=True)
+            program = (selection.out / "context-page-01.gnuplot").read_text()
+            self.assertEqual(program.count("with lines lw 2.6 dt (20,4)"), 3)
+            self.assertIn("nohead lw 2.6 dt (20,4)", program)
+            self.assertNotIn("dt (10,4)", program)
+            self.assertNotIn("linespoints", program)
+            styles = json.loads((selection.out / "model-styles.json").read_text())
+            self.assertEqual(styles["gpt-6-sol"]["dash"], "(20,4)")
 
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""

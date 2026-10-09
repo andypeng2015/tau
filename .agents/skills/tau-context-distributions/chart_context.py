@@ -476,7 +476,7 @@ def role_style(role):
         if role.endswith(suffix):
             family, level = role[:-len(suffix)], rank
             break
-    base = {"coordinator": 55, "engineer": 260, "researcher": 150, "reviewer": 310}.get(
+    base = {"coordinator": 55, "engineer": 260, "researcher": 150, "reviewer": 25}.get(
         family, 360 * stable_fraction("role:" + family))
     hue = (base + (-12, 0, 12, 24)[level]) % 360
     return (family, level, role), hue, (.64, .58, .52, .46)[level]
@@ -545,7 +545,7 @@ def model_pattern(model):
     return digest[0] % len(LINE_PATTERNS)
 
 
-LINE_PATTERNS = ("1", "(1,3)", "(4,3)", "(10,4)", "(8,3,1,3)",
+LINE_PATTERNS = ("1", "(1,3)", "(4,3)", "(20,4)", "(8,3,1,3)",
                  "(8,3,1,3,1,3)", "(3,7)", "(14,7)",
                  "(12,3,4,3)", "(1,7)", "(4,3,4,7)", "(16,3,1,3,1,3)")
 
@@ -556,14 +556,14 @@ def model_patterns(models):
     Role hues stay filter-independent. A pattern can change if a conflicting
     family is filtered away; export the exact table rather than promising otherwise.
     """
-    result, used = {}, {"1", "(10,4)"}
+    result, used = {}, {"1", "(20,4)"}
     families = sorted({model_version(model)[0] for model in models})
     for family in families:
         if family == "gpt-{version}-astra":
             result[family] = "1"
             continue
         if family == "gpt-{version}-sol":
-            result[family] = "(10,4)"
+            result[family] = "(20,4)"
             continue
         preference = model_pattern(family)
         candidates = [LINE_PATTERNS[(preference + i) % len(LINE_PATTERNS)]
@@ -836,7 +836,7 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "Exact model patterns are exported in model-styles.json. Inventory collisions are "
         "resolved deterministically; filtering away a conflicting model can change its pattern, "
          "while role hues remain filter-independent. Versions within each family share one "
-         "line pattern: Astra is solid, Sol uses long dashes. Numeric version order maps "
+         "line pattern: Astra is solid, Sol uses extended long dashes (20,4). Numeric version order maps "
          "oldest to +0.09 and newest to -0.09 OKLCH lightness relative to each role, with "
          "evenly spaced intermediate versions; singleton/unversioned families use zero offset. "
          "This report-inventory mapping may change when filtering versions. Numeric version "

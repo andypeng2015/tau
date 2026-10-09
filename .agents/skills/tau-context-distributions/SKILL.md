@@ -173,8 +173,8 @@ and extreme-tail ranges; values between ticks remain fully plotted.
 
 Related roles use **OKLCH family base hues** and sort
 **junior → normal → senior → ultra**. Base hue degrees are coordinator **55**
-(orange), engineer **260** (blue), researcher **150** (green), reviewer **310**
-(purple). Seniority hue offsets are **−12°, 0°, +12°, +24°**, respectively:
+(orange), engineer **260** (blue), researcher **150** (green), reviewer **25**
+(red). Seniority hue offsets are **−12°, 0°, +12°, +24°**, respectively:
 junior/senior derive symmetrically around normal, ultra extends the senior side.
 These are real hue changes, not shade-only substitutes. Lightness is
 0.64/0.58/0.52/0.46 and initial chroma0.15; reduce chroma at fixed hue/lightness
@@ -195,7 +195,8 @@ families use zero offset. This preserves role/seniority hue offsets and guarante
 the newest numeric version is darkest for the same role; it does not infer
 release chronology. Gamut reduction retains the requested hue and lightness.
 All versions of a model family share one pattern: **Astra solid**, **Sol long
-dashes `(10,4)`**. Other families receive distinct remaining dash/dot patterns.
+dashes `(20,4)`** (extended dash segments, unchanged gaps/stroke width).
+Other families receive distinct remaining dash/dot patterns.
 Numeric family recognition is presentation only and never changes aggregate
 identities or filters. No marker fallback. Role legend swatches show base
 hues/lightness; grayscale model swatches show actual family patterns and
