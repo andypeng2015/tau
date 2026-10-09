@@ -10,9 +10,11 @@ import collections
 import colorsys
 import csv
 import datetime as dt
+import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -343,29 +345,34 @@ def gp(text):
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("\n", "\\n").replace("\r", " ").replace("\t", " ") + '"'
 
 
-def ticks(maximum, transformed):
-    if transformed:
-        values = [0] + [10**power for power in range(int(math.log10(maximum)) + 1)]
+def ticks(maximum, offset):
+    if offset:
+        if offset == 1 and maximum <= 20:
+            values = (list(range(maximum + 1)) if maximum <= 5 else
+                      sorted({value for value in (0, 1, 2, 3, 5, 10, maximum) if value <= maximum}))
+        else:
+            first = 4 if offset == 10_000 else 0
+            values = [0] + [10**power for power in range(first, int(math.log10(maximum)) + 1)]
         # Keep labels sparse when tails span many orders of magnitude.
         if len(values) > 8:
-            values = [0] + values[3::2]
+            values = [0] + values[1::2]
         def label(value):
             for unit, suffix in ((10**12, "T"), (10**9, "B"), (10**6, "M"), (10**3, "k")):
                 if value >= unit:
                     return f"{value / unit:g}{suffix}" if value < 10**15 else f"{value:.0e}"
             return str(value)
-        return ", ".join(f'{gp(label(value))} {math.log10(1 + value):.12g}' for value in values)
+        return ", ".join(f'{gp(label(value))} {math.log10(1 + value / offset):.12g}' for value in values)
     return None
 
 
-def step_data(support, transform, upper):
+def step_data(support, offset, upper):
     """Ties jump by multiplicity; zero/singleton and continuation remain faithful."""
     if not support.n:
         return []
     points = [(0.0, 0.0)]
     previous = 0
     for value, count in sorted(support.values.items()):
-        x = math.log10(1 + value) if transform else value
+        x = math.log10(1 + value / offset) if offset else value
         points.extend(((x, 100 * previous / support.n),
                        (x, 100 * (previous + count) / support.n)))
         previous += count
@@ -373,25 +380,91 @@ def step_data(support, transform, upper):
     return points
 
 
+def stable_fraction(name):
+    """Unlike Python hash(), this survives processes, filters and report ranges."""
+    return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") / 2**64
+
+
+def role_style(role):
+    family, level = role, 1
+    for suffix, rank in (("-junior", 0), ("-senior", 2), ("-ultra", 3)):
+        if role.endswith(suffix):
+            family, level = role[:-len(suffix)], rank
+            break
+    hue = {"engineer": .60, "researcher": .43, "reviewer": .79}.get(
+        family, stable_fraction("role:" + family))
+    return (family, level, role), hue, (.59, .45, .31, .23)[level]
+
+
+def model_style(model):
+    provider, separator, name = model.partition("/")
+    if not separator:
+        name, provider = provider, ""
+    # Presentation only: retain every exact provider/model as a separate series.
+    match = re.search(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)*)(?![A-Za-z0-9.])", name)
+    if match:
+        version = tuple(int(part) for part in match[1].split("."))
+        family = name[:match.start()] + "{version}" + name[match.end():]
+        # Absolute version mapping, not rank within the selected inventory.
+        # Bounded lightness keeps both old and future/custom versions visible.
+        numeric = version[0] + sum(
+            (part / (part + 9)) / 100**(index - 1)
+            for index, part in enumerate(version[1:], 1))
+        lightness = .45 - .18 * math.tanh((numeric - 6) * 12)
+    else:
+        family, version, lightness = name, (), .45
+    hue = stable_fraction("model:" + family)
+    lightness += .035 * (2 * stable_fraction("provider:" + provider) - 1)
+    return (family, version, provider, model), hue, lightness
+
+
+def group_style(group, breakdown):
+    if breakdown == "role":
+        key, hue, lightness = role_style(group)
+    elif breakdown == "model":
+        key, hue, lightness = model_style(group)
+    elif breakdown == "role-model":
+        role, _, model = group.partition(" | ")
+        role_key, hue, lightness = role_style(role)
+        model_key, _, _ = model_style(model)
+        key = role_key, model_key, group
+        lightness += .035 * (2 * stable_fraction(model) - 1)
+    else:
+        key, hue, lightness = (group,), stable_fraction(breakdown + ":" + group), .42
+    rgb = colorsys.hls_to_rgb(hue, lightness, .72)
+    color = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
+    return key, color
+
+
+def provider_dash(group, breakdown):
+    """Same-version provider curves need more than a subtle shade difference."""
+    model = group.partition(" | ")[2] if breakdown == "role-model" else group
+    if breakdown not in ("model", "role-model") or "/" not in model:
+        return 1
+    provider = model.partition("/")[0]
+    return 1 + int(stable_fraction("provider:" + provider) * 4)
+
+
+def metric_axis(metric, values):
+    maximum = max(values, default=0)
+    positive = min((value for value in values if value), default=1)
+    if metric == "compactions":
+        offset = 1 if maximum > 1 else 0
+    else:
+        offset = 10_000 if maximum > max(10_000, positive * 30) else 0
+    upper = (math.log10(1 + maximum / offset) if offset else maximum) * 1.04 or 1
+    return maximum, offset, upper
+
+
 def render(out, supports, ranges, args, counts, *, synthetic=False):
-    """One deterministic inventory supplies every page's colors and shared axes."""
-    groups = sorted({key[2] for key in supports}) or ["All selected"]
-    palette = ["#2563eb", "#d97706", "#16866b", "#a044b6"]
-    colors = {}
-    for index, group in enumerate(groups):
-        if index < len(palette):
-            colors[group] = palette[index]
-        else:
-            rgb = colorsys.hsv_to_rgb((index * 0.61803398875) % 1, 0.72, 0.64)
-            colors[group] = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
+    """Semantic family order and inventory-independent colors; shared axes."""
+    groups = sorted({key[2] for key in supports},
+                    key=lambda group: group_style(group, args.breakdown)[0]) or ["All selected"]
+    colors = {group: group_style(group, args.breakdown)[1] for group in groups}
     axes = {}
     for metric in METRICS:
         values = [value for (_, kind, _), support in supports.items() if kind == metric for value in support.values]
-        maximum = max(values, default=0)
-        positive = min((value for value in values if value), default=1)
-        transformed = maximum > max(1000 if metric != "compactions" else 100, positive * 30)
-        upper = (math.log10(1 + maximum) if transformed else maximum) * 1.04 or 1
-        axes[metric] = maximum, transformed, upper
+        axes[metric] = metric_axis(metric, values)
     page_index = []
     for page, offset in enumerate(range(0, len(groups), 4), 1):
         selected = groups[offset:offset + 4]
@@ -409,7 +482,7 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
         data = []
         plots = []
         for metric_index, metric in enumerate(METRICS):
-            maximum, transformed, upper = axes[metric]
+            maximum, offset, upper = axes[metric]
             for range_index, bounds in enumerate(ranges):
                 panel = f"p{metric_index}{range_index}"
                 samples = sum(supports.get((range_index, metric, group), Support()).n for group in selected)
@@ -423,10 +496,10 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                     f"set lmargin at screen {left}", f"set rmargin at screen {right}",
                     f"set tmargin at screen {top}", f"set bmargin at screen {bottom}",
                     f"set title {gp(TITLES[metric_index])} font ',14' offset 0,.4",
-                    f"set xlabel {gp(UNITS[metric_index] + (' · input tokens' if metric != 'compactions' else '') + (' (log1p scale)' if transformed else ''))} font ',10'",
+                    f"set xlabel {gp(UNITS[metric_index] + (' · input tokens' if metric != 'compactions' else '') + (' (shifted log; offset 10k)' if offset == 10_000 else ' (log1p scale)' if offset else ''))} font ',10'",
                     "set ylabel 'Share at or below x' font ',10'" if range_index == 0 else "unset ylabel",
                     f"set xrange [0:{upper:.12g}]",
-                    (f"set xtics ({ticks(maximum, True)})" if transformed else
+                    (f"set xtics ({ticks(maximum, offset)})" if offset else
                      "set xtics 1" if metric == "compactions" and maximum <= 10 else "set xtics autofreq"),
                     f"set label 200 {gp(f'n={samples:,}  ·  missing={missing:,}  ·  open segments={opened:,}')} at graph 0,1.045 front font ',10' tc rgb '#64748b'",
                 ]
@@ -437,9 +510,9 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                         continue
                     block = f"{panel}g{group_index}"
                     data.append(f"${block} << EOD")
-                    data.extend(f"{x:.15g} {y:.15g}" for x, y in step_data(support, transformed, upper))
+                    data.extend(f"{x:.15g} {y:.15g}" for x, y in step_data(support, offset, upper))
                     data.append("EOD")
-                    terms.append(f"${block} using 1:2 with lines lw 2.6 lc rgb {gp(colors[group])} notitle")
+                    terms.append(f"${block} using 1:2 with lines lw 2.6 dt {provider_dash(group, args.breakdown)} lc rgb {gp(colors[group])} notitle")
                 if not terms:
                     plot.append("set label 201 'No measured observations' at graph .5,.5 center font ',14' tc rgb '#64748b'")
                     plot.append("plot NaN notitle")
@@ -457,9 +530,14 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
             display = textwrap.shorten(group.replace("\n", " "), width=84, placeholder="…")
             wrapped = "\\n".join(textwrap.wrap(display, width=46))
             # gp handles literal newlines, not a model-provided escape sequence.
+            dash = provider_dash(group, args.breakdown)
             layout.append(
-                f"set label {110 + index} {gp('━━  ' + wrapped.replace(chr(92)+'n', chr(10)))} "
-                f"at screen {0.06 + .455*(index%2)},{.916 - .034*(index//2)} "
+                f"set arrow {10+index} from screen {0.06+.455*(index%2)},{.916-.034*(index//2)} "
+                f"to screen {0.076+.455*(index%2)},{.916-.034*(index//2)} "
+                f"nohead lw 2.6 dt {dash} lc rgb {gp(colors[group])}")
+            layout.append(
+                f"set label {110 + index} {gp(wrapped.replace(chr(92)+'n', chr(10)))} "
+                f"at screen {0.083 + .455*(index%2)},{.916 - .034*(index//2)} "
                 f"font ',11' tc rgb {gp(colors[group])}")
             denominators = []
             for range_index in range(len(ranges)):
@@ -494,7 +572,7 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
             " if (format eq 'svg') { set terminal svg size 1760,1400 noenhanced font 'DejaVu Sans,12' }",
             " if (format eq 'png') { set terminal pngcairo size 1760,1400 noenhanced font 'DejaVu Sans,12' }",
             f" set output {gp(basename + '.')} . format",
-        ] + layout + plots + ["unset multiplot", "unset label", "}", "set output", ""])
+        ] + layout + plots + ["unset multiplot", "unset label", "unset arrow", "}", "set output", ""])
         (out / (basename + ".gnuplot")).write_text(program)
         subprocess.run(["gnuplot", basename + ".gnuplot"], cwd=out, check=True)
     (out / "pages.txt").write_text("\n".join(page_index) + "\n")
@@ -582,10 +660,15 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "## Artifacts and reproducibility\n\n"
         "distribution.csv is lossless aggregate support; summary.csv preserves zero/missing/open/"
         "partial coverage and percentiles; summary.json reports scan coverage. pages.txt lists exact "
-        "groups. Every page shares each metric's X limits and stable report colors across ranges. "
+        "groups. Every page shares each metric's X limits and stable colors across reports/ranges. "
+        "Related role families use light-to-dark junior/normal/senior/ultra shades; model families "
+        "use numeric version order and related shades without merging exact provider/model data. "
         "Display labels may be shortened; exact names remain in CSV and pages.txt. No groups or tails "
-        "are dropped. Tokens and exceptionally wide compaction ranges use log10(1+x), with real zero "
-        "preserved and ticks labeled in original units. Otherwise axes are linear. Axis decisions: "
+        "are dropped. Wide token ranges use log10(1+x/10000), emphasizing 10k–1M without hiding "
+        "low/zero or extreme tails; small/narrow token ranges stay linear. Compaction counts use "
+        "log10(1+x), except all-zero or binary ranges which stay linear. Real zeros are preserved "
+        "and ticks use original units. Provider-specific dashes match legend swatches. "
+        "Axis decisions [maximum, shift offset (0 means linear), upper plotted coordinate]: "
         + json.dumps(axes) + ".\n\n"
         "Re-render from this directory: `gnuplot context-page-01.gnuplot` (repeat for each page). "
         "Programs embed only aggregate step support. CSV cells are literal exact names; treat them "

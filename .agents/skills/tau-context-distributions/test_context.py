@@ -287,6 +287,68 @@ def synthetic_support():
 
 
 class RenderingTests(unittest.TestCase):
+    def test_shifted_axes_keep_zero_and_tails(self):
+        maximum, offset, upper = chart.metric_axis("accumulated", [0, 1, 10_000, 1_000_000])
+        self.assertEqual((maximum, offset), (1_000_000, 10_000))
+        support = chart.Support()
+        for value in (0, 1, 10_000, 1_000_000):
+            support.add(value, [])
+        points = chart.step_data(support, offset, upper)
+        self.assertEqual(points[1:3], [(0, 0), (0, 25)])
+        self.assertLess(chart.math.log10(2) / upper, .16)
+        self.assertEqual(points[-2][1], 100)
+        self.assertGreater(upper, points[-2][0])
+        self.assertIn('"10k"', chart.ticks(maximum, offset))
+        self.assertIn('"1M"', chart.ticks(maximum, offset))
+        self.assertNotIn('"1k"', chart.ticks(maximum, offset))
+        self.assertEqual(chart.metric_axis("segments", [0, 1, 9999])[1], 0)
+        self.assertEqual(chart.metric_axis("segments", [100_000, 200_000])[1], 0)
+        self.assertGreater(chart.metric_axis("segments", [0, 1, chart.U64])[2],
+                           chart.math.log10(1 + chart.U64 / 10_000))
+        for values in ([0], [0, 1]):
+            self.assertEqual(chart.metric_axis("compactions", values)[1], 0)
+        self.assertEqual(chart.metric_axis("compactions", [0, 1, 17])[1], 1)
+        ticks = chart.ticks(17, 1)
+        self.assertIn('"0" 0', ticks)
+        self.assertIn('"1"', ticks)
+        self.assertIn('"2"', ticks)
+        self.assertIn('"17"', ticks)
+
+    def test_provider_dashes_match_legend_swatches(self):
+        names = ["chatgpt/gpt-6-astra", "chatgpt-fedi/gpt-6-astra"]
+        self.assertNotEqual(*(chart.provider_dash(name, "model") for name in names))
+        self.assertEqual(chart.provider_dash(names[0], "model"),
+                         chart.provider_dash("chatgpt/gpt-6.1-sol", "model"))
+        self.assertEqual(chart.provider_dash("engineer | " + names[1], "role-model"),
+                         chart.provider_dash(names[1], "model"))
+
+    def test_semantic_family_order_and_stable_shades(self):
+        roles = ["engineer-senior", "reviewer", "engineer", "engineer-junior",
+                 "researcher-senior", "researcher", "custom-ultra", "custom-junior"]
+        ordered = sorted(roles, key=lambda name: chart.group_style(name, "role")[0])
+        self.assertEqual([name for name in ordered if name.startswith("engineer")],
+                         ["engineer-junior", "engineer", "engineer-senior"])
+        self.assertEqual([name for name in ordered if name.startswith("researcher")],
+                         ["researcher", "researcher-senior"])
+        styles = [chart.role_style(name) for name in
+                  ("engineer-junior", "engineer", "engineer-senior")]
+        self.assertEqual(len({style[1] for style in styles}), 1)
+        self.assertGreater(styles[0][2], styles[1][2])
+        self.assertGreater(styles[1][2], styles[2][2])
+        models = [f"provider/gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
+        ordered = sorted(models, key=lambda name: chart.group_style(name, "model")[0])
+        self.assertEqual(ordered, [models[index] for index in (2, 3, 1, 0)])
+        styles = [chart.model_style(name) for name in ordered]
+        self.assertEqual(len({style[1] for style in styles}), 1)
+        self.assertTrue(all(a[2] > b[2] for a, b in zip(styles, styles[1:])))
+        self.assertEqual(chart.model_style("other/gpt-6-sol")[1], styles[1][1])
+        for breakdown in ("role", "model", "provider", "role-model"):
+            names = ["custom", "provider/gpt-6-sol", "engineer | provider/gpt-6-sol",
+                     "Unknown model", "Mixed models"]
+            original = {name: chart.group_style(name, breakdown) for name in names}
+            self.assertEqual(original, {name: chart.group_style(name, breakdown)
+                                        for name in reversed(names)})
+
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
         root = os.environ.get("CONTEXT_PREVIEW_DIR")
@@ -303,6 +365,8 @@ class RenderingTests(unittest.TestCase):
                 self.assertTrue(program.with_suffix(".png").stat().st_size > 10_000)
                 self.assertTrue(program.with_suffix(".svg").stat().st_size > 10_000)
                 self.assertIn("noenhanced", program.read_text())
+                self.assertIn("set arrow", program.read_text())
+                self.assertIn("unset arrow", program.read_text())
             axes = [line for line in programs[0].read_text().splitlines() if line.startswith("set xrange")]
             self.assertEqual(axes, [line for line in programs[-1].read_text().splitlines() if line.startswith("set xrange")])
             self.assertIn("No measured observations", (selection.out / "context-page-04.gnuplot").read_text())

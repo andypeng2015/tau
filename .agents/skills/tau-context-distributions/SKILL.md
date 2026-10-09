@@ -112,8 +112,13 @@ evidence, so do not add them across different metrics. CSV model/role cells are
 literal text; do not let spreadsheet software interpret them as formulas.
 
 Charts use empirical CDF steps: share at or below x, ties jump by multiplicity.
-Tokens use zero-preserving `log10(1+x)` for wide ranges, labeled in original
-token units; narrow ranges are linear. Compactions are normally linear.
+Tokens use zero-preserving **`log10(1+x/10000)`** for wide ranges, labeled
+“shifted log; offset 10k” with original-unit ticks. This gives 10k–1M most
+of the width for typical context workloads without clipping smaller values,
+zeros or >1M tails. Small (maximum ≤10k) or narrow ranges stay linear;
+extreme tails necessarily occupy more space. Compactions use `log10(1+x)`
+with original integer-count ticks and explicit zero; all-zero/binary ranges
+stay linear. Every page and comparison range shares each metric's axis.
 No epsilon zeros, smoothing, fabricated missing samples, clipping or dropped
 groups. At most four groups share each page; all pages/ranges share metric X
 limits and report-wide colors. Exact labels survive in CSV and `pages.txt`
@@ -121,13 +126,33 @@ when long display labels are shortened. Empty panels explicitly say no
 measured observations. Re-render with `gnuplot context-page-01.gnuplot` from
 the output directory; the saved program embeds only aggregate support.
 
+Related roles share a hue and sort **junior → normal → senior → ultra**,
+with progressively darker shades (engineers blue, researchers green, reviewers
+purple). Model presentation groups the same name around its numeric version,
+sorts versions numerically (e.g. sol 5.6 → 6 → 6.1), and uses related
+light-to-dark shades. Provider-qualified series stay distinct; provider adds a
+small shade variation and consistent dash patterns (with matching legend
+swatches), never an alias or data merge. Colors depend on exact
+family/version names, not page position or the selected inventory, so filtered
+and comparison reports stay consistent. Unknown/custom names use deterministic
+fallback colors and ordering; suffixes junior/senior/ultra also work for custom
+role families. Numeric version recognition is a presentation heuristic only.
+
 **Inspect the real rendered PNGs with `read_image` before delivery.**
 Confirm legible titles, labels and legends, shared axes/colors, zero mass,
 honest empty panels and enough room for long model labels. Deliver inspected
 PNG previews plus source artifacts/coverage caveats. Do not claim a visual
-pass if inspection was unavailable. Use a senior reviewer for substantial
+pass if inspection was unavailable. Use a fresh senior researcher for substantial
 presentation changes, and send actual real outputs rather than synthetic-only
 previews.
+
+**Deliver every page**, not just page 1: enumerate `pages.txt` against the PNG
+files, inspect each, and attach the complete role/model sets with captions naming
+the breakdown and page N/total. Include a manifest of exact page groups and a
+report archive. When a role appears missing, check every page, exact role filters,
+selected-cohort summary evidence and skipped coverage before claiming data loss.
+Researchers/reviewers may simply be on later pages. Never broaden a cohort or
+silently remove filters to make a requested role appear.
 
 Unsupported/corrupt/timed-out journals and terminals without proven start
 ownership are skipped, never zero agents.
