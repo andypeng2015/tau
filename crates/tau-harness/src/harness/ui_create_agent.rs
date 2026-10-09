@@ -155,6 +155,7 @@ impl Harness {
             parent_cid,
             metadata,
             persistence,
+            req.model_override.as_ref(),
         ) {
             Ok(cid) => cid,
             Err(error) => {
@@ -376,6 +377,15 @@ impl Harness {
                 .get(&req.role)
                 .map(|reason| reason.message.clone())
                 .unwrap_or_else(|| format!("unknown role `{}`", req.role));
+            return reject(
+                self,
+                tau_proto::UiCreateAgentRejection::RoleUnavailable,
+                message,
+            );
+        }
+        if let Err(message) =
+            self.validate_required_tools_for_new_agent(&req.role, req.model_override.as_ref())
+        {
             return reject(
                 self,
                 tau_proto::UiCreateAgentRejection::RoleUnavailable,

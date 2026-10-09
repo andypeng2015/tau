@@ -149,6 +149,25 @@ hidden, or unreadable required skills emit a mandatory `harness.config_error`
 notice and disable that role; if the startup/default role is disabled this way,
 startup fails instead of silently falling back.
 
+Role-group and role `required_tools` list exact model-visible registered tool
+names, for example `required_tools: [zulip_register, zulip_send]` on a dedicated
+bot role. Requirements accumulate and de-duplicate across configuration layers;
+omission or `[]` adds nothing. Tau checks live effective availability after
+extension startup, including tool policy and the selected model's support.
+Missing tools fail startup for the selected role **and for any restored agent's
+role/model on resume**, before harness-owned recovery, initialization, or replay
+dispatch. Resumes with these prerequisites inspect saved roles without publishing
+repairs, then wait for tools before restoring agents; unrelated resumes keep
+their existing startup ordering. New-agent
+requests recheck availability, so a disconnected extension cannot leave a new
+bot silently tool-less. Other roles need not satisfy this role's requirements.
+Names refer to public/model-visible tools, not extension names or hosted provider
+capabilities. Errors name the role and missing tools; fix extension availability,
+role policy, or model support, or remove the requirement. This is a startup and
+creation guard, not a health monitor: losing tools does not kill running agents
+or change extension restart/isolation policy.
+The guard does not roll back arbitrary extension startup side effects.
+
 ### CLI UI defaults
 
 ```yaml

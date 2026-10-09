@@ -2242,6 +2242,55 @@ impl Harness {
             .collect()
     }
 
+    /// Identify opt-in startup prerequisites without restoring runtime agents
+    /// or publishing recovery facts. Rehydration can repair canonical journals,
+    /// so sessions with these roles must wait for effective tool availability.
+    /// Unused roles do not alter ordinary resume ordering.
+    pub(super) fn required_tool_roles_before_restore(
+        &mut self,
+    ) -> Result<Vec<String>, HarnessError> {
+        if !self
+            .config
+            .available_roles
+            .values()
+            .any(|role| !role.required_tools.is_empty())
+        {
+            return Ok(Vec::new());
+        }
+        let has_requirements = |role_name: &str| {
+            self.config
+                .available_roles
+                .get(role_name)
+                .is_some_and(|role| !role.required_tools.is_empty())
+        };
+        let mut roles = Vec::new();
+        if has_requirements(&self.config.selected_role) {
+            roles.push(self.config.selected_role.clone());
+        }
+        let loaded = self
+            .session_runtime
+            .store
+            .load_session(self.session_runtime.current_session_id.as_str())?
+            .map(|membership| {
+                membership
+                    .loaded_agents()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for agent_id in loaded {
+            let restored = self.restored_agent_runtime_from_log(agent_id.as_str());
+            let role = restored
+                .role
+                .unwrap_or_else(|| self.config.selected_role.clone());
+            if restored.resumable && has_requirements(&role) && !roles.contains(&role) {
+                roles.push(role);
+            }
+        }
+        Ok(roles)
+    }
+
     pub(super) fn rehydrate_agents_from_session(&mut self) {
         if let Err(error) = self
             .session_runtime

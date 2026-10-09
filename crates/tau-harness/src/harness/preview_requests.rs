@@ -103,6 +103,7 @@ impl Harness {
             None,
             Vec::new(),
             tau_core::AgentPersistenceMode::Ephemeral,
+            None,
         ) {
             Ok(agent) => agent,
             Err(error) => {

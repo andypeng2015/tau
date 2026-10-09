@@ -806,6 +806,7 @@ impl Harness {
             ));
             return Ok(None);
         }
+        self.validate_required_tools_for_role(&role)?;
         let agent_id = self.mint_available_agent_id_for_role(&role);
         let cid: AgentId = crate::parse_agent_id(&agent_id);
 
@@ -906,6 +907,8 @@ impl Harness {
         creation_already_committed: bool,
         start_operation_id: Option<tau_proto::StartOperationId>,
     ) -> Result<(), HarnessError> {
+        self.validate_required_tools_for_role(&pending.role)
+            .map_err(HarnessError::Participant)?;
         let PendingStartAgentRequest {
             source_id,
             extension_name,
@@ -2141,9 +2144,13 @@ impl Harness {
             parent_cid,
             metadata,
             tau_core::AgentPersistenceMode::Durable,
+            None,
         )
     }
 
+    /// Create a user or preview agent only after its effective role/model tools
+    /// satisfy opt-in prerequisites, before reserving identity or writing
+    /// history.
     pub(super) fn try_create_user_agent_with_parent(
         &mut self,
         session_id: SessionId,
@@ -2151,7 +2158,10 @@ impl Harness {
         parent_cid: Option<AgentId>,
         metadata: Vec<tau_proto::AgentInitialMetadata>,
         persistence: tau_core::AgentPersistenceMode,
+        model_override: Option<&ModelId>,
     ) -> Result<AgentId, HarnessError> {
+        self.validate_required_tools_for_new_agent(role, model_override)
+            .map_err(HarnessError::Participant)?;
         let agent_id = self.mint_available_agent_id_for_role(role);
         if persistence.is_ephemeral() {
             self.session_runtime

@@ -2537,6 +2537,98 @@ impl Harness {
         self.tool_definitions_from_specs(&specs)
     }
 
+    /// Check opt-in registered-tool requirements against the current effective
+    /// role/model surface, not declarations or a historical prompt snapshot.
+    /// Hosted capabilities are not registered tools and cannot satisfy this
+    /// list.
+    pub(super) fn validate_required_tools_for_role_model(
+        &self,
+        role_name: &str,
+        model: Option<&ModelId>,
+    ) -> Result<(), String> {
+        let Some(role) = self.config.available_roles.get(role_name) else {
+            return Ok(());
+        };
+        if role.required_tools.is_empty() {
+            return Ok(());
+        }
+        let mut specs = self.gather_effective_tool_specs_for_role_model(role_name, model);
+        let declared = role.web_tools.declared_tool_names().collect::<HashSet<_>>();
+        specs.retain(|spec| {
+            let alias = self.tool_model_visible_name(spec);
+            spec.provider_scope.is_none()
+                || !["web_search", "web_fetch"].contains(&alias.as_str())
+                || declared.contains(&spec.name)
+        });
+        if let Some(info) = model.and_then(|model| self.provider_runtime.model_info.get(model)) {
+            let compiled = compile_web_tools(&role.web_tools, info, &specs)
+                .map_err(|error| format!("role `{role_name}` tools unavailable: {error:?}"))?;
+            project_compiled_web_tools(&role.web_tools, &compiled, &mut specs);
+        }
+        select_ordinary_backings(&mut specs, &["web_search", "web_fetch"])
+            .map_err(|name| format!("role `{role_name}` has ambiguous tool `{name}`"))?;
+        let missing = role
+            .required_tools
+            .iter()
+            .filter(|name| {
+                !specs
+                    .iter()
+                    .any(|spec| self.tool_model_visible_name(spec) == *name)
+            })
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "role `{role_name}` cannot start: required tool(s) unavailable: {}; \
+             connect/fix the tool extension and check role tool policy and model support, \
+             or remove the requirement from `required_tools`",
+            missing.join(", ")
+        ))
+    }
+
+    /// Resolve a new agent's model before checking its role's tool
+    /// requirements.
+    pub(super) fn validate_required_tools_for_role(&self, role_name: &str) -> Result<(), String> {
+        let model = model_for_role(
+            &self.provider_runtime.model_info,
+            &self.config.available_roles,
+            role_name,
+        );
+        self.validate_required_tools_for_role_model(role_name, model.as_ref())
+    }
+
+    /// Match dispatch's override fallback when admitting a new UI agent.
+    pub(super) fn validate_required_tools_for_new_agent(
+        &self,
+        role_name: &str,
+        model_override: Option<&ModelId>,
+    ) -> Result<(), String> {
+        if let Some(model) =
+            model_override.filter(|model| self.provider_runtime.model_routes.contains_key(*model))
+        {
+            return self.validate_required_tools_for_role_model(role_name, Some(model));
+        }
+        self.validate_required_tools_for_role(role_name)
+    }
+
+    /// Fail fresh or resumed startup before initialization or replay can
+    /// dispatch agents whose configured required tools are absent. Restored
+    /// agents retain their own role/model selection rather than inheriting
+    /// the startup role.
+    pub(super) fn validate_startup_required_tools(&self) -> Result<(), HarnessError> {
+        self.validate_required_tools_for_role(&self.config.selected_role)
+            .map_err(HarnessError::Participant)?;
+        for agent in self.agent_runtime.agent_registry.agents.values() {
+            let role = self.role_name_for_agent(agent);
+            let model = self.model_for_agent_role(agent);
+            self.validate_required_tools_for_role_model(&role, model.as_ref())
+                .map_err(HarnessError::Participant)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn gather_effective_tool_specs_for_role_model(
         &self,
         role_name: &str,

@@ -498,9 +498,14 @@ impl Harness {
         harness.install_internal_tool_handlers(internal_tool_handlers);
         let session_start_reason = harness.session_runtime.current_session_start_reason;
         let resumed = session_start_reason == tau_proto::SessionStartReason::Resume;
-        if resumed {
-            harness.rehydrate_agents_from_session();
+        let required_restore_roles = if resumed {
+            harness.required_tool_roles_before_restore()?
         } else {
+            Vec::new()
+        };
+        if resumed && required_restore_roles.is_empty() {
+            harness.rehydrate_agents_from_session();
+        } else if !resumed {
             harness.restore_existing_session_accounting_without_runtime_rehydration();
         }
         harness.publish_current_session_dir();
@@ -520,6 +525,16 @@ impl Harness {
         if let Some(before_session_init) = before_session_init {
             before_session_init(&mut harness);
         }
+
+        for role in &required_restore_roles {
+            harness
+                .validate_required_tools_for_role(role)
+                .map_err(HarnessError::Participant)?;
+        }
+        if !required_restore_roles.is_empty() {
+            harness.rehydrate_agents_from_session();
+        }
+        harness.validate_startup_required_tools()?;
 
         // Eager session init for the default session. INTENTIONAL —
         // do NOT "simplify" this to lazy-on-first-prompt.
@@ -689,9 +704,14 @@ impl Harness {
 
         let session_start_reason = harness.session_runtime.current_session_start_reason;
         let resumed = session_start_reason == tau_proto::SessionStartReason::Resume;
-        if resumed {
-            harness.rehydrate_agents_from_session();
+        let required_restore_roles = if resumed {
+            harness.required_tool_roles_before_restore()?
         } else {
+            Vec::new()
+        };
+        if resumed && required_restore_roles.is_empty() {
+            harness.rehydrate_agents_from_session();
+        } else if !resumed {
             harness.restore_existing_session_accounting_without_runtime_rehydration();
         }
         let initial_client_id =
@@ -727,6 +747,24 @@ impl Harness {
         #[cfg(test)]
         if let Some(before_session_init) = before_session_init {
             before_session_init(&mut harness);
+        }
+
+        for role in &required_restore_roles {
+            if let Err(error) = harness
+                .validate_required_tools_for_role(role)
+                .map_err(HarnessError::Participant)
+            {
+                harness
+                    .send_startup_disconnect_to_initial_client(initial_client_id.as_ref(), &error);
+                return Err(error);
+            }
+        }
+        if !required_restore_roles.is_empty() {
+            harness.rehydrate_agents_from_session();
+        }
+        if let Err(error) = harness.validate_startup_required_tools() {
+            harness.send_startup_disconnect_to_initial_client(initial_client_id.as_ref(), &error);
+            return Err(error);
         }
 
         harness.start_session_init(

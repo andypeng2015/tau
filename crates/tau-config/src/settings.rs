@@ -1943,6 +1943,8 @@ struct RawRoleGroup {
     enable_tools: Option<Vec<ToolName>>,
 
     required_skills: Option<Vec<tau_proto::SkillName>>,
+    /// Exact model-visible tools required by every role in this group.
+    required_tools: Option<Vec<ToolName>>,
     /// Group-default logical web capability policy patch.
     web_tools: Option<RawWebToolsPolicy>,
     roles: IndexMap<String, AgentRolePatch>,
@@ -1955,8 +1957,8 @@ struct RawRoleGroup {
 // Other replacement lists can be cleared with `[]`. `tools` is a
 // nullable replacement list: `tools: null` clears an inherited allow-list back
 // to default tool behavior, while `tools: []` sets an explicit empty
-// allow-list. Prompt fragments and required skills are the exceptions and
-// remain additive when present.
+// allow-list. Prompt fragments, required skills, and required tools are the
+// exceptions and remain additive when present.
 ///
 /// Model-facing scalar settings additionally accept a saturating relative
 /// adjustment. Resolution always produces the existing absolute role value.
@@ -2192,6 +2194,8 @@ struct AgentRolePatch {
     enable_tools: Option<Vec<ToolName>>,
 
     required_skills: Option<Vec<tau_proto::SkillName>>,
+    /// Exact model-visible tools required before this role can start.
+    required_tools: Option<Vec<ToolName>>,
     /// Logical web capability policy patch.
     web_tools: Option<RawWebToolsPolicy>,
 }
@@ -2221,6 +2225,7 @@ impl RawRoleGroup {
             disable_tools: self.disable_tools.clone(),
             enable_tools: self.enable_tools.clone(),
             required_skills: self.required_skills.clone(),
+            required_tools: self.required_tools.clone(),
             web_tools: self.web_tools.clone(),
         }
     }
@@ -3007,6 +3012,12 @@ pub struct AgentRole {
         alias = "requiredSkills"
     )]
     pub required_skills: Vec<tau_proto::SkillName>,
+    /// Exact model-visible registered tool names that must be effective before
+    /// startup or creation of an agent in this role. Group and role
+    /// requirements accumulate across layers; an empty list adds no
+    /// requirements.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<ToolName>,
 }
 
 /// Automatic provider-side compaction policy for a harness role.
@@ -3723,6 +3734,13 @@ impl AgentRole {
             for skill in required_skills {
                 if !self.required_skills.contains(skill) {
                     self.required_skills.push(skill.clone());
+                }
+            }
+        }
+        if let Some(required_tools) = &patch.required_tools {
+            for tool in required_tools {
+                if !self.required_tools.contains(tool) {
+                    self.required_tools.push(tool.clone());
                 }
             }
         }

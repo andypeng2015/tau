@@ -91,6 +91,10 @@
 # customize internal tool availability for the role. `required_skills` declares
 # exact skills that must be model-loadable or the role
 # is disabled with a configuration notice.
+# Group/role `required_tools` lists exact model-visible registered tool names.
+# Missing effective tools reject selected-role startup, resumed agents in that
+# role, and new-agent creation. Requirements accumulate across layers; [] adds
+# nothing. This does not terminate running agents when an extension disconnects.
 #   role_groups:
 #     engineer:
 #       prompt_fragments:
@@ -111,6 +115,7 @@
 #           tools: [read, grep]
 #           disable_tools: [shell]
 #           required_skills: [project-review-process]
+#           required_tools: [read, grep]
 #         engineer-senior:
 #           order: 30
 #           effort: xhigh

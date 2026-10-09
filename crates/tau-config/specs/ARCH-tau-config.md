@@ -202,7 +202,8 @@ array replacement:
 - Per-role overrides are applied after group defaults.
 - Role `order` is ordinary role metadata: lower values sort first within a
   group, with role name as the stable tie-breaker.
-- Prompt fragments and required skill names are additive and de-duplicated.
+- Prompt fragments, required skill names, and group/role `required_tools` names
+  are additive and de-duplicated.
 - The six role tool-policy selector lists (`enable_tools`, `disable_tools`,
   `enable_tool_groups`, `disable_tool_groups`, `enable_tool_tags`, and
   `disable_tool_tags`) append unique entries in first-occurrence order at each

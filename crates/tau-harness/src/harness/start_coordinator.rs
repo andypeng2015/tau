@@ -228,6 +228,10 @@ impl Harness {
     pub(super) fn begin_start_operation(&mut self, pending: PendingStartAgentRequest) {
         let query_id = pending.query.query_id.clone();
         let source_id = pending.source_id.clone();
+        if let Err(error) = self.validate_required_tools_for_role(&pending.role) {
+            self.fail_start_agent_request(&source_id, query_id, error);
+            return;
+        }
         if query_id.len() > MAX_START_QUERY_ID_BYTES {
             self.fail_start_agent_request(
                 &source_id,

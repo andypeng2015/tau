@@ -2750,6 +2750,64 @@ fn harness_settings_reject_context_size_alert_without_threshold() {
     assert!(error.to_string().contains("requires a positive threshold"));
 }
 
+/// Required tools are opt-in, exact-name, additive prerequisites across group,
+/// role, drop-in, and selected profile layers; an empty patch must not erase a
+/// lower-layer requirement or impose one on unrelated roles.
+#[test]
+fn harness_role_required_tools_accumulate_across_layers_and_profiles() {
+    let td = TempDir::new().expect("tempdir");
+    std::fs::write(
+        td.path().join("harness.yaml"),
+        r#"
+        default_profile: bot
+        agents:
+          role_groups:
+            bots:
+              required_tools: [zulip_register]
+              roles:
+                bot:
+                  required_tools: [zulip_send, zulip_register]
+                observer: {}
+        profiles:
+          bot:
+            agents:
+              role_groups:
+                bots:
+                  roles:
+                    bot:
+                      required_tools: [zulip_react, zulip_send]
+        "#,
+    )
+    .expect("base config");
+    std::fs::create_dir_all(td.path().join("harness.d")).expect("drop-ins");
+    std::fs::write(
+        td.path().join("harness.d/10-bot.yaml"),
+        r#"
+        agents:
+          role_groups:
+            bots:
+              roles:
+                bot:
+                  required_tools: []
+        "#,
+    )
+    .expect("empty additive patch");
+    let settings = load_harness_settings_in(&dirs_with_config(td.path())).expect("load");
+    assert_eq!(
+        settings.roles["bot"].required_tools,
+        vec![
+            ToolName::new("zulip_register"),
+            ToolName::new("zulip_send"),
+            ToolName::new("zulip_react"),
+        ]
+    );
+    assert_eq!(
+        settings.roles["observer"].required_tools,
+        vec![ToolName::new("zulip_register")]
+    );
+    assert!(settings.roles["engineer"].required_tools.is_empty());
+}
+
 /// Ensures a higher-precedence raw zero threshold wins layering but cannot
 /// enter the effective alert domain, retaining the role-and-alert-specific
 /// diagnostic.

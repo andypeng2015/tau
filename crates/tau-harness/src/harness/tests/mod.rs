@@ -2812,6 +2812,7 @@ mod protocol_items;
 mod provider_execution_reports;
 mod quota;
 mod replay;
+mod required_tools;
 mod retry;
 mod session_init;
 mod strict_compaction_provider;
