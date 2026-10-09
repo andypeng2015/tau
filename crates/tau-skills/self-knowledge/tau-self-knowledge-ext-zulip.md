@@ -138,11 +138,28 @@ ordinary-mode role can share one existing shared Artifact file or image only
 when it explicitly grants that exact scoped tool. `zulip_send_attachment` is
 disabled by default, tagged `zulip:attach`, and has no tool group, so text-send
 permission does not authorize uploads. The designated receiver can provide a
-canonical shared `blake3:<64 lowercase hex>` Artifact `key`, a safe ASCII basename
+bare shared `blake3:<64 lowercase hex>` Artifact `key`, a safe ASCII basename
 `filename`, optional Markdown `message` caption, and exactly one existing
 `destination` or `reply_to`. Filenames are 1–128 bytes, cannot start with `.`,
 and contain only letters, digits, `.`, `_`, and `-`. `topic` follows the same
 explicit agent-chosen-topic authority as text sends.
+
+Pass the bare key string in `key`, not the surrounding
+`<tau-artifact:blake3:...>` reference wrapper returned by export. For example,
+after exporting a PNG, substitute its actual digest and an authorized destination:
+
+```json
+{
+  "key": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "filename": "chart.png",
+  "content_type": "image/png",
+  "destination": "configured-alias",
+  "message": "Generated chart"
+}
+```
+
+The digest and destination above are illustrative, not usable authority.
+Do not pass a local path or substitute a native Zulip destination ID.
 
 That revision also accepts optional `content_type`. When supplied, it must be
 exactly one of `image/avif`, `image/gif`, `image/heic`, `image/jpeg`,
@@ -164,13 +181,25 @@ links, or harness-store access. The sent fact preserves the exact outbound
 Markdown, including an ordinary authenticated relative upload link as inert
 content, never as recipient or reply authority.
 
-One attachment runs at a time. Artifact reads have one 60-second total
+Send attachments sequentially: wait for each call to finish before starting
+the next; keep only one attachment send in flight. Artifact reads have one 60-second total
 deadline, while provider operations retain 30-second HTTP deadlines. Sharing
 does not renew Artifact retention: existing originals persist independently
 of ephemeral transcripts and can become unavailable. Upload and send are
 separate effects, so failure or cancellation can leave an orphan upload or an
 uncertain sent message. Do not retry an uncertain send automatically; inspect
 the conversation first. Send-only mode remains text-only.
+
+The external corrective-examples change `e2e1ce2d` is published;
+publication does not update the installed extension. In that revision,
+`ToolSpec.examples` supplies corrected send/list/download calls with
+pre-dispatch schema-validation errors. Separately, the attachment-send runtime
+error for an invalid Artifact key includes a concrete corrected call directly.
+That invalid-key rejection happens before Artifact RPC, upload, or send: correct
+the key spelling and call again. This local rejection is not an uncertain remote
+failure. For remote failures or cancellation, retain the inspect-before-retry
+rule above; examples do not make upload and send atomic or authorize automatic
+retries.
 
 A separately attachment-read-capable extension revision adds
 `zulip_list_attachments` and `zulip_download_attachment` in ordinary
