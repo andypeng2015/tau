@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Content-free context ECDFs from Tau's validated, finite scalar projection.
+"""Content-free context distributions from Tau's validated, finite scalar projection.
 
 Only the current journal's prompt/segment scalar state and aggregate support
 counts survive parsing. No journal content or correlation identities are exported.
@@ -434,6 +434,25 @@ def step_data(support, offset, upper):
     return points
 
 
+def joined_support_data(support, offset, upper):
+    """Join observed cumulative endpoints, plus the existing 100% CDF tail.
+
+    No lower origin or intermediate observations. Joining is visual only, not
+    the ECDF at unobserved counts. The tail keeps singleton/zero series visible.
+    """
+    n = support.n
+    if not n:
+        return []
+    points, cumulative = [], 0
+    for value, count in sorted(support.values.items()):
+        cumulative += count
+        x = math.log10(1 + value / offset) if offset else value
+        points.append((x, 100 * cumulative / n))
+    if upper > points[-1][0]:
+        points.append((upper, 100.0))
+    return points
+
+
 def stable_fraction(name):
     """Unlike Python hash(), this survives processes, filters and report ranges."""
     return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") / 2**64
@@ -664,7 +683,8 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                         continue
                     block = f"{panel}g{group_index}"
                     data.append(f"${block} << EOD")
-                    points = step_data(support, offset, upper)
+                    points = (joined_support_data(support, offset, upper) if metric == "compactions"
+                              else step_data(support, offset, upper))
                     data.extend(f"{x:.15g} {y:.15g}" for x, y in points)
                     data.append("EOD")
                     if combined:
@@ -782,9 +802,14 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "These are observed request-input workload proxies, NOT unique accumulated text, final "
         "context lengths, billed tokens or window limits. System/tool material and carried summaries "
         "repeat across segments; additions never sent to inference are invisible. Different model "
-        "tokenizers make cross-model totals non-invariant. ECDF steps show share at or below x; "
-        "ties jump by multiplicity. Percentiles use nearest rank. Horizontal continuation is a "
-        "CDF, not extrapolated observations.\n\n"
+        "tokenizers make cross-model totals non-invariant. Observed support endpoints show share "
+        "at or below x, with ties counted by multiplicity; percentiles use nearest rank. "
+        "Context-size curves remain ECDF steps. Compaction curves instead join unique observed "
+        "(integer count, cumulative percentage) endpoints with straight lines in plotted coordinates. "
+        "Interpolation is visual only: it adds no observations and is not the ECDF at unobserved "
+        "counts. No artificial lower origin is drawn. The final horizontal 100% CDF continuation "
+        "to the shared axis edge is not an extra observation; it also keeps singleton/all-zero "
+        "series visible without markers.\n\n"
         "## Coverage and attribution\n\n"
         "Creation roles are immutable journal evidence. Model category is the set of ordinary "
          "model names in the metric unit: exact suffix after the first /, Mixed models, or Unknown model. "
@@ -854,7 +879,7 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "Axis decisions [maximum, shift offset (0 means linear), upper plotted coordinate]: "
         + json.dumps(axes) + ".\n\n"
         "Re-render from this directory: `gnuplot context-page-01.gnuplot` (repeat for each page). "
-        "Programs embed only aggregate step support. CSV cells are literal exact names; treat them "
+        "Programs embed only aggregate support and CDF continuation. CSV cells are literal exact names; treat them "
         "as text when importing into spreadsheets. No IDs, paths, transactions, prompt text or raw "
         "errors are exported. Aggregate activity, roles and models remain sensitive: keep this "
         "owner-only directory private and inspect before sharing. Do not commit artifacts.\n")

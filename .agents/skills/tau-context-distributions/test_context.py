@@ -358,6 +358,64 @@ def synthetic_support():
 
 
 class RenderingTests(unittest.TestCase):
+    def test_joined_compaction_support_preserves_ties_zero_and_order(self):
+        support = chart.Support()
+        for value in (4, 0, 1, 4, 0):
+            support.add(value, [])
+        original = support.values.copy()
+        self.assertEqual(chart.joined_support_data(support, 0, 5),
+                         [(0, 40), (1, 60), (4, 100), (5, 100)])
+        points = chart.joined_support_data(support, 1, 1)
+        self.assertEqual(points,
+                         [(0, 40), (chart.math.log10(2), 60),
+                          (chart.math.log10(5), 100), (1, 100)])
+        self.assertEqual(support.values, original)
+        self.assertEqual(support.n, 5)
+        self.assertEqual(chart.joined_support_data(chart.Support(), 1, 1), [])
+        for value in (0, 1, 7):
+            singleton = chart.Support()
+            singleton.add(value, [])
+            singleton.add(value, [])
+            maximum, offset, upper = chart.metric_axis("compactions", [value])
+            x = chart.math.log10(1 + value / offset) if offset else value
+            self.assertEqual(chart.joined_support_data(singleton, offset, upper),
+                             [(x, 100), (upper, 100)])
+            self.assertGreater(upper, x)
+        nonzero = chart.Support()
+        nonzero.add(2, [])
+        nonzero.add(4, [])
+        # Do not manufacture a lower origin or a 0% point when zero is absent.
+        self.assertEqual(chart.joined_support_data(nonzero, 0, 5),
+                         [(2, 50), (4, 100), (5, 100)])
+
+    def test_only_compaction_render_joins_support_and_keeps_line_styles(self):
+        group = json.dumps(["engineer", "gpt-6-sol"])
+        unit = chart.Support()
+        for value in (0, 0, 1, 4, 4):
+            unit.add(value, [])
+        supports = {(0, metric, group): unit for metric in chart.METRICS}
+        with tempfile.TemporaryDirectory() as temporary:
+            selection = args(out=Path(temporary) / "joined", breakdown="role-model")
+            chart.write_report(selection, [(1, 100)], supports, collections.Counter(), synthetic=True)
+            program = (selection.out / "context-page-01.gnuplot").read_text()
+            def block(name):
+                text = program.split(f"${name} << EOD\n", 1)[1].split("\nEOD", 1)[0]
+                return [tuple(map(float, line.split())) for line in text.splitlines()]
+            _, offset, upper = chart.metric_axis("compactions", unit.values)
+            expected = chart.joined_support_data(unit, offset, upper)
+            actual = block("p20g0")
+            self.assertEqual(len(actual), len(expected))
+            for point, endpoint in zip(actual, expected):
+                for coordinate, value in zip(point, endpoint):
+                    self.assertAlmostEqual(coordinate, value)
+            for name in ("p00g0", "p10g0"):
+                _, offset, upper = chart.metric_axis("segments", unit.values)
+                self.assertEqual(block(name), chart.step_data(unit, offset, upper))
+            self.assertEqual(actual[0], (0, 40))
+            self.assertEqual(program.count("with lines lw 2.6 dt (30,4)"), 3)
+            self.assertNotIn("linespoints", program)
+            self.assertIn("Interpolation is visual only", (selection.out / "README.md").read_text())
+
     def test_default_combined_view_preserves_pairing_and_zoom_resolution(self):
         default = chart.parser().parse_args(["--out", "unused"])
         self.assertEqual(default.breakdown, "role-model")

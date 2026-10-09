@@ -148,7 +148,16 @@ p50/p90/p95/max. `n + missing = eligible`; coverage fields refer to underlying
 evidence, so do not add them across different metrics. CSV model/role cells are
 literal text; do not let spreadsheet software interpret them as formulas.
 
-Charts use empirical CDF steps: share at or below x, ties jump by multiplicity.
+Context-size rows use empirical CDF steps: share at or below x, ties jump by multiplicity.
+The **compactions row only** joins each unique observed **(integer count,
+cumulative percentage)** endpoint with straight lines in plotted coordinates.
+Ties and genuine zero mass remain in the exact support/cumulative counts.
+Joining is visual interpolation only: it is **not the ECDF at unobserved counts**
+and never adds observations, an artificial lower origin, or geometric markers.
+Preserve the existing horizontal **100% CDF continuation** after the final support
+to the shared axis edge. It is not an extra observation and keeps singleton and
+all-zero series visible as lines. Do not staircase this row or replace context
+rows with joined curves. Explain this convention in report files, not chart clutter.
 Tokens use zero-preserving **`log10(1+x/10000)`** for wide ranges, labeled
 “shifted log; offset 10k” with original-unit ticks. This gives 10k–1M most
 of the width for typical context workloads without clipping smaller values,
@@ -156,7 +165,7 @@ zeros or >1M tails. Small (maximum ≤10k) or narrow ranges stay linear;
 extreme tails necessarily occupy more space. Compactions use `log10(1+x)`
 with original integer-count ticks and explicit zero; all-zero/binary ranges
 stay linear. Every page and comparison range shares each metric's axis.
-No epsilon zeros, smoothing, fabricated missing samples or clipping.
+No epsilon zeros, smoothing of data, fabricated missing samples or clipping.
 The combined view includes every selected observed pair on one page, retaining
 three metric rows; it never invents a cross-product from independent role/model
 aggregates. A role-only aggregate cannot reconstruct the pairing: regenerate
