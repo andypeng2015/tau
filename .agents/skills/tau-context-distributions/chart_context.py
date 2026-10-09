@@ -199,6 +199,8 @@ def read_trace(stream, ranges):
 
 
 def model_category(models):
+    # Keep raw evidence on segments for the explicit provider breakdown.
+    models = {model.split("/", 1)[1] for model in models}
     return next(iter(models)) if len(models) == 1 else MIXED if models else UNKNOWN
 
 
@@ -294,8 +296,15 @@ def aggregate(agents, args, supports, counts):
         units.extend(("segments", segment.peak, segment.models, [segment], 0, 0)
                      for segment in segments)
         for metric, value, unit_models, evidence, tails, compact_measured in units:
-            if args.model and model_category(unit_models) not in args.model:
+            category = model_category(unit_models)
+            if (args.breakdown in ("model", "role-model") and category == MIXED
+                    and not args.include_mixed and MIXED not in args.model):
+                counts[f"{chr(65 + index)}_{metric}_excluded_mixed_units"] += 1
                 continue
+            if args.model and category not in args.model:
+                counts[f"{chr(65 + index)}_{metric}_excluded_model_filter_units"] += 1
+                continue
+            counts[f"{chr(65 + index)}_{metric}_included_units"] += 1
             group = group_for(agent.role, unit_models, args.breakdown)
             supports.setdefault((index, metric, group), Support()).add(
                 value, evidence, tails, compact_measured)
@@ -473,85 +482,102 @@ def role_style(role):
     return (family, level, role), hue, (.64, .58, .52, .46)[level]
 
 
-def model_style(model):
-    provider, separator, name = model.partition("/")
-    if not separator:
-        name, provider = provider, ""
-    # Presentation only: retain every exact provider/model as a separate series.
-    match = re.search(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)*)(?![A-Za-z0-9.])", name)
+def model_version(model):
+    """Presentation family/version only; never alias aggregation identities."""
+    match = re.search(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)*)(?![A-Za-z0-9.])", model)
     if match:
         version = tuple(int(part) for part in match[1].split("."))
-        family = name[:match.start()] + "{version}" + name[match.end():]
-        # Absolute version mapping, not rank within the selected inventory.
-        # Bounded lightness keeps both old and future/custom versions visible.
-        numeric = version[0] + sum(
-            (part / (part + 9)) / 100**(index - 1)
-            for index, part in enumerate(version[1:], 1))
-        lightness = .45 - .18 * math.tanh((numeric - 6) * 12)
+        family = model[:match.start()] + "{version}" + model[match.end():]
     else:
-        family, version, lightness = name, (), .45
+        family, version = model, ()
+    return family, version
+
+
+def model_lightness(models):
+    families = collections.defaultdict(set)
+    for model in models:
+        family, version = model_version(model)
+        if version:
+            families[family].add(version)
+    result = {}
+    for model in models:
+        family, version = model_version(model)
+        versions = sorted(families[family])
+        # Up to .18 total separation, preserving visible role hues and contrast.
+        # A singleton/unversioned family uses the normal role lightness.
+        result[model] = (.09 - .18 * versions.index(version) / (len(versions) - 1)
+                         if version and len(versions) > 1 else 0)
+    return result
+
+
+def model_style(model):
+    family, version = model_version(model)
+    lightness = .45
     hue = stable_fraction("model:" + family)
-    lightness += .035 * (2 * stable_fraction("provider:" + provider) - 1)
-    return (family, version, provider, model), hue, lightness
+    return (family, version, model), hue, lightness
 
 
-def group_style(group, breakdown):
+def group_style(group, breakdown, lightness_offsets=None):
     if breakdown == "role":
         key, hue, lightness = role_style(group)
     elif breakdown == "model":
         key, hue, lightness = model_style(group)
+        lightness = .58 + (lightness_offsets or {}).get(group, 0)
     elif breakdown == "role-model":
         role, model = group_pair(group)
         role_key, hue, lightness = role_style(role)
         model_key, _, _ = model_style(model)
         key = role_key, model_key, group
+        lightness += (lightness_offsets or {}).get(model, 0)
     else:
         key, hue, lightness = (group,), stable_fraction(breakdown + ":" + group), .42
-    if breakdown in ("role", "role-model"):
-        color = oklch_hex(lightness, .15, hue)
+    if breakdown in ("role", "role-model", "model"):
+        color = oklch_hex(lightness, .15, hue * 360 if breakdown == "model" else hue)
     else:
         rgb = colorsys.hls_to_rgb(hue, lightness, .72)
         color = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
     return key, color
 
 
-def provider_dash(group, breakdown):
-    """Same-version provider curves need more than a subtle shade difference."""
-    model = group_pair(group)[1] if breakdown == "role-model" else group
-    if breakdown not in ("model", "role-model") or "/" not in model:
-        return 1
-    provider = model.partition("/")[0]
-    return 1 + int(stable_fraction("provider:" + provider) * 4)
-
-
 def model_pattern(model):
-    """Exact model identity, including provider and honest mixed/unknown units."""
+    """Preferred line-only pattern for an exact normalized model name."""
     digest = hashlib.sha256(("pattern:" + model).encode()).digest()
-    # Custom on/off lengths plus marker shapes avoid conflating model/provider
-    # identities while retaining stable patterns under filtering.
-    lengths = (2 + digest[0] % 8, 2 + digest[1] % 5,
-               1 + digest[2] % 3, 2 + digest[3] % 5)
-    return "(" + ",".join(map(str, lengths)) + ")", 1 + digest[4] % 13
+    return digest[0] % len(LINE_PATTERNS)
+
+
+LINE_PATTERNS = ("1", "(1,3)", "(4,3)", "(10,4)", "(8,3,1,3)",
+                 "(8,3,1,3,1,3)", "(3,7)", "(14,7)",
+                 "(12,3,4,3)", "(1,7)", "(4,3,4,7)", "(16,3,1,3,1,3)")
 
 
 def model_patterns(models):
     """Resolve exact observed-inventory collisions, consistently across panels.
 
-    Colors stay filter-independent. A pattern can change if a conflicting model
-    is filtered away; export the exact table rather than promising otherwise.
+    Role hues stay filter-independent. A pattern can change if a conflicting
+    family is filtered away; export the exact table rather than promising otherwise.
     """
-    result, used = {}, set()
-    for model in sorted(models):
-        dash, point = model_pattern(model)
-        lengths = [float(value) for value in dash.strip("()").split(",")]
-        attempt = 0
-        while (dash, point) in used:
-            attempt += 1
-            dash = "(" + ",".join(f"{value + (.5 * attempt if index == 1 else 0):g}"
-                                 for index, value in enumerate(lengths)) + ")"
-        result[model] = dash, point
-        used.add((dash, point))
-    return result
+    result, used = {}, {"1", "(10,4)"}
+    families = sorted({model_version(model)[0] for model in models})
+    for family in families:
+        if family == "gpt-{version}-astra":
+            result[family] = "1"
+            continue
+        if family == "gpt-{version}-sol":
+            result[family] = "(10,4)"
+            continue
+        preference = model_pattern(family)
+        candidates = [LINE_PATTERNS[(preference + i) % len(LINE_PATTERNS)]
+                      for i in range(len(LINE_PATTERNS))]
+        dash = next((pattern for pattern in candidates if pattern not in used), None)
+        if dash is None:
+            # Unbounded inventory fallback; no geometric marker fallback.
+            length = 20
+            while f"({length},4,1,4)" in used:
+                length += 4
+            dash = f"({length},4,1,4)"
+        result[family] = dash
+        used.add(dash)
+    return {model: result[model_version(model)[0]] for model in models}
 
 
 def metric_axis(metric, values):
@@ -566,19 +592,22 @@ def metric_axis(metric, values):
 
 
 def render(out, supports, ranges, args, counts, *, synthetic=False):
-    """Semantic family order and inventory-independent colors; shared axes."""
+    """Semantic family order, shared axes, role hues and version brightness."""
     groups = sorted({key[2] for key in supports},
                     key=lambda group: group_style(group, args.breakdown)[0]) or ["All selected"]
-    colors = {group: group_style(group, args.breakdown)[1] for group in groups}
     combined = args.breakdown == "role-model"
     roles = sorted({group_pair(group)[0] for group in groups},
                    key=lambda role: role_style(role)[0]) if combined else []
     models = sorted({group_pair(group)[1] for group in groups},
-                    key=lambda model: model_style(model)[0]) if combined else []
-    patterns = model_patterns(models)
-    if combined:
+                     key=lambda model: model_style(model)[0]) if combined else []
+    lightness_offsets = model_lightness(models if combined else groups if args.breakdown == "model" else [])
+    colors = {group: group_style(group, args.breakdown, lightness_offsets)[1] for group in groups}
+    patterns = model_patterns(models if combined else groups if args.breakdown == "model" else [])
+    if combined or args.breakdown == "model":
         (out / "model-styles.json").write_text(json.dumps(
-            {model: dict(dash=dash, marker=point) for model, (dash, point) in patterns.items()},
+            {model: dict(family=model_version(model)[0], dash=dash,
+                         lightness_offset=lightness_offsets[model])
+             for model, dash in patterns.items()},
             ensure_ascii=False, indent=2) + "\n")
     axes = {}
     for metric in METRICS:
@@ -639,10 +668,10 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                     data.extend(f"{x:.15g} {y:.15g}" for x, y in points)
                     data.append("EOD")
                     if combined:
-                        dash, point = patterns[group_pair(group)[1]]
-                        style = f"linespoints pt {point} ps .55 pi {max(1, len(points)//24)} lw 2.6 dt {dash}"
+                        dash = patterns[group_pair(group)[1]]
                     else:
-                        style = f"lines lw 2.6 dt {provider_dash(group, args.breakdown)}"
+                        dash = patterns[group] if args.breakdown == "model" else "1"
+                    style = f"lines lw 2.6 dt {dash}"
                     terms.append(f"${block} using 1:2 with {style} lc rgb {gp(colors[group])} notitle")
                 if not terms:
                     plot.append("set label 201 'No measured observations' at graph .5,.5 center font ',14' tc rgb '#64748b'")
@@ -658,8 +687,8 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
         ]
         if combined:
             layout.extend([
-                "set label 104 'Roles · colors' at screen .06,.927 font ',12' tc rgb '#475569'",
-                "set label 105 'Models · line patterns' at screen .515,.927 font ',12' tc rgb '#475569'",
+                "set label 104 'Roles · hues' at screen .06,.927 font ',12' tc rgb '#475569'",
+                "set label 105 'Models · family patterns, newer darker' at screen .515,.927 font ',12' tc rgb '#475569'",
             ])
             for index, role in enumerate(roles):
                 y = .908 - .009 * index
@@ -670,15 +699,15 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                 ])
             for index, model in enumerate(models):
                 y = .908 - .009 * index
-                dash, point = patterns[model]
+                dash = patterns[model]
+                shade = oklch_hex(.58 + lightness_offsets[model], 0, 0)
                 layout.extend([
-                    f"set arrow {1000+index} from screen .515,{y} to screen .541,{y} nohead lw 2.6 dt {dash} lc rgb '#475569'",
-                    f"set label {2000+index} '' at screen .528,{y} point pt {point} ps .55 tc rgb '#475569'",
+                    f"set arrow {1000+index} from screen .515,{y} to screen .541,{y} nohead lw 2.6 dt {dash} lc rgb {gp(shade)}",
                     f"set label {3000+index} {gp(textwrap.shorten(model, width=132, placeholder='…'))} at screen .548,{y} font ',11' tc rgb '#475569'",
                 ])
         for index, group in enumerate([] if combined else selected):
             display = textwrap.shorten(group.replace("\n", " "), width=46, placeholder="…")
-            dash = provider_dash(group, args.breakdown)
+            dash = patterns[group] if args.breakdown == "model" else "1"
             layout.append(
                 f"set arrow {10+index} from screen {0.06+.455*(index%2)},{.916-.028*(index//2)} "
                 f"to screen {0.076+.455*(index%2)},{.916-.028*(index//2)} "
@@ -729,6 +758,9 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
                              support.quantile(.95), max(support.values, default=None)))
     axes = render(args.out, supports, ranges, args, counts, synthetic=synthetic)
     selection = dict(cohort=args.cohort, breakdown=args.breakdown, role=args.role, model=args.model,
+                     model_identity="exact suffix after first /",
+                     mixed_models_included=(args.breakdown not in ("model", "role-model")
+                                            or args.include_mixed or MIXED in args.model),
                      role_scope="explicit" if args.role else "all" if args.all_roles else "standard",
                      effective_roles=selected_roles(args),
                      ranges=[dict(since_inclusive=iso(a), until_exclusive=iso(b)) for a, b in ranges])
@@ -755,7 +787,11 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "CDF, not extrapolated observations.\n\n"
         "## Coverage and attribution\n\n"
         "Creation roles are immutable journal evidence. Model category is the set of ordinary "
-        "models in the metric unit: one exact provider/model, Mixed models, or Unknown model. "
+         "model names in the metric unit: exact suffix after the first /, Mixed models, or Unknown model. "
+         "Different providers using the same exact suffix are one model, not Mixed models. "
+         "Model and role-model views exclude Mixed models by default after normalization; "
+         "--include-mixed or --model 'Mixed models' opts in. Exclusion/inclusion counts are "
+         "per metric unit above; selected_agents is the cohort before model exclusions. "
         "Repeatable --model selects these categories AFTER whole structural aggregation, separately "
         "at each metric's unit (a mixed agent may have single-model segments). Role filters apply "
         "to the agent uniformly. By default only the exact standard roster is selected: "
@@ -792,14 +828,20 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "partial coverage and percentiles; summary.json reports scan coverage. pages.txt lists exact "
         "groups. Every page shares each metric's X limits and stable colors across reports/ranges. "
         "Related role families use light-to-dark junior/normal/senior/ultra shades; model families "
-        "use numeric version order and related shades without merging exact provider/model data. "
+         "use numeric version order and related shades without aliasing different model names. "
         "The default combined role/model view puts all observed pairs on one page, with separate "
         "role-color and exact-model pattern legends, and a 3520×3600 zoomable image. It never "
         "fabricates unobserved role/model pairs. Joint CSV/page-index group identities are JSON "
         "[role, model] arrays so custom names cannot collide through a display separator. "
         "Exact model patterns are exported in model-styles.json. Inventory collisions are "
         "resolved deterministically; filtering away a conflicting model can change its pattern, "
-        "while role colors remain filter-independent. "
+         "while role hues remain filter-independent. Versions within each family share one "
+         "line pattern: Astra is solid, Sol uses long dashes. Numeric version order maps "
+         "oldest to +0.09 and newest to -0.09 OKLCH lightness relative to each role, with "
+         "evenly spaced intermediate versions; singleton/unversioned families use zero offset. "
+         "This report-inventory mapping may change when filtering versions. Numeric version "
+         "order is not inferred release chronology. Grayscale model swatches show the same "
+         "brightness offsets, while role swatches show base hues/lightness. "
         "Other breakdowns use at most ten series per page. "
         "Date comparisons are explicit opt-in; one window is the default. Display labels may be shortened; "
         "exact names remain in CSV and pages.txt. No selected groups or tails "
@@ -808,7 +850,7 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "log10(1+x), except all-zero or binary ranges which stay linear. Real zeros are preserved "
         "and ticks use original units, including intermediate 2x/5x decade values where labels fit. "
         "Tick labels are collision-pruned by panel width, not data samples. "
-        "Provider-specific dashes match legend swatches. "
+         "Model line-only patterns match legend swatches; no geometric markers are used. "
         "Axis decisions [maximum, shift offset (0 means linear), upper plotted coordinate]: "
         + json.dumps(axes) + ".\n\n"
         "Re-render from this directory: `gnuplot context-page-01.gnuplot` (repeat for each page). "
@@ -835,7 +877,8 @@ def parser():
     result.add_argument("--breakdown", choices=("none", "role", "model", "provider", "role-model"), default="role-model")
     result.add_argument("--role", action="append", default=[], help="Exact immutable creation role; repeatable")
     result.add_argument("--all-roles", action="store_true", help="Include nonstandard roles; explicit --role still selects exact names")
-    result.add_argument("--model", action="append", default=[], help="Exact aggregate provider/model category, Mixed models, or Unknown model; repeatable")
+    result.add_argument("--model", action="append", default=[], help="Exact model name after first /, Mixed models, or Unknown model; repeatable")
+    result.add_argument("--include-mixed", action="store_true", help="Include Mixed models in model/role-model views (default excluded)")
     result.add_argument("--timeout", type=float, default=120, help="Finite per-journal trace timeout, seconds")
     result.add_argument("--out", type=Path, required=True, help="New owner-only output directory")
     return result

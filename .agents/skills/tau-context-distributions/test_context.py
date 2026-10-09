@@ -125,10 +125,10 @@ class MeasurementTests(unittest.TestCase):
     def test_historical_endpoint_does_not_backfill(self):
         """One scan reconstructs independent endpoints with no future model/boundary leakage."""
         facts = [start(2, "a"), finish(10, "a", 20), compact(11),
-                 start(12, "b", "other/model"), finish(13, "b", 8)]
-        _, support, _ = collect(facts, ((1, 10), (1, 14)), args(breakdown="model"))
-        self.assertEqual(support[0, "accumulated", "provider/model"].missing, 1)
-        self.assertEqual(support[0, "compactions", "provider/model"].values, {0: 1})
+                 start(12, "b", "other/different"), finish(13, "b", 8)]
+        _, support, _ = collect(facts, ((1, 10), (1, 14)), args(breakdown="model", include_mixed=True))
+        self.assertEqual(support[0, "accumulated", "model"].missing, 1)
+        self.assertEqual(support[0, "compactions", "model"].values, {0: 1})
         self.assertEqual(support[1, "accumulated", chart.MIXED].values, {28: 1})
         self.assertEqual(support[1, "compactions", chart.MIXED].values, {1: 1})
 
@@ -145,9 +145,9 @@ class MeasurementTests(unittest.TestCase):
     def test_model_filters_do_not_remove_boundaries(self):
         """Exact model selection applies after per-metric aggregation, not to raw rows."""
         facts = [start(2, "a"), finish(3, "a", 20), compact(4),
-                 start(5, "b", "other/model"), finish(6, "b", 8)]
-        _, support, _ = collect(facts, selection=args(model=["provider/model"], breakdown="model"))
-        self.assertEqual(support[0, "segments", "provider/model"].values, {20: 1})
+                  start(5, "b", "other/different"), finish(6, "b", 8)]
+        _, support, _ = collect(facts, selection=args(model=["model"], breakdown="model"))
+        self.assertEqual(support[0, "segments", "model"].values, {20: 1})
         self.assertEqual(len(support), 1)
         _, support, _ = collect(facts, selection=args(model=[chart.MIXED], breakdown="model"))
         self.assertEqual(support[0, "accumulated", chart.MIXED].values, {28: 1})
@@ -175,9 +175,54 @@ class MeasurementTests(unittest.TestCase):
         _, support, _ = collect([], selection=args(breakdown="model"))
         self.assertIn((0, "compactions", chart.UNKNOWN), support)
         _, support, _ = collect([start(2, "a"), finish(3, "a", 10),
-                                 start(4, "b", "other/model"), finish(5, "b", 20)],
-                                selection=args(breakdown="model"))
+                                 start(4, "b", "other/different"), finish(5, "b", 20)],
+                                selection=args(breakdown="model", include_mixed=True))
         self.assertEqual(support[0, "segments", chart.MIXED].values, {20: 1})
+
+    def test_provider_independent_identity_and_exact_filters(self):
+        facts = [start(2, "a", "chatgpt/a/b"), finish(3, "a", 10),
+                 start(4, "b", "chatgpt-fedi/a/b"), finish(5, "b", 20),
+                 compact(6), start(7, "c", "other/a/b"), finish(8, "c", 8)]
+        for breakdown in ("model", "role-model"):
+            _, support, counts = collect(facts, selection=args(breakdown=breakdown))
+            group = "a/b" if breakdown == "model" else json.dumps(["engineer", "a/b"])
+            self.assertEqual(support[0, "accumulated", group].values, {28: 1})
+            self.assertEqual(support[0, "segments", group].values, {20: 1, 8: 1})
+            self.assertEqual(support[0, "compactions", group].values, {1: 1})
+            self.assertEqual(counts["A_accumulated_excluded_mixed_units"], 0)
+        _, support, _ = collect(facts, selection=args(breakdown="provider"))
+        self.assertEqual(support[0, "accumulated", "Mixed providers"].values, {28: 1})
+        self.assertEqual(support[0, "segments", "other"].values, {8: 1})
+        for name, expected in (("a/b", 3), ("chatgpt/a/b", 0), ("A/b", 0)):
+            _, support, _ = collect(facts, selection=args(breakdown="model", model=[name]))
+            self.assertEqual(len(support), expected)
+
+    def test_mixed_defaults_are_metric_local_and_opt_in(self):
+        facts = [start(2, "a", "provider/a"), finish(3, "a", 10), compact(4),
+                 start(5, "b", "other/b"), finish(6, "b", 20)]
+        for breakdown in ("model", "role-model"):
+            _, support, counts = collect(facts, selection=args(breakdown=breakdown))
+            self.assertEqual({key[1] for key in support}, {"segments"})
+            self.assertEqual(sum(unit.n for unit in support.values()), 2)
+            self.assertEqual(counts["A_selected_agents"], 1)
+            self.assertEqual(counts["A_accumulated_excluded_mixed_units"], 1)
+            self.assertEqual(counts["A_compactions_excluded_mixed_units"], 1)
+            self.assertEqual(counts["A_segments_excluded_mixed_units"], 0)
+            self.assertEqual(counts["A_segments_included_units"], 2)
+            _, included, _ = collect(facts, selection=args(breakdown=breakdown, include_mixed=True))
+            self.assertEqual(sum(unit.n for unit in included.values()), 4)
+            self.assertEqual(sum(unit.values.total() for (i, metric, g), unit in included.items()
+                                 if metric == "accumulated"), 1)
+        for breakdown in ("none", "role", "provider"):
+            _, support, _ = collect(facts, selection=args(breakdown=breakdown))
+            self.assertEqual({key[1] for key in support}, set(chart.METRICS))
+        # A genuinely mixed segment is excluded too, not allocated to either model.
+        _, support, counts = collect(
+            [start(2, "a", "p/a"), finish(3, "a", 10),
+             start(4, "b", "q/b"), finish(5, "b", 20)],
+            selection=args(breakdown="model"))
+        self.assertEqual(support, {})
+        self.assertEqual(counts["A_segments_excluded_mixed_units"], 1)
 
     def test_duplicates_and_clock_ambiguity_rejected(self):
         """Ambiguous structural evidence never becomes repeated samples or zero counts."""
@@ -321,16 +366,16 @@ class RenderingTests(unittest.TestCase):
             [start(2, "a", "provider/a"), finish(3, "a", 10), compact(4),
              start(5, "b", "other/b"), finish(6, "b", 20)], selection=default)
         self.assertEqual({key[2] for key in supports},
-                         {json.dumps(["engineer", model]) for model in ("provider/a", "other/b", chart.MIXED)})
-        self.assertEqual(supports[0, "accumulated", json.dumps(["engineer", chart.MIXED])].values, {30: 1})
+                         {json.dumps(["engineer", model]) for model in ("a", "b")})
+        self.assertTrue(all(key[1] == "segments" for key in supports))
         a = chart.group_for("custom | provider/a", {"provider/b"}, "role-model")
         b = chart.group_for("custom", {"provider/a | provider/b"}, "role-model")
         self.assertNotEqual(a, b)
-        self.assertEqual(chart.group_pair(a), ("custom | provider/a", "provider/b"))
+        self.assertEqual(chart.group_pair(a), ("custom | provider/a", "b"))
         for model in ("provider/a", "other/b", chart.MIXED, chart.UNKNOWN):
             self.assertEqual(chart.group_style("engineer | " + model, "role-model")[1],
                              chart.group_style("engineer", "role")[1])
-        models = [f"provider/model-{index}" for index in range(14)] + [chart.MIXED, chart.UNKNOWN]
+        models = [f"model{index}" for index in range(14)] + [chart.MIXED, chart.UNKNOWN]
         self.assertEqual(len(set(chart.model_patterns(models).values())), len(models))
         self.assertEqual(chart.model_pattern(models[0]), chart.model_pattern(models[0]))
         support = {}
@@ -347,9 +392,14 @@ class RenderingTests(unittest.TestCase):
             programs = list(selection.out.glob("*.gnuplot"))
             self.assertEqual(len(programs), 1)
             program = programs[0].read_text()
-            self.assertIn("Roles · colors", program)
-            self.assertIn("Models · line patterns", program)
-            self.assertIn("with linespoints", program)
+            self.assertIn("Roles · hues", program)
+            self.assertIn("Models · family patterns, newer darker", program)
+            self.assertIn("with lines lw", program)
+            self.assertNotIn("linespoints", program)
+            self.assertNotIn(" point pt ", program)
+            styles = json.loads((selection.out / "model-styles.json").read_text())
+            self.assertTrue(all(set(style) == {"family", "dash", "lightness_offset"} for style in styles.values()))
+            self.assertEqual(len({style["dash"] for style in styles.values()}), len(models))
             self.assertEqual(struct.unpack(">II", programs[0].with_suffix(".png").read_bytes()[16:24]),
                              (3520, 3600))
             groups = json.loads((selection.out / "pages.txt").read_text().split(": ", 1)[1])
@@ -400,13 +450,11 @@ class RenderingTests(unittest.TestCase):
         self.assertIn('"2"', ticks)
         self.assertIn('"17"', ticks)
 
-    def test_provider_dashes_match_legend_swatches(self):
-        names = ["chatgpt/gpt-6-astra", "chatgpt-fedi/gpt-6-astra"]
-        self.assertNotEqual(*(chart.provider_dash(name, "model") for name in names))
-        self.assertEqual(chart.provider_dash(names[0], "model"),
-                         chart.provider_dash("chatgpt/gpt-6.1-sol", "model"))
-        self.assertEqual(chart.provider_dash("engineer | " + names[1], "role-model"),
-                         chart.provider_dash(names[1], "model"))
+    def test_normalized_styles_match_across_providers(self):
+        names = [chart.model_category({name}) for name in
+                 ("chatgpt/gpt-6-astra", "chatgpt-fedi/gpt-6-astra")]
+        self.assertEqual(names[0], names[1])
+        self.assertEqual(chart.model_patterns(names), {"gpt-6-astra": chart.model_patterns(names[:1])["gpt-6-astra"]})
 
     def test_semantic_family_order_and_stable_shades(self):
         self.assertEqual(chart.role_style("coordinator")[1], 55)
@@ -423,13 +471,14 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual([style[1] for style in styles], [248, 260, 272])
         self.assertGreater(styles[0][2], styles[1][2])
         self.assertGreater(styles[1][2], styles[2][2])
-        models = [f"provider/gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
+        models = [f"gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
         ordered = sorted(models, key=lambda name: chart.group_style(name, "model")[0])
         self.assertEqual(ordered, [models[index] for index in (2, 3, 1, 0)])
         styles = [chart.model_style(name) for name in ordered]
         self.assertEqual(len({style[1] for style in styles}), 1)
-        self.assertTrue(all(a[2] > b[2] for a, b in zip(styles, styles[1:])))
-        self.assertEqual(chart.model_style("other/gpt-6-sol")[1], styles[1][1])
+        lightness = chart.model_lightness(ordered)
+        self.assertTrue(all(lightness[a] > lightness[b] for a, b in zip(ordered, ordered[1:])))
+        self.assertEqual(chart.model_style("gpt-6-sol")[1], styles[1][1])
         for breakdown in ("role", "model", "provider", "role-model"):
             names = ["custom", "provider/gpt-6-sol", "engineer | provider/gpt-6-sol",
                      "Unknown model", "Mixed models"]
@@ -445,7 +494,9 @@ class RenderingTests(unittest.TestCase):
             color = chart.oklch_hex(.58, 1, hue)
             self.assertRegex(color, r"^#[0-9a-f]{6}$")
             self.assertEqual(color, chart.oklch_hex(.58, 1, hue + 360))
-        models = ["provider/model-14", "provider/model-31"]
+        inventory = [f"model{i}" for i in range(100)]
+        models = next([a, b] for i, a in enumerate(inventory) for b in inventory[i+1:]
+                      if chart.model_pattern(a) == chart.model_pattern(b))
         self.assertEqual(chart.model_pattern(models[0]), chart.model_pattern(models[1]))
         patterns = chart.model_patterns(models)
         self.assertNotEqual(patterns[models[0]], patterns[models[1]])
@@ -453,6 +504,30 @@ class RenderingTests(unittest.TestCase):
         # Stable preferences unless another observed model conflicts.
         self.assertEqual(patterns[models[0]], chart.model_patterns(models[:1])[models[0]])
         self.assertEqual(chart.role_style("researcher-ultra")[1], 174)
+
+    def test_model_family_patterns_and_numeric_version_brightness(self):
+        models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol",
+                  "gpt-6-astra", "gpt-6.1-astra", "grok-4.7", "deepseek-flash"]
+        patterns = chart.model_patterns(models)
+        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(10,4)"})
+        self.assertEqual({patterns[m] for m in models if m.endswith("-astra")}, {"1"})
+        self.assertEqual(len(set(patterns.values())), 4)
+        offsets = chart.model_lightness(models)
+        self.assertEqual([offsets[m] for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")],
+                         [.09, 0, -.09])
+        self.assertEqual(offsets["deepseek-flash"], 0)
+        self.assertEqual(offsets["grok-4.7"], 0)
+        self.assertEqual(offsets, chart.model_lightness(list(reversed(models))))
+        # Numeric 6.10 is later/darker than 6.1, not lexical order.
+        numeric = chart.model_lightness(["gpt-6.10-sol", "gpt-6.1-sol"])
+        self.assertLess(numeric["gpt-6.10-sol"], numeric["gpt-6.1-sol"])
+        for role in chart.STANDARD_ROLES:
+            base = chart.role_style(role)[2]
+            colors = [chart.group_style(json.dumps([role, m]), "role-model", offsets)[1]
+                      for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")]
+            self.assertEqual(len(set(colors)), 3)
+            self.assertEqual(colors, [chart.oklch_hex(base + offsets[m], .15, chart.role_style(role)[1])
+                                     for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")])
 
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
