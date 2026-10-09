@@ -1,6 +1,6 @@
 ---
 name: tau-context-distributions
-description: Generate content-free context accumulation, individual segment size, and successful compaction ECDFs, with role/model filters and side-by-side date ranges.
+description: Generate one zoomable combined role/model chart of content-free context, segment sizes and compactions; optional filters and date comparisons.
 ---
 
 # Context and compaction distributions
@@ -14,7 +14,7 @@ running harnesses are contacted.
 cd "$(jj workspace root)"
 nix shell .#context-diagnostics -c tau-context-diagnostics \
   .agents/skills/tau-context-distributions/chart_context.py \
-  --breakdown role --out tmp/context-last14days
+  --out tmp/context-last14days
 ```
 
 The default captures UTC now once, then selects **agents created in the
@@ -65,7 +65,18 @@ Agents with no inference have missing size, not zero.
 
 ## Filters, breakdowns, comparisons
 
-Use `--breakdown none|role|model|provider|role-model`.
+The default is **one combined role/model chart**, one time window, all observed
+role/model pairs together. Role colors/shades identify roles; exact model
+identities use distinct deterministic dash/marker patterns. Compact independent
+role and model legends sit side by side, not a legend entry per pair. The PNG
+is **3520×3600** (2× each dimension of the previous 1760×1800 dense chart);
+fonts/strokes stay normal-sized so readers can zoom. Do not paginate the
+combined view merely for density or generate a model-only comparison as a
+standard second image.
+Joint `group` cells in CSV/`pages.txt` are JSON `[role, model]` arrays,
+preserving exact custom names without ambiguous display separators.
+
+Other explicit views use `--breakdown none|role|model|provider|role-model`.
 Repeat `--role` for exact immutable creation-role filters. Model categories
 use all ordinary models within **each metric unit**: one exact provider/model,
 `Mixed models`, or `Unknown model`. Repeat `--model` to select categories
@@ -85,13 +96,13 @@ roles; `--all-roles` includes every role when no `--role` is given.
 effective role scope; selected counts reflect that scope.
 
 ```sh
-# Side-by-side cohorts, exact UTC endpoints and unchanged lifetime semantics:
+# Optional only when requested: same combined chart, two time-window columns:
 nix shell .#context-diagnostics -c tau-context-diagnostics \
   .agents/skills/tau-context-distributions/chart_context.py \
   --tau target/debug/tau \
   --since 2026-09-10T12:00:00Z --until 2026-09-24T12:00:00Z \
   --compare-since 2026-09-24T12:00:00Z --compare-until 2026-10-08T12:00:00Z \
-  --breakdown model --role engineer --role reviewer \
+  --role engineer --role reviewer \
   --out tmp/context-model-comparison
 
 # Select single-model units and mixed units explicitly; substitute an exact
@@ -106,6 +117,10 @@ Both comparison bounds are required. Bounds require explicit timezones,
 positive ranges after the Unix epoch, at most 366 days each. Reproducibility
 requires fixed endpoints and the same snapshot evidence; running checkpoints
 can advance or lag writes. Snapshots across agents are not globally atomic.
+For future side-by-side requests, use the normal combined role/model encoding
+with A/B time windows as left/right columns on one graph. Do not generate a
+comparison now unless requested; a model-only layout is an explicit alternate
+breakdown, not the standard comparison.
 
 ## Artifacts and visual delivery
 
@@ -130,8 +145,11 @@ extreme tails necessarily occupy more space. Compactions use `log10(1+x)`
 with original integer-count ticks and explicit zero; all-zero/binary ranges
 stay linear. Every page and comparison range shares each metric's axis.
 No epsilon zeros, smoothing, fabricated missing samples, clipping or dropped
-groups. At most ten series share each page (still three metric rows);
-the taller canvas leaves room for the dense legend. All pages/ranges share metric X
+groups. The combined view includes every observed pair on one page, retaining
+three metric rows; it never invents a cross-product from independent role/model
+aggregates. A role-only aggregate cannot reconstruct the pairing: regenerate
+via the validated scalar projection if joint supports are unavailable.
+Other breakdowns put at most ten series on each page. All pages/ranges share metric X
 limits and report-wide colors. Exact labels survive in CSV and `pages.txt`
 when long display labels are shortened. Empty panels explicitly say no
 measured observations. Re-render with `gnuplot context-page-01.gnuplot` from
@@ -141,9 +159,16 @@ Nonlinear token ticks include intermediate original-unit values such as
 Labels are collision-pruned using panel width, including comparison columns
 and extreme-tail ranges; values between ticks remain fully plotted.
 
-Related roles share a hue and sort **junior → normal → senior → ultra**,
-with progressively darker shades (engineers blue, researchers green, reviewers
-purple). Model presentation groups the same name around its numeric version,
+Related roles use **OKLCH family base hues** and sort
+**junior → normal → senior → ultra**. Base hue degrees are coordinator **55**
+(orange), engineer **260** (blue), researcher **150** (green), reviewer **310**
+(purple). Seniority hue offsets are **−12°, 0°, +12°, +24°**, respectively:
+junior/senior derive symmetrically around normal, ultra extends the senior side.
+These are real hue changes, not shade-only substitutes. Lightness is
+0.64/0.58/0.52/0.46 and initial chroma0.15; reduce chroma at fixed hue/lightness
+when necessary to fit sRGB gamut, then emit sRGB hex. Custom families get a
+deterministic base hue and the same offsets. No added color dependency.
+Explicit model-only presentation groups the same name around its numeric version,
 sorts versions numerically (e.g. sol 5.6 → 6 → 6.1), and uses related
 light-to-dark shades. Provider-qualified series stay distinct; provider adds a
 small shade variation and consistent dash patterns (with matching legend
@@ -152,6 +177,15 @@ family/version names, not page position or the selected inventory, so filtered
 and comparison reports stay consistent. Unknown/custom names use deterministic
 fallback colors and ordering; suffixes junior/senior/ultra also work for custom
 role families. Numeric version recognition is a presentation heuristic only.
+In the combined view, color depends **only on the role**, not the model;
+exact provider/model, Mixed models and Unknown model each have their own
+dash/marker pattern and model legend entry. No provider or model aliases merge.
+Resolve pattern collisions deterministically over the observed report-wide
+model inventory; `model-styles.json` records the exact pattern/marker mapping.
+Patterns are consistent across roles/pages/comparison columns within a report.
+Filtering away a conflicting model can change a resolved pattern; only role
+colors are guaranteed filter-independent. Do not claim stronger pattern
+stability or silently conflate colliding model identities.
 
 **Inspect the real rendered PNGs with `read_image` before delivery.**
 Keep chart surfaces human-facing and minimal: metric titles, series legends,

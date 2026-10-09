@@ -213,7 +213,20 @@ def group_for(role, models, breakdown):
     if breakdown == "provider":
         providers = {model.split("/", 1)[0] for model in models}
         return next(iter(providers)) if len(providers) == 1 else "Mixed providers" if providers else "Unknown provider"
-    return role + " | " + model
+    # Unambiguous joint identity even when custom names contain separators.
+    return json.dumps([role, model], ensure_ascii=False)
+
+
+def group_pair(group):
+    """Read exact joint identities; legacy support labels are rerenderable."""
+    try:
+        pair = json.loads(group)
+    except (ValueError, TypeError):
+        pair = None
+    if isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) for item in pair):
+        return tuple(pair)
+    role, _, model = group.partition(" | ")
+    return role, model
 
 
 class Support:
@@ -417,15 +430,47 @@ def stable_fraction(name):
     return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") / 2**64
 
 
+def oklch_hex(lightness, chroma, hue):
+    """OKLCH -> sRGB, reducing chroma at fixed L/h rather than clipping hue.
+
+    Inverse OKLab matrix: Björn Ottosson's public-domain reference implementation
+    https://bottosson.github.io/posts/oklab/ (2021-01-25 matrices).
+    """
+    def linear_rgb(c):
+        a = c * math.cos(math.radians(hue))
+        b = c * math.sin(math.radians(hue))
+        l = (lightness + .3963377774 * a + .2158037573 * b)**3
+        m = (lightness - .1055613458 * a - .0638541728 * b)**3
+        s = (lightness - .0894841775 * a - 1.2914855480 * b)**3
+        return (4.0767416621 * l - 3.3077115913 * m + .2309699292 * s,
+                -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s,
+                -.0041960863 * l - .7034186147 * m + 1.7076147010 * s)
+    rgb = linear_rgb(chroma)
+    if not all(0 <= channel <= 1 for channel in rgb):
+        low, high = 0, chroma
+        for _ in range(24):
+            middle = (low + high) / 2
+            if all(0 <= channel <= 1 for channel in linear_rgb(middle)):
+                low = middle
+            else:
+                high = middle
+        rgb = linear_rgb(low)
+    def encoded(channel):
+        channel = min(1, max(0, channel))  # Final floating-point/rounding guard.
+        return 12.92 * channel if channel <= .0031308 else 1.055 * channel**(1/2.4) - .055
+    return "#" + "".join(f"{round(encoded(channel) * 255):02x}" for channel in rgb)
+
+
 def role_style(role):
     family, level = role, 1
     for suffix, rank in (("-junior", 0), ("-senior", 2), ("-ultra", 3)):
         if role.endswith(suffix):
             family, level = role[:-len(suffix)], rank
             break
-    hue = {"engineer": .60, "researcher": .43, "reviewer": .79}.get(
-        family, stable_fraction("role:" + family))
-    return (family, level, role), hue, (.59, .45, .31, .23)[level]
+    base = {"coordinator": 55, "engineer": 260, "researcher": 150, "reviewer": 310}.get(
+        family, 360 * stable_fraction("role:" + family))
+    hue = (base + (-12, 0, 12, 24)[level]) % 360
+    return (family, level, role), hue, (.64, .58, .52, .46)[level]
 
 
 def model_style(model):
@@ -456,25 +501,57 @@ def group_style(group, breakdown):
     elif breakdown == "model":
         key, hue, lightness = model_style(group)
     elif breakdown == "role-model":
-        role, _, model = group.partition(" | ")
+        role, model = group_pair(group)
         role_key, hue, lightness = role_style(role)
         model_key, _, _ = model_style(model)
         key = role_key, model_key, group
-        lightness += .035 * (2 * stable_fraction(model) - 1)
     else:
         key, hue, lightness = (group,), stable_fraction(breakdown + ":" + group), .42
-    rgb = colorsys.hls_to_rgb(hue, lightness, .72)
-    color = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
+    if breakdown in ("role", "role-model"):
+        color = oklch_hex(lightness, .15, hue)
+    else:
+        rgb = colorsys.hls_to_rgb(hue, lightness, .72)
+        color = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
     return key, color
 
 
 def provider_dash(group, breakdown):
     """Same-version provider curves need more than a subtle shade difference."""
-    model = group.partition(" | ")[2] if breakdown == "role-model" else group
+    model = group_pair(group)[1] if breakdown == "role-model" else group
     if breakdown not in ("model", "role-model") or "/" not in model:
         return 1
     provider = model.partition("/")[0]
     return 1 + int(stable_fraction("provider:" + provider) * 4)
+
+
+def model_pattern(model):
+    """Exact model identity, including provider and honest mixed/unknown units."""
+    digest = hashlib.sha256(("pattern:" + model).encode()).digest()
+    # Custom on/off lengths plus marker shapes avoid conflating model/provider
+    # identities while retaining stable patterns under filtering.
+    lengths = (2 + digest[0] % 8, 2 + digest[1] % 5,
+               1 + digest[2] % 3, 2 + digest[3] % 5)
+    return "(" + ",".join(map(str, lengths)) + ")", 1 + digest[4] % 13
+
+
+def model_patterns(models):
+    """Resolve exact observed-inventory collisions, consistently across panels.
+
+    Colors stay filter-independent. A pattern can change if a conflicting model
+    is filtered away; export the exact table rather than promising otherwise.
+    """
+    result, used = {}, set()
+    for model in sorted(models):
+        dash, point = model_pattern(model)
+        lengths = [float(value) for value in dash.strip("()").split(",")]
+        attempt = 0
+        while (dash, point) in used:
+            attempt += 1
+            dash = "(" + ",".join(f"{value + (.5 * attempt if index == 1 else 0):g}"
+                                 for index, value in enumerate(lengths)) + ")"
+        result[model] = dash, point
+        used.add((dash, point))
+    return result
 
 
 def metric_axis(metric, values):
@@ -493,18 +570,33 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
     groups = sorted({key[2] for key in supports},
                     key=lambda group: group_style(group, args.breakdown)[0]) or ["All selected"]
     colors = {group: group_style(group, args.breakdown)[1] for group in groups}
+    combined = args.breakdown == "role-model"
+    roles = sorted({group_pair(group)[0] for group in groups},
+                   key=lambda role: role_style(role)[0]) if combined else []
+    models = sorted({group_pair(group)[1] for group in groups},
+                    key=lambda model: model_style(model)[0]) if combined else []
+    patterns = model_patterns(models)
+    if combined:
+        (out / "model-styles.json").write_text(json.dumps(
+            {model: dict(dash=dash, marker=point) for model, (dash, point) in patterns.items()},
+            ensure_ascii=False, indent=2) + "\n")
     axes = {}
     for metric in METRICS:
         values = [value for (_, kind, _), support in supports.items() if kind == metric for value in support.values]
         axes[metric] = metric_axis(metric, values)
     page_index = []
-    for page, offset in enumerate(range(0, len(groups), PAGE_GROUPS), 1):
-        selected = groups[offset:offset + PAGE_GROUPS]
+    page_groups = len(groups) if combined else PAGE_GROUPS
+    for page, offset in enumerate(range(0, len(groups), page_groups), 1):
+        selected = groups[offset:offset + page_groups]
         legend_rows = math.ceil(len(selected) / 2)
-        date_y = .916 - .028 * (legend_rows - 1) - .045
+        date_y = (.908 - .009 * max(len(roles), len(models)) - .018 if combined else
+                  .916 - .028 * (legend_rows - 1) - .045)
         panel_top = date_y - .04
         panel_step = (panel_top - .03) / 3
-        height = 1800 if legend_rows > 2 else 1400
+        width = 3520 if combined else 1760
+        # Twofold increase in each dimension; fonts/strokes stay normal-sized
+        # for zooming rather than consuming the extra pixel space.
+        height = 3600 if combined else 1800 if legend_rows > 2 else 1400
         basename = f"context-page-{page:02}"
         page_index.append(f"{basename}: " + json.dumps(selected, ensure_ascii=False))
         lines = [
@@ -533,7 +625,7 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                     f"set xlabel {gp(('Input tokens' if metric != 'compactions' else 'Compactions') + (' · shifted log (10k offset)' if offset == 10_000 else ' · log1p' if offset else ''))} font ',10'",
                     "unset ylabel",
                     f"set xrange [0:{upper:.12g}]",
-                    (f"set xtics ({ticks(maximum, offset, pixels=640 if len(ranges) == 2 else 1434)})" if offset else
+                    (f"set xtics ({ticks(maximum, offset, pixels=int((right-left)*width))})" if offset else
                      "set xtics 1" if metric == "compactions" and maximum <= 10 else "set xtics autofreq"),
                 ]
                 terms = []
@@ -543,22 +635,48 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                         continue
                     block = f"{panel}g{group_index}"
                     data.append(f"${block} << EOD")
-                    data.extend(f"{x:.15g} {y:.15g}" for x, y in step_data(support, offset, upper))
+                    points = step_data(support, offset, upper)
+                    data.extend(f"{x:.15g} {y:.15g}" for x, y in points)
                     data.append("EOD")
-                    terms.append(f"${block} using 1:2 with lines lw 2.6 dt {provider_dash(group, args.breakdown)} lc rgb {gp(colors[group])} notitle")
+                    if combined:
+                        dash, point = patterns[group_pair(group)[1]]
+                        style = f"linespoints pt {point} ps .55 pi {max(1, len(points)//24)} lw 2.6 dt {dash}"
+                    else:
+                        style = f"lines lw 2.6 dt {provider_dash(group, args.breakdown)}"
+                    terms.append(f"${block} using 1:2 with {style} lc rgb {gp(colors[group])} notitle")
                 if not terms:
                     plot.append("set label 201 'No measured observations' at graph .5,.5 center font ',14' tc rgb '#64748b'")
                     plot.append("plot NaN notitle")
                     plot.append("unset label 201")
                 else:
-                    plot.append("plot " + ", ".join(terms))
+                    plot.append("plot " + ", \\\n".join(terms))
                 plots.extend(plot)
         layout = [
             "set multiplot",
             f"set label 100 {gp('Context & compaction distributions' + (' | SYNTHETIC TEST DATA' if synthetic else ''))} at screen .06,.975 font ',23' tc rgb '#0f172a'",
-            f"set label 101 {gp(f'By {args.breakdown}' + (f' · page {page}/{math.ceil(len(groups)/PAGE_GROUPS)}' if len(groups) > PAGE_GROUPS else ''))} at screen .06,.946 font ',12' tc rgb '#64748b'",
+            f"set label 101 {gp('By role and model' if combined else f'By {args.breakdown}' + (f' · page {page}/{math.ceil(len(groups)/PAGE_GROUPS)}' if len(groups) > PAGE_GROUPS else ''))} at screen .06,.946 font ',12' tc rgb '#64748b'",
         ]
-        for index, group in enumerate(selected):
+        if combined:
+            layout.extend([
+                "set label 104 'Roles · colors' at screen .06,.927 font ',12' tc rgb '#475569'",
+                "set label 105 'Models · line patterns' at screen .515,.927 font ',12' tc rgb '#475569'",
+            ])
+            for index, role in enumerate(roles):
+                y = .908 - .009 * index
+                color = group_style(role, "role")[1]
+                layout.extend([
+                    f"set arrow {10+index} from screen .06,{y} to screen .076,{y} nohead lw 2.6 lc rgb {gp(color)}",
+                    f"set label {110+index} {gp(textwrap.shorten(role, width=96, placeholder='…'))} at screen .083,{y} font ',11' tc rgb {gp(color)}",
+                ])
+            for index, model in enumerate(models):
+                y = .908 - .009 * index
+                dash, point = patterns[model]
+                layout.extend([
+                    f"set arrow {1000+index} from screen .515,{y} to screen .541,{y} nohead lw 2.6 dt {dash} lc rgb '#475569'",
+                    f"set label {2000+index} '' at screen .528,{y} point pt {point} ps .55 tc rgb '#475569'",
+                    f"set label {3000+index} {gp(textwrap.shorten(model, width=132, placeholder='…'))} at screen .548,{y} font ',11' tc rgb '#475569'",
+                ])
+        for index, group in enumerate([] if combined else selected):
             display = textwrap.shorten(group.replace("\n", " "), width=46, placeholder="…")
             dash = provider_dash(group, args.breakdown)
             layout.append(
@@ -570,12 +688,12 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                 f"at screen {0.083 + .455*(index%2)},{.916 - .028*(index//2)} "
                 f"font ',11' tc rgb {gp(colors[group])}")
         for index, bounds in enumerate(ranges):
-            short = f"{chr(65+index)}   {human_range(bounds)}"
+            short = (f"{chr(65+index)}   " if len(ranges) > 1 else "") + human_range(bounds)
             layout.append(f"set label {102+index} {gp(short)} at screen {0.105+.455*index},{date_y} font ',10' tc rgb '#0f172a'")
         program = "\n".join(data + lines + [
             "do for [format in 'svg png'] {",
-            f" if (format eq 'svg') {{ set terminal svg size 1760,{height} noenhanced font 'DejaVu Sans,12' }}",
-            f" if (format eq 'png') {{ set terminal pngcairo size 1760,{height} noenhanced font 'DejaVu Sans,12' }}",
+            f" if (format eq 'svg') {{ set terminal svg size {width},{height} noenhanced font 'DejaVu Sans,12' }}",
+            f" if (format eq 'png') {{ set terminal pngcairo size {width},{height} noenhanced font 'DejaVu Sans,12' }}",
             f" set output {gp(basename + '.')} . format",
         ] + layout + plots + ["unset multiplot", "unset label", "unset arrow", "}", "set output", ""])
         (out / (basename + ".gnuplot")).write_text(program)
@@ -675,7 +793,15 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "groups. Every page shares each metric's X limits and stable colors across reports/ranges. "
         "Related role families use light-to-dark junior/normal/senior/ultra shades; model families "
         "use numeric version order and related shades without merging exact provider/model data. "
-        "At most ten series share a page, with three metric rows. Display labels may be shortened; "
+        "The default combined role/model view puts all observed pairs on one page, with separate "
+        "role-color and exact-model pattern legends, and a 3520×3600 zoomable image. It never "
+        "fabricates unobserved role/model pairs. Joint CSV/page-index group identities are JSON "
+        "[role, model] arrays so custom names cannot collide through a display separator. "
+        "Exact model patterns are exported in model-styles.json. Inventory collisions are "
+        "resolved deterministically; filtering away a conflicting model can change its pattern, "
+        "while role colors remain filter-independent. "
+        "Other breakdowns use at most ten series per page. "
+        "Date comparisons are explicit opt-in; one window is the default. Display labels may be shortened; "
         "exact names remain in CSV and pages.txt. No selected groups or tails "
         "are dropped. Wide token ranges use log10(1+x/10000), emphasizing 10k–1M without hiding "
         "low/zero or extreme tails; small/narrow token ranges stay linear. Compaction counts use "
@@ -706,7 +832,7 @@ def parser():
     result.add_argument("--compare-since")
     result.add_argument("--compare-until")
     result.add_argument("--cohort", choices=("created", "active"), default="created")
-    result.add_argument("--breakdown", choices=("none", "role", "model", "provider", "role-model"), default="none")
+    result.add_argument("--breakdown", choices=("none", "role", "model", "provider", "role-model"), default="role-model")
     result.add_argument("--role", action="append", default=[], help="Exact immutable creation role; repeatable")
     result.add_argument("--all-roles", action="store_true", help="Include nonstandard roles; explicit --role still selects exact names")
     result.add_argument("--model", action="append", default=[], help="Exact aggregate provider/model category, Mixed models, or Unknown model; repeatable")

@@ -4,6 +4,7 @@ import collections
 import io
 import json
 import os
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +15,8 @@ import chart_context as chart
 
 def args(**values):
     result = chart.parser().parse_args(["--out", "unused"])
+    # Measurement oracles use an explicit unbroken population, not CLI defaults.
+    result.breakdown = "none"
     for name, value in values.items():
         setattr(result, name, value)
     return result
@@ -310,6 +313,48 @@ def synthetic_support():
 
 
 class RenderingTests(unittest.TestCase):
+    def test_default_combined_view_preserves_pairing_and_zoom_resolution(self):
+        default = chart.parser().parse_args(["--out", "unused"])
+        self.assertEqual(default.breakdown, "role-model")
+        self.assertIsNone(default.compare_since)
+        _, supports, _ = collect(
+            [start(2, "a", "provider/a"), finish(3, "a", 10), compact(4),
+             start(5, "b", "other/b"), finish(6, "b", 20)], selection=default)
+        self.assertEqual({key[2] for key in supports},
+                         {json.dumps(["engineer", model]) for model in ("provider/a", "other/b", chart.MIXED)})
+        self.assertEqual(supports[0, "accumulated", json.dumps(["engineer", chart.MIXED])].values, {30: 1})
+        a = chart.group_for("custom | provider/a", {"provider/b"}, "role-model")
+        b = chart.group_for("custom", {"provider/a | provider/b"}, "role-model")
+        self.assertNotEqual(a, b)
+        self.assertEqual(chart.group_pair(a), ("custom | provider/a", "provider/b"))
+        for model in ("provider/a", "other/b", chart.MIXED, chart.UNKNOWN):
+            self.assertEqual(chart.group_style("engineer | " + model, "role-model")[1],
+                             chart.group_style("engineer", "role")[1])
+        models = [f"provider/model-{index}" for index in range(14)] + [chart.MIXED, chart.UNKNOWN]
+        self.assertEqual(len(set(chart.model_patterns(models).values())), len(models))
+        self.assertEqual(chart.model_pattern(models[0]), chart.model_pattern(models[0]))
+        support = {}
+        for role in ("engineer", "researcher"):
+            for model in models:
+                for metric in chart.METRICS:
+                    unit = chart.Support()
+                    unit.add(0, [])
+                    unit.add(100_000 if metric != "compactions" else 2, [])
+                    support[0, metric, role + " | " + model] = unit
+        with tempfile.TemporaryDirectory() as temporary:
+            selection = args(out=Path(temporary) / "combined", breakdown="role-model")
+            chart.write_report(selection, [(1, 100)], support, collections.Counter(), synthetic=True)
+            programs = list(selection.out.glob("*.gnuplot"))
+            self.assertEqual(len(programs), 1)
+            program = programs[0].read_text()
+            self.assertIn("Roles · colors", program)
+            self.assertIn("Models · line patterns", program)
+            self.assertIn("with linespoints", program)
+            self.assertEqual(struct.unpack(">II", programs[0].with_suffix(".png").read_bytes()[16:24]),
+                             (3520, 3600))
+            groups = json.loads((selection.out / "pages.txt").read_text().split(": ", 1)[1])
+            self.assertEqual(len(groups), 32)
+
     def test_human_dates_keep_exact_report_bounds(self):
         bounds = (chart.instant("2026-09-25T00:16:39.269691Z"),
                   chart.instant("2026-10-09T00:16:39.269691Z"))
@@ -364,6 +409,8 @@ class RenderingTests(unittest.TestCase):
                          chart.provider_dash(names[1], "model"))
 
     def test_semantic_family_order_and_stable_shades(self):
+        self.assertEqual(chart.role_style("coordinator")[1], 55)
+        self.assertNotEqual(chart.role_style("coordinator")[1], chart.role_style("engineer")[1])
         roles = ["engineer-senior", "reviewer", "engineer", "engineer-junior",
                  "researcher-senior", "researcher", "custom-ultra", "custom-junior"]
         ordered = sorted(roles, key=lambda name: chart.group_style(name, "role")[0])
@@ -373,7 +420,7 @@ class RenderingTests(unittest.TestCase):
                          ["researcher", "researcher-senior"])
         styles = [chart.role_style(name) for name in
                   ("engineer-junior", "engineer", "engineer-senior")]
-        self.assertEqual(len({style[1] for style in styles}), 1)
+        self.assertEqual([style[1] for style in styles], [248, 260, 272])
         self.assertGreater(styles[0][2], styles[1][2])
         self.assertGreater(styles[1][2], styles[2][2])
         models = [f"provider/gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
@@ -389,6 +436,23 @@ class RenderingTests(unittest.TestCase):
             original = {name: chart.group_style(name, breakdown) for name in names}
             self.assertEqual(original, {name: chart.group_style(name, breakdown)
                                         for name in reversed(names)})
+
+    def test_oklch_conversion_and_model_pattern_collisions(self):
+        self.assertEqual(chart.oklch_hex(0, 0, 0), "#000000")
+        self.assertEqual(chart.oklch_hex(1, 0, 0), "#ffffff")
+        self.assertEqual(chart.oklch_hex(.5, 0, 0), "#636363")
+        for hue in range(0, 360, 15):
+            color = chart.oklch_hex(.58, 1, hue)
+            self.assertRegex(color, r"^#[0-9a-f]{6}$")
+            self.assertEqual(color, chart.oklch_hex(.58, 1, hue + 360))
+        models = ["provider/model-14", "provider/model-31"]
+        self.assertEqual(chart.model_pattern(models[0]), chart.model_pattern(models[1]))
+        patterns = chart.model_patterns(models)
+        self.assertNotEqual(patterns[models[0]], patterns[models[1]])
+        self.assertEqual(patterns, chart.model_patterns(list(reversed(models))))
+        # Stable preferences unless another observed model conflicts.
+        self.assertEqual(patterns[models[0]], chart.model_patterns(models[:1])[models[0]])
+        self.assertEqual(chart.role_style("researcher-ultra")[1], 174)
 
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
