@@ -13,12 +13,18 @@ starts it through the normal supervised stdio extension route. The
 [standalone project](https://radicle.network/nodes/radicle.dpc.pw/rad%3Az2LFTBWK7VpAwC3Bpxohkh91aqXd)
 owns its source and detailed operational documentation. The bridge uses bot
 email/API-key HTTP Basic authentication, `POST /api/v1/register`, and long-poll
-`GET /api/v1/events`; it does not use webhooks. Its automatic-receive revision
-requires Tau protocol 9, registry SDK 0.7.0, and a harness containing the
-receiver-admission fix first published in Tau commit
-`30c8b43410a84294f31f74451f9f7f09a94df473`. Update the harness and all configured
-extension binaries compatibly before activating it. Its snake_case keys, secret
-bindings, and catch-up checkpoint format otherwise remain unchanged.
+`GET /api/v1/events`; it does not use webhooks. The historical automatic-receive
+revision used Tau protocol 9 and registry SDK 0.7.0, with the receiver-admission
+fix first published in Tau commit
+`30c8b43410a84294f31f74451f9f7f09a94df473`. That historical requirement is not a
+compatibility guarantee for newer harnesses. For Tau protocol 11.1, use a
+compatible extension binary built with registry SDK 0.11.0; a binary built with
+SDK 0.8.0 speaks protocol 10.0 and is rejected before configuration or receiver
+registration. Update the installed harness and all configured extension binaries
+compatibly before activating them; changing Zulip routes or registration settings
+does not repair a wire-version mismatch. This SDK migration does not add Zulip
+capabilities or change its snake_case keys, secret bindings, or catch-up checkpoint
+format.
 
 An immediate reply for an already queued event, or a non-blocking poll reply,
 may omit the queue-ID echo. The bridge accepts that omission only for its
