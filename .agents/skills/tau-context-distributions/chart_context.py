@@ -497,7 +497,7 @@ def role_style(role):
             break
     base = {"coordinator": 55, "engineer": 260, "researcher": 150, "reviewer": 25}.get(
         family, 360 * stable_fraction("role:" + family))
-    hue = (base + (-14.4, 0, 14.4, 28.8)[level]) % 360
+    hue = (base + (-17.28, 0, 17.28, 34.56)[level]) % 360
     return (family, level, role), hue, (.64, .58, .52, .46)[level]
 
 
@@ -522,10 +522,12 @@ def model_lightness(models):
     for model in models:
         family, version = model_version(model)
         versions = sorted(families[family])
-        # Up to .26 total separation, preserving visible role hues and contrast.
-        # A singleton/unversioned family uses the normal role lightness.
-        result[model] = (.13 - .26 * versions.index(version) / (len(versions) - 1)
-                         if version and len(versions) > 1 else 0)
+        # Every newest/singleton/unversioned model shares the exact dark endpoint.
+        # Increase the oldest brightening offset by 20%, not absolute lightness.
+        if not version or version == versions[-1]:
+            result[model] = -.13
+        else:
+            result[model] = .156 - .286 * versions.index(version) / (len(versions) - 1)
     return result
 
 
@@ -895,8 +897,10 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
          "newest 1.5 times the family baseline, each older divided by 1.5, with a floor of "
          "min(8, baseline chunk). Singleton non-Sol and unversioned families retain their baseline. "
          "Numeric version order maps "
-         "oldest to +0.13 and newest to -0.13 OKLCH lightness relative to each role, with "
-         "evenly spaced intermediate versions; singleton/unversioned families use zero offset. "
+          "oldest multi-version models to +0.156 and newest to -0.13 OKLCH lightness relative to each role, with "
+          "evenly spaced intermediate versions; singleton/unversioned families also use -0.13. "
+          "The oldest brightening offset is 20% greater than +0.13, not absolute lightness multiplied by 1.2. "
+          "Seniority hue steps are 17.28 degrees, 20% greater than 14.4; family bases and role lightness stay unchanged. "
          "This report-inventory mapping may change when filtering versions. Numeric version "
          "order is not inferred release chronology. Grayscale model swatches show exact scaled "
          "chunks and the same brightness offsets, while role swatches show base hues/lightness. "

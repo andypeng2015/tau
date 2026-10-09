@@ -529,7 +529,8 @@ class RenderingTests(unittest.TestCase):
                          ["researcher", "researcher-senior"])
         styles = [chart.role_style(name) for name in
                   ("engineer-junior", "engineer", "engineer-senior")]
-        self.assertEqual([style[1] for style in styles], [245.6, 260, 274.4])
+        for style, hue in zip(styles, [242.72, 260, 277.28]):
+            self.assertAlmostEqual(style[1], hue)
         self.assertGreater(styles[0][2], styles[1][2])
         self.assertGreater(styles[1][2], styles[2][2])
         models = [f"gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
@@ -564,7 +565,7 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(patterns, chart.model_patterns(list(reversed(models))))
         # Stable preferences unless another observed model conflicts.
         self.assertEqual(patterns[models[0]], chart.model_patterns(models[:1])[models[0]])
-        self.assertEqual(chart.role_style("researcher-ultra")[1], 178.8)
+        self.assertAlmostEqual(chart.role_style("researcher-ultra")[1], 184.56)
 
     def test_model_family_patterns_and_numeric_version_brightness(self):
         models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol",
@@ -575,10 +576,11 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual({patterns[m] for m in models if m.endswith("-astra")}, {"1"})
         self.assertEqual(len(set(patterns.values())), 6)
         offsets = chart.model_lightness(models)
-        self.assertEqual([offsets[m] for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")],
-                         [.13, 0, -.13])
-        self.assertEqual(offsets["deepseek-flash"], 0)
-        self.assertEqual(offsets["grok-4.7"], 0)
+        for model, expected in zip(("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"),
+                                   [.156, .013, -.13]):
+            self.assertAlmostEqual(offsets[model], expected)
+        newest = ["gpt-6.1-sol", "gpt-6.1-astra", "deepseek-flash", "grok-4.7"]
+        self.assertEqual({offsets[m] for m in newest}, {-.13})
         self.assertEqual(offsets, chart.model_lightness(list(reversed(models))))
         # Numeric 6.10 is later/darker than 6.1, not lexical order.
         numeric = chart.model_lightness(["gpt-6.10-sol", "gpt-6.1-sol"])
@@ -586,7 +588,10 @@ class RenderingTests(unittest.TestCase):
         for role in chart.STANDARD_ROLES:
             base = chart.role_style(role)[2]
             self.assertGreaterEqual(base - .13, .33)
-            self.assertLessEqual(base + .13, .77)
+            self.assertLessEqual(base + .156, .796)
+            newest_colors = [chart.group_style(json.dumps([role, m]), "role-model", offsets)[1]
+                             for m in newest]
+            self.assertEqual(len(set(newest_colors)), 1)
             colors = [chart.group_style(json.dumps([role, m]), "role-model", offsets)[1]
                       for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")]
             self.assertEqual(len(set(colors)), 3)
