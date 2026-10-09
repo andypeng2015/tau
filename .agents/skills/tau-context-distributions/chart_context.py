@@ -453,6 +453,24 @@ def joined_support_data(support, offset, upper):
     return points
 
 
+def compaction_y(percent):
+    """Finite reversed shifted log, k=99; input/output coordinates are 0–100."""
+    if percent in (0, 100):
+        return percent
+    return 100 * (1 - math.log1p(99 * (1 - percent / 100)) / math.log1p(99))
+
+
+def compaction_y_ticks(pixels):
+    """Original percentages; reserve both endpoints and prune crowded labels."""
+    kept = [(0, 0)]
+    for percent in (50, 90, 95, 99):
+        y = compaction_y(percent)
+        if min(y - kept[-1][1], 100 - y) * pixels / 100 >= 28:
+            kept.append((percent, y))
+    kept.append((100, 100))
+    return ", ".join(f'{gp(str(percent) + "%%")} {y:.12g}' for percent, y in kept)
+
+
 def stable_fraction(name):
     """Unlike Python hash(), this survives processes, filters and report ranges."""
     return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") / 2**64
@@ -678,7 +696,6 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
             'set tics nomirror textcolor rgb "#475569"',
             'set grid ytics lc rgb "#e2e8f0"',
             'set yrange [0:100]',
-            'set ytics ("0%%" 0,"25%%" 25,"50%%" 50,"75%%" 75,"100%%" 100)',
             'unset key',
         ]
         data = []
@@ -694,10 +711,12 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                 plot = [
                     f"set lmargin at screen {left}", f"set rmargin at screen {right}",
                     f"set tmargin at screen {top}", f"set bmargin at screen {bottom}",
-                    f"set title {gp(TITLES[metric_index])} font ',14' offset 0,.4",
+                    f"set title {gp(TITLES[metric_index] + (' · reverse-log Y' if metric == 'compactions' else ''))} font ',14' offset 0,.4",
                     f"set xlabel {gp(('Input tokens' if metric != 'compactions' else 'Compactions') + (' · shifted log (10k offset)' if offset == 10_000 else ' · log1p' if offset else ''))} font ',10'",
                     "unset ylabel",
                     f"set xrange [0:{upper:.12g}]",
+                    (f"set ytics ({compaction_y_ticks(int((top-bottom)*height))})" if metric == "compactions" else
+                     'set ytics ("0%%" 0,"25%%" 25,"50%%" 50,"75%%" 75,"100%%" 100)'),
                     (f"set xtics ({ticks(maximum, offset, pixels=int((right-left)*width))})" if offset else
                      "set xtics 1" if metric == "compactions" and maximum <= 10 else "set xtics autofreq"),
                 ]
@@ -710,7 +729,8 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                     data.append(f"${block} << EOD")
                     points = (joined_support_data(support, offset, upper) if metric == "compactions"
                               else step_data(support, offset, upper))
-                    data.extend(f"{x:.15g} {y:.15g}" for x, y in points)
+                    data.extend(f"{x:.15g} {(compaction_y(y) if metric == 'compactions' else y):.15g}"
+                                for x, y in points)
                     data.append("EOD")
                     if combined:
                         dash = patterns[group_pair(group)[1]]
@@ -834,7 +854,15 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "Interpolation is visual only: it adds no observations and is not the ECDF at unobserved "
         "counts. No artificial lower origin is drawn. The final horizontal 100% CDF continuation "
         "to the shared axis edge is not an extra observation; it also keeps singleton/all-zero "
-        "series visible without markers.\n\n"
+        "series visible without markers. Only the compactions row transforms cumulative Y at render time: "
+        "for original fraction p in [0,1], f(p)=1-log1p(99*(1-p))/log1p(99), plotted as 100*f(p). "
+        "This finite reversed shifted-log scale expands percentages near 100%; exact 0% and 100% "
+        "remain at 0 and 100 without epsilon replacement or clamping. k=99 corresponds to a remaining-mass "
+        "shift of 1/99 (about 1.01 percentage points). Tick labels remain original cumulative percentages "
+        "(0,50,90,95,99,100), collision-pruned by panel height with endpoints retained. Context rows keep "
+        "linear cumulative Y and 0/25/50/75/100% ticks. Straight compaction joins are visual interpolation "
+        "in both transformed coordinates, not tail probabilities or observations at unobserved counts. "
+        "Exact support, cumulative counts and denominators in CSVs are unchanged.\n\n"
         "## Coverage and attribution\n\n"
         "Creation roles are immutable journal evidence. Model category is the set of ordinary "
          "model names in the metric unit: exact suffix after the first /, Mixed models, or Unknown model. "

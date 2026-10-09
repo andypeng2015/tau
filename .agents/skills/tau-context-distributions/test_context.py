@@ -1,6 +1,7 @@
 """Deterministic measurement and presentation oracles, without private journals."""
 
 import collections
+import csv
 import io
 import json
 import os
@@ -358,6 +359,27 @@ def synthetic_support():
 
 
 class RenderingTests(unittest.TestCase):
+    def test_reversed_compaction_y_is_finite_monotonic_and_expands_upper_tail(self):
+        self.assertEqual(chart.compaction_y(0), 0)
+        self.assertEqual(chart.compaction_y(100), 100)
+        values = [chart.compaction_y(percent / 10) for percent in range(1001)]
+        self.assertTrue(all(chart.math.isfinite(value) for value in values))
+        self.assertTrue(all(a < b for a, b in zip(values, values[1:])))
+        self.assertAlmostEqual(chart.compaction_y(90),
+                               100 * (1 - chart.math.log(10.9) / chart.math.log(100)))
+        self.assertGreater(chart.compaction_y(100) - chart.compaction_y(99), 10)
+        self.assertGreater(chart.compaction_y(99) - chart.compaction_y(95), 20)
+        full = chart.compaction_y_ticks(700)
+        for percent in (0, 50, 90, 95, 99, 100):
+            self.assertIn(f'"{percent}%%" ', full)
+        crowded = chart.compaction_y_ticks(90)
+        ticks = [(int(percent), float(y)) for percent, y in
+                 chart.re.findall(r'"(\d+)%%" ([\d.]+)', crowded)]
+        self.assertEqual(ticks[0], (0, 0))
+        self.assertEqual(ticks[-1], (100, 100))
+        self.assertLess(len(ticks), 6)
+        self.assertTrue(all((b[1] - a[1]) * .9 >= 28 for a, b in zip(ticks, ticks[1:])))
+
     def test_joined_compaction_support_preserves_ties_zero_and_order(self):
         support = chart.Support()
         for value in (4, 0, 1, 4, 0):
@@ -402,7 +424,8 @@ class RenderingTests(unittest.TestCase):
                 text = program.split(f"${name} << EOD\n", 1)[1].split("\nEOD", 1)[0]
                 return [tuple(map(float, line.split())) for line in text.splitlines()]
             _, offset, upper = chart.metric_axis("compactions", unit.values)
-            expected = chart.joined_support_data(unit, offset, upper)
+            expected = [(x, chart.compaction_y(y))
+                        for x, y in chart.joined_support_data(unit, offset, upper)]
             actual = block("p20g0")
             self.assertEqual(len(actual), len(expected))
             for point, endpoint in zip(actual, expected):
@@ -411,10 +434,20 @@ class RenderingTests(unittest.TestCase):
             for name in ("p00g0", "p10g0"):
                 _, offset, upper = chart.metric_axis("segments", unit.values)
                 self.assertEqual(block(name), chart.step_data(unit, offset, upper))
-            self.assertEqual(actual[0], (0, 40))
+            self.assertAlmostEqual(actual[0][1], chart.compaction_y(40))
+            self.assertEqual(actual[0][0], 0)
+            self.assertAlmostEqual(actual[-1][0], expected[-1][0])
+            self.assertEqual(actual[-1][1], 100)
+            self.assertEqual(program.count('set ytics ("0%%" 0,"25%%" 25,"50%%" 50,"75%%" 75,"100%%" 100)'), 2)
+            self.assertEqual(program.count("reverse-log Y"), 1)
+            self.assertIn('set ytics ("0%%" 0, "50%%" ', program)
             self.assertEqual(program.count("with lines lw 2.6 dt (45,4)"), 3)
             self.assertNotIn("linespoints", program)
             self.assertIn("Interpolation is visual only", (selection.out / "README.md").read_text())
+            with (selection.out / "distribution.csv").open() as file:
+                compactions = [row for row in csv.DictReader(file) if row["metric"] == "compactions"]
+            self.assertEqual([(int(row["value"]), int(row["cumulative_count"]), int(row["denominator"]))
+                              for row in compactions], [(0, 2, 5), (1, 3, 5), (4, 5, 5)])
 
     def test_default_combined_view_preserves_pairing_and_zoom_resolution(self):
         default = chart.parser().parse_args(["--out", "unused"])

@@ -159,6 +159,18 @@ Preserve the existing horizontal **100% CDF continuation** after the final suppo
 to the shared axis edge. It is not an extra observation and keeps singleton and
 all-zero series visible as lines. Do not staircase this row or replace context
 rows with joined curves. Explain this convention in report files, not chart clutter.
+**Only the compactions row uses reversed shifted-log cumulative Y**, expanding
+the many observations near 100%. For original cumulative fraction `p ∈ [0,1]`,
+use `f(p) = 1 − log1p(99*(1−p))/log1p(99)`, plotted as `100*f(p)`.
+The fixed `k=99` is a remaining-mass shift of `1/99` (about 1.01 percentage points).
+Exact 0% and 100% remain finite at 0 and 100; no epsilon substitution, clipping,
+clamping, dropped mass or transformed data in CSVs. This is still cumulative
+share at or below the observed count, **not a relabeled tail probability**.
+Tick labels remain original **0/50/90/95/99/100%**, collision-pruned by panel height
+while retaining 0/100. Use only a concise `reverse-log Y` title suffix for the
+scale indication. Context rows retain linear Y and 0/25/50/75/100% ticks.
+Transform compaction endpoints at render only; straight joins interpolate in
+both plotted coordinates and the existing 100% tail remains horizontal.
 Tokens use zero-preserving **`log10(1+x/10000)`** for wide ranges, labeled
 “shifted log; offset 10k” with original-unit ticks. This gives 10k–1M most
 of the width for typical context workloads without clipping smaller values,
