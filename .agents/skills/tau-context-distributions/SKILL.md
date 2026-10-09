@@ -174,7 +174,8 @@ and extreme-tail ranges; values between ticks remain fully plotted.
 Related roles use **OKLCH family base hues** and sort
 **junior → normal → senior → ultra**. Base hue degrees are coordinator **55**
 (orange), engineer **260** (blue), researcher **150** (green), reviewer **25**
-(red). Seniority hue offsets are **−12°, 0°, +12°, +24°**, respectively:
+(red). Seniority hue offsets are **−14.4°, 0°, +14.4°, +28.8°**, respectively
+(20% larger steps than the previous 12° spacing):
 junior/senior derive symmetrically around normal, ultra extends the senior side.
 These are real hue changes, not shade-only substitutes. Lightness is
 0.64/0.58/0.52/0.46 and initial chroma0.15; reduce chroma at fixed hue/lightness
@@ -189,13 +190,14 @@ fallback colors and ordering; suffixes junior/senior/ultra also work for custom
 role families. Numeric version recognition is a presentation heuristic only.
 In the combined view, color uses the **role hue plus model-version lightness**.
 Within each role and versioned family, sort exact numeric tuples (5.6 < 6 < 6.1;
-6.1 < 6.10), then evenly space OKLCH lightness offsets from **+0.09 oldest**
-to **−0.09 newest** relative to that role's base lightness. Singleton/unversioned
+6.1 < 6.10), then evenly space OKLCH lightness offsets from **+0.13 oldest**
+to **−0.13 newest** relative to that role's base lightness (0.26 total span,
+increased from 0.18). Singleton/unversioned
 families use zero offset. This preserves role/seniority hue offsets and guarantees
 the newest numeric version is darkest for the same role; it does not infer
 release chronology. Gamut reduction retains the requested hue and lightness.
 All versions of a model family share one pattern: **Astra solid**, **Sol long
-dashes `(20,4)`** (extended dash segments, unchanged gaps/stroke width).
+dashes `(30,4)`** (1.5× the previous 20-unit dash segments, unchanged gaps/stroke width).
 Other families receive distinct remaining dash/dot patterns.
 Numeric family recognition is presentation only and never changes aggregate
 identities or filters. No marker fallback. Role legend swatches show base

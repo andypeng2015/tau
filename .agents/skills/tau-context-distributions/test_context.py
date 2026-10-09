@@ -471,7 +471,7 @@ class RenderingTests(unittest.TestCase):
                          ["researcher", "researcher-senior"])
         styles = [chart.role_style(name) for name in
                   ("engineer-junior", "engineer", "engineer-senior")]
-        self.assertEqual([style[1] for style in styles], [248, 260, 272])
+        self.assertEqual([style[1] for style in styles], [245.6, 260, 274.4])
         self.assertGreater(styles[0][2], styles[1][2])
         self.assertGreater(styles[1][2], styles[2][2])
         models = [f"gpt-{version}-sol" for version in ("6.10", "6.1", "5.6", "6")]
@@ -506,18 +506,18 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(patterns, chart.model_patterns(list(reversed(models))))
         # Stable preferences unless another observed model conflicts.
         self.assertEqual(patterns[models[0]], chart.model_patterns(models[:1])[models[0]])
-        self.assertEqual(chart.role_style("researcher-ultra")[1], 174)
+        self.assertEqual(chart.role_style("researcher-ultra")[1], 178.8)
 
     def test_model_family_patterns_and_numeric_version_brightness(self):
         models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol",
                   "gpt-6-astra", "gpt-6.1-astra", "grok-4.7", "deepseek-flash"]
         patterns = chart.model_patterns(models)
-        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(20,4)"})
+        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(30,4)"})
         self.assertEqual({patterns[m] for m in models if m.endswith("-astra")}, {"1"})
         self.assertEqual(len(set(patterns.values())), 4)
         offsets = chart.model_lightness(models)
         self.assertEqual([offsets[m] for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")],
-                         [.09, 0, -.09])
+                         [.13, 0, -.13])
         self.assertEqual(offsets["deepseek-flash"], 0)
         self.assertEqual(offsets["grok-4.7"], 0)
         self.assertEqual(offsets, chart.model_lightness(list(reversed(models))))
@@ -526,6 +526,8 @@ class RenderingTests(unittest.TestCase):
         self.assertLess(numeric["gpt-6.10-sol"], numeric["gpt-6.1-sol"])
         for role in chart.STANDARD_ROLES:
             base = chart.role_style(role)[2]
+            self.assertGreaterEqual(base - .13, .33)
+            self.assertLessEqual(base + .13, .77)
             colors = [chart.group_style(json.dumps([role, m]), "role-model", offsets)[1]
                       for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")]
             self.assertEqual(len(set(colors)), 3)
@@ -540,12 +542,13 @@ class RenderingTests(unittest.TestCase):
             selection = args(out=Path(temporary) / "long-sol", breakdown="role-model")
             chart.write_report(selection, [(1, 100)], supports, counts, synthetic=True)
             program = (selection.out / "context-page-01.gnuplot").read_text()
-            self.assertEqual(program.count("with lines lw 2.6 dt (20,4)"), 3)
-            self.assertIn("nohead lw 2.6 dt (20,4)", program)
+            self.assertEqual(program.count("with lines lw 2.6 dt (30,4)"), 3)
+            self.assertIn("nohead lw 2.6 dt (30,4)", program)
             self.assertNotIn("dt (10,4)", program)
+            self.assertNotIn("dt (20,4)", program)
             self.assertNotIn("linespoints", program)
             styles = json.loads((selection.out / "model-styles.json").read_text())
-            self.assertEqual(styles["gpt-6-sol"]["dash"], "(20,4)")
+            self.assertEqual(styles["gpt-6-sol"]["dash"], "(30,4)")
 
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
