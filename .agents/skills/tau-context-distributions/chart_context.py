@@ -31,6 +31,13 @@ TITLES = (
 UNITS = ("Sum of observed segment peaks", "Observed ordinary-input peak", "Accepted boundaries")
 MIXED = "Mixed models"
 UNKNOWN = "Unknown model"
+# Exact standard roster in built-in.harness.yaml and docs/examples/harness.yaml.
+# This report policy is deliberately not a prefix match or runtime role discovery.
+STANDARD_ROLES = (
+    "coordinator", "engineer-junior", "engineer", "engineer-senior",
+    "researcher", "researcher-senior", "researcher-ultra", "reviewer",
+)
+PAGE_GROUPS = 10
 
 
 def checked(value):
@@ -51,7 +58,17 @@ def instant(text):
 
 def iso(value):
     return (dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
-            + dt.timedelta(microseconds=value)).isoformat().replace("+00:00", "Z")
+             + dt.timedelta(microseconds=value)).isoformat().replace("+00:00", "Z")
+
+
+def human_range(bounds):
+    """Date-only chart shorthand; exact UTC instants remain in report files."""
+    dates = [dt.datetime.fromisoformat(iso(value).replace("Z", "+00:00"))
+             for value in bounds]
+    start, end = dates
+    def label(date, year=False):
+        return f"{date:%b} {date.day}" + (f", {date.year}" if year else "")
+    return label(start, start.year != end.year) + " – " + label(end, True)
 
 
 def select_range(since, until, now):
@@ -244,9 +261,14 @@ class Support:
         raise AssertionError("unreachable quantile")
 
 
+def selected_roles(args):
+    return tuple(args.role) if args.role else None if args.all_roles else STANDARD_ROLES
+
+
 def aggregate(agents, args, supports, counts):
+    roles = selected_roles(args)
     for index, agent in enumerate(agents):
-        if not agent.selected(args.cohort) or args.role and agent.role not in args.role:
+        if not agent.selected(args.cohort) or roles is not None and agent.role not in roles:
             continue
         counts[f"{chr(65 + index)}_selected_agents"] += 1
         segments = [segment for segment in agent.segments if segment.starts]
@@ -345,23 +367,33 @@ def gp(text):
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("\n", "\\n").replace("\r", " ").replace("\t", " ") + '"'
 
 
-def ticks(maximum, offset):
+def ticks(maximum, offset, pixels=1400):
     if offset:
         if offset == 1 and maximum <= 20:
             values = (list(range(maximum + 1)) if maximum <= 5 else
                       sorted({value for value in (0, 1, 2, 3, 5, 10, maximum) if value <= maximum}))
         else:
             first = 4 if offset == 10_000 else 0
-            values = [0] + [10**power for power in range(first, int(math.log10(maximum)) + 1)]
-        # Keep labels sparse when tails span many orders of magnitude.
-        if len(values) > 8:
-            values = [0] + values[1::2]
+            values = [0] + [factor * 10**power
+                            for power in range(first, int(math.log10(maximum)) + 1)
+                            for factor in (1, 2, 5) if factor * 10**power <= maximum]
         def label(value):
             for unit, suffix in ((10**12, "T"), (10**9, "B"), (10**6, "M"), (10**3, "k")):
                 if value >= unit:
                     return f"{value / unit:g}{suffix}" if value < 10**15 else f"{value:.0e}"
             return str(value)
-        return ", ".join(f'{gp(label(value))} {math.log10(1 + value / offset):.12g}' for value in values)
+        upper = math.log10(1 + maximum / offset) * 1.04
+        kept = []
+        last_right = -math.inf
+        for value in values:
+            text = label(value)
+            x = math.log10(1 + value / offset)
+            center = x / upper * pixels
+            half_width = len(text) * 4
+            if center - half_width >= last_right + 12:
+                kept.append(f'{gp(text)} {x:.12g}')
+                last_right = center + half_width
+        return ", ".join(kept)
     return None
 
 
@@ -466,8 +498,13 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
         values = [value for (_, kind, _), support in supports.items() if kind == metric for value in support.values]
         axes[metric] = metric_axis(metric, values)
     page_index = []
-    for page, offset in enumerate(range(0, len(groups), 4), 1):
-        selected = groups[offset:offset + 4]
+    for page, offset in enumerate(range(0, len(groups), PAGE_GROUPS), 1):
+        selected = groups[offset:offset + PAGE_GROUPS]
+        legend_rows = math.ceil(len(selected) / 2)
+        date_y = .916 - .028 * (legend_rows - 1) - .045
+        panel_top = date_y - .04
+        panel_step = (panel_top - .03) / 3
+        height = 1800 if legend_rows > 2 else 1400
         basename = f"context-page-{page:02}"
         page_index.append(f"{basename}: " + json.dumps(selected, ensure_ascii=False))
         lines = [
@@ -485,23 +522,19 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
             maximum, offset, upper = axes[metric]
             for range_index, bounds in enumerate(ranges):
                 panel = f"p{metric_index}{range_index}"
-                samples = sum(supports.get((range_index, metric, group), Support()).n for group in selected)
-                missing = sum(supports.get((range_index, metric, group), Support()).missing for group in selected)
-                opened = sum(supports.get((range_index, metric, group), Support()).open for group in selected)
                 left = 0.105 + (0.455 * range_index if len(ranges) == 2 else 0)
                 right = left + (0.365 if len(ranges) == 2 else 0.815)
-                top = 0.785 - 0.232 * metric_index
-                bottom = top - 0.156
+                top = panel_top - panel_step * metric_index
+                bottom = top - panel_step + .064
                 plot = [
                     f"set lmargin at screen {left}", f"set rmargin at screen {right}",
                     f"set tmargin at screen {top}", f"set bmargin at screen {bottom}",
                     f"set title {gp(TITLES[metric_index])} font ',14' offset 0,.4",
-                    f"set xlabel {gp(UNITS[metric_index] + (' · input tokens' if metric != 'compactions' else '') + (' (shifted log; offset 10k)' if offset == 10_000 else ' (log1p scale)' if offset else ''))} font ',10'",
-                    "set ylabel 'Share at or below x' font ',10'" if range_index == 0 else "unset ylabel",
+                    f"set xlabel {gp(('Input tokens' if metric != 'compactions' else 'Compactions') + (' · shifted log (10k offset)' if offset == 10_000 else ' · log1p' if offset else ''))} font ',10'",
+                    "unset ylabel",
                     f"set xrange [0:{upper:.12g}]",
-                    (f"set xtics ({ticks(maximum, offset)})" if offset else
+                    (f"set xtics ({ticks(maximum, offset, pixels=640 if len(ranges) == 2 else 1434)})" if offset else
                      "set xtics 1" if metric == "compactions" and maximum <= 10 else "set xtics autofreq"),
-                    f"set label 200 {gp(f'n={samples:,}  ·  missing={missing:,}  ·  open segments={opened:,}')} at graph 0,1.045 front font ',10' tc rgb '#64748b'",
                 ]
                 terms = []
                 for group_index, group in enumerate(selected):
@@ -519,58 +552,30 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
                     plot.append("unset label 201")
                 else:
                     plot.append("plot " + ", ".join(terms))
-                plot.append("unset label 200")
                 plots.extend(plot)
         layout = [
             "set multiplot",
             f"set label 100 {gp('Context & compaction distributions' + (' | SYNTHETIC TEST DATA' if synthetic else ''))} at screen .06,.975 font ',23' tc rgb '#0f172a'",
-            f"set label 101 {gp(f'{args.breakdown} breakdown · ECDF steps · legend n: accumulated / segments / compactions · page {page}/{math.ceil(len(groups)/4)}')} at screen .06,.946 font ',12' tc rgb '#64748b'",
+            f"set label 101 {gp(f'By {args.breakdown}' + (f' · page {page}/{math.ceil(len(groups)/PAGE_GROUPS)}' if len(groups) > PAGE_GROUPS else ''))} at screen .06,.946 font ',12' tc rgb '#64748b'",
         ]
         for index, group in enumerate(selected):
-            display = textwrap.shorten(group.replace("\n", " "), width=84, placeholder="…")
-            wrapped = "\\n".join(textwrap.wrap(display, width=46))
-            # gp handles literal newlines, not a model-provided escape sequence.
+            display = textwrap.shorten(group.replace("\n", " "), width=46, placeholder="…")
             dash = provider_dash(group, args.breakdown)
             layout.append(
-                f"set arrow {10+index} from screen {0.06+.455*(index%2)},{.916-.034*(index//2)} "
-                f"to screen {0.076+.455*(index%2)},{.916-.034*(index//2)} "
+                f"set arrow {10+index} from screen {0.06+.455*(index%2)},{.916-.028*(index//2)} "
+                f"to screen {0.076+.455*(index%2)},{.916-.028*(index//2)} "
                 f"nohead lw 2.6 dt {dash} lc rgb {gp(colors[group])}")
             layout.append(
-                f"set label {110 + index} {gp(wrapped.replace(chr(92)+'n', chr(10)))} "
-                f"at screen {0.083 + .455*(index%2)},{.916 - .034*(index//2)} "
+                f"set label {110 + index} {gp(display)} "
+                f"at screen {0.083 + .455*(index%2)},{.916 - .028*(index//2)} "
                 f"font ',11' tc rgb {gp(colors[group])}")
-            denominators = []
-            for range_index in range(len(ranges)):
-                ns = [supports.get((range_index, metric, group), Support()).n for metric in METRICS]
-                denominators.append(chr(65 + range_index) + ": " + " / ".join(f"{n:,}" for n in ns))
-            layout.append(
-                f"set label {120+index} {gp('n  ' + '     ·     '.join(denominators))} "
-                f"at screen {0.06+.455*(index%2)},{.891-.034*(index//2)} "
-                "font ',9' tc rgb '#64748b'")
         for index, bounds in enumerate(ranges):
-            short = f"{chr(65+index)}   {iso(bounds[0])} ≤ creation < {iso(bounds[1])}"
-            if args.cohort == "active":
-                short = f"{chr(65+index)}   activity in [{iso(bounds[0])}, {iso(bounds[1])})"
-            layout.append(f"set label {102+index} {gp(short)} at screen {0.105+.455*index},.822 font ',10' tc rgb '#0f172a'")
-        footer = f"{args.cohort.title()}-in-range; lifetime evidence before each endpoint. Open measured tails included. Not unique content."
-        selection = "Selection: " + ("roles=" + json.dumps(args.role, ensure_ascii=False) + "; " if args.role else "") + ("model categories=" + json.dumps(args.model, ensure_ascii=False) if args.model else "all model categories")
-        clock_skips = sum(counts.get(reason + "_journals", 0)
-                          for reason in ("missing_clock", "regressing_clock", "invalid_projection"))
-        coverage = (
-            f"Coverage: {counts.get('validated_journals', 0):,} / "
-            f"{counts.get('scanned_journals', 0):,} journals validated (all scanned history); "
-            f"{counts.get('failed_or_unsupported_journals', 0):,} failed/unsupported; "
-            f"{counts.get('timed_out_journals', 0):,} timed out; "
-            f"{clock_skips:,} clock/projection skips. Exclusions are not zeros.")
-        layout.extend([
-            f"set label 104 {gp(footer)} at screen .06,.064 font ',11' tc rgb '#475569'",
-            f"set label 105 {gp(textwrap.shorten(selection, width=170, placeholder='… (exact selection in README)'))} at screen .06,.046 font ',10' tc rgb '#64748b'",
-            f"set label 106 {gp(coverage)} at screen .06,.024 font ',10' tc rgb '#64748b'",
-        ])
+            short = f"{chr(65+index)}   {human_range(bounds)}"
+            layout.append(f"set label {102+index} {gp(short)} at screen {0.105+.455*index},{date_y} font ',10' tc rgb '#0f172a'")
         program = "\n".join(data + lines + [
             "do for [format in 'svg png'] {",
-            " if (format eq 'svg') { set terminal svg size 1760,1400 noenhanced font 'DejaVu Sans,12' }",
-            " if (format eq 'png') { set terminal pngcairo size 1760,1400 noenhanced font 'DejaVu Sans,12' }",
+            f" if (format eq 'svg') {{ set terminal svg size 1760,{height} noenhanced font 'DejaVu Sans,12' }}",
+            f" if (format eq 'png') {{ set terminal pngcairo size 1760,{height} noenhanced font 'DejaVu Sans,12' }}",
             f" set output {gp(basename + '.')} . format",
         ] + layout + plots + ["unset multiplot", "unset label", "unset arrow", "}", "set output", ""])
         (out / (basename + ".gnuplot")).write_text(program)
@@ -606,6 +611,8 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
                              support.quantile(.95), max(support.values, default=None)))
     axes = render(args.out, supports, ranges, args, counts, synthetic=synthetic)
     selection = dict(cohort=args.cohort, breakdown=args.breakdown, role=args.role, model=args.model,
+                     role_scope="explicit" if args.role else "all" if args.all_roles else "standard",
+                     effective_roles=selected_roles(args),
                      ranges=[dict(since_inclusive=iso(a), until_exclusive=iso(b)) for a, b in ranges])
     summary = json.dumps(dict(selection=selection, coverage=dict(counts)), indent=2, ensure_ascii=False)
     (args.out / "summary.json").write_text(summary + "\n")
@@ -633,7 +640,12 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "models in the metric unit: one exact provider/model, Mixed models, or Unknown model. "
         "Repeatable --model selects these categories AFTER whole structural aggregation, separately "
         "at each metric's unit (a mixed agent may have single-model segments). Role filters apply "
-        "to the agent uniformly. Provider breakdown uses the set of ordinary provider prefixes. "
+        "to the agent uniformly. By default only the exact standard roster is selected: "
+        + ", ".join(STANDARD_ROLES) + ". Explicit --role replaces this roster, including custom "
+        "roles; --all-roles selects all roles unless --role is given. Effective scope is exported "
+        "above. Charts use date-only UTC shorthand; this report retains exact endpoints, cohort "
+        "definitions, selections and scan coverage without cluttering the chart surface. "
+        "Provider breakdown uses the set of ordinary provider prefixes. "
         "No alias guessing or last-model attribution occurs.\n\n"
         "Unknown nonempty segments omit the strict agent sum, while measured individual segments "
         "and valid zero compaction counts remain. A segment with some missing terminals retains "
@@ -663,11 +675,14 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "groups. Every page shares each metric's X limits and stable colors across reports/ranges. "
         "Related role families use light-to-dark junior/normal/senior/ultra shades; model families "
         "use numeric version order and related shades without merging exact provider/model data. "
-        "Display labels may be shortened; exact names remain in CSV and pages.txt. No groups or tails "
+        "At most ten series share a page, with three metric rows. Display labels may be shortened; "
+        "exact names remain in CSV and pages.txt. No selected groups or tails "
         "are dropped. Wide token ranges use log10(1+x/10000), emphasizing 10k–1M without hiding "
         "low/zero or extreme tails; small/narrow token ranges stay linear. Compaction counts use "
         "log10(1+x), except all-zero or binary ranges which stay linear. Real zeros are preserved "
-        "and ticks use original units. Provider-specific dashes match legend swatches. "
+        "and ticks use original units, including intermediate 2x/5x decade values where labels fit. "
+        "Tick labels are collision-pruned by panel width, not data samples. "
+        "Provider-specific dashes match legend swatches. "
         "Axis decisions [maximum, shift offset (0 means linear), upper plotted coordinate]: "
         + json.dumps(axes) + ".\n\n"
         "Re-render from this directory: `gnuplot context-page-01.gnuplot` (repeat for each page). "
@@ -693,6 +708,7 @@ def parser():
     result.add_argument("--cohort", choices=("created", "active"), default="created")
     result.add_argument("--breakdown", choices=("none", "role", "model", "provider", "role-model"), default="none")
     result.add_argument("--role", action="append", default=[], help="Exact immutable creation role; repeatable")
+    result.add_argument("--all-roles", action="store_true", help="Include nonstandard roles; explicit --role still selects exact names")
     result.add_argument("--model", action="append", default=[], help="Exact aggregate provider/model category, Mixed models, or Unknown model; repeatable")
     result.add_argument("--timeout", type=float, default=120, help="Finite per-journal trace timeout, seconds")
     result.add_argument("--out", type=Path, required=True, help="New owner-only output directory")

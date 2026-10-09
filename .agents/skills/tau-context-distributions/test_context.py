@@ -53,6 +53,29 @@ def collect(facts, ranges=((1, 100),), selection=None, created=1):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_exact_default_roster_and_explicit_overrides(self):
+        roles = list(chart.STANDARD_ROLES) + ["engineer-custom", "reviewer-senior",
+                                            "rostra-bot", "fedi-project-manager"]
+        agents = [chart.read_trace(evidence([start(2, "a"), finish(3, "a", 10)],
+                                           role=role), [(1, 100)])[0] for role in roles]
+        for selection, expected in (
+                (args(breakdown="role"), set(chart.STANDARD_ROLES)),
+                (args(breakdown="role", all_roles=True), set(roles)),
+                (args(breakdown="role", role=["rostra-bot"]), {"rostra-bot"}),
+                (args(breakdown="role", role=["engineer"], all_roles=True), {"engineer"})):
+            support, counts = {}, collections.Counter()
+            for agent in agents:
+                chart.aggregate([agent], selection, support, counts)
+            self.assertEqual({key[2] for key in support}, expected)
+            self.assertEqual(counts["A_selected_agents"], len(expected))
+        for breakdown in ("none", "model", "provider", "role-model"):
+            for cohort in ("created", "active"):
+                support, counts = {}, collections.Counter()
+                selection = args(breakdown=breakdown, cohort=cohort)
+                for agent in agents:
+                    chart.aggregate([agent], selection, support, counts)
+                self.assertEqual(counts["A_selected_agents"], len(chart.STANDARD_ROLES))
+
     def test_segment_peaks_not_prompt_sums(self):
         """Repeated overlapping inputs contribute a single high-water per segment."""
         facts = [start(2, "a"), finish(3, "a", 10), start(4, "b"), finish(5, "b", 20),
@@ -287,6 +310,24 @@ def synthetic_support():
 
 
 class RenderingTests(unittest.TestCase):
+    def test_human_dates_keep_exact_report_bounds(self):
+        bounds = (chart.instant("2026-09-25T00:16:39.269691Z"),
+                  chart.instant("2026-10-09T00:16:39.269691Z"))
+        self.assertEqual(chart.human_range(bounds), "Sep 25 – Oct 9, 2026")
+        self.assertEqual(chart.human_range((chart.instant("2025-12-31T12:00:00Z"),
+                                           chart.instant("2026-01-01T12:00:00Z"))),
+                         "Dec 31, 2025 – Jan 1, 2026")
+        self.assertEqual(chart.iso(bounds[0]), "2026-09-25T00:16:39.269691Z")
+
+    def test_intermediate_ticks_prune_collisions_not_data(self):
+        for width in (640, 1434):
+            ticks = chart.ticks(1_200_000, 10_000, width)
+            for text in ("0", "10k", "50k", "100k", "500k", "1M"):
+                self.assertIn(chart.gp(text) + " ", ticks)
+        ticks = chart.ticks(chart.U64, 10_000, 640)
+        self.assertIn('"0" 0', ticks)
+        self.assertLess(len(ticks.split(", ")), 30)
+
     def test_shifted_axes_keep_zero_and_tails(self):
         maximum, offset, upper = chart.metric_axis("accumulated", [0, 1, 10_000, 1_000_000])
         self.assertEqual((maximum, offset), (1_000_000, 10_000))
@@ -360,16 +401,26 @@ class RenderingTests(unittest.TestCase):
                       (chart.instant("2026-09-24T12:00:00Z"), chart.instant("2026-10-08T12:00:00Z"))]
             chart.write_report(selection, ranges, synthetic_support(), collections.Counter(scanned_journals=17), synthetic=True)
             programs = list(selection.out.glob("*.gnuplot"))
-            self.assertEqual(len(programs), 4)
+            self.assertEqual(len(programs), 2)
             for program in programs:
                 self.assertTrue(program.with_suffix(".png").stat().st_size > 10_000)
                 self.assertTrue(program.with_suffix(".svg").stat().st_size > 10_000)
                 self.assertIn("noenhanced", program.read_text())
                 self.assertIn("set arrow", program.read_text())
                 self.assertIn("unset arrow", program.read_text())
+                for noise in ("Share at or below", "missing=", "open segments=", "Selection:",
+                              "Coverage:", "Created-in-range", "≤ creation", "legend n:",
+                              "set label 120", "T12:00:00Z"):
+                    self.assertNotIn(noise, program.read_text())
+                self.assertIn("Sep 10 – Sep 24, 2026", program.read_text())
             axes = [line for line in programs[0].read_text().splitlines() if line.startswith("set xrange")]
             self.assertEqual(axes, [line for line in programs[-1].read_text().splitlines() if line.startswith("set xrange")])
-            self.assertIn("No measured observations", (selection.out / "context-page-04.gnuplot").read_text())
+            pages = (selection.out / "pages.txt").read_text().splitlines()
+            self.assertTrue(all(len(json.loads(line.split(": ", 1)[1])) <= 10 for line in pages))
+            self.assertIn("No measured observations", (selection.out / "context-page-02.gnuplot").read_text())
+            summary = json.loads((selection.out / "summary.json").read_text())
+            self.assertEqual(summary["selection"]["role_scope"], "standard")
+            self.assertEqual(summary["selection"]["effective_roles"], list(chart.STANDARD_ROLES))
             self.assertEqual(selection.out.stat().st_mode & 0o777, 0o700)
             chart.write_report(args(out=base / "empty"), ranges, {}, collections.Counter(), synthetic=True)
             self.assertIn("No measured observations", (base / "empty/context-page-01.gnuplot").read_text())

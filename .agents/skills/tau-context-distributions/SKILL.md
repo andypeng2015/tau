@@ -74,6 +74,16 @@ contribute a single-model individual segment. No model-row filtering, alias
 mapping or last-model attribution occurs. Provider breakdown uses the set of
 ordinary provider prefixes; mixed models on one provider remain that provider.
 
+By default, include this **exact standard roster** only: `coordinator`,
+`engineer-junior`, `engineer`, `engineer-senior`, `researcher`,
+`researcher-senior`, `researcher-ultra`, `reviewer` (from the built-in role
+configuration and `docs/examples/harness.yaml`). Do not prefix-match custom
+roles. This applies to every breakdown and both cohort modes. Explicit
+`--role custom-name` replaces the default roster and can select nonstandard
+roles; `--all-roles` includes every role when no `--role` is given.
+`--role` takes precedence over `--all-roles`. Report JSON/README state the
+effective role scope; selected counts reflect that scope.
+
 ```sh
 # Side-by-side cohorts, exact UTC endpoints and unchanged lifetime semantics:
 nix shell .#context-diagnostics -c tau-context-diagnostics \
@@ -120,11 +130,16 @@ extreme tails necessarily occupy more space. Compactions use `log10(1+x)`
 with original integer-count ticks and explicit zero; all-zero/binary ranges
 stay linear. Every page and comparison range shares each metric's axis.
 No epsilon zeros, smoothing, fabricated missing samples, clipping or dropped
-groups. At most four groups share each page; all pages/ranges share metric X
+groups. At most ten series share each page (still three metric rows);
+the taller canvas leaves room for the dense legend. All pages/ranges share metric X
 limits and report-wide colors. Exact labels survive in CSV and `pages.txt`
 when long display labels are shortened. Empty panels explicitly say no
 measured observations. Re-render with `gnuplot context-page-01.gnuplot` from
 the output directory; the saved program embeds only aggregate support.
+Nonlinear token ticks include intermediate original-unit values such as
+10k, 20k, 50k, 100k, 200k, 500k and 1M where supported by the range.
+Labels are collision-pruned using panel width, including comparison columns
+and extreme-tail ranges; values between ticks remain fully plotted.
 
 Related roles share a hue and sort **junior → normal → senior → ultra**,
 with progressively darker shades (engineers blue, researchers green, reviewers
@@ -139,8 +154,17 @@ fallback colors and ordering; suffixes junior/senior/ultra also work for custom
 role families. Numeric version recognition is a presentation heuristic only.
 
 **Inspect the real rendered PNGs with `read_image` before delivery.**
+Keep chart surfaces human-facing and minimal: metric titles, series legends,
+original-unit ticks, concise scale notation and readable dates such as
+“Sep 25 – Oct 9, 2026”. These dates are UTC date-only shorthand; exact instants
+stay in report files. Do not put redundant percentage-axis prose, sample counts
+(including legend n), missing/open/partial diagnostics, Selection/role-filter
+prose, cohort/cutoff narratives or coverage/audit footers on the images.
+Preserve all exact ranges, role scope, cohort definitions and coverage caveats
+in CSV/JSON/README and the delivery manifest, not on the chart surface.
+
 Confirm legible titles, labels and legends, shared axes/colors, zero mass,
-honest empty panels and enough room for long model labels. Deliver inspected
+honest empty panels and enough room for model labels. Deliver inspected
 PNG previews plus source artifacts/coverage caveats. Do not claim a visual
 pass if inspection was unavailable. Use a fresh senior researcher for substantial
 presentation changes, and send actual real outputs rather than synthetic-only
@@ -162,7 +186,7 @@ remain **incompatible-or-malformed**, since human CLI errors cannot prove legacy
 schema incompatibility versus corruption. Unknown failures are not guessed.
 The broad failed/unsupported count contains those subcategories; do not add it
 to them. All scan counters cover discovered history, not proven eligible agents.
-The visible chart footer preserves that distinction from per-metric missingness.
+The report coverage section preserves that distinction from per-metric missingness.
 The conservative clock policy skips any journal with missing or regressing
 append timestamps, including unrelated events, to avoid ambiguous cuts.
 Supported typed journal schema is the count authority: legacy serde defaults
