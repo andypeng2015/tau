@@ -559,44 +559,67 @@ def group_style(group, breakdown, lightness_offsets=None):
 
 
 def model_pattern(model):
-    """Preferred line-only pattern for an exact normalized model name."""
+    """Preferred line-N-dots family character for custom model families."""
     digest = hashlib.sha256(("pattern:" + model).encode()).digest()
-    return digest[0] % len(LINE_PATTERNS)
+    return 1 + digest[0] % 3
 
 
-LINE_PATTERNS = ("1", "(1,3)", "(4,3)", "(30,4)", "(8,3,1,3)",
-                 "(8,3,1,3,1,3)", "(3,7)", "(14,7)",
-                 "(12,3,4,3)", "(1,7)", "(4,3,4,7)", "(16,3,1,3,1,3)")
+FAMILY_PATTERNS = {
+    "gpt-{version}-astra": "1",
+    "gpt-{version}-sol": "(30,4)",
+    "gpt-{version}-terra": "(30,4,1,4)",
+    # Preserve the other current families; custom families use line-N-dots.
+    "deepseek-flash": "(4,3,4,7)",
+    "grok-{version}": "(3,7)",
+}
 
 
 def model_patterns(models):
-    """Resolve exact observed-inventory collisions, consistently across panels.
+    """Allocate family characters, then scale line chunks by numeric version.
 
     Role hues stay filter-independent. A pattern can change if a conflicting
     family is filtered away; export the exact table rather than promising otherwise.
     """
-    result, used = {}, {"1", "(30,4)"}
+    result, used = {}, set(FAMILY_PATTERNS.values())
     families = sorted({model_version(model)[0] for model in models})
     for family in families:
-        if family == "gpt-{version}-astra":
-            result[family] = "1"
+        if family in FAMILY_PATTERNS:
+            result[family] = FAMILY_PATTERNS[family]
             continue
-        if family == "gpt-{version}-sol":
-            result[family] = "(30,4)"
+        attempt = 0
+        while True:
+            dots = 1 + (model_pattern(family) - 1 + attempt) % 3
+            gap = 4 + attempt // 3
+            pattern = "(" + ",".join(map(str, [30, gap] + [1, gap] * dots)) + ")"
+            if pattern not in used:
+                break
+            attempt += 1
+        result[family] = pattern
+        used.add(pattern)
+    patterns = {model: result[model_version(model)[0]] for model in models}
+    versions = collections.defaultdict(set)
+    for model in models:
+        family, version = model_version(model)
+        if version:
+            versions[family].add(version)
+    for model in models:
+        family, version = model_version(model)
+        if (patterns[model] == "1" or not version
+                or len(versions[family]) <= 1 and family != "gpt-{version}-sol"):
             continue
-        preference = model_pattern(family)
-        candidates = [LINE_PATTERNS[(preference + i) % len(LINE_PATTERNS)]
-                      for i in range(len(LINE_PATTERNS))]
-        dash = next((pattern for pattern in candidates if pattern not in used), None)
-        if dash is None:
-            # Unbounded inventory fallback; no geometric marker fallback.
-            length = 20
-            while f"({length},4,1,4)" in used:
-                length += 4
-            dash = f"({length},4,1,4)"
-        result[family] = dash
-        used.add(dash)
-    return {model: result[model_version(model)[0]] for model in models}
+        lengths = list(map(float, patterns[model][1:-1].split(",")))
+        main = max(lengths[::2])
+        if main <= 1:
+            continue
+        rank = sorted(versions[family], reverse=True).index(version)
+        # Scale main line chunks only, not dots or gaps. Short legacy patterns
+        # keep a floor no larger than their own baseline.
+        length = max(min(8, main), main * 1.5 * (2 / 3)**rank)
+        for index in range(0, len(lengths), 2):
+            if lengths[index] == main:
+                lengths[index] = length
+        patterns[model] = "(" + ",".join(f"{value:g}" for value in lengths) + ")"
+    return patterns
 
 
 def metric_axis(metric, values):
@@ -708,7 +731,7 @@ def render(out, supports, ranges, args, counts, *, synthetic=False):
         if combined:
             layout.extend([
                 "set label 104 'Roles · hues' at screen .06,.927 font ',12' tc rgb '#475569'",
-                "set label 105 'Models · family patterns, newer darker' at screen .515,.927 font ',12' tc rgb '#475569'",
+                "set label 105 'Models · newer darker, longer dashes' at screen .515,.927 font ',12' tc rgb '#475569'",
             ])
             for index, role in enumerate(roles):
                 y = .908 - .009 * index
@@ -860,13 +883,23 @@ def write_report(args, ranges, supports, counts, *, synthetic=False):
         "[role, model] arrays so custom names cannot collide through a display separator. "
         "Exact model patterns are exported in model-styles.json. Inventory collisions are "
         "resolved deterministically; filtering away a conflicting model can change its pattern, "
-         "while role hues remain filter-independent. Versions within each family share one "
-         "line pattern: Astra is solid, Sol uses extended long dashes (30,4). Numeric version order maps "
+         "while role hues remain filter-independent. The general version technique combines "
+         "lightness with main-line chunk scaling, preserving family dots and gaps. Astra remains "
+         "solid. Terra uses line-dot (30,4,1,4); other current families retain their patterns. "
+         "Custom families use line-1/2/3-dots, with gap variants resolving baseline collisions. "
+         "Sol keeps its long-dash character but varies chunk length by numeric version: newest 45, each older "
+         "observed version divided by 1.5, with an 8-unit readability floor; gaps stay 4. "
+         "Thus Sol 6.1/6/5.6 use (45,4)/(30,4)/(20,4) when those versions are selected. "
+         "A sole observed Sol version uses (45,4); filtering versions can change these ranks. "
+         "Other dashed families scale main chunks when multiple numeric versions are selected: "
+         "newest 1.5 times the family baseline, each older divided by 1.5, with a floor of "
+         "min(8, baseline chunk). Singleton non-Sol and unversioned families retain their baseline. "
+         "Numeric version order maps "
          "oldest to +0.13 and newest to -0.13 OKLCH lightness relative to each role, with "
          "evenly spaced intermediate versions; singleton/unversioned families use zero offset. "
          "This report-inventory mapping may change when filtering versions. Numeric version "
-         "order is not inferred release chronology. Grayscale model swatches show the same "
-         "brightness offsets, while role swatches show base hues/lightness. "
+         "order is not inferred release chronology. Grayscale model swatches show exact scaled "
+         "chunks and the same brightness offsets, while role swatches show base hues/lightness. "
         "Other breakdowns use at most ten series per page. "
         "Date comparisons are explicit opt-in; one window is the default. Display labels may be shortened; "
         "exact names remain in CSV and pages.txt. No selected groups or tails "

@@ -67,7 +67,8 @@ Agents with no inference have missing size, not zero.
 
 The default is **one combined role/model chart**, one time window, all selected observed
 role/model pairs together. Role hues identify roles; model families use
-line-only patterns and numeric versions use lightness (newest darkest). No
+line-only patterns and numeric versions use lightness (newest darkest);
+Sol versions also vary dash chunk length (newest longest). No
 geometric point/marker symbols appear on curves or legend swatches. Compact independent
 role and model legends sit side by side, not a legend entry per pair. The PNG
 is **3520×3600** (2× each dimension of the previous 1760×1800 dense chart);
@@ -205,9 +206,34 @@ increased from 0.18). Singleton/unversioned
 families use zero offset. This preserves role/seniority hue offsets and guarantees
 the newest numeric version is darkest for the same role; it does not infer
 release chronology. Gamut reduction retains the requested hue and lightness.
-All versions of a model family share one pattern: **Astra solid**, **Sol long
-dashes `(30,4)`** (1.5× the previous 20-unit dash segments, unchanged gaps/stroke width).
-Other families receive distinct remaining dash/dot patterns.
+The general version-encoding technique combines **lightness + pattern-length
+scaling**, preserving the family's character, dot count and gaps. The current
+inspected dataset has multiple versions only for Sol (three); this is not a
+Sol-only technique. Solid families such as Astra use brightness without turning
+their solid lines into dashes.
+
+Versions retain their family's line character: **Astra solid**, **Sol long
+dashes with numeric-version-dependent chunk length**. Across the report-wide
+observed Sol inventory, newest uses **45-unit chunks**, each older numeric rank
+divides by **1.5**, with an **8-unit minimum** to keep much older chunks readable.
+Gaps stay **4** and stroke width stays unchanged. Thus **6.1-sol `(45,4)`**,
+**6-sol `(30,4)`**, **5.6-sol `(20,4)`** when all three are selected; a sole
+observed Sol version uses `(45,4)`. This supersedes identical chunks across all
+Sol versions, not their common long-dash family character.
+**Terra uses repeating line-dot `(30,4,1,4)`**, similar to Sol's long line but
+with one dash-dot (not a geometric point marker). Preserve current Deepseek
+`(4,3,4,7)` and Grok `(3,7)` baselines rather than restyling them gratuitously.
+Additional/custom families use **line-N-dots**, with N=1/2/3 and gap variants
+for baseline collisions; this gives an extendible family convention without
+configuration or marker symbols.
+
+For any other dashed family with multiple observed numeric versions, scale
+its longest on-segment(s): newest **1.5× the family baseline**, each older
+numeric rank divided by **1.5**, with a readability floor **min(8, baseline
+chunk)**. Leave dot segments and gaps unchanged. Singleton non-Sol and
+unversioned families retain their baseline. At the floor, much older versions
+can share chunk lengths; brightness still carries numeric rank. Do not turn
+Astra or unrelated unversioned families into dashes merely to encode a version.
 Numeric family recognition is presentation only and never changes aggregate
 identities or filters. No marker fallback. Role legend swatches show base
 hues/lightness; grayscale model swatches show actual family patterns and
@@ -217,8 +243,10 @@ Resolve other-family pattern collisions deterministically over the observed
 report-wide family inventory.
 Patterns are consistent across roles/pages/comparison columns within a report.
 Filtering away a conflicting family can change a resolved pattern; filtering
-versions can change rank-based lightness offsets. Role hues and the explicit
-Astra/Sol patterns remain filter-independent. Do not claim stronger style
+versions can change rank-based lightness offsets **and scaled chunk lengths**.
+Role hues and Astra's solid character remain filter-independent; Sol retains
+its long-dash character and fixed gap, not filter-independent chunk lengths.
+Do not claim stronger style
 stability or silently conflate different model names.
 
 **Inspect the real rendered PNGs with `read_image` before delivery.**

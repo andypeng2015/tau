@@ -412,7 +412,7 @@ class RenderingTests(unittest.TestCase):
                 _, offset, upper = chart.metric_axis("segments", unit.values)
                 self.assertEqual(block(name), chart.step_data(unit, offset, upper))
             self.assertEqual(actual[0], (0, 40))
-            self.assertEqual(program.count("with lines lw 2.6 dt (30,4)"), 3)
+            self.assertEqual(program.count("with lines lw 2.6 dt (45,4)"), 3)
             self.assertNotIn("linespoints", program)
             self.assertIn("Interpolation is visual only", (selection.out / "README.md").read_text())
 
@@ -451,7 +451,7 @@ class RenderingTests(unittest.TestCase):
             self.assertEqual(len(programs), 1)
             program = programs[0].read_text()
             self.assertIn("Roles · hues", program)
-            self.assertIn("Models · family patterns, newer darker", program)
+            self.assertIn("Models · newer darker, longer dashes", program)
             self.assertIn("with lines lw", program)
             self.assertNotIn("linespoints", program)
             self.assertNotIn(" point pt ", program)
@@ -570,9 +570,10 @@ class RenderingTests(unittest.TestCase):
         models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol",
                   "gpt-6-astra", "gpt-6.1-astra", "grok-4.7", "deepseek-flash"]
         patterns = chart.model_patterns(models)
-        self.assertEqual({patterns[m] for m in models if m.endswith("-sol")}, {"(30,4)"})
+        self.assertEqual([patterns[m] for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")],
+                         ["(20,4)", "(30,4)", "(45,4)"])
         self.assertEqual({patterns[m] for m in models if m.endswith("-astra")}, {"1"})
-        self.assertEqual(len(set(patterns.values())), 4)
+        self.assertEqual(len(set(patterns.values())), 6)
         offsets = chart.model_lightness(models)
         self.assertEqual([offsets[m] for m in ("gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol")],
                          [.13, 0, -.13])
@@ -600,13 +601,94 @@ class RenderingTests(unittest.TestCase):
             selection = args(out=Path(temporary) / "long-sol", breakdown="role-model")
             chart.write_report(selection, [(1, 100)], supports, counts, synthetic=True)
             program = (selection.out / "context-page-01.gnuplot").read_text()
-            self.assertEqual(program.count("with lines lw 2.6 dt (30,4)"), 3)
-            self.assertIn("nohead lw 2.6 dt (30,4)", program)
+            self.assertEqual(program.count("with lines lw 2.6 dt (45,4)"), 3)
+            self.assertIn("nohead lw 2.6 dt (45,4)", program)
             self.assertNotIn("dt (10,4)", program)
             self.assertNotIn("dt (20,4)", program)
             self.assertNotIn("linespoints", program)
             styles = json.loads((selection.out / "model-styles.json").read_text())
-            self.assertEqual(styles["gpt-6-sol"]["dash"], "(30,4)")
+            self.assertEqual(styles["gpt-6-sol"]["dash"], "(45,4)")
+
+    def test_sol_dash_numeric_ranks_scaling_floor_and_other_families(self):
+        models = ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-sol", "gpt-6.10-sol",
+                  "gpt-6-astra", "gpt-6.1-astra", "deepseek-flash", "gpt-sol"]
+        patterns = chart.model_patterns(models)
+        self.assertEqual(patterns["gpt-6.10-sol"], "(45,4)")
+        self.assertEqual(patterns["gpt-6.1-sol"], "(30,4)")
+        self.assertEqual(patterns["gpt-6-sol"], "(20,4)")
+        self.assertEqual(patterns, chart.model_patterns(list(reversed(models))))
+        self.assertEqual(chart.model_patterns(["gpt-5.6-sol"]), {"gpt-5.6-sol": "(45,4)"})
+        other = [model for model in models if not model.endswith("-sol") or model == "gpt-sol"]
+        self.assertEqual({model: patterns[model] for model in other}, chart.model_patterns(other))
+        self.assertEqual(patterns["gpt-6-astra"], "1")
+        self.assertEqual(patterns["gpt-6.1-astra"], "1")
+        many = [f"gpt-{version}-sol" for version in range(1200)]
+        scaled = chart.model_patterns(many)
+        self.assertEqual(scaled[many[-1]], "(45,4)")
+        self.assertEqual(scaled[many[0]], "(8,4)")
+        self.assertTrue(all(float(pattern[1:-1].split(",")[0]) >= 8
+                            and pattern.endswith(",4)") for pattern in scaled.values()))
+
+    def test_sol_version_curve_and_legend_use_the_same_dash_mapping(self):
+        models = ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"]
+        unit = chart.Support()
+        unit.add(0, [])
+        unit.add(10, [])
+        supports = {(0, metric, json.dumps(["engineer", model])): unit
+                    for metric in chart.METRICS for model in models}
+        with tempfile.TemporaryDirectory() as temporary:
+            selection = args(out=Path(temporary) / "sol-versions", breakdown="role-model")
+            chart.write_report(selection, [(1, 100)], supports, collections.Counter(), synthetic=True)
+            program = (selection.out / "context-page-01.gnuplot").read_text()
+            styles = json.loads((selection.out / "model-styles.json").read_text())
+            for model, dash in zip(models, ("(20,4)", "(30,4)", "(45,4)")):
+                self.assertEqual(styles[model]["dash"], dash)
+                self.assertEqual(program.count(f"with lines lw 2.6 dt {dash}"), 3)
+                self.assertIn(f"nohead lw 2.6 dt {dash}", program)
+            self.assertNotIn("linespoints", program)
+            self.assertNotIn(" point pt ", program)
+
+    def test_version_scaling_is_general_and_preserves_dots_gaps_and_solid(self):
+        models = ["gpt-5.6-terra", "gpt-6-terra", "gpt-6.1-terra",
+                  "gpt-6-astra", "gpt-6.1-astra"]
+        patterns = chart.model_patterns(models)
+        self.assertEqual([patterns[m] for m in models[:3]],
+                         ["(20,4,1,4)", "(30,4,1,4)", "(45,4,1,4)"])
+        self.assertEqual([patterns[m] for m in models[3:]], ["1", "1"])
+        current = chart.model_patterns(["gpt-5.6-terra", "deepseek-flash", "grok-4.7"])
+        self.assertEqual(current, {"gpt-5.6-terra": "(30,4,1,4)",
+                                  "deepseek-flash": "(4,3,4,7)", "grok-4.7": "(3,7)"})
+        custom = ["widget-1-pro", "widget-2-pro", "widget-3-pro"]
+        scaled = chart.model_patterns(custom)
+        parts = [list(map(float, scaled[model][1:-1].split(","))) for model in custom]
+        self.assertEqual([part[0] for part in parts], [20, 30, 45])
+        self.assertTrue(all(part[1:] == parts[0][1:] for part in parts))
+        self.assertTrue(all(value == 1 for value in parts[0][2::2]))
+        # Unversioned custom families are baseline line-N-dots, no version scaling.
+        inventory = [f"future{index}" for index in range(40)]
+        allocated = chart.model_patterns(inventory)
+        self.assertEqual(len(set(allocated.values())), len(inventory))
+        for pattern in allocated.values():
+            part = list(map(float, pattern[1:-1].split(",")))
+            self.assertEqual(part[0], 30)
+            self.assertIn(len(part), (4, 6, 8))
+            self.assertTrue(all(value == 1 for value in part[2::2]))
+            self.assertTrue(all(value == part[1] >= 4 for value in part[1::2]))
+
+    def test_terra_line_dot_is_used_on_curve_and_legend_without_markers(self):
+        _, supports, counts = collect(
+            [start(2, "a", "provider/gpt-5.6-terra"), finish(3, "a", 10)],
+            selection=args(breakdown="role-model"))
+        with tempfile.TemporaryDirectory() as temporary:
+            selection = args(out=Path(temporary) / "terra", breakdown="role-model")
+            chart.write_report(selection, [(1, 100)], supports, counts, synthetic=True)
+            program = (selection.out / "context-page-01.gnuplot").read_text()
+            self.assertEqual(program.count("with lines lw 2.6 dt (30,4,1,4)"), 3)
+            self.assertIn("nohead lw 2.6 dt (30,4,1,4)", program)
+            self.assertNotIn("linespoints", program)
+            self.assertNotIn(" point pt ", program)
+            styles = json.loads((selection.out / "model-styles.json").read_text())
+            self.assertEqual(styles["gpt-5.6-terra"]["dash"], "(30,4,1,4)")
 
     def test_render_edges_and_empty_selection(self):
         """Real gnuplot output handles empty panels, long literals and shared paginated axes."""
