@@ -8,6 +8,19 @@ advertise: false
 
 For debugging or detailed understanding, inspect the Tau source code rather than guessing from behavior.
 
+## Exact-byte inspection
+
+Rendered tool text intentionally escapes matching exact prompt-envelope closing
+sentinels; ordinary typed tool results neutralize the `tau_internal` closing token.
+Distinct source bytes can therefore look identical in textual output: a literal
+closing token and its already-escaped visible form can render the same way.
+This is presentation escaping, not a change to the file on disk. For byte-sensitive
+reviews, inspect a bounded range as hex (for example,
+`sed -n '148,149p' crates/tau-proto/src/prompt_envelope.rs | od -An -tx1`),
+or compare the bytes locally and print only a boolean rather than the source text.
+See [SPEC-exact-sentinel-prompt-envelopes](../../../specs/SPEC-exact-sentinel-prompt-envelopes.md)
+for the framing contract.
+
 Primary upstream is Radicle:
 
 - Project id: `rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4`
