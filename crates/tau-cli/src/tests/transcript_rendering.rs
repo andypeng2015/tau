@@ -2335,6 +2335,46 @@ fn compaction_lifecycle_notice_uses_info_style() {
     );
 }
 
+/// Warning notices, including admitted protocol skew, must not borrow critical
+/// red/bold emphasis; severity controls styling rather than message text.
+#[test]
+fn harness_notice_severity_selects_distinct_styles() {
+    let theme = tau_themes::Theme::parse(
+        r#"{ styles: {
+            "system.info": { fg: "blue" },
+            "system.warning": { fg: "yellow" },
+            "system.info.important": { fg: "red", bold: true },
+        } }"#,
+    )
+    .expect("valid theme");
+    for (level, color, bold) in [
+        (tau_proto::NoticeLevel::Critical, Color::Red, true),
+        (tau_proto::NoticeLevel::Warning, Color::Yellow, false),
+        (tau_proto::NoticeLevel::Info, Color::Blue, false),
+        (tau_proto::NoticeLevel::Debug, Color::Blue, false),
+        (tau_proto::NoticeLevel::Trace, Color::Blue, false),
+    ] {
+        let notice = tau_proto::HarnessNotice {
+            kind: tau_proto::notice_kind::HARNESS_INTERNAL_WARNING.to_owned(),
+            message: "`github-notifications`, minor protocol mismatch 10.0 vs harness 10.4"
+                .to_owned(),
+            level,
+            purpose: tau_proto::NoticePurpose::Alert,
+        };
+        let rendered = render_harness_notice(&theme, &notice);
+        let spans = rendered.content.spans();
+        assert_eq!(spans[0].style.fg, Some(color), "{level:?}");
+        assert_eq!(spans[0].style.bold, bold, "{level:?}");
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            format!("□ {}", notice.message),
+        );
+    }
+}
+
 /// Output-limit warnings must distinguish the one authorized continuation from
 /// each terminal truncation shape without presenting an incomplete tool call as
 /// executable.

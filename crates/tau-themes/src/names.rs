@@ -65,6 +65,8 @@ pub const SESSION_STATUS: &str = "session.status";
 
 // -- System --
 pub const SYSTEM_INFO: &str = "system.info";
+/// Nonfatal notices that warrant attention without error-level emphasis.
+pub const SYSTEM_WARNING: &str = "system.warning";
 /// Harness-authored internal notices shown in human-facing transcripts.
 pub const SYSTEM_INTERNAL_NOTICE: &str = "system.internal_notice";
 /// Sender and recipient identities in agent-message routing headers.

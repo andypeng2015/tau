@@ -1,5 +1,26 @@
 use super::*;
 
+/// Every built-in palette must distinguish nonfatal warnings from critical
+/// notices without adding bold error emphasis.
+#[test]
+fn builtins_distinguish_warning_notices_from_critical_notices() {
+    for builtin_name in BUILTIN_THEME_NAMES {
+        let theme = Theme::builtin_named(builtin_name).expect("registered built-in theme");
+        let warning = theme.resolve_style(&StyleName::new(crate::names::SYSTEM_WARNING));
+        let critical = theme.resolve_style(&StyleName::new(crate::names::SYSTEM_INFO_IMPORTANT));
+        assert!(
+            matches!(warning.fg, Some(Color::Yellow | Color::DarkYellow)),
+            "{builtin_name}"
+        );
+        assert!(!warning.bold, "{builtin_name}");
+        assert!(
+            matches!(critical.fg, Some(Color::Red | Color::DarkRed)),
+            "{builtin_name}"
+        );
+        assert!(critical.bold, "{builtin_name}");
+    }
+}
+
 /// Built-in themes must present typed internal notices consistently even when
 /// their color palettes differ.
 #[test]

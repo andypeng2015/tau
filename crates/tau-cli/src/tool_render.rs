@@ -1838,9 +1838,8 @@ pub(crate) fn render_harness_notice(
     use tau_themes::names;
 
     let style_name = match info.level {
-        tau_proto::NoticeLevel::Critical | tau_proto::NoticeLevel::Warning => {
-            names::SYSTEM_INFO_IMPORTANT
-        }
+        tau_proto::NoticeLevel::Critical => names::SYSTEM_INFO_IMPORTANT,
+        tau_proto::NoticeLevel::Warning => names::SYSTEM_WARNING,
         tau_proto::NoticeLevel::Info
         | tau_proto::NoticeLevel::Debug
         | tau_proto::NoticeLevel::Trace => names::SYSTEM_INFO,

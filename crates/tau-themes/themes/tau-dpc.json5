@@ -62,6 +62,7 @@
     "system.internal_notice": { fg: "dark_grey", italic: true },
     "agent.message.identity": { bold: true },
     "system.info.important": { fg: "red", bold: true },
+    "system.warning":       { fg: "yellow" },
     "system.disconnect":    { fg: "red", bold: true },
     "system.path":          { fg: "blue" },
     "system.status":        { },
