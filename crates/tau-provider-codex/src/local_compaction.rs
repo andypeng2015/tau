@@ -162,7 +162,7 @@ impl CodexRuntime {
                         }
                     }
                     _ => CompactOutcome::Terminal {
-                        error: CodexError(error),
+                        error: CodexError::compact_terminal(error, attempt.progress()),
                         backend_reached,
                     },
                 },

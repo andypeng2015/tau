@@ -319,7 +319,16 @@ pub fn run_prompt_attempt<S: ProviderReportSink>(
         tau_provider_chat_completions::AttemptOutcome::Canceled { progress, facts } => {
             PromptAttemptOutcome::Canceled { progress, facts }
         }
-        tau_provider_chat_completions::AttemptOutcome::Terminal(failure) => {
+        tau_provider_chat_completions::AttemptOutcome::Terminal(mut failure) => {
+            // Private compact output is omitted from the terminal. Do not let
+            // that empty shape restore pre-output capacity-retreat authority.
+            if prompt.operation == tau_proto::PromptOperation::StandaloneCompaction
+                && failure.progress == tau_provider_chat_completions::SemanticProgress::Parsed
+                && failure.failure_kind
+                    == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
+            {
+                failure.failure_kind = Some(tau_proto::ProviderFailureKind::Unknown);
+            }
             PromptAttemptOutcome::Terminal {
                 finished: Box::new(finished(
                     agent_prompt_id,

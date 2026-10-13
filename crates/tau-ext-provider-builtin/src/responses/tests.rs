@@ -338,6 +338,59 @@ fn production_context_rejection_exposes_guarded_recovery_facts() {
     }
 }
 
+/// Only pre-output compact capacity failures authorize retreat. Ordinary
+/// inference keeps its existing category even after accepted semantic output.
+#[test]
+fn local_summary_post_progress_capacity_error_revokes_recovery_authority() {
+    let model: ResponsesModel =
+        serde_json::from_value(serde_json::json!({"id": "test-model"})).expect("model");
+    for compact in [false, true] {
+        for progress in [false, true] {
+            let mut prompt = crate::openai_tests::prompt();
+            if compact {
+                prompt.operation = tau_proto::PromptOperation::StandaloneCompaction;
+                prompt.context = tau_proto::PromptContext {
+                    blocks: vec![tau_proto::ContextBlock::UserInput(
+                        tau_proto::UserInputBlock {
+                            items: vec![tau_proto::ContextItem::CompactionTrigger],
+                        },
+                    )],
+                };
+            }
+            let mut body = String::new();
+            if progress {
+                body.push_str("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"private draft\"}]}}\n\n");
+            }
+            body.push_str("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"context_length_exceeded\"}}}\n\n");
+            let outcome = run_loopback_attempt(
+                &prompt,
+                &model,
+                &format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            );
+            let PromptAttemptOutcome::Terminal {
+                finished,
+                progress: observed,
+            } = outcome
+            else {
+                panic!("capacity error must terminalize");
+            };
+            assert_eq!(observed.has_timed_semantic_output, progress);
+            assert_eq!(
+                finished.failure_kind,
+                Some(if compact && progress {
+                    tau_proto::ProviderFailureKind::Unknown
+                } else {
+                    tau_proto::ProviderFailureKind::ContextWindowExceeded
+                })
+            );
+            assert!(finished.output_items.is_empty());
+        }
+    }
+}
+
 /// Run the production public Responses adapter against one finite loopback
 /// response.
 fn run_loopback_attempt(

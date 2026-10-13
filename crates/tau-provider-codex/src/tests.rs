@@ -605,6 +605,10 @@ enum LoopbackResponseMode {
     LocalSummarySuccess,
     CompactUnavailable,
     CompactItemThenUnavailable,
+    /// Accepted native or local output followed by a canonical capacity error.
+    CompactOutputThenCapacity {
+        local: bool,
+    },
     CompactUnavailableWithEmbeddedItem,
 }
 
@@ -669,6 +673,7 @@ fn spawn_loopback_server(mode: LoopbackResponseMode) -> WsLoopbackServer {
                     | LoopbackResponseMode::LocalSummarySuccess
                     | LoopbackResponseMode::CompactUnavailable
                     | LoopbackResponseMode::CompactItemThenUnavailable
+                    | LoopbackResponseMode::CompactOutputThenCapacity { .. }
                     | LoopbackResponseMode::CompactUnavailableWithEmbeddedItem
             ) {
                 let Ok(mut socket) = tungstenite::accept(stream) else {
@@ -683,6 +688,30 @@ fn spawn_loopback_server(mode: LoopbackResponseMode) -> WsLoopbackServer {
                         .lock()
                         .expect("requests")
                         .push(serde_json::from_str(&request).expect("synthetic request JSON"));
+                }
+                if let LoopbackResponseMode::CompactOutputThenCapacity { local } = mode {
+                    let item = if local {
+                        serde_json::json!({
+                            "type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "private draft"}]
+                        })
+                    } else {
+                        serde_json::json!({
+                            "type": "compaction", "id": "cmp_1", "encrypted_content": "sealed"
+                        })
+                    };
+                    for event in [
+                        serde_json::json!({
+                            "type": "response.output_item.done", "output_index": 0, "item": item
+                        }),
+                        serde_json::json!({
+                            "type": "response.failed",
+                            "response": {"error": {"code": "context_length_exceeded"}}
+                        }),
+                    ] {
+                        let _ = socket.send(tungstenite::Message::Text(event.to_string().into()));
+                    }
+                    continue;
                 }
                 if matches!(
                     mode,
@@ -960,6 +989,7 @@ fn spawn_loopback_server(mode: LoopbackResponseMode) -> WsLoopbackServer {
                 | LoopbackResponseMode::LocalSummarySuccess
                 | LoopbackResponseMode::CompactUnavailable
                 | LoopbackResponseMode::CompactItemThenUnavailable
+                | LoopbackResponseMode::CompactOutputThenCapacity { .. }
                 | LoopbackResponseMode::CompactUnavailableWithEmbeddedItem => {
                     unreachable!("handled above")
                 }
@@ -1277,6 +1307,49 @@ fn compact_post_progress_failure_is_terminal() {
         1,
         "semantic progress prohibits both transparent repair and logical retry"
     );
+}
+
+/// Native opaque output and private local drafts must not grant the harness
+/// capacity-retreat authority after a later structured stream error.
+#[test]
+fn compact_post_progress_capacity_error_revokes_recovery_authority() {
+    for local in [false, true] {
+        let server =
+            spawn_loopback_server(LoopbackResponseMode::CompactOutputThenCapacity { local });
+        let mut config = ResolvedConfig {
+            inner: native_compact_test_config(server.base_url()),
+        };
+        if local {
+            config = resolved_config_for_model(
+                &ModelName::new("gpt-5.3-codex"),
+                ResolvedCredentials::new("token".to_owned(), None),
+                CodexMode::Standard,
+            );
+            config.inner.base_url = server.base_url();
+        }
+        let runtime = CodexRuntime::new(Arc::new(crate::test_network_policy()));
+        let session = tau_proto::SessionId::parse("capacity-session").expect("session");
+        let agent = tau_proto::AgentId::parse("capacity-agent").expect("agent");
+        let context = compact_trigger_context();
+        let request = test_prompt_payload(&session, &agent, &context);
+        let CompactOutcome::Terminal {
+            error,
+            backend_reached: true,
+        } = runtime.compact("ap-capacity", &config, &request, &mut NeverAbort)
+        else {
+            panic!("late capacity error must terminalize");
+        };
+        assert_eq!(
+            error.failure_kind(),
+            Some(tau_proto::ProviderFailureKind::Unknown)
+        );
+        assert!(
+            matches!(&error.0, common::LlmError::ProviderFailure(_, message)
+                if message == "compaction capacity error after semantic output"),
+            "expected accepted progress for local={local}: {error:?}"
+        );
+        assert_eq!(server.counts().requests.lock().expect("requests").len(), 1);
+    }
 }
 
 /// Definitive absence authorizes fallback only before accepted native content.

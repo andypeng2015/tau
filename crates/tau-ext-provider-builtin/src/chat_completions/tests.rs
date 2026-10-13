@@ -1016,13 +1016,48 @@ fn canceled_local_summary_releases_no_content() {
 #[test]
 fn run_prompt_attempt_terminalizes_parsed_retryable_local_summary() {
     let outcome = run_scripted_local_summary_attempt(concat!(
-        "data: {\"choices\":[{\"delta\":{\"content\":\"Goal:\\ngoal\"}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Goal:\\ngoal\"}}]}\n\n",
         "data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"retry\"}}\n\n"
     ));
-    assert!(matches!(
-        outcome,
-        super::attempt::PromptAttemptOutcome::Terminal { .. }
+    let PromptAttemptOutcome::Terminal { finished, progress } = outcome else {
+        panic!("late retryable error must terminalize");
+    };
+    assert_eq!(
+        progress,
+        tau_provider_chat_completions::SemanticProgress::Parsed
+    );
+    assert_eq!(
+        finished.failure_kind,
+        Some(tau_proto::ProviderFailureKind::Unknown)
+    );
+    assert_eq!(
+        finished.error.as_deref(),
+        Some("summary compactor failed after semantic output")
+    );
+}
+
+/// Private semantic output must not disappear into an empty capacity terminal
+/// that authorizes another compact dispatch at a smaller prefix.
+#[test]
+fn local_summary_post_progress_capacity_error_revokes_recovery_authority() {
+    let (outcome, updates) = run_scripted_local_summary_attempt_with_updates(concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"error\":{\"code\":\"context_length_exceeded\"}}\n\n"
     ));
+    let PromptAttemptOutcome::Terminal { finished, progress } = outcome else {
+        panic!("post-output error must terminalize");
+    };
+    assert_eq!(
+        progress,
+        tau_provider_chat_completions::SemanticProgress::Parsed
+    );
+    assert_eq!(finished.stop_reason, tau_proto::ProviderStopReason::Error);
+    assert!(finished.output_items.is_empty());
+    assert_eq!(
+        finished.failure_kind,
+        Some(tau_proto::ProviderFailureKind::Unknown)
+    );
+    assert!(updates.iter().all(|update| update.deltas.is_empty()));
 }
 
 fn run_scripted_local_summary_attempt(

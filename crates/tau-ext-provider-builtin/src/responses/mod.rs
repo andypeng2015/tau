@@ -638,6 +638,15 @@ pub(crate) fn run_selected_prompt_attempt<S: ProviderReportSink>(
             }
         }
         tau_provider_responses::AttemptOutcome::Terminal(mut failure) => {
+            // The summary is private; an empty public terminal must not turn
+            // accepted semantic output into pre-output recovery authority.
+            if compact_prompt.is_some()
+                && failure.progress.has_timed_semantic_output
+                && failure.failure_kind
+                    == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
+            {
+                failure.failure_kind = Some(tau_proto::ProviderFailureKind::Unknown);
+            }
             if chatgpt_plan {
                 failure.stop_reason = tau_proto::ProviderStopReason::Error;
             }

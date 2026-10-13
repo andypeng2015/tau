@@ -421,6 +421,21 @@ pub enum SemanticProgress {
 pub struct CodexError(common::LlmError);
 
 impl CodexError {
+    /// Revoke capacity-retreat authority after private compact output was
+    /// accepted. Ordinary inference and clean unusable local summaries never
+    /// pass through this error-only boundary.
+    fn compact_terminal(error: common::LlmError, progress: SemanticProgress) -> Self {
+        if progress != SemanticProgress::None
+            && error.failure_kind() == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
+        {
+            Self(common::LlmError::ProviderFailure(
+                tau_proto::ProviderFailureKind::Unknown,
+                "compaction capacity error after semantic output".to_owned(),
+            ))
+        } else {
+            Self(error)
+        }
+    }
     /// Returns the logical retry decision, when the outer scheduler should
     /// retry.
     #[must_use]
@@ -1557,7 +1572,7 @@ impl CodexRuntime {
                         }
                     }
                     _ => CompactOutcome::Terminal {
-                        error: CodexError(error),
+                        error: CodexError::compact_terminal(error, attempt.progress()),
                         backend_reached,
                     },
                 };
