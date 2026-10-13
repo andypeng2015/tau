@@ -4486,7 +4486,7 @@ fn configure_requires_instance_name_and_keeps_state_dir_optional() {
     );
     assert_eq!(
         json["harness_protocol_version"],
-        serde_json::json!({"major": 11, "minor": 1})
+        serde_json::json!({"major": 12, "minor": 0})
     );
     let decoded: Configure = serde_json::from_value(json).expect("decode configure");
     assert_eq!(decoded, with_state);
@@ -4525,7 +4525,7 @@ fn configure_protocol_revision_advertisement_is_additive() {
     let decoded: Configure = serde_json::from_value(legacy.clone()).expect("old configure");
     assert_eq!(decoded.harness_protocol_version, None);
     let mut newer = legacy;
-    newer["harness_protocol_version"] = serde_json::json!({"major": 11, "minor": 1});
+    newer["harness_protocol_version"] = serde_json::json!({"major": 12, "minor": 0});
     newer["absent_optional_secrets"] = serde_json::json!(["optional_key"]);
     let old: OldConfigure = serde_json::from_value(newer.clone()).expect("old decoder");
     assert_eq!(old.instance_name.as_str(), "std-utils");
@@ -4595,7 +4595,7 @@ fn directional_message_wire_form_uses_flat_message_tag() {
     assert!(input_json.get("payload").is_some());
     assert_eq!(
         input_json["payload"]["protocol_version"],
-        serde_json::json!({"major": 11, "minor": 1})
+        serde_json::json!({"major": 12, "minor": 0})
     );
 
     let output = HarnessOutputMessage::Disconnect(Disconnect {
@@ -4687,7 +4687,7 @@ fn ui_session_admission_wire_round_trip() {
     );
     assert_eq!(
         accepted_json["payload"]["harness_protocol_version"],
-        serde_json::json!({"major": 11, "minor": 1})
+        serde_json::json!({"major": 12, "minor": 0})
     );
     assert_eq!(
         serde_json::from_value::<HarnessOutputMessage>(accepted_json)
@@ -7270,6 +7270,29 @@ fn agent_compacted_ignores_removed_output_token_alias() {
 /// while old response frames without the additive field remain decodable.
 #[test]
 fn provider_failure_kind_wire_contract_is_backward_compatible() {
+    for (kind, wire) in [
+        (
+            ProviderFailureKind::LocalSummaryUnusable,
+            "local_summary_unusable",
+        ),
+        (
+            ProviderFailureKind::TransientCompactionExhausted,
+            "transient_compaction_exhausted",
+        ),
+    ] {
+        let value = serde_json::to_value(kind).expect("JSON");
+        assert_eq!(value, serde_json::json!(wire));
+        assert_eq!(
+            serde_json::from_value::<ProviderFailureKind>(value).expect("decode"),
+            kind
+        );
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&kind, &mut bytes).expect("CBOR");
+        assert_eq!(
+            ciborium::from_reader::<ProviderFailureKind, _>(bytes.as_slice()).expect("decode CBOR"),
+            kind
+        );
+    }
     assert_eq!(
         serde_json::to_value(ProviderFailureKind::ContextWindowExceeded).expect("serialize"),
         serde_json::json!("context_window_exceeded")

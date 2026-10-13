@@ -154,8 +154,16 @@ failures with the shared backoff scheduler, up to five total attempts. Exhaustio
 does not permanently disable automatic compaction: a fresh ordinary inference
 terminal may authorize another transaction, including a canonical no-output
 context-window rejection. No queue-polling or restart-only retry loop is allowed.
-Failures after accepted semantic output and historical unclassified failures
-require explicit recovery. Grok's unary native compactor uses the same bounded
+Stream failures after accepted semantic output and historical unclassified failures
+require explicit recovery. A clean local-summary completion with only reasoning
+or empty text instead retries a smaller complete prefix, up to four extra
+unusable-summary-authorized successors. This allowance survives mixed
+capacity/length chains and restart; it is separate from transport retries, not
+a five-paid-call total. Exhaustion can rearm on a fresh ordinary terminal, never
+queue polling alone. Draft reasoning stays private. The rule covers Chat
+Completions, public Responses, and Codex's local fallback, not native opaque
+compaction or malformed/tool-bearing output.
+Grok's unary native compactor uses the same bounded
 scheduler for proven request/body transport and absolute-deadline failures before
 accepting its complete opaque item. Unknown HTTP/status/output failures remain
 terminal; native failure never selects a different paid summary implementation.
@@ -1636,7 +1644,7 @@ capability snapshot remains replayable for the running harness so both live and
 late clients show neutral unknown.
 
 Required inference work has no attempt-count or elapsed-time retry limit during
-the running session. Standalone compaction is bounded to five total attempts:
+the running session. Each standalone provider prompt has at most five transient attempts:
 transient failures use the same scheduler and shared cooldown, then the fifth
 failure terminalizes without a sixth provider attempt. Transport/server
 failures, throttling, usage windows, billing/quota/credits, reloadable

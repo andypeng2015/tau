@@ -8187,11 +8187,10 @@ fn hello_protocol_version_admission_matrix_is_explicit() {
     }
 }
 
-/// The typed compaction-evidence protocol-eleven boundary rejects protocol-ten
-/// providers, tools, and core extensions before they can configure.
+/// Compaction recovery's wire boundary rejects previous-major providers, tools,
+/// and core extensions before they can configure.
 #[test]
-fn configured_extension_admission_rejects_protocol_ten_peers() {
-    assert_eq!(tau_proto::PROTOCOL_VERSION.major, 11);
+fn configured_extension_admission_rejects_previous_major_peers() {
     for client_kind in [
         tau_proto::ClientKind::Provider,
         tau_proto::ClientKind::Tool,
@@ -8199,7 +8198,10 @@ fn configured_extension_admission_rejects_protocol_ten_peers() {
     ] {
         let hello = tau_proto::Hello {
             declaration_inspection: false,
-            protocol_version: tau_proto::ProtocolVersion::new(10, 4),
+            protocol_version: tau_proto::ProtocolVersion::new(
+                tau_proto::PROTOCOL_VERSION.major - 1,
+                0,
+            ),
             client_name: crate::test_extension_name("old-peer"),
             client_kind,
             expected_session_id: None,

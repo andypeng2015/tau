@@ -4579,6 +4579,9 @@ pub enum StandaloneCompactionFailureReason {
     /// Bounded transient retries ended before any semantic compact output.
     /// A fresh ordinary inference terminal may authorize another transaction.
     TransientCompactionExhausted,
+    /// A clean, private local-summary terminal contained no usable narrative.
+    /// Bounded strict-prefix retreat or a fresh ordinary terminal may retry it.
+    LocalSummaryUnusable,
     /// The provider returned a malformed replacement window.
     InvalidWindow,
     /// The provider exhausted its output-token budget before completing a
@@ -4610,6 +4613,7 @@ impl StandaloneCompactionFailureReason {
         match self {
             Self::ProviderError => "provider error",
             Self::TransientCompactionExhausted => "transient compaction retries exhausted",
+            Self::LocalSummaryUnusable => "local summary contained no usable narrative",
             Self::InvalidWindow => "invalid compaction output",
             Self::OutputLengthExceeded => "summary output limit reached",
             Self::RouteFailed => "provider route unavailable",
@@ -5078,7 +5082,13 @@ pub struct StandaloneCompactionIncomplete {
     pub backend: ProviderBackend,
 }
 
-/// Pre-minted strict-predecessor successor for standalone context rejection.
+/// Maximum extra strict-prefix successors authorized by unusable local
+/// summaries in one compaction episode. Capacity, length, and transport limits
+/// are separate.
+pub const LOCAL_SUMMARY_UNUSABLE_MAX_SUCCESSORS: usize = 4;
+
+/// Pre-minted strict-predecessor successor for a recoverable standalone
+/// rejection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContextRetreatPlan {
     /// Successor transaction identity.
@@ -6208,6 +6218,10 @@ pub enum ProviderFailureKind {
     /// Standalone compaction exhausted bounded transient retries without
     /// accepting semantic output in any failed attempt.
     TransientCompactionExhausted,
+    /// A completed no-tool local summary contained only bounded private
+    /// reasoning or empty text, with no publishable narrative. Not native
+    /// compact output.
+    LocalSummaryUnusable,
     /// A terminal provider failure without a more specific safe classification.
     Unknown,
 }
@@ -6396,6 +6410,7 @@ impl ProviderFailureKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TransientCompactionExhausted => "transient_compaction_exhausted",
+            Self::LocalSummaryUnusable => "local_summary_unusable",
             Self::ContextWindowExceeded => "context_window_exceeded",
             Self::RequestRejected => "request_rejected",
             Self::Unknown => "unknown",
@@ -6790,6 +6805,35 @@ pub struct ProviderResponseFinished {
 }
 
 impl ProviderResponseFinished {
+    /// Classify a canonical output-free standalone rejection that must commit
+    /// before its failure and any strict-prefix successor. Callers must
+    /// separately establish standalone ownership; this method grants no
+    /// inference authority.
+    #[must_use]
+    pub fn standalone_rejection_reason(&self) -> Option<StandaloneCompactionFailureReason> {
+        if self.stop_reason != ProviderStopReason::Error || !self.output_items.is_empty() {
+            return None;
+        }
+        match self.failure_kind? {
+            ProviderFailureKind::ContextWindowExceeded => {
+                Some(StandaloneCompactionFailureReason::ContextWindowExceeded)
+            }
+            ProviderFailureKind::LocalSummaryUnusable
+                if self.backend.as_ref().is_some_and(|backend| {
+                    matches!(
+                        backend.kind,
+                        ProviderBackendKind::ChatCompletions
+                            | ProviderBackendKind::PublicResponses
+                            | ProviderBackendKind::Responses
+                    )
+                }) =>
+            {
+                Some(StandaloneCompactionFailureReason::LocalSummaryUnusable)
+            }
+            _ => None,
+        }
+    }
+
     /// Returns whether this terminal contains only the provider-native
     /// reasoning representation that its backend can replay losslessly.
     #[must_use]

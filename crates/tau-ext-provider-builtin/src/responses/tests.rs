@@ -1482,6 +1482,33 @@ fn summary_validation_accepts_responses_dual_reasoning_representation() {
     ));
 }
 
+/// Public Responses shares the narrow empty-summary category without granting
+/// recovery to malformed or tool-shaped output.
+#[test]
+fn public_responses_empty_summary_preserves_recovery_classification() {
+    let items = vec![tau_proto::ContextItem::ReasoningText(
+        tau_proto::ReasoningTextItem {
+            kind: tau_proto::ReasoningTextKind::Full,
+            text: "bounded private thought".to_owned(),
+        },
+    )];
+    assert_eq!(
+        validate_responses_narrative_output(items, summary_config())
+            .expect_err("missing narrative")
+            .failure_kind(),
+        tau_proto::ProviderFailureKind::LocalSummaryUnusable
+    );
+    assert_eq!(
+        validate_responses_narrative_output(
+            vec![tau_proto::ContextItem::CompactionTrigger],
+            summary_config()
+        )
+        .expect_err("invalid shape")
+        .failure_kind(),
+        tau_proto::ProviderFailureKind::RequestRejected
+    );
+}
+
 /// Public Responses summary dispatch must retain the ordinary request and add
 /// only the harness-authored instruction after its warmed context prefix.
 #[test]

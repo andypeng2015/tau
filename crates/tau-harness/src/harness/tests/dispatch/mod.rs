@@ -2951,6 +2951,7 @@ mod compaction_strict;
 mod compaction_terminalization;
 mod compaction_threshold;
 mod compaction_turn_start;
+mod compaction_unusable_summary;
 mod configuration;
 mod extension_routing;
 mod internal_tool_dispatch;

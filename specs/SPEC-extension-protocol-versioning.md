@@ -8,6 +8,12 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 12.0 adds typed `local_summary_unusable` provider and durable failure
+variants plus bounded strict-prefix recovery authority. Configured extensions
+must rebuild together; earlier peers cannot silently ignore the new variants.
+Historical generic failures retain explicit-only recovery. Journal framing is
+unchanged; older binaries cannot replay new variant-bearing records.
+
 Protocol 11.0 introduces typed exhausted-transient standalone compaction
 failure variants with future-inference recovery authority. Configured
 extensions require compatible rebuilds; no historical failure is reclassified.

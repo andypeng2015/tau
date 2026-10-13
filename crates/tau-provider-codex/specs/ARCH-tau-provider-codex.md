@@ -87,6 +87,10 @@ Existing WebSocket receive/retained-state bounds and cancellation still apply.
 Local summary never repairs transparently. Pre-output transient failures use
 the same bounded logical scheduler as native compaction;
 cancellation and post-content native failures never fall back.
+A clean completed local response with only bounded reasoning or empty narrative
+reports typed unusable-summary failure to the harness. It does not retry within
+the adapter; the harness owns bounded smaller-prefix successors. Native opaque
+output and partial-stream errors never gain that authority.
 
 The model publishes no inferred historical-prefix byte budget. Tau initially
 sends the exact normalized provider-closed target with the same mode, system

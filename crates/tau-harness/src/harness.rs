@@ -1052,6 +1052,9 @@ fn standalone_compaction_failure_message(
         tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted => {
             "transient_compaction_exhausted"
         }
+        tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable => {
+            "local_summary_unusable"
+        }
         tau_proto::StandaloneCompactionFailureReason::InvalidWindow => "invalid_window",
         tau_proto::StandaloneCompactionFailureReason::OutputLengthExceeded => {
             "output_length_exceeded"

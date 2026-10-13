@@ -2749,7 +2749,9 @@ impl Harness {
                     self.fail_standalone_compaction(
                         &cid,
                         response,
-                        tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded,
+                        response
+                            .standalone_rejection_reason()
+                            .expect("replayed standalone rejection was validated"),
                         None,
                     );
                 }

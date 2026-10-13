@@ -23,6 +23,7 @@ pub use grok::{GrokModel, GrokProfile};
 use tau_provider_chatgpt::credential::Credential as ChatGptPlanCredential;
 use tau_provider_grok::credential::Credential as GrokCredential;
 mod image_tools;
+mod local_summary_validation_error;
 mod oauth_refresh_rejection;
 mod openai_auth;
 mod openai_prompt_cache;

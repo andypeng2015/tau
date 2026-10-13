@@ -23,6 +23,11 @@ The user approved bounded pre-output transient retries for local as well as
 native standalone compaction for ticket `71od`, and rearming exhausted transient
 failures on fresh ordinary inference terminals. Historical failures without
 typed no-output evidence remain conservative.
+The user approved bounded recovery for unusable local summaries in `l2h9`:
+clean reasoning-only or empty completed summaries may retreat to smaller
+prefixes, up to four such successors per episode, and a fresh ordinary terminal
+may rearm exhaustion. This includes the Tau-owned Codex local fallback, not
+native opaque compaction, cancellation, or stream errors after progress.
 The user separately approved letting that typed fresh-terminal automatic
 successor compact the current eligible history rather than only the failed cut;
 manual and post-semantic-output recovery retain their existing cut safeguards.
@@ -192,8 +197,8 @@ with the existing built-in local summary implementation otherwise.
 Each start, failure, replacement boundary, and inference checkpoint uses normal
 atomic publication. Replay claims an unstarted retreat once, resumes ordinary
 inference after a committed success without rerunning the summary, and leaves
-ambiguous dispatched work blocked. Outside the local-summary output-limit
-exception below, partial semantic output, cancellation,
+ambiguous dispatched work blocked. Outside the local-summary output-limit and
+clean-unusable-summary exceptions below, partial semantic output, cancellation,
 unsupported policy, and branch/model mismatch do not grant automatic recovery.
 A viable configuration assumes useful shrinking prefixes exist; fixed overhead
 or an indivisible smallest prefix that the backend rejects terminates as
@@ -264,15 +269,17 @@ The model-callable path accepts work only when the exact captured
 provider-qualified model supports standalone compaction and its route exists.
 It has no inline fallback. Provider terminal errors produce one terminal
 transaction failure. Canonical no-output context rejection may authorize the
-shared smaller-prefix successor, but other deterministic failures do not.
+shared smaller-prefix successor, as may the narrow clean-unusable-summary
+category below; other deterministic failures do not.
 Before any semantic compact output is
 accepted, standalone compaction uses the shared transient-failure classifier
 and jittered Fibonacci scheduler with a named five-attempt policy, including the
 first attempt. A same-event error processed before content is accepted remains
-pre-progress. After semantic compact output is accepted, a later failure
+pre-progress. Except for clean completed unusable local summaries, after
+semantic compact output is accepted, a later failure
 discards the uncommitted output and terminalizes without automatic retry;
 recovery requires a distinct explicit request. Deterministic failures,
-other than the shared capacity-retreat case, are terminal immediately. Ordinary
+other than the shared capacity-retreat and clean-unusable-summary cases, are terminal immediately. Ordinary
 inference deliberately retains its unbounded transient-retry policy.
 The Codex adapter selects native compaction privately when the model supports
 its wire contract, otherwise local summary. It serializes the first native probe
@@ -313,12 +320,15 @@ model and selected lineage may authorize one new automatic transaction through
 ordinary threshold/policy evidence or canonical no-output context rejection.
 Ingress, queue polling, and restart alone do not rearm it. The terminal commits
 before any reactive successor start; replay claims that successor at most once.
+The same fresh-terminal rearming applies to a typed unusable-local-summary
+failure with no pending successor. A failed episode never resumes its owed
+inference merely to manufacture another overflow.
 The automatic successor supersedes the typed failure and may advance its cut
 within the same selected lineage to the current provider-closed prefix.
 It preserves the owed resume ancestry and post-cut suffix. Only successful
-publication clears the failure chain; unknown/post-progress failures never
+publication clears the failure chain; unknown/post-progress stream failures never
 gain this advancing-cut authority.
-Post-progress, deterministic, canceled, interrupted, and historical unclassified
+Apart from the clean local-summary exception, post-progress, deterministic, canceled, interrupted, and historical unclassified
 failures retain explicit-only recovery. Grok's unary compactor retries only
 proven request/body transport or absolute-deadline failures before accepting its
 one complete opaque item. Unknown status/body/shape failures remain terminal.
@@ -617,13 +627,31 @@ provider work. Explicit requests use the durable pre-start manual-request failur
 with reason `prefix_too_large`; automatic starts retain their typed preflight
 failure.
 
-Only a canonical typed, no-output `context_window_exceeded` terminal authorizes
-automatic retreat. Its failure record pre-mints one successor at the immediate
+A canonical typed, no-output `context_window_exceeded` terminal authorizes
+automatic capacity retreat. Its failure record pre-mints one successor at the immediate
 previous useful provider-closed cut, including a replacement-only prefix.
 Each rejection strictly retreats; the first success returns to ordinary
 execution, which alone supplies fresh evidence for another compaction.
 This method also applies to explicit requests. Generic provider failures,
 cancellation, route loss, and irreducible history terminalize without automatic retry.
+
+A clean completed Tau-owned local summarizer that emitted only bounded private
+reasoning or empty/whitespace narrative reports `local_summary_unusable`, not
+generic request rejection. Chat Completions, public Responses, and the Codex
+local fallback share this authority. Invalid role/tool/output shape, byte-limit
+violations, cancellation, native compaction, and partial-stream errors do not.
+The private draft is discarded; reasoning never becomes a replacement summary.
+The canonical output-free terminal commits before its failure record, which
+pre-mints a strict predecessor using the same closed-prefix machinery as capacity
+retreat. Four successors may be authorized by this category per episode.
+Core derives that allowance from committed predecessor links across capacity
+retreat and same-cut output continuation, so mixed chains and restart cannot
+reset it. Capacity rejections do not consume the allowance; existing transport
+and length limits remain independent, not a five-paid-call total.
+Exhaustion or an irreducible prefix produces one final failure without losing the
+suffix, request ownership, captured model/branch, or owed resume watermark.
+Fresh-terminal or explicit recovery starts a new episode; polling and ingress
+alone do not. Historical generic failures are not reclassified.
 A deterministic automatic byte-budget preflight failure records its reason in
 the start, so live execution and restart commit the same terminal without
 provider work.

@@ -1740,6 +1740,20 @@ impl Harness {
         response: &ProviderResponseFinished,
     ) -> ProviderTerminalPlan {
         if response.error.is_some() || response.failure_kind.is_some() {
+            if response.standalone_rejection_reason()
+                == Some(tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable)
+                && !self
+                    .prompt_coordination
+                    .prompt_runtime
+                    .semantic_output
+                    .contains(&response.agent_prompt_id)
+            {
+                return ProviderTerminalPlan::StandaloneCompaction(
+                    StandaloneCompactionTerminalPlan::Rejected(
+                        StandaloneCompactionRejection::LocalSummaryUnusable,
+                    ),
+                );
+            }
             if response.failure_kind
                 == Some(tau_proto::ProviderFailureKind::TransientCompactionExhausted)
                 && response.stop_reason == ProviderStopReason::Error
@@ -1958,7 +1972,9 @@ impl Harness {
         self.fail_standalone_compaction(
             cid,
             &response,
-            tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded,
+            response
+                .standalone_rejection_reason()
+                .expect("classified standalone rejection committed"),
             source.as_ref(),
         );
     }
@@ -2093,6 +2109,7 @@ impl Harness {
         let failure = (!matches!(
             rejection,
             StandaloneCompactionRejection::ContextWindowExceeded
+                | StandaloneCompactionRejection::LocalSummaryUnusable
         ))
         .then(|| self.prepare_standalone_failure(cid, response, rejection.durable_reason()))
         .flatten();
@@ -2111,6 +2128,7 @@ impl Harness {
     ) {
         match rejection {
             StandaloneCompactionRejection::ProviderError
+            | StandaloneCompactionRejection::LocalSummaryUnusable
             | StandaloneCompactionRejection::TransientCompactionExhausted => self.emit_info(&format!(
                 "provider failed standalone compaction for agent_prompt_id={}",
                 response.agent_prompt_id
@@ -2135,6 +2153,7 @@ impl Harness {
         if matches!(
             rejection,
             StandaloneCompactionRejection::ContextWindowExceeded
+                | StandaloneCompactionRejection::LocalSummaryUnusable
         ) {
             let retained_response = self.clone_finished_response_for_timing(
                 provider_terminal_timing::ProviderTerminalStage::RetainedPlanClone,
@@ -2205,9 +2224,15 @@ impl Harness {
                 cut,
             )
             .is_none();
-        let retreat_plan = if reason
+        let permits_retreat = reason
             == tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
-        {
+            || (reason == tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+                && self
+                    .session_runtime
+                    .agent_store
+                    .agent(response.agent_id.as_str())
+                    .is_some_and(|tree| tree.local_summary_unusable_can_retreat(&transaction_id)));
+        let retreat_plan = if permits_retreat {
             let agent_id = response.agent_id.as_str();
             let started = self
                 .session_runtime
@@ -2377,9 +2402,11 @@ impl Harness {
                     .description(),
                 _ => reason.description(),
             };
-            let recovery = if reason
-                == tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
-            {
+            let recovery = if matches!(
+                reason,
+                tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+                    | tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+            ) {
                 "a fresh inference terminal can retry automatically; :compact retries explicitly"
             } else {
                 "retry with :compact, switch model/role, or rewind"

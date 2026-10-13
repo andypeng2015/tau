@@ -872,6 +872,31 @@ fn run_prompt_attempt_retains_truncated_local_summary_privately() {
     assert!(updates.iter().all(|update| update.deltas.is_empty()));
 }
 
+/// A clean reasoning-only stop must keep its draft private while preserving the
+/// narrow typed authority needed for bounded smaller-prefix recovery.
+#[test]
+fn clean_reasoning_only_summary_preserves_typed_recovery_without_public_output() {
+    let (outcome, updates) = run_scripted_local_summary_attempt_with_updates(concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"private synthetic reasoning\"}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    ));
+    assert!(updates.iter().all(|update| update.deltas.is_empty()));
+    let PromptAttemptOutcome::Terminal { finished, progress } = outcome else {
+        panic!("unusable summary must remain private");
+    };
+    assert_eq!(
+        progress,
+        tau_provider_chat_completions::SemanticProgress::Parsed
+    );
+    assert!(finished.output_items.is_empty());
+    assert_eq!(
+        finished.failure_kind,
+        Some(tau_proto::ProviderFailureKind::LocalSummaryUnusable)
+    );
+    assert_eq!(finished.stop_reason, tau_proto::ProviderStopReason::Error);
+}
+
 /// A valid local summary remains absent from progress events and crosses the
 /// extension seam once in its validated private terminal envelope.
 #[test]

@@ -541,14 +541,26 @@ pub(crate) fn run_selected_prompt_attempt<S: ProviderReportSink>(
                             {
                                 Ok(output) => vec![output],
                                 Err(error) => {
-                                    return invalid_compaction(
-                                        agent_prompt_id,
-                                        prompt,
-                                        provider,
-                                        &error,
-                                        backend_reached,
-                                        provider_attempt,
-                                    );
+                                    return PromptAttemptOutcome::Terminal {
+                                        finished: Box::new(finished(
+                                            agent_prompt_id,
+                                            prompt,
+                                            provider,
+                                            Vec::new(),
+                                            tau_proto::ProviderStopReason::Error,
+                                            Some(error.to_string()),
+                                            Some(error.failure_kind()),
+                                            success.usage,
+                                            success.provider_response_id,
+                                            backend_reached,
+                                            provider_attempt,
+                                        )),
+                                        progress: tau_provider_responses::AttemptProgress {
+                                            output_items: Vec::new(),
+                                            response_bytes_received: 0,
+                                            has_timed_semantic_output: true,
+                                        },
+                                    };
                                 }
                             };
                     }
@@ -837,7 +849,10 @@ fn resolved_summary_config(model: &ResponsesModel) -> Option<SummaryCompactionCo
 fn validate_responses_narrative_output(
     items: Vec<tau_proto::ContextItem>,
     config: SummaryCompactionConfig,
-) -> Result<tau_proto::ContextItem, String> {
+) -> Result<
+    tau_proto::ContextItem,
+    crate::local_summary_validation_error::LocalSummaryValidationError,
+> {
     // Public Responses represents one reasoning stream twice: visible bounded
     // reasoning text and an opaque provider replay item. The summary validator
     // bounds and discards the text; discard its replay-only twin before

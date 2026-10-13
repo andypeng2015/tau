@@ -1,5 +1,10 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 12.0 adds typed unusable-local-summary failure authority and bounded
+strict-prefix successors. Compatible configured peers must rebuild together;
+older journals retain their existing generic failure meaning. See
+[SPEC-compaction-and-context-recovery](../../../specs/SPEC-compaction-and-context-recovery.md).
+
 Protocol 11.1 adds optional UI-only original discovery paths to AGENTS file
 declarations and initialization summaries. Omission falls back to the resolved
 file path; identity, deduplication, and model-visible instructions are unchanged.

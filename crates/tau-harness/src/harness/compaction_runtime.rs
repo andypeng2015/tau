@@ -1298,7 +1298,7 @@ impl Harness {
                     .agent_store
                     .agent(agent_id)
                     .is_some_and(|tree| {
-                        tree.transient_compaction_retry_is_ready(
+                        tree.automatic_compaction_retry_is_ready(
                             &failed,
                             current_head,
                             preparing_terminal,
@@ -1307,7 +1307,7 @@ impl Harness {
             })
     }
 
-    /// Claim the latest typed transient failure only after a fresh ordinary
+    /// Claim the latest typed retryable failure only after a fresh ordinary
     /// terminal commits. The successor may select current closed history while
     /// retaining the old outcome and owed resume lineage.
     pub(super) fn automatic_compaction_supersedes(
@@ -1320,7 +1320,7 @@ impl Harness {
         self.session_runtime
             .agent_store
             .agent(agent_id)?
-            .transient_compaction_retry_is_ready(&failed, current_head, None)
+            .automatic_compaction_retry_is_ready(&failed, current_head, None)
             .then_some(failed.transaction_id)
     }
 

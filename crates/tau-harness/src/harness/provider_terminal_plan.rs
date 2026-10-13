@@ -43,6 +43,8 @@ pub(crate) enum StandaloneCompactionRejection {
     ProviderError,
     /// Bounded retries exhausted with reliable no-semantic-output evidence.
     TransientCompactionExhausted,
+    /// A completed private local summary contained no usable narrative.
+    LocalSummaryUnusable,
     /// The provider canonically rejected an output-free request for context
     /// size.
     ContextWindowExceeded,
@@ -62,6 +64,9 @@ impl StandaloneCompactionRejection {
             Self::ProviderError => tau_proto::StandaloneCompactionFailureReason::ProviderError,
             Self::TransientCompactionExhausted => {
                 tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+            }
+            Self::LocalSummaryUnusable => {
+                tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
             }
             Self::ContextWindowExceeded => {
                 tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded

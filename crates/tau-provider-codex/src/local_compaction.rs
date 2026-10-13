@@ -19,8 +19,10 @@ impl CodexRuntime {
     ///
     /// Pre-output transient failures return to the bounded logical scheduler.
     /// No transparent repair follows this attempt. Once semantic output is
-    /// accepted, failure is terminal. All semantic output stays private until
-    /// the complete narrative passes validation.
+    /// accepted, failure is terminal at this adapter. Only a clean completed
+    /// but unusable narrative carries typed authority for a harness-owned
+    /// smaller-prefix successor. All semantic output stays private until the
+    /// complete narrative passes validation.
     pub fn local_compact_numbered(
         &self,
         agent_prompt_id: &str,
@@ -51,7 +53,7 @@ impl CodexRuntime {
         }
         let mut context = request.context.clone();
         if let Err(error) = local_summary_compaction::replace_trailing_trigger(&mut context) {
-            let outcome = invalid_output(error, false);
+            let outcome = invalid_output(LlmError::InvalidResponse(error.to_owned()), false);
             finish_local_timing(
                 &mut trace,
                 agent_prompt_id,
@@ -259,11 +261,13 @@ fn finish_local_timing(
 /// Reject raw tool/unknown slots too, including incomplete calls that ordinary
 /// inference intentionally drops. Reasoning is bounded and discarded, never
 /// incorporated in the accepted narrative.
-fn validate_narrative(state: StreamState) -> Result<tau_proto::ContextItem, &'static str> {
+fn validate_narrative(state: StreamState) -> Result<tau_proto::ContextItem, LlmError> {
     let limit = tau_proto::LOCAL_COMPACTION_NARRATIVE_MAX_BYTES;
     let mut reasoning_bytes = state.thinking.as_ref().map_or(0, String::len);
     if limit < reasoning_bytes {
-        return Err("summary compactor reasoning exceeds its byte limit");
+        return Err(LlmError::InvalidResponse(
+            "summary compactor reasoning exceeds its byte limit".to_owned(),
+        ));
     }
     let mut narrative = None;
     for item in state.output_items {
@@ -272,20 +276,37 @@ fn validate_narrative(state: StreamState) -> Result<tau_proto::ContextItem, &'st
             OutputItemAccumulator::Reasoning(item) => {
                 reasoning_bytes = reasoning_bytes.saturating_add(item.raw_json().len());
                 if limit < reasoning_bytes {
-                    return Err("summary compactor reasoning exceeds its byte limit");
+                    return Err(LlmError::InvalidResponse(
+                        "summary compactor reasoning exceeds its byte limit".to_owned(),
+                    ));
                 }
             }
             OutputItemAccumulator::Message(message) if narrative.is_none() => {
                 narrative = Some(message.text);
             }
-            _ => return Err("summary compactor returned unsupported output"),
+            _ => {
+                return Err(LlmError::InvalidResponse(
+                    "summary compactor returned unsupported output".to_owned(),
+                ));
+            }
         }
     }
     let Some(narrative) = narrative else {
-        return Err("summary compactor did not return exactly one message");
+        return Err(LlmError::ProviderFailure(
+            tau_proto::ProviderFailureKind::LocalSummaryUnusable,
+            "summary compactor did not return exactly one message".to_owned(),
+        ));
     };
-    if narrative.trim().is_empty() || narrative.len() > limit {
-        return Err("summary compactor output is empty or exceeds its byte limit");
+    if narrative.len() > limit {
+        return Err(LlmError::InvalidResponse(
+            "summary compactor output exceeds its byte limit".to_owned(),
+        ));
+    }
+    if narrative.trim().is_empty() {
+        return Err(LlmError::ProviderFailure(
+            tau_proto::ProviderFailureKind::LocalSummaryUnusable,
+            "summary compactor output is empty".to_owned(),
+        ));
     }
     Ok(tau_proto::ContextItem::LocalCompactionNarrative(
         tau_proto::LocalCompactionNarrativeItem { narrative },
@@ -293,9 +314,9 @@ fn validate_narrative(state: StreamState) -> Result<tau_proto::ContextItem, &'st
 }
 
 /// Construct a content-free terminal validation failure.
-fn invalid_output(error: &'static str, backend_reached: bool) -> CompactOutcome {
+fn invalid_output(error: LlmError, backend_reached: bool) -> CompactOutcome {
     CompactOutcome::Terminal {
-        error: CodexError(LlmError::InvalidResponse(error.to_owned())),
+        error: CodexError(error),
         backend_reached,
     }
 }

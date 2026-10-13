@@ -1001,7 +1001,8 @@ terminal silently no-op. See
   validation. Historical failed open-prefix starts remain replay-valid only for
   explicit recovery by a normalized successor; their immutable events are not
   rewritten.
-  A typed `transient_compaction_exhausted` failure is the narrow exception:
+  Typed `transient_compaction_exhausted` and `local_summary_unusable` failures are
+  narrow exceptions when no successor is already pending:
   after a fresh ordinary inference terminal on the matching model and lineage,
   an automatic successor may select current provider-closed history while
   preserving the old outcome and owed resume ancestry.
@@ -1011,6 +1012,11 @@ terminal silently no-op. See
   semantic output. Queue polling and restart do not retry it; fresh ordinary
   inference terminal evidence can authorize one automatic successor. Historical
   `provider_error` failures remain unclassified and require explicit recovery.
+  `local_summary_unusable` records a clean completed no-tool summary with no
+  usable narrative. Its output-free canonical provider terminal commits first.
+  It may pre-mint a smaller-prefix successor, with four such successors per
+  episode. Exhaustion or irreducibility blocks until explicit recovery or a fresh
+  ordinary terminal; a failed episode never dispatches inference to rearm itself.
   A public Responses or Chat Completions local-summary output-limit failure also retains its typed partial output,
   usage, response id, attempt, and backend in a non-context projection; replay
   requires the matching `output_length_exceeded` reason and never treats that
@@ -1075,7 +1081,7 @@ and threshold source. The obsolete evidence-free `automatic_threshold` form
 does not decode. `automatic_policy` uniquely claims a terminal-owned eager decision,
 whose evidence carries the same exact fields. `reactive_context_overflow`
 carries the failed inference prompt id and claims that planned recovery.
-A typed standalone context rejection may commit a `context_retreat` successor
+A typed standalone capacity or unusable-local-summary rejection may commit a `context_retreat` successor
 plan for any compaction entrypoint; its `automatic_context_retreat` start must
 claim that exact plan and strict previous provider-closed cut, including the
 replacement alone. An explicit request retains its one delivery owner across
@@ -1084,6 +1090,9 @@ usage or no-output rejection can authorize a new one. The obsolete
 `automatic_continuation` form does not decode. `roll_through` remains current
 correlation on `automatic_context_retreat`; it does not authorize another
 summary after success.
+The unusable-summary allowance derives from committed predecessor links across
+capacity retreat and output-length continuation; neither mixed chains nor cold
+replay reset it. Independent transport/length bounds are not charged against it.
 `automatic_preflight_failure` commits a typed no-provider-dispatch byte-budget or
 route terminal under its correlated authority. Its old
 `previous_transaction_id` field does not decode.

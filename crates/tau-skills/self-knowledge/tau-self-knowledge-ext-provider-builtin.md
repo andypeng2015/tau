@@ -149,7 +149,7 @@ provenance without stripping, history loss, or account fallback.
 Required ChatGPT/Codex Responses, Chat Completions, and OpenRouter inference
 keeps retrying during the running session until success or explicit
 cancellation, unless Tau can positively prove the unchanged request is
-deterministic and invalid. Standalone compaction instead stops after five total
+deterministic and invalid. Each standalone provider prompt stops after five transient
 attempts; transient failures use the same scheduler and shared cooldown, while
 deterministic failures stop immediately. Unknown inference failures retry
 conservatively; billing, quota, credits, usage windows, and reloadable
@@ -157,8 +157,14 @@ auth/configuration retry slowly.
 Pre-output transient compaction exhaustion remains eligible for a new automatic
 transaction after a fresh ordinary inference terminal, including a canonical
 no-output context-window rejection. Queue polling, ingress, and restart alone
-never rearm it. Post-output and historical unclassified failures require
-explicit recovery. Standalone rows label compact request input and full
+never rearm it. Post-output stream errors and historical unclassified failures require
+explicit recovery. A clean local-summary terminal with only reasoning or empty
+text has typed `local_summary_unusable` authority: discard the draft and try a
+strictly smaller complete prefix, with four such successors per episode. Capacity
+and length successors cannot reset this allowance; transport retries have their
+separate bound. Exhaustion can rearm on a fresh ordinary terminal. Native opaque
+compaction, malformed/tool output, cancellation, and ambiguous work do not gain
+this authority. Standalone rows label compact request input and full
 continuation context separately; preserved suffixes prevent interpreting their
 ratio as context reduction.
 

@@ -1,6 +1,36 @@
 use super::*;
 use crate::common::{MessageAccumulator, ToolCallAccumulator};
 
+/// Only completed, bounded, structurally valid local output may authorize a
+/// smaller-prefix attempt. Native errors and malformed local items keep their
+/// existing terminal classification.
+#[test]
+fn empty_local_summary_has_narrow_typed_failure() {
+    let mut reasoning = state(vec![]);
+    reasoning.thinking = Some("private".to_owned());
+    for state in [state(vec![]), reasoning] {
+        let error = validate_narrative(state).expect_err("no narrative");
+        assert_eq!(
+            error.failure_kind(),
+            Some(tau_proto::ProviderFailureKind::LocalSummaryUnusable)
+        );
+        assert!(
+            error.retry_decision().is_none(),
+            "no adapter-side same-prefix retry"
+        );
+    }
+    let error = validate_narrative(state(vec![OutputItemAccumulator::Compaction(None)]))
+        .expect_err("wrong shape");
+    assert_ne!(
+        error.failure_kind(),
+        Some(tau_proto::ProviderFailureKind::LocalSummaryUnusable)
+    );
+    assert_ne!(
+        LlmError::InvalidResponse("native invalid output".to_owned()).failure_kind(),
+        Some(tau_proto::ProviderFailureKind::LocalSummaryUnusable)
+    );
+}
+
 /// Create synthetic parser state for terminal-shape validation, without
 /// pretending that these test-only slots passed stream accounting.
 fn state(items: Vec<OutputItemAccumulator>) -> StreamState {

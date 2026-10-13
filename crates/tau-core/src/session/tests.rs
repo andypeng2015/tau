@@ -1949,8 +1949,8 @@ fn transient_compaction_retry_cancellation_is_live_cold_equivalent() {
         Event::AgentInferenceDispatchStarted(checkpoint.clone()),
         AgentJournalFoldSemantics::InferenceDeferredInputV1,
     );
-    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
-    assert!(live.transient_compaction_retry_is_ready(
+    assert!(!live.automatic_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(live.automatic_compaction_retry_is_ready(
         &failed,
         AgentHead::Root,
         Some(&checkpoint.agent_prompt_id)
@@ -1967,25 +1967,25 @@ fn transient_compaction_retry_cancellation_is_live_cold_equivalent() {
         }),
         AgentJournalFoldSemantics::CommitOrder,
     );
-    assert!(live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(live.automatic_compaction_retry_is_ready(&failed, AgentHead::Root, None));
     let cold = AgentTree::try_from_events(agent_id(), &records).expect("cold replay");
-    assert!(cold.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(cold.automatic_compaction_retry_is_ready(&failed, AgentHead::Root, None));
     let mut unknown = failed.clone();
     unknown.reason = tau_proto::StandaloneCompactionFailureReason::ProviderError;
-    assert!(!cold.transient_compaction_retry_is_ready(&unknown, AgentHead::Root, None));
+    assert!(!cold.automatic_compaction_retry_is_ready(&unknown, AgentHead::Root, None));
     live.inference_dispatches
         .get_mut(&checkpoint.agent_prompt_id)
         .expect("dispatch")
         .checkpoint
         .model = "other/model".into();
-    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(!live.automatic_compaction_retry_is_ready(&failed, AgentHead::Root, None));
     let dispatch = live
         .inference_dispatches
         .get_mut(&checkpoint.agent_prompt_id)
         .expect("dispatch");
     dispatch.checkpoint.model = started.model;
     dispatch.durable_event_seq = PersistedAgentEventSeq::new(0);
-    assert!(!live.transient_compaction_retry_is_ready(&failed, AgentHead::Root, None));
+    assert!(!live.automatic_compaction_retry_is_ready(&failed, AgentHead::Root, None));
 }
 
 /// Provider-prefix normalization must keep function, custom, and mixed parallel

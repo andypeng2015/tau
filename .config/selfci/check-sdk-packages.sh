@@ -162,26 +162,33 @@ fn packaged_sdk_round_trips_the_advertised_protocol_version() {
     let decoded: tau_proto::ProtocolVersion =
         tau_proto::decode_message_from_slice(&encoded).expect("protocol version should decode");
 
-    assert_eq!(decoded, tau_proto::ProtocolVersion::new(11, 1));
+    assert_eq!(decoded, tau_proto::ProtocolVersion::new(12, 0));
     let _logging_initializer: fn(&'static str) = tau_client::init_logging_for;
 }
 
-/// Prevents a version-only SDK update from omitting protocol 11's new failure
-/// authority; both provider and canonical standalone failure DTOs must exist.
+/// Prevents version-only SDK updates from omitting compaction recovery authority;
+/// both provider and canonical standalone failure DTOs must exist.
 #[test]
-fn packaged_sdk_preserves_protocol_11_failure_variants() {
-    let provider = tau_proto::ProviderFailureKind::TransientCompactionExhausted;
-    let encoded = tau_proto::encode_message_to_vec(&provider).expect("provider failure should encode");
-    let decoded: tau_proto::ProviderFailureKind =
-        tau_proto::decode_message_from_slice(&encoded).expect("provider failure should decode");
-    assert_eq!(decoded, provider);
-
-    let standalone = tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted;
-    let encoded =
-        tau_proto::encode_message_to_vec(&standalone).expect("standalone failure should encode");
-    let decoded: tau_proto::StandaloneCompactionFailureReason =
-        tau_proto::decode_message_from_slice(&encoded).expect("standalone failure should decode");
-    assert_eq!(decoded, standalone);
+fn packaged_sdk_preserves_compaction_failure_variants() {
+    for provider in [
+        tau_proto::ProviderFailureKind::TransientCompactionExhausted,
+        tau_proto::ProviderFailureKind::LocalSummaryUnusable,
+    ] {
+        let encoded = tau_proto::encode_message_to_vec(&provider).expect("provider failure should encode");
+        let decoded: tau_proto::ProviderFailureKind =
+            tau_proto::decode_message_from_slice(&encoded).expect("provider failure should decode");
+        assert_eq!(decoded, provider);
+    }
+    for standalone in [
+        tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted,
+        tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable,
+    ] {
+        let encoded =
+            tau_proto::encode_message_to_vec(&standalone).expect("standalone failure should encode");
+        let decoded: tau_proto::StandaloneCompactionFailureReason =
+            tau_proto::decode_message_from_slice(&encoded).expect("standalone failure should decode");
+        assert_eq!(decoded, standalone);
+    }
 }
 
 /// Ensures the archive includes protocol 11.1's actual source API and wire field,

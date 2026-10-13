@@ -4,6 +4,7 @@ use tau_provider::local_summary_compaction::Config as SummaryCompactionConfig;
 
 use super::sampling::ResponseSampler;
 use super::{ChatCompletionsModel, ChatCompletionsProvider};
+use crate::local_summary_validation_error::LocalSummaryValidationError;
 use crate::report_sink::ProviderReportSink;
 
 /// The official Sol 6.1 Chat Completions surface is text-only for tool traffic;
@@ -258,8 +259,8 @@ pub fn run_prompt_attempt<S: ProviderReportSink>(
                                 &provider.base_url,
                                 Vec::new(),
                                 tau_proto::ProviderStopReason::Error,
-                                Some(error),
-                                Some(tau_proto::ProviderFailureKind::RequestRejected),
+                                Some(error.to_string()),
+                                Some(error.failure_kind()),
                                 success.usage,
                                 success.facts.backend_reached,
                                 success.facts.provider_attempt,
@@ -345,7 +346,7 @@ fn validate_local_summary_terminal(
     continuation: &[tau_proto::LocalSummaryContinuationStep],
     stop: tau_proto::ProviderStopReason,
     config: SummaryCompactionConfig,
-) -> Result<Vec<tau_proto::ContextItem>, String> {
+) -> Result<Vec<tau_proto::ContextItem>, LocalSummaryValidationError> {
     if continuation.is_empty() && stop == tau_proto::ProviderStopReason::EndTurn {
         return validate_resolved_narrative_output(items.to_vec(), config).map(|item| vec![item]);
     }
@@ -365,7 +366,9 @@ fn validate_local_summary_terminal(
             || narrative.len() as u64 + text.len() as u64 > config.max_output_bytes()
         {
             return Err(
-                "summary narrative or retained reasoning exceeds its byte limit".to_owned(),
+                "summary narrative or retained reasoning exceeds its byte limit"
+                    .to_owned()
+                    .into(),
             );
         }
         narrative.push_str(&text);
@@ -374,7 +377,7 @@ fn validate_local_summary_terminal(
         return Ok(items.to_vec());
     }
     if narrative.trim().is_empty() {
-        return Err("summary compactor output is empty".to_owned());
+        return Err(LocalSummaryValidationError::EmptyNarrative);
     }
     Ok(vec![tau_proto::ContextItem::LocalCompactionNarrative(
         tau_proto::LocalCompactionNarrativeItem { narrative },
@@ -457,7 +460,7 @@ fn lower_prompt_cache_ttl(
 pub(crate) fn validate_resolved_narrative_output(
     items: Vec<tau_proto::ContextItem>,
     config: SummaryCompactionConfig,
-) -> Result<tau_proto::ContextItem, String> {
+) -> Result<tau_proto::ContextItem, LocalSummaryValidationError> {
     let mut message = None;
     let mut reasoning_bytes = 0_u64;
     for item in &items {
@@ -470,17 +473,25 @@ pub(crate) fn validate_resolved_narrative_output(
                         "summary compactor reasoning exceeds its byte limit".to_owned()
                     })?;
                 if config.max_output_bytes() < reasoning_bytes {
-                    return Err("summary compactor reasoning exceeds its byte limit".to_owned());
+                    return Err("summary compactor reasoning exceeds its byte limit"
+                        .to_owned()
+                        .into());
                 }
             }
-            _ => return Err("summary compactor returned unsupported output".to_owned()),
+            _ => {
+                return Err("summary compactor returned unsupported output"
+                    .to_owned()
+                    .into());
+            }
         }
     }
     let Some(message) = message else {
-        return Err("summary compactor did not return exactly one message".to_owned());
+        return Err(LocalSummaryValidationError::MissingNarrative);
     };
     if message.role != tau_proto::ContextRole::Assistant {
-        return Err("summary compactor returned an invalid role".to_owned());
+        return Err("summary compactor returned an invalid role"
+            .to_owned()
+            .into());
     }
     let text = message
         .content
@@ -493,10 +504,13 @@ pub(crate) fn validate_resolved_narrative_output(
             | tau_proto::ContentPart::CitationMetadataInvalid => "",
         })
         .collect::<String>();
-    if text.trim().is_empty()
-        || u64::try_from(text.len()).unwrap_or(u64::MAX) > config.max_output_bytes()
-    {
-        return Err("summary compactor output is empty or exceeds its byte limit".to_owned());
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > config.max_output_bytes() {
+        return Err("summary compactor output exceeds its byte limit"
+            .to_owned()
+            .into());
+    }
+    if text.trim().is_empty() {
+        return Err(LocalSummaryValidationError::EmptyNarrative);
     }
     // Only the provider's bounded final assistant text crosses the private
     // extension seam; reasoning remains absent from semantic history.
@@ -509,7 +523,7 @@ pub(crate) fn validate_resolved_narrative_output(
 fn validate_narrative_output(
     items: Vec<tau_proto::ContextItem>,
     config: super::LocalSummaryCompactionConfig,
-) -> Result<tau_proto::ContextItem, String> {
+) -> Result<tau_proto::ContextItem, LocalSummaryValidationError> {
     validate_resolved_narrative_output(
         items,
         config

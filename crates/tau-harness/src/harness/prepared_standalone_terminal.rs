@@ -34,13 +34,14 @@ impl Harness {
                 )
             }
             StandaloneCompactionTerminalPlan::Rejected(reason) => {
-                let failure =
-                    (!matches!(reason, StandaloneCompactionRejection::ContextWindowExceeded))
-                        .then(|| {
-                            self.prepare_standalone_failure(cid, response, reason.durable_reason())
-                        })
-                        .flatten()
-                        .map(Box::new);
+                let failure = (!matches!(
+                    reason,
+                    StandaloneCompactionRejection::ContextWindowExceeded
+                        | StandaloneCompactionRejection::LocalSummaryUnusable
+                ))
+                .then(|| self.prepare_standalone_failure(cid, response, reason.durable_reason()))
+                .flatten()
+                .map(Box::new);
                 PreparedStandaloneTerminal::Rejected { reason, failure }
             }
         }

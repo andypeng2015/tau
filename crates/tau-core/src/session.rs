@@ -745,7 +745,9 @@ struct CompactionTransactionFold {
     failure_event_seq: Option<PersistedAgentEventSeq>,
     checkpoint: Option<tau_proto::AgentInferenceDispatchStarted>,
     inference_finished: bool,
-    standalone_context_rejection: Option<tau_proto::ProviderResponseFinished>,
+    /// Canonical capacity or unusable-local-summary rejection awaiting its
+    /// separate durable failure fact. Never contains a provisional draft.
+    standalone_rejection: Option<tau_proto::ProviderResponseFinished>,
 }
 
 /// Durable accounting phase retained for one prompt's latest attempt.
@@ -1145,22 +1147,19 @@ impl AgentTree {
         let id = self.compaction_transactions.order.last()?;
         let transaction = self.compaction_transactions.get(id)?;
         match (&transaction.outcome, &transaction.checkpoint) {
-            (None, _) => transaction
-                .standalone_context_rejection
-                .clone()
-                .map_or_else(
-                    || {
-                        Some(StandaloneCompactionRecovery::Interrupted(
-                            transaction.started.clone(),
-                        ))
-                    },
-                    |response| {
-                        Some(StandaloneCompactionRecovery::RejectedAwaitingFailure {
-                            started: transaction.started.clone(),
-                            response: Box::new(response),
-                        })
-                    },
-                ),
+            (None, _) => transaction.standalone_rejection.clone().map_or_else(
+                || {
+                    Some(StandaloneCompactionRecovery::Interrupted(
+                        transaction.started.clone(),
+                    ))
+                },
+                |response| {
+                    Some(StandaloneCompactionRecovery::RejectedAwaitingFailure {
+                        started: transaction.started.clone(),
+                        response: Box::new(response),
+                    })
+                },
+            ),
             (Some(CompactionTransactionOutcome::Failed(failed)), _) => {
                 if let Some(plan) = failed.context_retreat.clone() {
                     Some(StandaloneCompactionRecovery::AwaitingContextRetreat {
@@ -1398,19 +1397,65 @@ impl AgentTree {
             .next()
     }
 
-    /// Whether a typed exhausted-transient failure has a fresh ordinary
-    /// inference terminal on the selected lineage. The optional prompt is the
-    /// exact terminal currently being prepared; it must own a newer dispatch.
-    /// Ingress, queue polling, and cold replay alone cannot create eligibility.
+    /// Whether another unusable-summary-authorized strict-prefix successor fits
+    /// this episode's allowance. Derive the count from committed predecessor
+    /// links so capacity/length successors and cold replay cannot reset it.
+    /// Explicit requests and fresh-terminal retries start a new episode.
     #[must_use]
-    pub fn transient_compaction_retry_is_ready(
+    pub fn local_summary_unusable_can_retreat(
+        &self,
+        transaction_id: &tau_proto::CompactionTransactionId,
+    ) -> bool {
+        let mut id = transaction_id;
+        let mut used = 0;
+        loop {
+            let Some(transaction) = self.compaction_transactions.get(id) else {
+                return false;
+            };
+            let predecessor = match &transaction.started.trigger {
+                tau_proto::StandaloneCompactionTrigger::AutomaticContextRetreat {
+                    failed_transaction_id,
+                    ..
+                }
+                | tau_proto::StandaloneCompactionTrigger::AutomaticOutputLengthContinuation {
+                    failed_transaction_id,
+                } => failed_transaction_id,
+                _ => return used < tau_proto::LOCAL_SUMMARY_UNUSABLE_MAX_SUCCESSORS,
+            };
+            let Some(previous) = self.compaction_transactions.get(predecessor) else {
+                return false;
+            };
+            if matches!(&previous.outcome,
+                Some(CompactionTransactionOutcome::Failed(failed))
+                    if failed.reason == tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+            ) {
+                used += 1;
+                if used >= tau_proto::LOCAL_SUMMARY_UNUSABLE_MAX_SUCCESSORS {
+                    return false;
+                }
+            }
+            id = predecessor;
+        }
+    }
+
+    /// Whether a typed exhausted-transient or unusable-summary failure has a
+    /// fresh ordinary inference terminal on the selected lineage. The
+    /// optional prompt is the exact terminal currently being prepared; it
+    /// must own a newer dispatch. Ingress, queue polling, and cold replay
+    /// alone cannot create eligibility.
+    #[must_use]
+    pub fn automatic_compaction_retry_is_ready(
         &self,
         failed: &tau_proto::AgentStandaloneCompactionFailed,
         current_head: tau_proto::AgentHead,
         preparing_terminal: Option<&tau_proto::AgentPromptId>,
     ) -> bool {
-        if failed.reason
-            != tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+        if !matches!(
+            failed.reason,
+            tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
+                | tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+        ) || failed.context_retreat.is_some()
+            || failed.output_length_continuation.is_some()
         {
             return false;
         }
@@ -2901,18 +2946,15 @@ impl AgentTree {
                 if response.automatic_compaction_decision.is_some()
         )
         .then(|| NodeId::new(u64::try_from(self.nodes.len()).expect("agent node count fits u64")));
-        let standalone_context_rejection = matches!(
+        let standalone_rejection = matches!(
             event,
             Event::ProviderResponseFinished(response)
-                 if response.failure_kind
-                     == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
-                     && response.stop_reason == tau_proto::ProviderStopReason::Error
-                     && response.output_items.is_empty()
+                 if response.standalone_rejection_reason().is_some()
                     && self.prompt_starts.get(&response.agent_prompt_id).is_some_and(|started| {
                         started.operation == tau_proto::PromptOperation::StandaloneCompaction
                     })
         );
-        let node = (!standalone_context_rejection)
+        let node = (!standalone_rejection)
             .then(|| self.apply_transcript_event(resolved_parent, event, durable_event_seq))
             .flatten();
         if let Some(node_id) = node {
@@ -3107,7 +3149,7 @@ impl AgentTree {
                         failure_event_seq: None,
                         checkpoint: None,
                         inference_finished: false,
-                        standalone_context_rejection: None,
+                        standalone_rejection: None,
                     },
                 );
                 let decision_id = match &started.trigger {
@@ -3284,12 +3326,9 @@ impl AgentTree {
                 }
                 for transaction in self.compaction_transactions.values_mut() {
                     if transaction.started.compact_prompt_id == response.agent_prompt_id
-                        && response.failure_kind
-                            == Some(tau_proto::ProviderFailureKind::ContextWindowExceeded)
-                        && response.stop_reason == tau_proto::ProviderStopReason::Error
-                        && response.output_items.is_empty()
+                        && response.standalone_rejection_reason().is_some()
                     {
-                        transaction.standalone_context_rejection = Some(response.clone());
+                        transaction.standalone_rejection = Some(response.clone());
                     }
                     if transaction.checkpoint.as_ref().is_some_and(|checkpoint| {
                         checkpoint.agent_prompt_id == response.agent_prompt_id
@@ -4807,7 +4846,7 @@ impl AgentTree {
                 || started.supersedes.as_ref().is_some_and(|id| {
                     !self.compaction_transactions.get(id).is_some_and(|transaction| {
                         matches!(&transaction.outcome, Some(CompactionTransactionOutcome::Failed(failed))
-                            if self.transient_compaction_retry_is_ready(failed, head, None))
+                            if self.automatic_compaction_retry_is_ready(failed, head, None))
                     })
                 })
             {
@@ -4853,7 +4892,7 @@ impl AgentTree {
                     | tau_proto::StandaloneCompactionTrigger::ReactivePreflightFailure { .. }
             ) && self.compaction_transactions.get(id).is_some_and(|transaction| {
                 matches!(&transaction.outcome, Some(CompactionTransactionOutcome::Failed(failed))
-                    if self.transient_compaction_retry_is_ready(failed, head, None))
+                    if self.automatic_compaction_retry_is_ready(failed, head, None))
             });
             if !automatic_retreat
                 && !output_continuation
@@ -4902,9 +4941,11 @@ impl AgentTree {
                             } if *roll_through == plan.roll_through
                         )
                 });
-                if failed.reason
-                    != tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
-                    || !plan_matches
+                if !matches!(
+                    failed.reason,
+                    tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
+                        | tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+                ) || !plan_matches
                     || started.cut == previous.started.cut
                 {
                     return Err(AgentEventValidationError::new(
@@ -5847,14 +5888,25 @@ impl AgentTree {
                 ));
             }
         }
-        if matches!(
-            failed.reason,
+        let canonical_reason = match failed.reason {
+            tau_proto::StandaloneCompactionFailureReason::ContextIrreducible => {
+                Some(tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded)
+            }
             tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
-                | tau_proto::StandaloneCompactionFailureReason::ContextIrreducible
-        ) && transaction.standalone_context_rejection.is_none()
+            | tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable => {
+                Some(failed.reason)
+            }
+            _ => None,
+        };
+        if canonical_reason.is_some()
+            && transaction
+                .standalone_rejection
+                .as_ref()
+                .and_then(tau_proto::ProviderResponseFinished::standalone_rejection_reason)
+                != canonical_reason
         {
             return Err(AgentEventValidationError::new(
-                "standalone context rejection requires its canonical provider terminal first",
+                "standalone rejection requires its matching canonical provider terminal first",
             ));
         }
         if let Some(plan) = &failed.context_retreat {
@@ -5887,7 +5939,12 @@ impl AgentTree {
                 } => self.reactive_compaction_target(failed_agent_prompt_id),
                 _ => Some(transaction.started.cut),
             };
-            if failed.reason != tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
+            let retreat_allowed = failed.reason
+                == tau_proto::StandaloneCompactionFailureReason::ContextWindowExceeded
+                || (failed.reason
+                    == tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+                    && self.local_summary_unusable_can_retreat(&failed.transaction_id));
+            if !retreat_allowed
                 || immediate_predecessor != Some(plan.cut)
                 || plan.cut == tau_proto::AgentHead::Root
                 || expected_target != Some(plan.roll_through)
@@ -5908,6 +5965,20 @@ impl AgentTree {
         {
             return Err(AgentEventValidationError::new(
                 "reducible standalone context rejection requires a durable successor plan",
+            ));
+        } else if failed.reason
+            == tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
+            && self.local_summary_unusable_can_retreat(&failed.transaction_id)
+            && self
+                .previous_provider_closed_cut_in_active_window(
+                    self.head
+                        .map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node),
+                    failed.cut,
+                )
+                .is_some()
+        {
+            return Err(AgentEventValidationError::new(
+                "unusable local summary with remaining allowance requires a strict-prefix successor",
             ));
         } else if failed.reason == tau_proto::StandaloneCompactionFailureReason::ContextIrreducible
         {
