@@ -1637,6 +1637,29 @@ impl AgentTree {
         }
     }
 
+    /// Returns the closed failed prefix in the selected logical window.
+    ///
+    /// A consumed prefix is represented only by the active replacement, never
+    /// by newer surviving suffix nodes. This normalizes explicit recovery; it
+    /// does not clear failures or authorize an automatic retry.
+    #[must_use]
+    pub fn standalone_compaction_recovery_cut(
+        &self,
+        failed_cut: AgentHead,
+        current_head: AgentHead,
+    ) -> Option<AgentHead> {
+        if !self.is_ancestor_head(failed_cut, current_head) {
+            return None;
+        }
+        let closed = self.closed_provider_prefix_at_or_before(failed_cut);
+        if self.active_provider_window_contains(current_head, closed) {
+            return Some(closed);
+        }
+        let (boundary, _) = self.active_provider_window_replacement(current_head.as_option())?;
+        let boundary = AgentHead::Node(boundary);
+        self.is_ancestor_head(closed, boundary).then_some(boundary)
+    }
+
     /// Reconstruct the logical provider-visible window ending at `head`.
     ///
     /// Physical ancestry around a suffix-preserving boundary is
@@ -4998,8 +5021,17 @@ impl AgentTree {
             // A replacement boundary is physically newer than its preserved
             // suffix, but logically precedes it. The exact retreat plan above
             // already validates that provider-order relation.
+            let explicit_replacement_cut = matches!(
+                started.trigger,
+                tau_proto::StandaloneCompactionTrigger::Manual
+                    | tau_proto::StandaloneCompactionTrigger::ManualAgentTool { .. }
+                    | tau_proto::StandaloneCompactionTrigger::ManualUi { .. }
+            ) && self
+                .standalone_compaction_recovery_cut(previous.started.cut, head)
+                == Some(started.cut);
             if (!automatic_retreat
                 && !transient_retry
+                && !explicit_replacement_cut
                 && !self.is_ancestor_head(started.cut, previous.started.cut))
                 || !preserves_resume
             {

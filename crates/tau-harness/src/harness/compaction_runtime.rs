@@ -1244,7 +1244,7 @@ impl Harness {
         current_head: tau_proto::AgentHead,
     ) -> Option<tau_proto::AgentHead> {
         let tree = self.session_runtime.agent_store.agent(agent_id)?;
-        let normalized = tree.closed_provider_prefix_at_or_before(failed_cut);
+        let normalized = tree.standalone_compaction_recovery_cut(failed_cut, current_head)?;
         (tree.contains_head_ancestry(normalized, current_head)
             && resume_through.is_none_or(|owed| tree.contains_head_ancestry(owed, current_head)))
         .then_some(normalized)

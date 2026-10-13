@@ -313,6 +313,15 @@ authorities. Model or branch drift permits a fresh independent transaction
 without rewriting the failed history; returning to the failed model and branch
 restores suppression. Only a successful authorized successor clears the matching
 durable failure chain.
+If an accepted same-lineage replacement has consumed the failed prefix, explicit
+recovery uses that prefix's representation at the active replacement boundary.
+It may not advance into the surviving suffix. This applies across model switches
+without changing the failed transaction's exact-model authority or retained
+resume ancestry; the other model's success alone does not clear suppression.
+Live admission and cold replay use the same logical-boundary rule. The journal
+schema is unchanged, but older validators cannot replay these newly legal
+successors; this correction is part of the unreleased protocol 12 contract,
+including relative to intermediate local protocol 12 builds.
 A typed exhausted-transient standalone failure records that every failed
 attempt accepted no semantic output. It does not immediately dispatch another
 transaction. A fresh canonical ordinary inference terminal on the matching

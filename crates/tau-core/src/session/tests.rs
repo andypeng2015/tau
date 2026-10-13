@@ -2,6 +2,7 @@ use std::io as path_std_io;
 
 use super::*;
 
+mod cross_model_recovery;
 mod partial_provider_error;
 
 /// Typed citation semantics and opaque hosted-call replay remain identical

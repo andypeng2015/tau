@@ -1,5 +1,178 @@
 use super::*;
 
+/// A legacy open-cut failure remains explicit-only after another model replaces
+/// its closed prefix. Recovery must compact that replacement and retain the
+/// complete tool round and owed resume branch, including after cold
+/// restoration.
+#[test]
+fn cross_model_replacement_recovers_legacy_failure_without_consuming_tool_suffix() {
+    let td = TempDir::new().expect("tempdir");
+    let state = td.path().join("state");
+    let agent_id;
+    let boundary;
+    {
+        let mut h = quiet_provider_harness(&state).expect("start");
+        enable_remote_compaction_for_test_model(&mut h);
+        h.provider_runtime
+            .model_info
+            .get_mut(&"test/model".into())
+            .expect("model")
+            .supports_compaction = false;
+        h.provider_runtime
+            .model_info
+            .get_mut(&"test/model".into())
+            .expect("model")
+            .supports_standalone_compaction = true;
+        let cid = ensure_test_user_agent(&mut h);
+        agent_id = durable_agent_id_for_conversation(&h, &cid);
+        let (prefix, _, results) = seed_historical_open_prefix_failure(&mut h, &cid, "test/model");
+        let mut other = h
+            .provider_runtime
+            .model_info
+            .get(&"test/model".into())
+            .expect("model")
+            .clone();
+        other.id = "other/model".into();
+        h.provider_runtime
+            .model_info
+            .insert(other.id.clone(), other);
+        let route = h
+            .provider_runtime
+            .model_routes
+            .get(&"test/model".into())
+            .expect("route")
+            .clone();
+        h.provider_runtime
+            .model_routes
+            .insert("other/model".into(), route);
+        let start = tau_proto::AgentStandaloneCompactionStarted {
+            agent_id: agent_id.clone(),
+            transaction_id: tau_proto::CompactionTransactionId::parse("ct-other-model")
+                .expect("id"),
+            compact_prompt_id: test_agent_prompt_id("ap-other-model"),
+            operation: tau_proto::PromptOperation::StandaloneCompaction,
+            cut: prefix,
+            resume_through: None,
+            model: "other/model".into(),
+            originator: tau_proto::PromptOriginator::User,
+            supersedes: None,
+            trigger: tau_proto::StandaloneCompactionTrigger::Manual,
+        };
+        h.session_runtime
+            .agent_store
+            .agent(agent_id.as_str())
+            .expect("tree")
+            .validate_event(&Event::AgentStandaloneCompactionStarted(start.clone()))
+            .expect("valid other start");
+        h.publish_for_agent(&cid, Event::AgentStandaloneCompactionStarted(start.clone()));
+        let compacted = Event::AgentCompacted(tau_proto::AgentCompacted {
+            agent_id: agent_id.clone(),
+            transaction_id: start.transaction_id,
+            compact_prompt_id: start.compact_prompt_id,
+            operation: start.operation,
+            cut: prefix,
+            suffix_end: results,
+            model: start.model,
+            original_input_tokens: None,
+            compaction_output_tokens: None,
+            replacement_window: vec![ContextItem::Message(MessageItem {
+                role: ContextRole::Assistant,
+                content: vec![ContentPart::Text {
+                    text: "other model summary".to_owned(),
+                }],
+                phase: None,
+                responses_raw_json: None,
+            })],
+        });
+        h.session_runtime
+            .agent_store
+            .agent(agent_id.as_str())
+            .expect("tree")
+            .validate_event(&compacted)
+            .expect("valid other replacement");
+        h.publish_for_agent(&cid, compacted);
+        boundary = h.selected_head_for_agent(&cid).expect("boundary");
+        assert_ne!(
+            boundary, results,
+            "other model replacement must be admitted"
+        );
+        assert!(h.durable_recovery_blocks_automatic(
+            agent_id.as_str(),
+            &"test/model".into(),
+            boundary
+        ));
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&state, "s1");
+    let mut h =
+        quiet_provider_harness_with_start_reason(&state, tau_proto::SessionStartReason::Resume)
+            .expect("resume");
+    enable_remote_compaction_for_test_model(&mut h);
+    h.provider_runtime
+        .model_info
+        .get_mut(&"test/model".into())
+        .expect("model")
+        .supports_compaction = false;
+    h.provider_runtime
+        .model_info
+        .get_mut(&"test/model".into())
+        .expect("model")
+        .supports_standalone_compaction = true;
+    ensure_test_user_agent(&mut h);
+    assert!(h.durable_recovery_blocks_automatic(agent_id.as_str(), &"test/model".into(), boundary));
+    let before = h
+        .session_runtime
+        .agent_store
+        .agent(agent_id.as_str())
+        .expect("tree")
+        .clone();
+    let suffix = before
+        .active_provider_window(boundary.as_option())
+        .transcript;
+    assert_eq!(suffix.len(), 2, "complete call/results round");
+    h.handle_compact_request(
+        crate::harness::harness_connection_id(),
+        test_session_id("s1"),
+        Some(agent_id.as_str()),
+    );
+    let starts: Vec<_> = event_log_events(&h)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::AgentStandaloneCompactionStarted(start) => Some(start),
+            _ => None,
+        })
+        .collect();
+    let recovery = starts.last().expect("recovery");
+    assert_eq!(recovery.cut, boundary);
+    assert_eq!(
+        recovery.supersedes,
+        Some(tau_proto::CompactionTransactionId::parse("ct-historical-open-prefix").expect("id"))
+    );
+    assert_eq!(recovery.resume_through, Some(boundary));
+    let compact = read_nth_prompt_created(&h, 0);
+    h.handle_provider_response_finished(provider_text_response(
+        &compact.agent_prompt_id,
+        compact.agent_id,
+        "recovered summary",
+    ))
+    .expect("recovery success");
+    let tree = h
+        .session_runtime
+        .agent_store
+        .agent(agent_id.as_str())
+        .expect("tree");
+    let head = tree.head();
+    assert_eq!(tree.active_provider_window(head).transcript, suffix);
+    assert!(
+        tree.unresolved_standalone_compaction_failure(
+            &"test/model".into(),
+            head.map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node)
+        )
+        .is_none()
+    );
+    h.shutdown().expect("shutdown");
+}
+
 /// Construct the provider's typed bounded-exhaustion terminal with no output.
 fn transient_exhaustion_response(
     prompt: &tau_proto::AgentPromptCreated,
