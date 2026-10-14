@@ -11,11 +11,11 @@ project owns the exact credential, route, and transport schema. Consult its
 `docs/setup.md` for private maintainer guild-channel setup, `SECURITY.md` for
 trust boundaries, and `docs/design.md` and `docs/runtime.md` for the full contract
 and limits. Do not infer compatibility from the Cargo package version:
-registry SDK/proto 0.7.0 advertises wire 9.0 and is rejected by Tau 10.4;
-the verified extension revision `f5fdea420430773c81b77dc4fbf862db8214f29a`
-pins registry SDK/proto 0.10.0, which advertises wire 10.2. Tau 10.4 admits
-that revision best-effort with a minor-skew warning. This is not a claim about
-the newest available SDK or full live Discord connectivity.
+for Tau protocol 13.1, rebuild with exact registry
+`dpc-tau-client`/`dpc-tau-proto` SDK 0.13.0 and update the extension together with
+the harness. Historical SDK 0.7.0 / protocol 9.0 and SDK 0.10.0 / protocol 10.2
+binaries are rejected before configuration. Updating the SDK does not establish
+full live Discord connectivity.
 
 ## Private maintainer channel
 

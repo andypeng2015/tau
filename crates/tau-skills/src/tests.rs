@@ -1034,21 +1034,25 @@ fn built_in_skill_sources_load_with_matching_frontmatter_names() {
     }
 }
 
-/// Ensures the bundled Slack guidance keeps the published protocol and SDK
-/// compatibility boundary instead of regressing to a previous extension
-/// release.
+/// Ensures bundled Slack guidance requires the compatible SDK rebuild rather
+/// than suggesting protocol-10 binaries can run with a protocol-13 harness.
 #[test]
-fn slack_self_knowledge_retains_published_protocol_eight_one_boundary() {
+fn slack_self_knowledge_requires_protocol_thirteen_one_rebuild() {
     let source = BUILT_IN_SKILL_SOURCES
         .iter()
         .find(|source| source.diagnostic_path == "tau-self-knowledge-ext-slack.md")
         .expect("embedded Slack self-knowledge");
-    assert!(
-        source
-            .content
-            .contains("The current executable speaks Tau protocol 8.1\nusing registry SDK 0.6.0."),
-        "Slack self-knowledge must describe the published protocol-8.1 boundary"
-    );
+    for token in [
+        "For Tau protocol 13.1, rebuild with exact registry",
+        "`dpc-tau-client`/`dpc-tau-proto` 0.13.0",
+        "update the extension together",
+        "Protocol-10 binaries are rejected before configuration.",
+    ] {
+        assert!(
+            source.content.contains(token),
+            "missing upgrade guidance: {token}"
+        );
+    }
 }
 
 /// Keep the concise Zulip operational skill synchronized with sender tiers,

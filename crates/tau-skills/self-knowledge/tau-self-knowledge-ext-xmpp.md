@@ -13,6 +13,10 @@ example `TAU_ENABLE_EXTENSIONS=std-xmpp tau`). It launches as a supervised
 stdio extension with an empty Tau default configuration; do not infer account,
 room, or gateway settings from that empty default.
 
+For Tau protocol 13.1, rebuild with exact registry SDK
+`dpc-tau-client`/`dpc-tau-proto` 0.13.0 and update the extension together with the
+harness. Protocol-10 binaries are rejected before configuration.
+
 Tau owns the instance name, managed-secret delivery, per-instance state,
 publisher identity, tool prefixing, role policy, and extension supervision.
 The separately maintained `tau-ext-xmpp` project owns XMPP-specific

@@ -8,9 +8,10 @@ advertise: false
 
 `tau-ext-github` is a separately maintained inbound MessageBridge executable. Its
 project owns the exact secret, repository, actor-admission, and polling schema.
-Use a current Tau build with the automatic-receiver fix and compatible
-protocol-9/SDK-0.7 extension binaries before enabling its automatic-receive
-revision.
+For Tau protocol 13.1, rebuild with exact registry SDK
+`dpc-tau-client`/`dpc-tau-proto` 0.13.0 and update the extension together with the
+harness. Protocol-9 and protocol-10 binaries are rejected before configuration;
+the historical automatic-receiver fix does not establish current compatibility.
 
 Its logical receive tool is `github_register {}`, meaning “make the authenticated
 calling agent the receiving agent.” The old `{"enabled":true}` spelling remains

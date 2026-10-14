@@ -9,8 +9,9 @@ advertise: false
 `std-slack` is Tau's disabled-by-default Slack Socket Mode bridge. It exposes
 `slack_register`, `slack_conversations`, `slack_send`, and default-off `slack_react`; `tool_prefix` scopes
 all four tools and their group for multiple accounts. Slack text is always
-untrusted external content. The current executable speaks Tau protocol 8.1
-using registry SDK 0.6.0.
+untrusted external content. For Tau protocol 13.1, rebuild with exact registry
+SDK `dpc-tau-client`/`dpc-tau-proto` 0.13.0 and update the extension together
+with the harness. Protocol-10 binaries are rejected before configuration.
 
 Configuration requires app/bot token secrets, nonempty exact U/W
 `allowed_user_ids`, and an active `conversations` and/or
@@ -151,8 +152,17 @@ process-local message, reply, edit, reaction, registration, selection, or
 deduplication authority.
 
 `slack_send` reserves each accepted `ToolCallId` in a non-evicting 1,024-entry
-process/session ledger and moves initial HTTP plus retry waiting off the
-serialized protocol reader. It makes one initial attempt and at most one
+process/session ledger and moves authentication, initial post HTTP, and retry
+waiting off the serialized protocol reader. Without installation evidence, it
+retains the original call in separate bounded preparation until `auth.test`
+finishes; no registration or caller retry is needed. Same-call replay coalesces,
+and conflicting reuse before post reservation cancels the pending call with one
+stable conflict error rather than leaving its original send running.
+Configuration/session/agent retirement invalidates the original call rather
+than rebinding it. A started auth request retains its worker slot until it
+returns, then cancels stale work without installing identity or posting.
+Preparation and delivery share the 1,024-call replay capacity and 64-worker
+budget; excess new calls fail before I/O. It makes one initial post attempt and at most one
 byte-identical retry after bounded Retry-After or an ambiguous outcome. This is
 at-least-once notification delivery: an ambiguous first attempt followed by
 success may leave one or two Slack copies; two ambiguous outcomes can leave
@@ -171,8 +181,9 @@ session/process retirement, so there is no durable outbox, `client_msg_id`,
 restart guarantee, or exactly-once claim. Provider diagnostics are closed
 categories; raw bodies, Slack error text/headers, native ids, mentions, tokens,
 and message content never appear in model errors, notices, or logs.
-At most 64 calls own active delivery workers, each response is capped at
-64 KiB, and retry must begin within the 60-second logical-call horizon.
+Each HTTP attempt has a 30-second timeout and each response is capped at
+64 KiB. The post retry must begin within 60 seconds of authenticated preparation;
+cold authentication does not consume that existing retry horizon.
 
 Supported events reserve one of 64 process-local queued/in-flight admission slots
 before ACK. Slow live-human verification and bridge-local replies run on one serial

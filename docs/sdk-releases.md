@@ -20,9 +20,9 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
-Protocol **13.1** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
+Protocol **13.1** uses published `dpc-tau-proto` and `dpc-tau-client`
 **0.13.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
-client-to-proto pin of `=0.13.0`. This line is not yet published. It adds UI-only
+client-to-proto pin of `=0.13.0`. It adds UI-only
 artifact discovery enum variants and verified clipboard export to the preceding
 unpublished 0.12.0 / protocol 13.0 work. It includes
 authenticated delivery publishers, generic custom-event agent privacy scope,
@@ -31,7 +31,7 @@ shell routing with an opaque endpoint protocol. Configured extensions must
 rebuild together with the harness. Journal framing is unchanged; new binaries
 read legacy shell records, but older readers cannot decode new passive-append
 or failure variants. Do not roll back after writing them without a compatible
-reader. No publication, migration, or rollout is authorized by these source edits.
+reader. SDK publication does not install or activate compatible extension binaries.
 
 Since published SDK 0.10.0 / protocol 10.2, the public API gained provider error
 categories, CLI message DTOs and optional CLI-origin metadata, typed
@@ -41,7 +41,36 @@ Configured protocol-10 extensions are rejected before Configure/Ready by a
 protocol-13 harness and must migrate to the actual SDK API, not merely advertise
 a new wire version. The archive consumer check verifies protocol 13.1 and its
 typed failure variants under Rust 1.91; registry-only acceptance must follow
-publication before source-identifying package tags are created.
+publication before source-identifying package tags are created; this acceptance
+has passed for 0.13.0.
+
+## Protocol 13.1 release acceptance
+
+Both packages were published on October 14, 2026 from clean source revision
+`04e2610481bfbdabfeb582d7360f8ac5797f06e9`. Locked verified Cargo publish dry-runs
+passed in dependency order. The official sparse-index checksums matched the
+downloaded registry archives, whose Cargo VCS metadata identifies that revision
+and the respective `crates/tau-proto` and `crates/tau-client` subdirectories.
+
+| Package | Registry archive SHA-256 |
+| --- | --- |
+| `dpc-tau-proto 0.13.0` | `fa5a4e4a10255474547c3a53da1d0b803332fb1a3660ffc17f7a1d541e71a035` |
+| `dpc-tau-client 0.13.0` | `f09fee020a05ad7f8f8cf9ad6884c194be84fe71ae42ab2dcd43bb0e56f83b4d` |
+
+The unchanged 0.1.0 leaf archives were checked against their official index
+checksums and original clean provenance at
+`2243c6857446bd253a505ce1ba20671a445d899c`.
+`./.config/selfci/check-sdk-packages.sh --registry` passed all five consumer
+tests on Rust 1.91 without local SDK patches. After that acceptance, the Radicle
+tags `dpc-tau-proto-v0.13.0` and `dpc-tau-client-v0.13.0` were published at the
+exact source revision; the public seed's owner-namespaced refs were verified.
+The source passed the normal merge queue and is public on Radicle.
+This is an SDK and source publication, not a new application registry/native
+release or a deployment. Protocol-10 extension binaries remain incompatible;
+each owning project must publish its actual migration before its Tau flake pin
+or installed binary can be updated.
+
+## Earlier package lines
 
 Protocol **10.2** uses published `dpc-tau-proto` and `dpc-tau-client` **0.10.0**,
 with their unchanged leaf dependencies at 0.1.0. Configure's default-empty
