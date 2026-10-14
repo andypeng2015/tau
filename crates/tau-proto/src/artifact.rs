@@ -8,6 +8,7 @@ mod error;
 mod frame;
 mod identifier;
 mod key;
+mod listing;
 mod read_id;
 mod request_id;
 mod result;
@@ -19,6 +20,9 @@ pub use descriptor::ArtifactDescriptor;
 pub use error::ArtifactError;
 pub use frame::artifact_frame_fits;
 pub use key::ArtifactKey;
+pub use listing::{
+    ARTIFACT_LIST_LIMIT, ArtifactListEntry, ArtifactSignature, artifact_prefix_valid,
+};
 pub use read_id::ArtifactReadId;
 pub use request_id::ArtifactRequestId;
 pub use result::{ArtifactResult, ArtifactValue};
@@ -35,7 +39,7 @@ pub const ARTIFACT_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const ARTIFACT_REFERENCE_SCHEME: &str = "tau-artifact";
 
 /// One correlated, exact-session request from a configured extension or an
-/// authenticated socket UI (which can use only upload operations).
+/// authenticated exact-session UI (which also has store discovery authority).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRequest {
     /// Caller-selected correlation, bounded to 128 ASCII identifier bytes.
@@ -54,6 +58,9 @@ impl ArtifactRequest {
             return false;
         }
         match &self.op {
+            ArtifactOp::List { prefix, limit } => {
+                artifact_prefix_valid(prefix) && *limit > 0 && *limit <= ARTIFACT_LIST_LIMIT
+            }
             ArtifactOp::Available => true,
             ArtifactOp::Begin { .. } => true,
             ArtifactOp::Write {
@@ -86,11 +93,17 @@ impl ArtifactRequest {
     }
 }
 
-/// Bounded artifact operations; keys grant no list, mutation, or deletion
-/// operation.
+/// Bounded artifact operations; enumeration requires separate UI authority.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ArtifactOp {
+    /// UI-only advisory whole-store discovery, newest explicit puts first.
+    List {
+        /// Bare-key prefix, applied before ranking and limiting.
+        prefix: String,
+        /// Maximum entries requested, bounded by `ARTIFACT_LIST_LIMIT`.
+        limit: u8,
+    },
     /// Check persistent store availability before an expensive producer effect.
     Available,
     /// Allocate a connection-owned upload; a new upload renews age on commit.

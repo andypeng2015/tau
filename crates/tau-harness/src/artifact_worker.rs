@@ -96,12 +96,12 @@ impl ArtifactWorker {
                         continue;
                     }
                     connections.insert(job.connection.clone(), Arc::clone(&job.alive));
-                    let result = store.execute(
-                        &job.owner,
-                        job.connection.as_str(),
-                        job.request.op,
-                        unix_now(),
-                    );
+                    let result = match job.request.op {
+                        tau_proto::ArtifactOp::List { prefix, limit } => {
+                            store.list(&prefix, limit, || job.alive.load(Ordering::Acquire))
+                        }
+                        op => store.execute(&job.owner, job.connection.as_str(), op, unix_now()),
+                    };
                     // Cancellation/disconnect may race a committed publication.
                     // Never delete its object or undo a
                     // shared duplicate's age update.

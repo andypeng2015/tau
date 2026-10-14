@@ -17,6 +17,12 @@ pub struct ArtifactResult {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "value", rename_all = "snake_case")]
 pub enum ArtifactValue {
+    /// Complete advisory top-N page from a UI-only query.
+    Listed {
+        /// Bounded entries in descending put time, then ascending full-key
+        /// order.
+        entries: Vec<super::ArtifactListEntry>,
+    },
     /// Availability, cancellation, or close acknowledged.
     Done,
     /// A newly admitted upload.

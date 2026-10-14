@@ -49,11 +49,19 @@ directed and omitted from semantic journals and debug JSONL. Cancellation or a
 lost result may leave a committed shared original. See
 [SPEC-shared-artifacts](specs/SPEC-shared-artifacts.md).
 
-Authenticated UIs can upload shared originals, but cannot read them through
-their upload-only RPC authority. Requests use the UI's existing exact-session
+Authenticated UIs can upload and read shared originals, and enumerate a bounded
+recent page of the whole selected store for user-requested clipboard export.
+This is UI authority, not an extension enumeration grant. Requests use the UI's existing exact-session
 connection and captured session generation, including the initial owned stdio
 UI's ordinary socket-class admission. Paste originals remain outside prompt
 drafts, histories, semantic journals, raw-input tracing, and event broadcasts.
+Clipboard export verifies complete size/digest and closes the read before sending
+original bytes through the terminal's native MIME-write protocol. A digest proves
+equality, not safe content or media validity. Explicit MIME declarations and
+header inference do not grant execution authority. Write permission is independent
+of paste ingress; denial is never bypassed with an automatic legacy fallback.
+Cancellation cannot retract an admitted terminal packet or prove clipboard
+rollback after a lost acknowledgment.
 
 Native clipboard copied-file bundles carry workstation-captured regular-file
 bytes, not permission to open terminal-supplied paths on the Tau execution host.

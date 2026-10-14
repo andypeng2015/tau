@@ -14,6 +14,8 @@
 //!   replays the capped log/history suffix plus fixed tail without rubber
 
 mod block_layout_state;
+mod clipboard_export;
+mod clipboard_export_handle;
 mod clipboard_fence;
 mod clipboard_files;
 mod clipboard_paste;
@@ -1554,7 +1556,11 @@ impl TermHandle {
     /// already in flight may finish later; their events are ignored after
     /// this flag is set.
     pub fn request_input_shutdown(&self) {
-        self.lock().terminal.input_shutdown = true;
+        {
+            let mut st = self.lock();
+            st.terminal.input_shutdown = true;
+            st.terminal.clipboard_export = None;
+        }
         let _ = self.input_tx.send(InputMessage::Shutdown);
     }
 
@@ -2390,6 +2396,8 @@ fn validate_osc1337_name(name: &str) -> Result<(), &'static str> {
 
 /// Raw terminal events from crossterm or a virtual test input channel.
 pub enum RawEvent {
+    /// Payload-free export outcome from the bounded writer transaction.
+    ClipboardExportNotice(&'static str),
     /// Raw OSC body from the sole terminal reader; never logged.
     Osc(Vec<u8>),
     /// Private mode 5522 capability report mapped by the reader.
@@ -2805,10 +2813,28 @@ impl Term {
             };
 
             match raw {
+                RawEvent::ClipboardExportNotice(notice) => return Ok(Event::Notice(notice.into())),
                 RawEvent::Osc(body) => {
+                    let notice = {
+                        let mut st = self.handle.lock();
+                        let notice = st
+                            .terminal
+                            .clipboard_export
+                            .as_ref()
+                            .and_then(|export| export.receive(&body));
+                        if notice.is_some() {
+                            st.terminal.clipboard_export = None;
+                        }
+                        notice
+                    };
+                    if let Some(notice) = notice {
+                        return Ok(Event::Notice(notice.into()));
+                    }
                     let effects = {
                         let mut st = self.handle.lock();
-                        let busy = st.editor.pending_paste.is_some();
+                        let busy = st.editor.pending_paste.is_some()
+                            || st.terminal.clipboard_export.is_some()
+                            || st.terminal.clipboard_export_inflight;
                         st.editor
                             .clipboard
                             .receive(&body, path_std_time::Instant::now(), busy)
@@ -2827,6 +2853,9 @@ impl Term {
                     self.apply_clipboard_effects(effects)?;
                 }
                 RawEvent::ClipboardDeadline => {
+                    if self.handle.expire_clipboard_export() {
+                        continue;
+                    }
                     let effects = self
                         .handle
                         .lock()
@@ -2841,6 +2870,12 @@ impl Term {
                     return Ok(Event::Notice("Clipboard paste interrupted by focus change; draft unchanged. Paste again.".into()));
                 }
                 RawEvent::Key(key) => {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && self.handle.cancel_clipboard_export()
+                    {
+                        continue;
+                    }
                     {
                         let mut st = self.handle.lock();
                         if st.editor.clipboard.busy() {
@@ -2915,7 +2950,7 @@ impl Term {
                     });
                 }
                 RawEvent::FocusChanged { focused } => {
-                    {
+                    let export_notice = {
                         let mut st = self.handle.lock();
                         if st.editor.clipboard.busy() {
                             let _ = self
@@ -2923,7 +2958,16 @@ impl Term {
                                 .input_tx
                                 .send(InputMessage::Raw(RawEvent::ClipboardInterrupted));
                         }
+                        let notice = st
+                            .terminal
+                            .clipboard_export
+                            .take()
+                            .map(|export| export.cancelled_notice());
                         st.editor.clipboard.reset();
+                        notice
+                    };
+                    if let Some(notice) = export_notice {
+                        self.handle.export_notice(notice);
                     }
                     if self.owns_raw_mode {
                         if focused {
@@ -2932,14 +2976,20 @@ impl Term {
                                 .editor
                                 .clipboard
                                 .probe(path_std_time::Instant::now());
-                            self.write_clipboard_control(b"\x1b[?5522l\x1b[?5522$p")?;
+                            self.handle
+                                .queue_clipboard_control(b"\x1b[?5522l\x1b[?5522$p");
                         } else {
-                            self.write_clipboard_control(b"\x1b[?5522l")?;
+                            self.handle.queue_clipboard_control(b"\x1b[?5522l");
                         }
                     }
                     return Ok(Event::FocusChanged { focused });
                 }
                 RawEvent::Paste(text) => {
+                    if self.handle.lock().terminal.clipboard_export.is_some() {
+                        return Ok(Event::Notice(
+                            "Clipboard export busy; wait or press Ctrl-C before pasting.".into(),
+                        ));
+                    }
                     if let Some(event) = self.apply_text_paste(text) {
                         return Ok(event);
                     }
@@ -3041,7 +3091,20 @@ impl Term {
                 self.start_real_reader();
             }
 
-            let deadline = self.handle.lock().editor.clipboard.deadline();
+            let deadline = {
+                let st = self.handle.lock();
+                st.editor
+                    .clipboard
+                    .deadline()
+                    .into_iter()
+                    .chain(
+                        st.terminal
+                            .clipboard_export
+                            .as_ref()
+                            .map(|export| export.deadline),
+                    )
+                    .min()
+            };
             if deadline.is_some_and(|deadline| deadline <= path_std_time::Instant::now()) {
                 return Ok(Some(RawEvent::ClipboardDeadline));
             }
@@ -3441,12 +3504,19 @@ impl Term {
         &self,
         release_terminal: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<()> {
-        {
+        let export_notice = {
             let mut st = self.handle.lock();
             st.terminal.external_paused = true;
             st.terminal.exit_prepared = false;
             st.editor.clipboard.reset();
             st.terminal.clipboard_control.clear();
+            st.terminal
+                .clipboard_export
+                .take()
+                .map(|export| export.cancelled_notice())
+        };
+        if let Some(notice) = export_notice {
+            self.handle.export_notice(notice);
         }
         // Wait until any redraw frame that already passed the paused-state
         // check has finished writing before releasing the terminal to an
@@ -4361,6 +4431,7 @@ impl Term {
         {
             let mut st = self.handle.lock();
             st.terminal.shutdown = true;
+            st.terminal.clipboard_export = None;
             st.editor.clipboard.reset();
         }
         self.handle.release_redraw_notification();
@@ -5411,8 +5482,57 @@ fn redraw_loop(
         prev_width = pass.width;
         prev_height = pass.height;
 
+        if let Err(error) = write_clipboard_export_packet(&state, &mut writer) {
+            fail_terminal_output(&state, &input_tx, sync_condvar, error);
+            discard_failed_output(writer);
+            return;
+        }
         complete_redraw_sync(&state, pass.sync_gen, sync_condvar);
     }
+}
+
+/// Admits at most one bounded packet after any already-captured ordinary
+/// controls.
+///
+/// No state lock spans I/O. Cancellation linearizes before admission or retires
+/// the remainder while this single in-flight packet finishes. Handoff sync
+/// cannot complete until this packet has flushed.
+fn write_clipboard_export_packet(
+    state: &Arc<Mutex<SharedState>>,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    let packet = {
+        let mut st = state.lock().expect("term state mutex poisoned");
+        if st.terminal.external_paused
+            || st.terminal.input_shutdown
+            || st.terminal.shutdown
+            || st.terminal.output_failure.is_some()
+        {
+            st.terminal.clipboard_export = None;
+            return Ok(());
+        }
+        let Some(export) = st.terminal.clipboard_export.as_mut() else {
+            return Ok(());
+        };
+        if path_std_time::Instant::now() >= export.deadline {
+            // The input owner's combined deadline retires this reservation and
+            // queues the reset/probe without blocking on terminal output.
+            return Ok(());
+        }
+        let packet = export.admit_packet();
+        st.terminal.clipboard_export_inflight = packet.is_some();
+        packet
+    };
+    if let Some(packet) = packet {
+        let result = writer.write_all(&packet).and_then(|()| writer.flush());
+        let mut st = state.lock().expect("term state mutex poisoned");
+        st.terminal.clipboard_export_inflight = false;
+        if result.is_err() {
+            st.terminal.clipboard_export = None;
+        }
+        result?;
+    }
+    Ok(())
 }
 
 /// Drops a failed buffered writer without retrying bytes retained in its
@@ -5483,7 +5603,13 @@ fn wait_for_redraw_or_sync(
             "terminal shared state acquired"
         );
     }
-    if st.terminal.sync_completed < st.terminal.sync_requested {
+    if st.terminal.sync_completed < st.terminal.sync_requested
+        || (!st.terminal.external_paused
+            && st.terminal.redraw_suppression == 0
+            && st.terminal.clipboard_export.as_ref().is_some_and(|export| {
+                export.ready() && path_std_time::Instant::now() < export.deadline
+            }))
+    {
         return true;
     }
     drop(st);
@@ -5983,6 +6109,7 @@ fn fail_terminal_output(
         st.terminal.output_failure = Some(OutputFailure::new(error));
     }
     st.terminal.input_shutdown = true;
+    st.terminal.clipboard_export = None;
     st.terminal.sync_completed = st.terminal.sync_requested;
     drop(st);
     sync_condvar.notify_all();

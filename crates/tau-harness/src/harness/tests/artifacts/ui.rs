@@ -23,23 +23,35 @@ fn ui_artifact_upload_uses_existing_initial_and_attached_ingress() {
             Ok(ArtifactValue::Done)
         );
         let bytes = b"normalized\nwall of text".to_vec();
-        let mut upload = tau_client::ArtifactUpload::new(bytes).expect("bounded original");
+        let mut upload = tau_client::ArtifactUpload::new(bytes.clone()).expect("bounded original");
         while let Some(op) = upload.next_op() {
             upload
                 .accept(ui_rpc(&mut h, &connection, &mut reader, op, true).expect("upload RPC"))
                 .expect("valid progress");
         }
         let key = upload.descriptor().expect("final descriptor").key.clone();
-        assert_eq!(
-            ui_rpc(
-                &mut h,
-                &connection,
-                &mut reader,
-                ArtifactOp::Stat { key },
-                false
-            ),
-            Err(ArtifactError::Permission)
-        );
+        let ArtifactValue::Listed { entries } = ui_rpc(
+            &mut h,
+            &connection,
+            &mut reader,
+            ArtifactOp::List {
+                prefix: String::new(),
+                limit: 10,
+            },
+            true,
+        )
+        .expect("UI whole-store catalog") else {
+            panic!("catalog")
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].descriptor.key, key);
+        let mut download = tau_client::ArtifactDownload::new(key);
+        while let Some(op) = download.next_op() {
+            download
+                .accept(ui_rpc(&mut h, &connection, &mut reader, op, true).expect("read RPC"))
+                .expect("valid complete read");
+        }
+        assert_eq!(download.into_bytes().expect("verified and closed"), bytes);
         assert_eq!(h.ui_runtime.client_writers.len(), clients);
         h.handle_client_message(
             &connection,

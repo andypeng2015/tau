@@ -21,6 +21,7 @@
 
 mod artifact_client;
 mod artifact_download;
+mod artifact_media;
 mod artifact_upload;
 mod bridge_receiver;
 mod builder;
@@ -46,6 +47,7 @@ mod writer_thread;
 
 pub use artifact_client::ArtifactClient;
 pub use artifact_download::ArtifactDownload;
+pub use artifact_media::{ArtifactMedia, artifact_signature};
 pub use artifact_upload::ArtifactUpload;
 pub use bridge_receiver::{BridgeReceiverClient, BridgeReceiverConfig, BridgeReceiverSnapshot};
 pub use builder::ExtensionBuilder;

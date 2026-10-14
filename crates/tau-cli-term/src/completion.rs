@@ -93,6 +93,8 @@ pub(crate) fn is_valid_command_name(name: &str) -> bool {
 /// A single argument completion candidate.
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
+    /// Optional display-only abbreviation; insertion always uses `value`.
+    pub label: Option<String>,
     /// Text inserted into the prompt when this completion is accepted.
     pub value: String,
     /// Human-readable description shown beside the value in the menu.
@@ -103,6 +105,7 @@ impl CompletionItem {
     /// Creates an argument completion with a menu description.
     pub fn new(value: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
+            label: None,
             value: value.into(),
             description: description.into(),
         }
@@ -111,9 +114,16 @@ impl CompletionItem {
     /// Creates an argument completion with no menu description.
     pub fn plain(value: impl Into<String>) -> Self {
         Self {
+            label: None,
             value: value.into(),
             description: String::new(),
         }
+    }
+
+    /// Sets a display label without changing the exact inserted value.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 }
 
@@ -836,7 +846,7 @@ fn build_session_candidates(
             let accepted = format!("{trigger_prefix}{}", item.value);
             replace_candidate(
                 Candidate {
-                    label: item.value,
+                    label: item.label.unwrap_or(item.value),
                     description: item.description,
                     replacement: String::new(),
                     cursor: 0,
@@ -867,7 +877,7 @@ fn build_agent_mention_candidates(
             let accepted = format!("{trigger_prefix}{}", item.value);
             replace_candidate(
                 Candidate {
-                    label: item.value,
+                    label: item.label.unwrap_or(item.value),
                     description: item.description,
                     replacement: String::new(),
                     cursor: 0,
@@ -927,7 +937,7 @@ fn build_arg_candidates(
             let accepted = item.value.clone();
             replace_candidate(
                 Candidate {
-                    label: item.value,
+                    label: item.label.unwrap_or(item.value),
                     description: item.description,
                     replacement: String::new(),
                     cursor: 0,

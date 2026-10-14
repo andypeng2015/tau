@@ -4,25 +4,17 @@ use super::*;
 use crate::artifact_worker::ArtifactWorker;
 
 impl Harness {
-    /// Admits upload-only requests from the authenticated attached socket UI.
+    /// Admits store requests from the authenticated exact-session UI.
     pub(super) fn handle_ui_artifact_request(
         &mut self,
         connection: &tau_proto::ConnectionId,
         request: tau_proto::ArtifactRequest,
     ) {
-        use tau_proto::{ArtifactError, ArtifactOp};
+        use tau_proto::ArtifactError;
         let id = request.request_id.clone();
         let result = (|| {
             if !self.is_attached_socket_ui(connection)
                 || self.session_runtime.storage_mode.is_memory_only()
-                || !matches!(
-                    request.op,
-                    ArtifactOp::Available
-                        | ArtifactOp::Begin { .. }
-                        | ArtifactOp::Write { .. }
-                        | ArtifactOp::Finalize { .. }
-                        | ArtifactOp::Abort { .. }
-                )
             {
                 return Err(ArtifactError::Permission);
             }
@@ -81,7 +73,9 @@ impl Harness {
         // Actual harness mode, not session journal persistence, owns this test.
         // No root construction, stat, startup cleanup, or worker I/O precedes
         // it.
-        if self.session_runtime.storage_mode.is_memory_only() {
+        if self.session_runtime.storage_mode.is_memory_only()
+            || matches!(request.op, tau_proto::ArtifactOp::List { .. })
+        {
             return Err(ArtifactError::Permission);
         }
         let entry = self

@@ -10,6 +10,7 @@ use crate::{list_agents as path_crate_list_agents, theme as path_crate_theme};
 
 #[cfg(test)]
 mod agent_picker_tests;
+mod clipboard_export;
 pub(crate) mod cold_attach_stager;
 #[cfg(test)]
 mod configuration_tests;
@@ -720,6 +721,10 @@ pub(crate) fn parse_retry_extension_command(
 }
 
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    (
+        ":export-to-clipboard",
+        "Copy an artifact's original bytes to the local terminal clipboard",
+    ),
     (":quit", "Quit this UI using the current session policy"),
     (":q", "Alias for :quit"),
     (
@@ -1409,6 +1414,8 @@ fn run_chat_session(
             .then(|| Arc::new(DeliveryMemoryTracker::new()));
     let socket_delivery_memory = delivery_memory.clone();
     let (paste_upload, paste_worker) = paste_upload::PasteUpload::spawn(writer.clone());
+    let (clipboard_export, clipboard_worker) =
+        clipboard_export::ClipboardExport::spawn(writer.clone(), session_id.clone());
     let socket_reader = spawn_socket_reader(
         socket_reader_input,
         attach,
@@ -1426,6 +1433,7 @@ fn run_chat_session(
         socket_delivery_memory,
         quit_result_tx,
         paste_upload.clone(),
+        clipboard_export.clone(),
     );
 
     // Terminal setup.
@@ -1583,6 +1591,13 @@ fn run_chat_session(
         handle.clone(),
     ));
     let session_completion = SessionCompletion::new(session_id.clone(), handle.clone());
+    completion_data.set_arg_completer(
+        tau_cli_term::CommandName::new(":export-to-clipboard"),
+        clipboard_export.completer(
+            handle.clone(),
+            clipboard_export::supported(harness_protocol_version),
+        ),
+    );
     completion_data.set_session_completer(session_completion.completer());
     completion_data.set_arg_completer(
         tau_cli_term::CommandName::new(":theme"),
@@ -1662,6 +1677,7 @@ fn run_chat_session(
             TerminalInputLoopCtx {
                 shell_client,
                 paste_upload: paste_upload.clone(),
+                clipboard_export: clipboard_export.clone(),
                 quit_results: quit_result_rx.clone(),
                 fast_service_tier_state,
                 current_role_state,
@@ -1738,7 +1754,9 @@ fn run_chat_session(
         local_disconnect_started,
     );
     paste_upload.stop();
+    clipboard_export.stop();
     let _ = paste_worker.join();
+    let _ = clipboard_worker.join();
     drop(session_completion);
     // HighTerm owns raw mode and performs its final repaint on Drop. Joining
     // renderer workers alone does not restore the terminal.
@@ -2129,6 +2147,7 @@ fn spawn_socket_reader(
     socket_delivery_memory: Option<Arc<DeliveryMemoryTracker>>,
     quit_result_tx: mpsc::Sender<tau_proto::UiQuitResult>,
     paste_upload: paste_upload::PasteUpload,
+    clipboard_export: clipboard_export::ClipboardExport,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut cold_attach_stager = if attach {
@@ -2263,8 +2282,10 @@ fn spawn_socket_reader(
                     socket_ui_io_meter.record_downlink_frame_bytes(&message, frame_bytes);
                     let deliveries = match message {
                         HarnessOutputMessage::ArtifactResult(result) => {
-                            if queue_bytes <= tau_proto::ARTIFACT_FRAME_BYTES {
-                                paste_upload.deliver(*result);
+                            if queue_bytes <= tau_proto::ARTIFACT_FRAME_BYTES
+                                && let Some(result) = clipboard_export.deliver(*result)
+                            {
+                                paste_upload.deliver(result);
                             }
                             if let Some(memory) = &socket_delivery_memory {
                                 memory.release(delivery_id);
@@ -2686,6 +2707,8 @@ struct RendererQueueFrame {
 }
 
 struct TerminalInputLoopCtx {
+    /// UI-only catalog and verified downloads, bound to this attachment.
+    clipboard_export: clipboard_export::ClipboardExport,
     /// UI-owned authenticated extension inventory and operation correlations.
     shell_client: Arc<Mutex<tau_shell_interaction::Client>>,
     /// Upload control on this attachment's existing bidirectional transport.
@@ -3673,9 +3696,29 @@ impl<'a> TerminalInputSession<'a> {
     fn handle_non_session_command(&mut self, text: &str) -> bool {
         // The grouping mirrors the old dispatch order while keeping each
         // command-family helper below the cargo-crap hotspot range.
-        self.handle_custom_prompt_command(text)
+        self.handle_clipboard_export_command(text)
+            || self.handle_custom_prompt_command(text)
             || self.handle_navigation_or_role_shortcut(text)
             || self.handle_utility_or_shell_shortcut(text)
+    }
+
+    fn handle_clipboard_export_command(&mut self, text: &str) -> bool {
+        let Some(args) = text
+            .strip_prefix(":export-to-clipboard")
+            .filter(|args| args.is_empty() || args.starts_with(char::is_whitespace))
+        else {
+            return false;
+        };
+        if !clipboard_export::supported(self.ctx.harness_protocol_version) {
+            self.output
+                .command_feedback("Clipboard export requires harness protocol 13.1 or newer.");
+        } else {
+            match self.ctx.clipboard_export.start(args, self.term.handle().clone()) {
+                Ok(()) => self.output.command_feedback("Preparing clipboard export; Ctrl-C cancels. Waiting for terminal acknowledgment."),
+                Err(error) => self.output.command_feedback(error),
+            }
+        }
+        true
     }
 
     fn handle_custom_prompt_command(&mut self, text: &str) -> bool {

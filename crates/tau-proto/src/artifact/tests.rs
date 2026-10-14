@@ -1,5 +1,29 @@
 use super::*;
 
+/// UI listing bounds cannot become arbitrary filesystem prefixes or unbounded
+/// pages.
+#[test]
+fn listing_prefix_and_page_bounds_are_closed() {
+    for prefix in ["", "b", "blake3:", "blake3:abc012"] {
+        assert!(artifact_prefix_valid(prefix));
+    }
+    for prefix in ["../", "BLAKE3:", "blake3:G", "blake3:a/../"] {
+        assert!(!artifact_prefix_valid(prefix));
+    }
+    for (limit, valid) in [(0, false), (1, true), (10, true), (11, false)] {
+        let request = ArtifactRequest {
+            request_id: "list".parse().expect("valid request"),
+            expected_session_id: "session".parse().expect("valid session"),
+            op: ArtifactOp::List {
+                prefix: "".into(),
+                limit,
+            },
+        };
+        assert_eq!(request.is_bounded(), valid);
+        assert!(!format!("{request:?}").contains("prefix"));
+    }
+}
+
 /// Semantic identities and immutable descriptors reject malformed wire values
 /// during decoding, before any producer or storage state can accept them.
 #[test]

@@ -6,6 +6,18 @@ prompt shell actions, prompt-history search, and editor integration. The lower
 suppression, and pause/resume of terminal mode. `tau-cli-picker` is the small
 standalone picker UI used by configured commands.
 
+Native clipboard export reserves attachment authority before asynchronous
+download. The sole raw redraw owner admits one bounded packet after ordinary
+frame/control flush, outside captured redraw passes. Cancellation and packet
+admission share the state lock, never held during I/O; an admitted packet must
+finish intact. A commit already admitted when cancellation wins has an unknown
+outcome until a matching native acknowledgment. Handoff retains the existing
+output drain and input fence; its decision budget does not interrupt a blocked
+output syscall. Clipboard ingress and export cannot own transfers concurrently.
+One optional nonblocking retirement observer registers under the reservation
+lock; every removal wakes the download owner, including cancellation before
+output and acknowledgment before the admitted commit flush returns.
+
 ## Command-mode boundary
 
 `tau-cli-term` recognizes `:` at the first non-whitespace position as Tau's

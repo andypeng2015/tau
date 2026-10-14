@@ -170,6 +170,11 @@ pub(super) struct Effects {
 }
 
 impl ClipboardPaste {
+    /// Capability admitted for the current ownership epoch, not write
+    /// permission.
+    pub(super) fn native_available(&self) -> bool {
+        self.enabled && !self.handoff_blocked
+    }
     /// Starts a fresh, bounded capability probe without waiting at startup.
     pub(super) fn probe(&mut self, now: Instant) {
         self.enabled = false;

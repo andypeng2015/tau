@@ -9,6 +9,28 @@ use crate::harness::{ExtensionActivationStage, ExtensionFrameAdmission};
 
 mod ui;
 
+/// Whole-store UI discovery must not silently grant configured extensions
+/// enumeration.
+#[test]
+fn configured_artifact_extensions_cannot_enumerate() {
+    let temp = TempDir::new().expect("private root");
+    let mut h = quiet_provider_harness(temp.path()).expect("test harness");
+    let sink = connect_activated_artifact_extension(&mut h);
+    assert_eq!(
+        rpc(
+            &mut h,
+            &sink,
+            ArtifactOp::List {
+                prefix: "".into(),
+                limit: 10
+            }
+        ),
+        Err(ArtifactError::Permission)
+    );
+    assert!(h.runtime_io.artifacts.is_none());
+    assert!(!temp.path().join("artifacts").exists());
+}
+
 /// A stalled configured recipient is disconnected on artifact egress overflow;
 /// other connections remain live and late completions cannot revive the peer.
 #[test]

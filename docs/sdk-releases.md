@@ -20,9 +20,11 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
-Protocol **13.0** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
-**0.12.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
-client-to-proto pin of `=0.12.0`. This line is not yet published. It includes
+Protocol **13.1** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
+**0.13.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
+client-to-proto pin of `=0.13.0`. This line is not yet published. It adds UI-only
+artifact discovery enum variants and verified clipboard export to the preceding
+unpublished 0.12.0 / protocol 13.0 work. It includes
 authenticated delivery publishers, generic custom-event agent privacy scope,
 and passive context append requests/results/facts. It replaces live first-party
 shell routing with an opaque endpoint protocol. Configured extensions must
@@ -37,7 +39,7 @@ exhausted-transient compaction failure variants, and optional original discovery
 paths and unusable-local-summary failure authority. These field and enum additions require a new pre-1.0 minor SDK line.
 Configured protocol-10 extensions are rejected before Configure/Ready by a
 protocol-13 harness and must migrate to the actual SDK API, not merely advertise
-a new wire version. The archive consumer check verifies protocol 13.0 and its
+a new wire version. The archive consumer check verifies protocol 13.1 and its
 typed failure variants under Rust 1.91; registry-only acceptance must follow
 publication before source-identifying package tags are created.
 

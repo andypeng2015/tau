@@ -1,5 +1,54 @@
 # Artifact transfers
 
+## Copy an artifact to your clipboard
+
+Use `:export-to-clipboard KEY` in the interactive UI. Completion suggests up to
+ten originals from the whole shared store, newest explicit upload first. Typing
+a key prefix searches before limiting, so older originals remain discoverable.
+Rows abbreviate the displayed key but insert the full key, with original byte
+size and a header-derived format hint or “format unknown.” Canonical
+`<tau-artifact:FULL_KEY>` references also work when entered directly.
+
+Tau downloads and verifies the complete size and BLAKE3 digest, then closes the
+read before sending any clipboard bytes. Copying/listing does not refresh
+artifact retention. Bytes remain unchanged: no newline conversion, text
+normalization, transcoding or base64-as-text substitute.
+
+The default type is inferred from PNG/JPEG/GIF/WebP/PDF signatures, otherwise
+complete strict UTF-8 without control characters (except TAB/LF/CR) becomes
+`text/plain;charset=utf-8`, with a `text/plain` alias. Other bytes use
+`application/octet-stream`. These are guesses, not media validation.
+Override a guess with `:export-to-clipboard KEY --mime image/svg+xml`, for example.
+The bounded ASCII MIME parser supports `type/subtype` and one optional unquoted
+`;charset=TOKEN` parameter, up to 256 bytes; it rejects wildcards, whitespace and
+other parameters. Explicit UTF-8 text declarations require valid UTF-8.
+Overrides never alter shared metadata or add a plain-text alias.
+
+Native OSC5522 MIME writes reach the workstation through compatible terminals
+and multiplexers, including over SSH. Support and write permission are separate;
+paste support does not grant export permission. Tau reports a correlated
+terminal acknowledgment, denial, unavailable support, or an unknown outcome.
+It never silently falls back to OSC52 or runs a remote clipboard utility.
+Arbitrary binary data does not necessarily become a desktop file or have a
+paste target in another application.
+
+Only one clipboard transfer runs at a time. Ctrl-C cancels export before agent
+prompt cancellation; focus changes, foreground handoff and disconnect revoke
+pending work. The operation has a fixed 60-second budget. Cancellation stops
+future packet admission, but cannot undo an already admitted commit; a lost
+acknowledgment can therefore leave the native outcome unknown. The sole terminal
+writer emits bounded packets asynchronously. Existing foreground handoff still
+waits for admitted output before releasing terminal ownership; a blocked output
+syscall is not forcibly interrupted by that budget.
+
+Listing uses a coalesced asynchronous three-second cache and an off-loop scan
+with bounded result memory and a two-second decision budget checked between
+filesystem operations. Failed/incomplete scans are reported unavailable, not as
+partially recent pages. No durable index, MIME catalog or timestamp migration is
+needed. The UI requires harness protocol 13.1 or newer for this feature.
+
+## Shared original-byte storage
+
 Tau's Artifact RPC stores **immutable original bytes under their content hash**.
 Model-facing text refers to an artifact with the canonical Markdown autolink
 `<tau-artifact:FULL_KEY>`, for example

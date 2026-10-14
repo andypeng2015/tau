@@ -1,5 +1,10 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Protocol 13.1 adds bounded UI-only artifact discovery DTOs. Exact-session UIs
+gate discovery/read export on the admitted revision; configured extensions keep
+known-key operations without listing. No journal event is added. See
+[SPEC-shared-artifacts](../../../specs/SPEC-shared-artifacts.md).
+
 Generic transient activity request/result DTOs carry opaque operation IDs and
 authenticated incarnation ownership, without tool- or shell-specific state.
 They govern [SPEC-extension-activity-leases](../../../specs/SPEC-extension-activity-leases.md).

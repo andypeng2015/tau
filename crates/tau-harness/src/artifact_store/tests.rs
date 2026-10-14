@@ -2,6 +2,91 @@ use std::process::Command;
 
 use super::*;
 
+/// Recent pages use last put, deterministic ties and prefix-before-limit
+/// without renewal.
+#[test]
+fn discovery_ranks_full_store_and_finds_older_prefixes() {
+    let temp = tempfile::tempdir().expect("private root");
+    let mut store = ArtifactStore::new(temp.path());
+    let (_, old) = put(&mut store, "owner", "connection", b"old original", 1);
+    for n in 0..12 {
+        put(&mut store, "other-session", "connection", &[n], 10);
+    }
+    let ArtifactValue::Listed { entries } = store.list("", 10, || true).expect("whole-store list")
+    else {
+        panic!("list")
+    };
+    assert_eq!(entries.len(), 10);
+    assert!(entries.iter().all(|entry| entry.last_put_at == 10));
+    assert!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0].descriptor.key.as_str() < pair[1].descriptor.key.as_str())
+    );
+    let ArtifactValue::Listed { entries } = store
+        .list(old.key.as_str(), 1, || true)
+        .expect("older matching prefix")
+    else {
+        panic!("list")
+    };
+    assert_eq!(entries[0].descriptor, old);
+    assert!(entries[0].signature.is_none()); // A header cannot prove text.
+    assert_eq!(
+        store
+            .metadata(&old.key)
+            .expect("original metadata")
+            .last_put_at,
+        1
+    );
+    put(&mut store, "owner", "connection", b"old original", 20);
+    let ArtifactValue::Listed { entries } =
+        store.list("", 1, || true).expect("renewed original list")
+    else {
+        panic!("list")
+    };
+    assert_eq!(entries[0].descriptor, old);
+    assert_eq!(entries[0].last_put_at, 20);
+}
+
+/// Canceled scans never return a plausible partial top-N page; corrupt entries
+/// are ignored.
+#[test]
+fn discovery_cancellation_and_header_inference_are_bounded() {
+    let temp = tempfile::tempdir().expect("private root");
+    let mut store = ArtifactStore::new(temp.path());
+    assert_eq!(store.list("", 10, || false), Err(ArtifactError::Busy));
+    let (_, png) = put(
+        &mut store,
+        "owner",
+        "connection",
+        b"\x89PNG\r\n\x1a\nnot a decoded image",
+        1,
+    );
+    let ArtifactValue::Listed { entries } = store.list("", 10, || true).expect("header hints")
+    else {
+        panic!("list")
+    };
+    assert_eq!(
+        entries[0].signature,
+        Some(tau_proto::ArtifactSignature::Png)
+    );
+    fs::write(
+        store
+            .root
+            .join("blake3")
+            .join(artifact_digest(&png.key).expect("canonical digest"))
+            .join("meta.json"),
+        b"bad metadata",
+    )
+    .expect("corrupt metadata fixture");
+    let ArtifactValue::Listed { entries } =
+        store.list("", 10, || true).expect("skip corrupt metadata")
+    else {
+        panic!("list")
+    };
+    assert!(entries.is_empty());
+}
+
 fn put(
     store: &mut ArtifactStore,
     owner: &str,

@@ -5,6 +5,11 @@ use crate::redraw_sync_generation::RedrawSyncGeneration;
 
 /// Terminal dimensions, redraw coordination, and lifecycle flags.
 pub(super) struct TerminalRuntimeState {
+    /// One attachment-local clipboard reservation, including download and ACK.
+    pub(super) clipboard_export: Option<crate::clipboard_export::ClipboardExport>,
+    /// An admitted packet retains sole export ownership until its flush
+    /// returns.
+    pub(super) clipboard_export_inflight: bool,
     /// Current terminal width in columns.
     pub(super) width: usize,
     /// Current terminal height in rows.
@@ -64,6 +69,8 @@ impl TerminalRuntimeState {
     /// Creates terminal runtime state for the supplied dimensions.
     pub(super) fn new(width: usize, height: usize) -> Self {
         Self {
+            clipboard_export: None,
+            clipboard_export_inflight: false,
             width,
             height,
             shutdown: false,

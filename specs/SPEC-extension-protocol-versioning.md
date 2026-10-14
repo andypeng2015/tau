@@ -8,6 +8,13 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 13.1 adds UI-only bounded artifact discovery and permits authenticated
+exact-session UIs to read originals for explicit clipboard export. UI clients
+withhold the new operations until SessionAccepted advertises 13.1 or newer.
+Configured extensions gain no enumeration; their existing operations and
+journals are unchanged. The public enum additions use source SDK 0.13.0.
+This source change does not publish packages or activate installed binaries.
+
 Protocol 13.0 adds generic authenticated delivery publisher metadata, custom
 agent privacy scope, and typed passive context append requests, outcomes, and
 durable facts. It retires live first-party shell events in favor of opaque

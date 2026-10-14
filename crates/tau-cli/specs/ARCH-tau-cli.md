@@ -1,5 +1,16 @@
 # ARCH-tau-cli: tau-cli architecture
 
+`:export-to-clipboard` is UI-local: one coalescing worker discovers whole-store
+artifact keys and downloads selected originals over the existing exact-session
+transport. It verifies complete size/digest and Close before publishing bytes to
+a previously reserved raw-terminal export token. Completion callbacks read only
+bounded cached metadata; abbreviated labels never alter insertion keys.
+RPC response, attachment stop, and raw reservation retirement share a bounded,
+coalesced wake; the worker rechecks predicates after each wake and waits only
+against the actual deadline, never periodically polls cancellation.
+Native terminal outcomes stay local and content-free. See
+[SPEC-shared-artifacts](../../../specs/SPEC-shared-artifacts.md).
+
 ## Declaration collector
 
 The collector's public JSON schema and exit contract are documented in

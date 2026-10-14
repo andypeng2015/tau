@@ -19,6 +19,7 @@ use tau_proto::{
 
 mod cleanup;
 mod filesystem;
+mod listing;
 mod metadata;
 mod reader;
 mod receipt;
@@ -84,6 +85,7 @@ impl ArtifactStore {
     ) -> Result<ArtifactValue, ArtifactError> {
         self.expire(Instant::now());
         match op {
+            ArtifactOp::List { prefix, limit } => self.list(&prefix, limit, || true),
             ArtifactOp::Available => Ok(ArtifactValue::Done),
             ArtifactOp::Begin { size } => self.begin(owner, connection, size),
             ArtifactOp::Write {

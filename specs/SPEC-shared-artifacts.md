@@ -11,7 +11,9 @@ Artifacts are immutable original bytes addressed directly by their BLAKE3
 digest. The selected persistent state root defines a shared cross-session
 namespace. Identical bytes share one original and age; filenames and media
 claims are per-use hints, not canonical identity or first-writer metadata.
-There is no list, overwrite, delete, reference-pin, or implicit remote-fetch API.
+There is no overwrite, delete, reference-pin, or implicit remote-fetch API.
+Whole-store discovery is restricted to authenticated UIs; configured extensions
+retain known-key read authority without enumeration.
 Model-facing text names an artifact with the canonical Markdown autolink
 `<tau-artifact:FULL_KEY>`. Shared formatting and parsing preserve the raw digest
 key as the internal content address; consumers may also accept that bare key.
@@ -37,12 +39,13 @@ image previews remain inline and independently replayable under
 [SPEC-typed-image-tool-results](SPEC-typed-image-tool-results.md); an original
 artifact never replaces preview or context replay authority.
 
-Authenticated UIs may use only availability and upload operations on their
+Authenticated UIs may upload, read known originals, and query a bounded recent
+page from the whole shared store on their
 existing connection. Exact-session Hello admission captures the session binding
 generation; both that authority and transfer connection ownership remain current
 for each request. Initial owned stdio and attached socket UIs use the same
 admission route; unrelated external peers, probes, and in-memory/non-admitted
-clients gain no upload authority. Read/list/mutation authority is not added.
+clients gain no artifact authority. Mutation/deletion authority is not added.
 Large terminal pastes upload normalized editor-equivalent UTF-8 and insert
 the canonical editable artifact reference with a per-use media hint. The pending source never enters
 prompt drafts, history, or event presentation. Failure retains it for explicit
@@ -56,6 +59,25 @@ paste inserts its complete reference list only after every original finalizes;
 this grouped editor update does not make backing-store publication transactional.
 Failure/cancellation may retain finalized predecessors, and explicit retry
 resumes retained unfinished transfer state without rereading the clipboard.
+
+UI discovery ranks validated metadata by latest explicit put, descending, with
+full-key ties ascending. Prefix filtering precedes the page limit. A scan
+returns a complete advisory top-N page or fails, never presents an incomplete
+traversal as globally recent. Discovery is off-loop, bounded in retained memory
+and decision time, revocable on disconnect, and does not renew retention.
+Header media inference is advisory; no name/media catalog is persisted.
+
+Clipboard export is an explicit UI-local operation. The consumer verifies the
+complete original size/digest and closes its read before admitting terminal
+output. It preserves bytes under an explicit per-use media declaration or
+conservative local inference, including generic binary fallback. This does not
+validate media or create desktop files. Export uses the sole terminal writer,
+one bounded packet at a time, and requires a correlated native acknowledgment;
+permission denial never triggers a different clipboard protocol. Lifecycle
+revocation prevents later packet admission, including commit, but cannot retract
+an already admitted packet. A lost acknowledgment or cancellation racing commit
+has an unknown native outcome. No clipboard bytes or control payloads enter
+semantic history or diagnostic logs.
 
 Objects are bounded to 16 MiB and raw chunks to 1 MiB, with the complete encoded
 frame bounded separately in both directions. A bounded off-loop worker owns

@@ -76,7 +76,7 @@ expected_internal_dependencies = {
     },
     "dpc-tau-client": {
         "dpc-tau-blocking-notify-channel": "=0.1.0",
-        "dpc-tau-proto": "=0.12.0",
+        "dpc-tau-proto": "=0.13.0",
     },
 }
 
@@ -162,8 +162,21 @@ fn packaged_sdk_round_trips_the_advertised_protocol_version() {
     let decoded: tau_proto::ProtocolVersion =
         tau_proto::decode_message_from_slice(&encoded).expect("protocol version should decode");
 
-    assert_eq!(decoded, tau_proto::ProtocolVersion::new(13, 0));
+    assert_eq!(decoded, tau_proto::ProtocolVersion::new(13, 1));
     let _logging_initializer: fn(&'static str) = tau_client::init_logging_for;
+}
+
+/// UI discovery DTOs and consumer-local MIME inference must survive packaging.
+#[test]
+fn packaged_sdk_exposes_clipboard_artifact_helpers() {
+    let op = tau_proto::ArtifactOp::List { prefix: String::new(), limit: 10 };
+    let encoded = tau_proto::encode_message_to_vec(&op).expect("list encoding");
+    let decoded: tau_proto::ArtifactOp =
+        tau_proto::decode_message_from_slice(&encoded).expect("list decoding");
+    assert_eq!(op, decoded);
+    let media = tau_client::ArtifactMedia::select(b"\0binary", None).expect("media");
+    assert_eq!(media.mime, "application/octet-stream");
+    assert!(!media.plain_alias);
 }
 
 /// The source-only SDK bump must include generic publisher and passive append
