@@ -1614,9 +1614,9 @@
     </div>
     <p style="margin-bottom: 0.25rem">The coding agent harness for power users</p>
     <h1>Powerful agents.<br><span class="accent">Your rules.</span></h1>
-    <p>Tau is a feature-rich harness for bleeding-edge agentic development,
-      rooted in Unix hacker culture. Powerful tools, deep configurability, and
-      composable components make it a system you can inspect, extend, and make your own.</p>
+    <p>Bring your models, build an agent team, and put it to work in your terminal.
+      Tau is an open-source coding harness rooted in Unix hacker culture:
+      powerful tools and composable parts you can inspect, extend, and make your own.</p>
     <div class="hero-cta">
       <a class="btn-primary" href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/docs/getting-started.md">Try Tau</a>
       <a class="btn-secondary" href="#major-features">Explore the features &darr;</a>
@@ -1687,9 +1687,7 @@
       native packages for amd64 and arm64 in DEB, RPM, and <code>.tar.gz</code>
       formats.</p>
     <p>Choose <code>tau-full</code> for the complete distribution, or download
-      individual Tau and extension packages. The <code>tau-full</code> archive
-      combines their payloads; its DEB and RPM packages select the exact
-      individual packages.</p>
+      just the Tau and extension packages that fit your setup.</p>
     <p>Complete tarballs:
       <a href="https://github.com/dpc/tau/releases/download/v0.2.1/tau-full-0.2.1-amd64.tar.gz">amd64</a>
       &middot;
@@ -1697,8 +1695,7 @@
       Verify downloads with
       <a href="https://github.com/dpc/tau/releases/download/v0.2.1/SHA256SUMS">SHA256SUMS</a>.</p>
     <p>Requires glibc 2.34 or later; default restricted extension startup needs
-      Linux 5.12 or later. Package verification does not establish broad distro,
-      CPU/kernel, or service-lifecycle qualification.</p>
+      Linux 5.12 or later. See the release page for installation details.</p>
     <div class="hero-cta">
       <a class="btn-primary" href="https://github.com/dpc/tau/releases/tag/v0.2.1">Browse v0.2.1 packages &rarr;</a>
     </div>
@@ -1717,9 +1714,8 @@
       named profiles, and your own extensions when the work calls for them.
       Your setup lives in files you can read, version, and change.</p>
     <p>Follow <a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/docs/getting-started.md">Your first Tau task</a>
-      for installation, authentication, one bounded repository change, review,
-      and resume. It explains Tau's trust and local-data boundary before the
-      first model request.</p>
+      to go from installation to your first repository change, with a review
+      and a session you can return to.</p>
   </section>
 
   <hr class="divider">
@@ -1755,13 +1751,12 @@
 
   <section id="major-features">
     <h2>Explore what Tau can do</h2>
-    <h3>Real capabilities. Concrete controls.</h3>
-    <p>Open a feature to see how it works. These are small, independent examples,
-      not a required setup: YAML snippets are patches for
-      <code>~/.config/tau/harness.yaml</code> unless labeled otherwise.
-      For an annotated, sanitized configuration showing how several features fit
-      together, see the <a href="https://github.com/dpc/tau/blob/master/docs/examples/harness.yaml">complete harness example</a>.
-      Adapt it to your own setup instead of copying it unchanged.</p>
+    <h3>Find your next workflow</h3>
+    <p>Open a feature for ideas and a glimpse of how to make it yours.
+      The snippets show small additions to <code>~/.config/tau/harness.yaml</code>
+      unless labeled otherwise. Explore the
+      <a href="https://github.com/dpc/tau/blob/master/docs/examples/harness.yaml">complete harness example</a>
+      to see how the pieces fit together.</p>
     <div class="feature-list">
       <details class="feature-detail" open>
         <summary><span><strong>Agent roles</strong><span class="feature-teaser">Compose a team with role-specific settings and behavior.</span></span><span class="feature-kind">Config</span></summary>
@@ -1796,11 +1791,9 @@
           <div><p>Compose your setup from shared defaults, config fragments, and
             named profile overlays. Keep model selection, agent behavior, and
             extension configuration independently reusable instead of maintaining
-            a separate config for every workflow.</p><p>Stack profiles at launch;
-            later patches override earlier ones at the same scope. This example
-            selects DeepSeek as the inherited model default and adds a reasoning
-            adjustment. Explicit role-level model settings still win. Configure
-            a provider named <code>deepseek</code> with the listed model first.</p>
+            a separate config for every workflow.</p><p>Stack profiles at launch
+            to match the task. Here, one profile chooses a configured DeepSeek
+            model and another gives agents more reasoning effort.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/agent-roles.md#configuration-profiles">Profiles &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml + shell</p><pre><code class="language-yaml"><span class="yaml-key">profiles</span>:
   <span class="yaml-key">deepseek</span>:
@@ -1820,9 +1813,9 @@
           <div><p>Connect ChatGPT/Codex accounts, Grok subscriptions via xAI device
             authorization, OpenRouter, public OpenAI Responses endpoints, or
             compatible Chat Completions servers, including local servers such as
-            llama.cpp.</p><p>Provider profiles and credentials live
-            separately. Account quotas, API billing, and supported tools or
-            modalities depend on the route &mdash; not every model supports every feature.</p>
+            llama.cpp.</p><p>Bring an account you already use, explore another
+            provider, or run a local model. Choose the route whose capabilities
+            and costs suit the work.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/providers.md">Provider setup &rarr;</a></div>
           <div class="feature-example"><p>Shell &middot; examples: account setup</p><pre><code>tau provider add chatgpt
 tau provider add grok
@@ -1835,15 +1828,14 @@ tau provider list
       <details class="feature-detail">
         <summary><span><strong>Project instructions &amp; skill search</strong><span class="feature-teaser">Grow your skill library, not every agent's prompt.</span></span><span class="feature-kind">Tools</span></summary>
         <div class="feature-body">
-          <div><p>Layer project and user <code>AGENTS.md</code> instructions while
-            keeping a large skill library searchable on demand. Discovery reads
-            bounded metadata, not every skill body. Agents search names and
-            descriptions, optionally search content, then load an exact skill.</p>
-            <p>Project skills advertise their names and descriptions by default;
-              user skills stay out of the prompt until searched.
-              Set <code>advertise: false</code> for less frequently used project
-              skills too. The library can grow without putting its whole catalog
-              or contents into every agent's context.</p>
+          <div><p>Teach agents how your project works with <code>AGENTS.md</code>,
+            then turn repeatable workflows into searchable skills. Agents can
+            discover the right instructions when needed, without carrying the
+            whole library in every prompt.</p>
+            <p>Share skills across projects or keep them close to the code.
+              Make everyday skills easy to discover and leave specialist
+              guidance available on demand, from testing conventions to
+              a focused review checklist.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/skills.md">Instructions and skills &rarr;</a></div>
           <div class="feature-example"><p>Example agent tool calls &middot; your own skill library</p><pre><code># Search skill names and descriptions:
 skill({"query": "rust review"})
@@ -1930,17 +1922,13 @@ Ask the same reviewers to check the fixes.</code></pre></div>
       <details class="feature-detail">
         <summary><span><strong>Status-aware control &amp; loop safeguards</strong><span class="feature-teaser">Make task progress part of how the harness operates.</span></span><span class="feature-kind">Workflow</span></summary>
         <div class="feature-body">
-          <div><p>The <code>status</code> tool reports meaningful task names and
-            working, waiting, blocked, or done states to the UI and watching
-            agents. These states drive behavior, not just presentation:
-            Tau challenges premature final responses while an agent still
-            reports working or has not reported a status, at most twice
-            per unresolved phase.</p>
-            <p>Separate loop safeguards help models that struggle to recover
-              from repetitive responses or tool failures. Tau injects one
-              prompt to change approach, then stops automatic continuation
-              with a visible notice if that cycle recurs. Both safeguards
-              are bounded recovery measures, not guarantees of task completion.</p>
+          <div><p>See who's working, waiting, blocked, or done at a glance.
+            Agents share named task states with you and their teammates,
+            helping you spot where attention is needed.</p>
+            <p>Tau also nudges agents that stop before reporting a task outcome.
+              When responses or tool failures become repetitive, it prompts a
+              change of approach and pauses persistent loops with a visible
+              notice.</p>
             <a href="https://github.com/dpc/tau/blob/master/crates/tau-harness/specs/ARCH-tau-harness.md">Harness control &rarr;</a></div>
           <div class="feature-example"><p>Example agent tool calls &middot; task lifecycle</p><pre><code>status({
   "state": "working",
@@ -1957,17 +1945,12 @@ status({
       <details class="feature-detail">
         <summary><span><strong>Cross-session collaboration</strong><span class="feature-teaser">Connect agent teams across projects and tool environments.</span></span><span class="feature-kind">Config</span></summary>
         <div class="feature-body">
-          <div><p>Enable <code>session_list</code> discovery and use
-            <code>message</code> to communicate with agents in other live
-            sessions. Cooperative local harnesses can connect teams whose
-            tools run in different sandboxes, with a configured receiver
-            role for incoming work. The example allows Tau to start that
-            receiver when no eligible instance is available.</p>
-            <p>Control outbound discovery and messaging with project-root
-              allowlists and denylists. Incoming and outgoing notices can
-              explain each team's trust context and handling expectations.
-              Notices are advisory: peer messages do not grant permissions,
-              and this same-user IPC is not isolation between hostile peers.</p>
+          <div><p>Let a team working on one project ask another team for help.
+            Cooperative local sessions can discover and message each other,
+            even when their tools run in different sandboxes.</p>
+            <p>Choose which projects agents can contact and which role receives
+              incoming work. Add notices to share each team's working
+              expectations. Here, Tau can start a receiver when needed.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/agent-messaging.md">Cross-session controls &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; adapt project paths and receiver role</p><pre><code class="language-yaml"><span class="yaml-key">agents</span>:
   <span class="yaml-key">enable_tool_groups</span>: [<span class="yaml-string">session_discovery</span>]
@@ -1992,13 +1975,10 @@ status({
             automatically, freeing agents to do independent work. Completion
             notifications and <code>wait</code> collect results;
             <code>cancel</code> requests cancellation when a call is no longer
-            needed. Cancellation does not undo effects already performed.</p>
-            <p>Asynchronous prompt inputs use configurable delivery deadlines
-              for user input, agent messages, external messages, and status
-              updates. Tune idle and waiting behavior to favor responsiveness
-              or coalesce notifications into fewer model turns. Inputs join
-              the next eligible prompt, rather than interrupting an in-flight
-              model response.</p>
+            needed.</p>
+            <p>Tune notification timing to match your workflow: respond quickly
+              when agents are idle, or batch updates while they wait to spend
+              fewer model turns on coordination.</p>
             <a href="https://github.com/dpc/tau/blob/master/specs/SPEC-agent-message-delivery.md">Delivery and scheduling &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; agent-message delivery delays</p><pre><code class="language-yaml"><span class="yaml-key">notification_delivery</span>:
   <span class="yaml-key">agent_message</span>:
@@ -2018,9 +1998,8 @@ status({
             its daemon stops.</p>
             <p>Run <code>tau serve</code> under systemd or another supervisor for
               a headless, long-lived session you can attach to as needed.
-              Interactive sessions shut down on the last ordinary UI quit unless
-              you have used <code>:detach</code>; supervised sessions stay alive
-              across UI disconnects.</p>
+              Use <code>:detach</code> when you want to leave an interactive
+              session working in the background.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/session-startup.md">Session lifecycle &rarr;</a></div>
           <div class="feature-example"><p>Shell &middot; replace SESSION with its ID</p><pre><code># In Tau's UI, leave the session running:
 # :detach
@@ -2048,13 +2027,10 @@ tau serve --session SESSION --create-or-existing</code></pre></div>
             <p>Keybindings can run shell commands and insert their output into
               your prompt. Use <code>fzf</code>-based file and history selection,
               or the agent picker on <code>Ctrl+B</code>. Press <code>Ctrl+O</code>
-              to edit the prompt in your text editor: <code>$TAU_EDITOR</code>
-              takes precedence over <code>$EDITOR</code>, with further fallbacks
-              when neither is set.</p>
+              to shape a longer prompt in your preferred text editor.</p>
             <p>Prompt completion and local <code>!</code> shell commands round
               out the terminal workflow. Customize keybindings, themes, mouse
-              behavior, and display detail independently of agent configuration.
-              Install <code>fzf</code> to use the optional pickers.</p>
+              behavior, and display detail independently of agent configuration.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/cli-keybindings.md">Terminal controls &rarr;</a></div>
           <div class="feature-example"><p>~/.config/tau/cli.yaml</p><pre><code class="language-yaml"><span class="yaml-key">theme</span>: <span class="yaml-string">tau-plain-dark</span>
 <span class="yaml-key">mouse</span>: <span class="yaml-boolean">true</span>
@@ -2085,9 +2061,8 @@ tau serve --session SESSION --create-or-existing</code></pre></div>
               role settings let you override it.</p>
             <p>Optional directory locks serialize cooperating agents'
               modifications while read-only inspection and unrelated work
-              continue. Use manual locks around a whole workflow and automatic
-              locks for supported file edits. Locks coordinate participating
-              tools; they are not a general security boundary.</p>
+              continue. Coordinate a whole implementation-and-review workflow,
+              or use automatic locks for supported file edits.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/getting-started.md">Your first coding task &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; shell environment</p><pre><code class="language-yaml"><span class="yaml-key">extensions</span>:
   <span class="yaml-key">core-shell</span>:
@@ -2100,17 +2075,13 @@ tau serve --session SESSION --create-or-existing</code></pre></div>
       <details class="feature-detail">
         <summary><span><strong>Compaction controls</strong><span class="feature-teaser">Choose when and how agents compact their context.</span></span><span class="feature-kind">Config</span></summary>
         <div class="feature-body">
-          <div><p>Control compaction through named, composable policies with
-            model-aware thresholds, reserved headroom, lifecycle triggers, and
-            agent-status conditions. Compact after an agent finishes a task,
-            before its next inference, manually, or through an agent tool;
-            configure policies globally or specialize them per role.</p>
-            <p>Tau supports provider-native compaction and its own configurable
-              summary fallback, with custom mechanisms implemented through provider
-              extensions. Provider-inline compaction and overflow recovery have
-              separate controls from standalone policies. This example adds a
-              status-aware policy while retaining the default before-inference
-              safeguard; the model route determines the available mechanisms.</p>
+          <div><p>Keep long-running work moving as context grows. Choose when
+            agents summarize their history: at task boundaries, before the next
+            model call, or when you ask. Tailor policies to each role.</p>
+            <p>Use provider-native compaction where available or Tau's
+              configurable summary fallback. This example adds a policy to
+              compact at completed task boundaries, alongside the default
+              before-inference safeguard.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/agent-roles.md">Context controls &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; compact at task boundaries</p><pre><code class="language-yaml"><span class="yaml-key">agents</span>:
   <span class="yaml-key">compactions</span>:
@@ -2124,16 +2095,12 @@ tau serve --session SESSION --create-or-existing</code></pre></div>
       <details class="feature-detail">
         <summary><span><strong>Context-size notices</strong><span class="feature-teaser">Give agents guidance when their context crosses a threshold.</span></span><span class="feature-kind">Config</span></summary>
         <div class="feature-body">
-          <div><p>Named alerts send configurable notices to an agent when
-            provider-reported input-token usage exceeds a chosen threshold.
-            Use plain text or a prompt template to guide its next steps.
-            Set alerts globally or per role, with lifecycle and status
-            conditions controlling delivery.</p>
-            <p>Unlike automatic compaction, a notice lets the agent decide
-              how to respond. Within a running daemon, each alert fires once
-              while usage stays above its threshold and rearms when usage
-              falls back or context accounting resets. The example delivers
-              after a successful response and any tool calls it starts.</p>
+          <div><p>Give agents a heads-up when their context is getting large.
+            Write your own guidance: wrap up the current task, save important
+            findings, or prepare to compact.</p>
+            <p>Unlike automatic compaction, a notice leaves the next step to
+              the agent. Set thresholds and messages for your whole team or
+              tailor them to individual roles.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/agent-roles.md">Configure context alerts &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; context-size guidance</p><pre><code class="language-yaml"><span class="yaml-key">agents</span>:
   <span class="yaml-key">context_size_alerts</span>:
@@ -2156,20 +2123,15 @@ tau serve --session SESSION --create-or-existing</code></pre></div>
             <p>Performance traces expose token and cache usage, cost estimates,
               tool and wait lifecycles, and compaction activity. Use compact
               human-readable output or machine-readable exports for your own
-              analysis. Debug captures are best-effort and private; inspect them
-              before sharing.</p>
+              analysis.</p>
             <p>Track estimated API spend per agent and across a delegated
               workflow. Live cost displays include both an agent's own spend
-              and a recursive total for it and the agents it created. These
-              totals follow delegation, not every peer an agent messages.
-              Usage and pricing coverage determine the estimates; they are
-              not a provider invoice. Include descendants in traces to
-              analyze the wider workflow.</p>
+              and a total including the agents it created, so you can compare
+              the cost of individual tasks and whole teams.</p>
             <p>The bundled <code>papercut</code> tool lets agents
               record incidental harness, tooling, and environment problems
               without derailing their task. Review accumulated reports
-              periodically to find recurring friction and improve the setup;
-              reporting does not automatically analyze or fix problems.</p>
+              periodically to find recurring friction and improve your setup.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/agent-trace.md">Traces &amp; performance exports &rarr;</a></div>
           <div class="feature-example"><p>Shell &middot; substitute your IDs</p><pre><code># Inspect the configured agent's inputs:
 tau dev print-prompt
@@ -2192,17 +2154,12 @@ tau dev papercut list --markdown</code></pre></div>
       <details class="feature-detail">
         <summary><span><strong>Secret handling</strong><span class="feature-teaser">Let agents use authenticated services without handing them credentials.</span></span><span class="feature-kind">Config</span></summary>
         <div class="feature-body">
-          <div><p>Tau supplies managed secrets directly to authorized providers
-            and extensions, rather than putting credential values in agent
-            prompts or tool arguments. Declare secret names in configuration;
-            keep the values in Tau's secret store or supply them through
-            <code>TAU_SECRET_*</code> variables at startup.</p>
-            <p>Supervised extensions cannot browse the secret store, and Tau
-              removes those startup variables before launching them. Credential
-              delivery stays out of ordinary event logs and transcripts.
-              Extensions that receive secrets remain trusted code: this is
-              not protection against an authorized integration leaking or
-              misusing its credentials.</p>
+          <div><p>Connect authenticated services without putting API keys in
+            agent prompts or tool arguments. Reference secrets by name in
+            configuration; Tau delivers the values to the providers and
+            extensions you authorize.</p>
+            <p>Keep credentials separate from the setup you share and version.
+              Choose trusted integrations to receive them.</p>
             <a href="https://github.com/dpc/tau/blob/master/specs/SPEC-extension-secret-storage.md">Credential handling &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; provision the exa secret separately</p><pre><code class="language-yaml"><span class="yaml-key">extensions</span>:
   <span class="yaml-key">std-websearch</span>:
@@ -2219,11 +2176,9 @@ tau dev papercut list --markdown</code></pre></div>
           <div><p>Enable, replace, or wrap capabilities as ordinary supervised
             executables. Extensions can register tools and actions, subscribe
             to events, and receive declared secrets. Use your preferred
-            language and configure process wrappers where needed.</p><p>The
-            placeholder executable below must implement Tau's extension
-            protocol. Configured extensions are trusted local code;
-            <code>require: false</code> allows startup with a warning if this
-            optional integration cannot initialize.</p>
+            language and configure process wrappers where needed.</p><p>Bring
+            your team's tools into the same workflow. This example connects a
+            custom Tau extension as an optional integration.</p>
             <a href="https://github.com/dpc/tau/blob/master/docs/extensions.md">Build and configure extensions &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; custom executable placeholder</p><pre><code class="language-yaml"><span class="yaml-key">extensions</span>:
   <span class="yaml-key">team-tools</span>:
@@ -2239,9 +2194,9 @@ tau dev papercut list --markdown</code></pre></div>
           <div><p>Enable bundled Rhai scripting for trusted event hooks and custom
             tools. Separately installed projects connect Tau to Slack, Telegram,
             Zulip, XMPP, email and calendars, Swarm coordination, and Rostra.</p>
-            <p>These are opt-in, not services activated by a default install.
-              Each integration needs its own setup, credentials, and authority
-              choices. The Rhai example enables execution of a trusted local script.</p>
+            <p>Add the integrations you want, or write a local Rhai script to
+              customize how Tau reacts to events. The example connects your
+              own trusted script.</p>
             <a href="#extensions">Browse the extension catalog &rarr;</a></div>
           <div class="feature-example"><p>harness.yaml &middot; Rhai, disabled by default</p><pre><code class="language-yaml"><span class="yaml-key">extensions</span>:
   <span class="yaml-key">std-rhai</span>:
@@ -2261,10 +2216,10 @@ tau dev papercut list --markdown</code></pre></div>
 
   <section id="extensions">
     <h2>Extensions</h2>
-    <h3>Built in, maintained separately, or supplied by the community</h3>
-    <p>Tau runs most capabilities as process extensions. Standard extensions
-      ship in the Tau repository. External Tau projects are maintained in
-      separate repositories but remain part of the Tau project.</p>
+    <h3>Bring your tools into the conversation</h3>
+    <p>Start with coding tools and web research, then connect the services your
+      team uses. Choose from bundled extensions, optional Tau projects,
+      and community integrations.</p>
 
     <h3>Standard extensions</h3>
     <div class="extension-list">
@@ -2278,13 +2233,9 @@ tau dev papercut list --markdown</code></pre></div>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/crates/tau-ext-utils">Utilities</a></strong>
-        <p>The <code>timer</code> tool schedules real-time wakeups for external
-          waits and periodic checks: one-shot delays, recurring intervals,
-          or daily local-time and UTC reminders. The session must be running
-          to act on them; tool completion uses <code>wait</code> instead.</p>
-        <p>The <code>papercut</code> tool collects incidental environment
-          problems for periodic review and improvement. Reports stay in local
-          extension state; do not include secrets.</p>
+        <p>Schedule reminders and periodic checks in running sessions with
+          <code>timer</code>. Collect everyday tooling friction with
+          <code>papercut</code> so you can improve your setup over time.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/crates/tau-ext-websearch">Web search</a></strong>
@@ -2294,19 +2245,18 @@ tau dev papercut list --markdown</code></pre></div>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/crates/tau-ext-std-notifications">Notifications</a></strong>
-        <p>Configurable completion and idle hooks for terminal bells, OSC
-          signals, and detached commands for desktop notification glue.
-          Hooks ship unconfigured so you choose the interruptions.</p>
+        <p>Choose how Tau gets your attention when work finishes or agents
+          become idle, from a terminal bell to your own desktop notification
+          command.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/crates/tau-ext-rhai">Rhai</a></strong>
-        <p>Opt-in trusted local scripting.</p>
+        <p>Add custom tools and event hooks with your own local scripts.</p>
       </div>
     </div>
 
     <h3>External Tau projects</h3>
-    <p>These Tau projects are maintained in separate repositories. Published
-      projects are pinned and re-exported by the Tau flake.</p>
+    <p>Optional integrations maintained by the Tau project in their own repositories.</p>
     <div class="extension-list">
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az4FCuiVzFns5iTquhsYCntZyVWCqi">PIM</a></strong>
@@ -2314,27 +2264,27 @@ tau dev papercut list --markdown</code></pre></div>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az38my9x3Rmn6VYtDMiLKgjK3tRv8o">Swarm</a></strong>
-        <p>Live session projection and task coordination with a Tau Swarm peer.</p>
+        <p>Share live session activity and coordinate tasks with a Tau Swarm peer.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az2LFTBWK7VpAwC3Bpxohkh91aqXd">Zulip</a></strong>
-        <p>Bot message bridge with long polling and scoped send/reaction tools.</p>
+        <p>Connect agents to Zulip conversations with messages and reactions.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az4LrrRivcgNjJii5wzbjTvA8ttt6o">Rostra</a></strong>
-        <p>Relay-only social client with signed writes and opt-in notifications.</p>
+        <p>Read and publish on Rostra through its relay, with optional notifications.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3NJhEtKWCbHPa28wDQSYJ8eEfBjg">Slack</a></strong>
-        <p>Socket Mode text bridge with scoped send/reaction tools.</p>
+        <p>Bring Tau into Slack conversations with messages and reactions.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3Az3sPdSePnxtBvP9pTLwUwVgpMU68r">Telegram</a></strong>
-        <p>Bot API text bridge with an optional separately supervised gateway.</p>
+        <p>Exchange messages with your agents through a Telegram bot.</p>
       </div>
       <div class="extension-entry">
         <strong><a href="https://radicle.network/nodes/radicle.dpc.pw/rad%3AzpN6uwkd6ok9qRAX5yZaF7w8xzDd">XMPP</a></strong>
-        <p>Disabled-by-default XMPP messaging integration.</p>
+        <p>Connect your agents to XMPP messaging.</p>
       </div>
     </div>
 
@@ -2342,21 +2292,15 @@ tau dev papercut list --markdown</code></pre></div>
     <div class="extension-list">
       <div class="extension-entry">
         <strong><a href="https://github.com/akohlsmith/tau-searxng-search">tau-ext-searxng-search</a></strong>
-        <p>Maintained by akohlsmith, this standalone SearXNG search tool supports
-          configurable engines and categories, with optional local-category
-          prioritization. See the project for installation and configuration.</p>
+        <p>Search through SearXNG with your choice of engines and categories.
+          Independently maintained by akohlsmith.</p>
       </div>
     </div>
-    <p>Third-party extensions are independently maintained. A listing is not a
-      compatibility, security, or maintenance endorsement; review the project
-      before granting it access to Tau.</p>
-    <p>For external Tau projects, for example:
-      <code style="color:#00ffff">nix profile install github:dpc/tau#tau-ext-slack</code>.
-      Installing a package does not enable it, create an account, add credentials,
-      or authorize routes and tools.
-      Then configure the service identity, Tau-managed secrets, allowed senders,
-      routes, and role tool policy. See the
-      <a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/docs/extensions.md">extension guide</a>.</p>
+    <p>Want to add one? For example, install the Slack extension with
+      <code style="color:#00ffff">nix profile install github:dpc/tau#tau-ext-slack</code>,
+      then follow the
+      <a href="https://radicle.network/nodes/radicle.dpc.pw/rad:z3ToHcxKefTYxZEoCoDXmddUkK3a4/tree/docs/extensions.md">extension guide</a>
+      to connect it to your setup.</p>
   </section>
 
   <hr class="divider">
@@ -2409,9 +2353,9 @@ tau dev papercut list --markdown</code></pre></div>
         own languages and runtimes.</li>
       <li><span class="keyword">Composability.</span> Start, stop, restart,
         redirect, and compose components with standard Unix tools.</li>
-      <li><span class="keyword">Explicit boundaries.</span> Local coding tools
-        and configured extensions are powerful, trusted code. Choose external
-        sandboxing when needed; a prompt is not an enforced write barrier.</li>
+      <li><span class="keyword">Your environment.</span> Choose the tools and
+        extensions you trust, and run them with the sandboxing and process
+        wrappers that fit your workflow.</li>
       <li><span class="keyword">No sealed box.</span> Inspect the source,
         version your setup, and replace components instead of waiting for a
         single prescribed workflow.</li>
@@ -2521,11 +2465,10 @@ tau dev papercut list --markdown</code></pre></div>
   <section id="other-taus">
     <h2>Other agents named Tau</h2>
     <h3>Naming is hard</h3>
-    <p>Because the author is not very original and forgot to do prior research,
-      and Tau is just such a good name, there are other coding harnesses
-      called "Tau", like:</p>
+    <p>Tau is a good name &mdash; good enough that several agent projects share it.
+      If you were looking for another Tau, try:</p>
     <ul class="philosophy-list">
-      <li><a href="https://github.com/tau-agent/tau">github.com/tau-agent/tau</a> &mdash; CLI, in Rust, probably quite similar</li>
+      <li><a href="https://github.com/tau-agent/tau">github.com/tau-agent/tau</a></li>
       <li><a href="https://taulepton.com/">taulepton.com</a></li>
       <li><a href="https://github.com/AbdoKnbGit/tau">github.com/AbdoKnbGit/tau</a></li>
       <li><a href="https://alexledger.substack.com/p/tau-the-self-modifying-browser-based">Tau, the self-modifying browser-based agent</a></li>
