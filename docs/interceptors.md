@@ -113,8 +113,7 @@ user input and prompt lifecycle facts; agent response facts
 (`provider.response_finished`); terminal tool completion facts (`tool.result`,
 `tool.result_display`, `tool.error`, `provider.tool_result`,
 `provider.tool_error`, `tool.cancelled`, `tool.background_result`,
-`tool.background_result_display`, and `tool.background_error`); validated user-shell
-terminal facts (`shell.command_finished`); session lifecycle facts; durable
+`tool.background_result_display`, and `tool.background_error`); session lifecycle facts; durable
 session membership facts; `agent.started`; and harness-owned agent message
 projections. Canonical external `message.*` facts are also protected; their
 peer-authored `message.*_reported` inputs remain ordinarily interceptable. Treat
@@ -141,17 +140,18 @@ replacements are also rejected to preserve immutable facts. For mandatory
 `provider.response_finished`, terminal tool completion facts including the
 payload-free result display projections, session
 lifecycle/membership facts, `agent.started`, and harness-owned agent message
-projections, canonical external `message.*` facts, and
-`shell.command_finished`, the harness publishes the original event instead. For mutable
+projections, canonical external `message.*` facts, and generic
+`agent.passive_context_appended` facts, the harness publishes the original event instead. For mutable
 prompt text events, replacements may edit text but cannot change routing identity
 fields such as agent id or prompt metadata. The original
 persistence metadata is preserved.
 
-Peer-authored `shell.command_progress_reported` and
-`shell.command_finished_reported` remain ordinary mutable, droppable
-observations. Only after one commits does the harness validate its captured
-configured generation and routed-command identity, then publish the protected
-canonical shell fact.
+Endpoint-owned shell requests and replies are opaque custom events: ordinary
+same-name replacement and drop rules apply. Endpoints validate identities and
+correlations; the harness has no shell-specific interception policy. Generic
+passive-context facts are immutable but droppable, and their separate result
+reports commit or failure. Dropping a terminal observation does not cancel OS
+effects or imply that context insertion also failed.
 
 ## Same-priority chaining
 

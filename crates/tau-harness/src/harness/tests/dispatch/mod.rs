@@ -330,67 +330,6 @@ fn render_shell_workdir_prompt(h: &Harness, agent_id: &tau_proto::AgentId) -> St
     .expect("render shell workdir prompt")
 }
 
-fn configure_test_ui_shell_provider(
-    h: &mut Harness,
-    connection_id: &str,
-) -> Arc<Mutex<Vec<RoutedFrame>>> {
-    for provider in super::super::ui_shell_provider_ids(&h.tool_routing.registry) {
-        h.tool_routing.registry.unregister_connection(&provider);
-    }
-    let sink = connect_test_tool(h, connection_id);
-    h.runtime_io
-        .bus
-        .set_subscriptions(
-            &crate::test_connection_id(connection_id),
-            Vec::new(),
-            vec![tau_proto::EventSelector::Exact(
-                tau_proto::EventName::UI_SHELL_COMMAND,
-            )],
-        )
-        .expect("subscribe shell provider");
-    h.tool_routing.registry.register(
-        &crate::test_connection_id(connection_id),
-        tau_proto::ToolSpec {
-            provider_scope: None,
-            name: tau_proto::ToolName::new("shell"),
-            model_visible_name: None,
-            description: None,
-            tool_type: tau_proto::ToolType::Function,
-            parameters: None,
-            format: None,
-            tags: vec![tau_proto::ToolTag::new("shell:exec:generic")],
-            enabled_by_default: true,
-            background_support: None,
-            examples: Vec::new(),
-        },
-    );
-    sink
-}
-
-fn routed_ui_shell_command(
-    h: &mut Harness,
-    command_id: &str,
-    include_in_context: bool,
-) -> tau_proto::UiShellCommand {
-    let cid = ensure_test_user_agent(h);
-    let agent_id = crate::parse_agent_id(
-        h.agent_runtime.agent_registry.agents[&cid]
-            .identity
-            .agent_id
-            .as_deref()
-            .expect("durable agent id"),
-    );
-    let command = tau_proto::UiShellCommand {
-        session_id: h.session_runtime.current_session_id.clone(),
-        command_id: test_shell_command_id(command_id),
-        command: "pwd".to_owned(),
-        include_in_context,
-        target_agent_id: Some(agent_id),
-    };
-    h.handle_ui_shell_command(&crate::test_connection_id("ui"), command.clone());
-    command
-}
-
 fn text_part(item: &ContextItem) -> Option<&str> {
     match item {
         ContextItem::Message(message) => message.content.first().map(|part| match part {
@@ -2926,12 +2865,6 @@ fn request_rendered_prompt(
             _ => None,
         })
         .expect("rendered prompt result")
-}
-
-/// Builds a validated shell command id used by this test module.
-fn test_shell_command_id(value: impl AsRef<str>) -> tau_proto::ShellCommandId {
-    tau_proto::ShellCommandId::parse(value.as_ref())
-        .expect("test identifier must satisfy its grammar")
 }
 
 mod agent_messaging;

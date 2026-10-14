@@ -37,6 +37,10 @@ assembles a fresh two-part summary before ordinary resume through the real adapt
 
 ## Deterministic provider tests
 
+`core_shell_endpoint_passive_output_is_durable_and_nonactivating` exercises the
+production shell endpoint over the generic bus: two attached UIs, duplicate
+intent, one attributed durable passive append, and no provider activation.
+
 The default workspace test run executes a test-only fake provider as a real
 supervised subprocess. No environment opt-in, provider credential, network
 access, or VCR cassette is involved. Most cases use no shell; the listed

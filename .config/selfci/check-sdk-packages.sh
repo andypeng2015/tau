@@ -76,7 +76,7 @@ expected_internal_dependencies = {
     },
     "dpc-tau-client": {
         "dpc-tau-blocking-notify-channel": "=0.1.0",
-        "dpc-tau-proto": "=0.11.0",
+        "dpc-tau-proto": "=0.12.0",
     },
 }
 
@@ -162,8 +162,32 @@ fn packaged_sdk_round_trips_the_advertised_protocol_version() {
     let decoded: tau_proto::ProtocolVersion =
         tau_proto::decode_message_from_slice(&encoded).expect("protocol version should decode");
 
-    assert_eq!(decoded, tau_proto::ProtocolVersion::new(12, 0));
+    assert_eq!(decoded, tau_proto::ProtocolVersion::new(13, 0));
     let _logging_initializer: fn(&'static str) = tau_client::init_logging_for;
+}
+
+/// The source-only SDK bump must include generic publisher and passive append
+/// surfaces, not just advertise the new revision.
+#[test]
+fn packaged_sdk_exposes_generic_passive_context() {
+    let request = tau_proto::Event::ExtPassiveContextAppendRequest(
+        tau_proto::ExtPassiveContextAppendRequest {
+            session_id: "session".parse().expect("session"),
+            agent_id: "agent".parse().expect("agent"),
+            operation_id: "operation".to_owned(),
+            body: "output".to_owned(),
+        },
+    );
+    let encoded = tau_proto::encode_message_to_vec(&request).expect("request encodes");
+    let decoded: tau_proto::Event =
+        tau_proto::decode_message_from_slice(&encoded).expect("request decodes");
+    assert_eq!(request, decoded);
+    let mut delivery = tau_proto::EventDelivery::live(tau_proto::UnixMicros::new(1), request);
+    delivery.publisher = Some(tau_proto::EventPublisher::Harness);
+    let encoded = tau_proto::encode_message_to_vec(&delivery).expect("delivery encodes");
+    let decoded: tau_proto::EventDelivery =
+        tau_proto::decode_message_from_slice(&encoded).expect("delivery decodes");
+    assert_eq!(decoded.publisher, delivery.publisher);
 }
 
 /// Prevents version-only SDK updates from omitting compaction recovery authority;

@@ -22,6 +22,10 @@ above `tau-proto`, which owns the wire messages. First-party extensions now use
 `tau-client` directly; the former compatibility startup helper crate was removed
 after the migration completed without a protocol break.
 
+Typed and raw event handlers expose optional harness-owned live publisher
+metadata. They do not infer identities for replay or synthesized frames that
+omit it, nor authenticate names carried inside opaque custom payloads.
+
 Opted-in executables can place `prepare_inspection` before runtime registration
 and state construction. It advertises declaration inspection, consumes purpose
 selection, and either emits a bounded typed terminal inventory or returns an

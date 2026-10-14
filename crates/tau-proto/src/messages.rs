@@ -282,6 +282,31 @@ impl std::fmt::Display for UnixMicros {
     }
 }
 
+/// Authenticated origin captured before interception of a live publication.
+///
+/// These identities are run-local, not durable journal authority. Interceptors
+/// can replace payloads but cannot replace this publisher attribution.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EventPublisher {
+    /// A harness-owned publication, rather than a peer report.
+    Harness,
+    /// A configured extension publishing on its current connection.
+    Extension {
+        /// Stable configured instance name.
+        name: ExtensionName,
+        /// Run-local configured instance identity.
+        instance_id: crate::ExtensionInstanceId,
+        /// Connection that submitted the original publication.
+        connection_id: crate::ConnectionId,
+    },
+    /// An authenticated attached user interface.
+    Ui {
+        /// Harness-assigned identity of the attached UI connection.
+        connection_id: crate::ConnectionId,
+    },
+}
+
 /// A bus event delivered by the harness to one peer.
 ///
 /// The protocol no longer has a bare top-level event lane. Every event the
@@ -300,6 +325,10 @@ impl std::fmt::Display for UnixMicros {
 /// harness-generated catch-up timestamp.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventDelivery {
+    /// Original live publisher, absent for historical or synthetic deliveries.
+    /// Absence must not be interpreted as an authenticated peer identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<EventPublisher>,
     /// Inner bus fact delivered to the peer.
     pub event: Box<Event>,
     /// True when this delivery re-sends a durable historical fact to a late
@@ -317,6 +346,7 @@ impl EventDelivery {
     #[must_use]
     pub fn direct(event: Event) -> Self {
         Self {
+            publisher: None,
             event: Box::new(event),
             replay: false,
             recorded_at: None,
@@ -327,6 +357,7 @@ impl EventDelivery {
     #[must_use]
     pub fn live(recorded_at: UnixMicros, event: Event) -> Self {
         Self {
+            publisher: None,
             event: Box::new(event),
             replay: false,
             recorded_at: Some(recorded_at),
@@ -338,6 +369,7 @@ impl EventDelivery {
     #[must_use]
     pub fn replay(recorded_at: UnixMicros, event: Event) -> Self {
         Self {
+            publisher: None,
             event: Box::new(event),
             replay: true,
             recorded_at: Some(recorded_at),

@@ -601,15 +601,14 @@ impl Harness {
                     |agent_id| self.agent_has_accepted_work(cid, agent_id),
                 )
             })
-            || !self.ui_runtime.pending_ui_shell_commands.is_empty()
-            || !self
-                .ui_runtime
-                .pending_ui_shell_output_injections
-                .is_empty()
-            || !self.ui_runtime.active_ui_shell_command_ids.is_empty()
             || !self.ui_runtime.pending_action_invocations.is_empty()
             || !self.ui_runtime.pending_retry_prompts.is_empty()
-            || !self.ui_runtime.pending_bootstrap_creates.is_empty();
+            || !self.ui_runtime.pending_bootstrap_creates.is_empty()
+            || self
+                .extensions
+                .activity_leases
+                .values()
+                .any(|leases| leases.is_busy());
         self.runtime_io.idle_session.checkpoint(now, busy, activity);
     }
 
@@ -620,7 +619,6 @@ impl Harness {
                 HarnessInputMessage::Emit(emit) => matches!(
                     emit.event.as_ref(),
                     Event::UiPromptSubmitted(_)
-                        | Event::UiShellCommand(_)
                         | Event::UiCreateAgent(_)
                         | Event::UiCompactRequest(_)
                         | Event::UiRetryPrompt(_)

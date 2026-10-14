@@ -19,7 +19,9 @@ pub(super) struct RendererDelivery {
     /// only its contained event.
     pub(super) event: Box<Event>,
     /// Whether the harness marked this delivery as replay/catch-up.
-    replay: bool,
+    pub(super) replay: bool,
+    /// Authenticated live publisher retained for extension-owned UI endpoints.
+    pub(super) publisher: Option<tau_proto::EventPublisher>,
     /// Harness-provided observation time.
     pub(super) recorded_at: UnixMicros,
     /// Encoded frame bytes charged to bounded staging or renderer admission.
@@ -987,6 +989,7 @@ fn is_transcript_event(event: &Event) -> bool {
         event,
         Event::UiPromptSubmitted(_)
             | Event::AgentPromptSubmitted(_)
+            | Event::AgentPassiveContextAppended(_)
             | Event::ProviderResponseFinished(_)
     )
 }
@@ -1099,6 +1102,7 @@ pub(super) fn renderer_event_from_delivery(
         event,
         replay,
         recorded_at,
+        publisher,
     } = delivery;
     if replay
         && matches!(
@@ -1111,6 +1115,7 @@ pub(super) fn renderer_event_from_delivery(
     Some(RendererDelivery {
         event,
         replay,
+        publisher,
         recorded_at: recorded_at.unwrap_or_else(UnixMicros::now),
         queue_bytes,
         delivery_id,

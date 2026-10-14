@@ -343,6 +343,34 @@ The model-visible tool is conditional: agents use it only for an incidental
 Tau harness, tooling, environment, confusing, or suspicious problem, never
 merely to state that no problem occurred.
 
+User shell commands require `!instance command` or `!!instance command`; no
+default executor is inferred. The configured extension owns execution,
+cancellation, discovery, and running snapshots via transient opaque custom
+events. `!` requests generic passive, attributed context insertion after the
+command finishes; `!!` does not. Neither activates inference. Lost acceptance
+means an unconfirmed outcome and never triggers execution retry.
+
+Configured extensions can hold generic background activity with
+`extension.activity_lease_request` (`acquire`/`release`) and observe the live,
+harness-attributed `extension.activity_lease_result`. Wait for `Acquired` before
+starting effects. IDs are opaque, nonempty, at most 256 UTF-8 bytes, and scoped to
+the current connection incarnation. Duplicate acquisition is idempotent; release
+retires the ID. Each connection allows 256 active holds and 4096 total operation
+IDs; a fresh operation must use a fresh ID. These transient holds prevent only
+idle shutdown, not explicit shutdown or crashes. Disconnect clears them; UI
+detach does not. There is no expiry or heartbeat, so an unreleased hold can keep
+the session alive indefinitely. See
+[the activity ownership contract](../specs/SPEC-extension-activity-leases.md).
+User shell execution acquires before acceptance and releases after terminal and
+any passive-context outcome; the harness never interprets the command.
+
+`Path` and `PathFuzzy` completion use extension-host filesystem enumeration at
+the instance's remembered cwd, not local terminal paths or the namespace of an
+arbitrary shell wrapper. Named bang commands query only that instance; ordinary
+prompt paths merge labeled results. See
+[the endpoint contract](../specs/SPEC-extension-owned-shell-interaction.md) and
+[generic passive append API](../specs/SPEC-passive-extension-context.md).
+
 Core-shell protects non-interactive model and user shell commands from pager
 prompts by applying `PAGER=cat`, `GIT_PAGER=cat`, `GH_PAGER=cat`,
 `JJ_PAGER=cat`, and `SYSTEMD_PAGER=cat` after inherited variables and

@@ -5050,7 +5050,9 @@ impl Harness {
         event: &Event,
         sync_head_for: Option<&ConversationHeadSync>,
     ) -> bool {
-        self.agent_creation_event_targets_ephemeral_agent(event)
+        matches!(event, Event::ExtensionEvent(custom)
+            if custom.agent_id().is_some_and(|agent| self.agent_is_ephemeral(agent)))
+            || self.agent_creation_event_targets_ephemeral_agent(event)
             || self.message_fact_targets_ephemeral_agent(event)
             || self.provider_event_targets_ephemeral_agent(event)
             || self.agent_addressed_event_targets_ephemeral_agent(event)
@@ -5143,115 +5145,18 @@ impl Harness {
     }
 
     pub(super) fn agent_addressed_event_targets_ephemeral_agent(&self, event: &Event) -> bool {
-        let shell_report_route_id = match event {
-            Event::ShellCommandProgressReported(progress) => Some(&progress.command_id),
-            Event::ShellCommandFinishedReported(finished) => Some(&finished.command_id),
-            _ => None,
-        };
-        if shell_report_route_id.is_some_and(|command_id| {
-            self.ui_runtime
-                .ephemeral_ui_shell_route_ids
-                .contains(command_id)
-        }) {
-            return true;
-        }
-        let canonical_shell_command_id = match event {
-            Event::ShellCommandProgress(progress) => Some(&progress.command_id),
-            Event::ShellCommandFinished(finished) => Some(&finished.command_id),
-            _ => None,
-        };
-        if canonical_shell_command_id.is_some_and(|command_id| {
-            self.ui_runtime
-                .pending_ephemeral_ui_shell_canonical_events
-                .contains_key(command_id)
-        }) {
-            return true;
-        }
         Self::agent_addressed_event_agent_id(event)
             .is_some_and(|agent_id| self.agent_is_ephemeral(agent_id))
     }
 
-    /// Classify interceptor payloads without allowing mutable shell target
-    /// fields to suppress raw debug audit.
+    /// Classify interceptor payloads using ordinary event scope metadata.
     pub(super) fn debug_intercept_event_targets_ephemeral(&self, event: &Event) -> bool {
-        match event {
-            Event::ShellCommandProgressReported(progress) => self
-                .ui_runtime
-                .ephemeral_ui_shell_route_ids
-                .contains(&progress.command_id),
-            Event::ShellCommandFinishedReported(finished) => self
-                .ui_runtime
-                .ephemeral_ui_shell_route_ids
-                .contains(&finished.command_id),
-            Event::ShellCommandProgress(progress) => self
-                .ui_runtime
-                .pending_ephemeral_ui_shell_canonical_events
-                .contains_key(&progress.command_id),
-            Event::ShellCommandFinished(finished) => self
-                .ui_runtime
-                .pending_ephemeral_ui_shell_canonical_events
-                .contains_key(&finished.command_id),
-            _ => self.event_targets_ephemeral_agent(event, None),
-        }
-    }
-
-    /// Release ephemeral debug classification when mutable canonical shell
-    /// progress is dropped before commit.
-    pub(super) fn discard_uncommitted_shell_canonical_marker(
-        &mut self,
-        command_id: &tau_proto::ShellCommandId,
-    ) {
-        self.release_pending_ephemeral_shell_canonical_marker(command_id);
-    }
-
-    /// Reserve one ephemeral debug-classification marker for a canonical shell
-    /// event that has entered publication.
-    pub(super) fn mark_pending_ephemeral_shell_canonical(
-        &mut self,
-        command_id: tau_proto::ShellCommandId,
-    ) {
-        self.ui_runtime
-            .pending_ephemeral_ui_shell_canonical_events
-            .entry(command_id)
-            .and_modify(|count| {
-                *count = NonZeroUsize::new(
-                    count
-                        .get()
-                        .checked_add(1)
-                        .expect("pending shell canonical count overflow"),
-                )
-                .expect("incremented count stays nonzero");
-            })
-            .or_insert(NonZeroUsize::MIN);
-    }
-
-    /// Release one committed or dropped canonical shell event's marker.
-    pub(super) fn release_pending_ephemeral_shell_canonical_marker(
-        &mut self,
-        command_id: &tau_proto::ShellCommandId,
-    ) {
-        let Some(count) = self
-            .ui_runtime
-            .pending_ephemeral_ui_shell_canonical_events
-            .get_mut(command_id)
-        else {
-            return;
-        };
-        if count.get() == 1 {
-            self.ui_runtime
-                .pending_ephemeral_ui_shell_canonical_events
-                .remove(command_id);
-        } else {
-            *count = NonZeroUsize::new(count.get() - 1).expect("decremented count remains nonzero");
-        }
+        self.event_targets_ephemeral_agent(event, None)
     }
 
     pub(super) fn agent_addressed_event_agent_id(event: &Event) -> Option<&tau_proto::AgentId> {
         match event {
             Event::UiPromptSubmitted(prompt) => Some(&prompt.agent_id),
-            Event::UiShellCommand(command) => command.target_agent_id.as_ref(),
-            Event::ShellCommandProgress(progress) => progress.target_agent_id.as_ref(),
-            Event::ShellCommandFinished(finished) => finished.target_agent_id.as_ref(),
             Event::AgentPromptCreated(prompt) => Some(&prompt.agent_id),
             Event::AgentPromptStarted(prompt) => Some(&prompt.agent_id),
             Event::AgentPromptQueued(prompt) => Some(&prompt.agent_id),
@@ -5374,10 +5279,12 @@ impl Harness {
             Event::AgentStandaloneCompactionFailed(failed) => Some(failed.agent_id.clone()),
             Event::AgentInferenceDispatchStarted(started) => Some(started.agent_id.clone()),
             Event::AgentUserMessageInjected(injected) => Some(injected.agent_id.clone()),
+            Event::AgentPassiveContextAppended(appended) => Some(appended.agent_id.clone()),
+            Event::ExtPassiveContextAppendRequest(request) => Some(request.agent_id.clone()),
+            Event::ExtPassiveContextAppendResult(result) => Some(result.agent_id.clone()),
             Event::AgentMessageSent(message) => Some(message.sender_id.clone()),
             Event::AgentMessageReceived(message) => Some(message.recipient_id.clone()),
             Event::AgentHeadMoved(moved) => Some(moved.agent_id.clone()),
-            Event::ShellCommandFinished(finished) => finished.target_agent_id.clone(),
             Event::ProviderResponseFinished(finished) => Some(finished.agent_id.clone()),
             Event::ProviderStandaloneExecutionAccounted(accounted) => {
                 Some(accounted.agent_id.clone())

@@ -99,6 +99,8 @@ impl SharedWriter {
 
 /// Writer that rejects one selected mandatory frame after startup.
 struct MandatoryFrameFailureWriter {
+    /// Successful frames remain readable for real endpoint discovery.
+    mirror: Option<UnixStream>,
     /// Protocol event-name bytes that identify the mandatory frame.
     needle: &'static [u8],
     /// Whether startup reached `Ready`.
@@ -119,8 +121,8 @@ struct SaturationWriter {
     blocked: bool,
     /// Notification that a mandatory frame reached the writer.
     mandatory: mpsc::Sender<()>,
-    /// Mandatory bytes observed since the previous flush.
-    mandatory_pending: bool,
+    /// Complete framed bytes accumulated across fragmented protocol writes.
+    pending_bytes: Vec<u8>,
 }
 
 impl std::io::Write for SaturationWriter {
@@ -138,22 +140,37 @@ impl std::io::Write for SaturationWriter {
                 closed = condvar.wait(closed).expect("writer gate wait");
             }
         }
-        let mandatory = [
-            b"tool.result_reported".as_slice(),
-            b"tool.error_reported".as_slice(),
-            b"tool.cancelled_reported".as_slice(),
-            b"shell.command_finished_reported".as_slice(),
-            b"agent.metadata_set_request".as_slice(),
-        ]
-        .iter()
-        .any(|needle| bytes.windows(needle.len()).any(|window| window == *needle));
         self.bytes.lock().expect("writer bytes").extend(bytes);
-        self.mandatory_pending |= mandatory;
+        self.pending_bytes.extend(bytes);
         Ok(bytes.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        if std::mem::take(&mut self.mandatory_pending) {
+        let mut reader = HarnessInputReader::new(path_std_io::Cursor::new(std::mem::take(
+            &mut self.pending_bytes,
+        )));
+        let mandatory = std::iter::from_fn(|| reader.read_message().transpose())
+            .filter_map(Result::ok)
+            .any(|frame| {
+                let HarnessInputMessage::Emit(emit) = frame else {
+                    return false;
+                };
+                matches!(
+                    emit.event.as_ref(),
+                    Event::ToolResultReported(_)
+                        | Event::ToolErrorReported(_)
+                        | Event::ToolCancelledReported(_)
+                        | Event::AgentMetadataSetRequest(_)
+                ) || tau_shell_interaction::decode_reply(&emit.event).is_some_and(|reply| {
+                    matches!(
+                        reply.response,
+                        tau_shell_interaction::Response::Available { .. }
+                            | tau_shell_interaction::Response::Finished(_)
+                            | tau_shell_interaction::Response::Rejected { .. }
+                    )
+                })
+            });
+        if mandatory {
             let _ = self.mandatory.send(());
         }
         Ok(())
@@ -172,6 +189,9 @@ impl std::io::Write for MandatoryFrameFailureWriter {
         {
             self.failed.store(true, Ordering::Release);
         }
+        if let Some(mirror) = &mut self.mirror {
+            mirror.write_all(bytes)?;
+        }
         Ok(bytes.len())
     }
 
@@ -180,6 +200,9 @@ impl std::io::Write for MandatoryFrameFailureWriter {
             return Err(path_std_io_error::Error::other(
                 "forced mandatory frame failure",
             ));
+        }
+        if let Some(mirror) = &mut self.mirror {
+            mirror.flush()?;
         }
         Ok(())
     }
@@ -731,9 +754,113 @@ fn ui_shell_command(command_id: &str, command: &str) -> Event {
             .expect("known-safe SessionId must be valid"),
         command_id: test_shell_command_id(command_id),
         command: command.to_owned(),
-        include_in_context: true,
+        include_in_context: false,
         target_agent_id: None,
     })
+}
+
+/// Send one opaque request with attached-UI attribution, as the real harness
+/// does.
+fn write_interaction<W: std::io::Write>(
+    writer: &mut EventWriter<W>,
+    request: &tau_shell_interaction::Request,
+) {
+    let HarnessInputMessage::Emit(emit) = tau_shell_interaction::request_message(request) else {
+        unreachable!()
+    };
+    let mut delivery = tau_proto::EventDelivery::live(tau_proto::UnixMicros::new(1), *emit.event);
+    delivery.publisher = Some(tau_proto::EventPublisher::Ui {
+        connection_id: "test-ui".parse().expect("UI"),
+    });
+    writer
+        .write_frame(&HarnessOutputMessage::Deliver(delivery))
+        .expect("opaque request");
+    writer.flush().expect("flush request");
+}
+
+/// Discover the real process nonce, never a test-only fixed endpoint identity.
+fn discover_shell_endpoint<W: std::io::Write>(
+    reader: &mut TestExtensionReader,
+    writer: &mut EventWriter<W>,
+) -> tau_shell_interaction::Target {
+    write_shell_discovery(writer);
+    loop {
+        let event = reader
+            .read_event()
+            .expect("read discovery")
+            .expect("discovery response");
+        if let Some(reply) = tau_shell_interaction::decode_reply(&event)
+            && matches!(
+                reply.response,
+                tau_shell_interaction::Response::Available { .. }
+            )
+        {
+            return reply.target;
+        }
+    }
+}
+
+/// Bind the fixture session and ask the production endpoint for its
+/// incarnation.
+fn write_shell_discovery<W: std::io::Write>(writer: &mut EventWriter<W>) {
+    writer
+        .write_event(&Event::SessionStarted(tau_proto::SessionStarted {
+            session_id: "session-1".parse().expect("session"),
+            reason: tau_proto::SessionStartReason::Initial,
+        }))
+        .expect("session start");
+    write_interaction(
+        writer,
+        &tau_shell_interaction::Request {
+            context: tau_shell_interaction::Context {
+                session_id: "session-1".parse().expect("session"),
+                agent_id: None,
+                request_id: "discover-fixture".to_owned(),
+            },
+            target: None,
+            operation: tau_shell_interaction::Operation::Discover,
+        },
+    );
+}
+
+/// Convert a local data-only fixture into the live endpoint protocol
+/// explicitly.
+fn write_shell_execution<W: std::io::Write>(
+    writer: &mut EventWriter<W>,
+    target: tau_shell_interaction::Target,
+    command: tau_proto::UiShellCommand,
+) {
+    let lease_result = Event::ExtActivityLeaseResult(tau_proto::ExtActivityLeaseResult {
+        session_id: command.session_id.clone(),
+        publisher: target.instance.clone(),
+        connection_id: "fixture-shell".parse().expect("connection"),
+        operation_id: format!("{}:{}", target.nonce, command.command_id),
+        action: tau_proto::ActivityLeaseAction::Acquire,
+        outcome: tau_proto::ActivityLeaseOutcome::Acquired,
+    });
+    write_interaction(
+        writer,
+        &tau_shell_interaction::Request {
+            context: tau_shell_interaction::Context {
+                session_id: command.session_id,
+                agent_id: command.target_agent_id,
+                request_id: command.command_id.to_string(),
+            },
+            target: Some(target),
+            operation: tau_shell_interaction::Operation::Execute {
+                command: command.command,
+                include_in_context: command.include_in_context,
+            },
+        },
+    );
+    // This wire fixture stands in for the harness. Focused endpoint tests check
+    // that silence, replay, and forged results cannot authorize effects.
+    let mut delivery = tau_proto::EventDelivery::live(tau_proto::UnixMicros::new(1), lease_result);
+    delivery.publisher = Some(tau_proto::EventPublisher::Harness);
+    writer
+        .write_frame(&HarnessOutputMessage::Deliver(delivery))
+        .expect("lease acknowledgement");
+    writer.flush().expect("flush acknowledgement");
 }
 
 /// Consumes startup events (tool registration declarations). The
@@ -789,7 +916,15 @@ fn wait_for_user_shell_progress(reader: &mut TestExtensionReader, command_id: &s
                 deadline_guard.finish();
                 return;
             }
-            Some(_) => {}
+            Some(event) => {
+                if let Some(reply) = tau_shell_interaction::decode_reply(&event)
+                    && let tau_shell_interaction::Response::Progress(progress) = reply.response
+                    && progress.command_id == command_id && progress.chunk.contains(text)
+                {
+                    deadline_guard.finish();
+                    return;
+                }
+            }
             None => panic!("extension closed before user shell progress"),
         }
     }
@@ -819,7 +954,15 @@ fn wait_for_user_shell_finished(
                 deadline_guard.finish();
                 return finished;
             }
-            Some(_) => {}
+            Some(event) => {
+                if let Some(reply) = tau_shell_interaction::decode_reply(&event)
+                    && let tau_shell_interaction::Response::Finished(finished) = reply.response
+                    && finished.command_id == command_id
+                {
+                    deadline_guard.finish();
+                    return finished;
+                }
+            }
             None => panic!("extension closed before user shell finish"),
         }
     }
@@ -847,7 +990,7 @@ fn run_after_production_fifo_saturation(
         entered: entered_tx,
         blocked: false,
         mandatory: mandatory_tx,
-        mandatory_pending: false,
+        pending_bytes: Vec::new(),
     };
     let runner = thread::spawn(move || {
         run_impl(
@@ -873,6 +1016,35 @@ fn run_after_production_fifo_saturation(
         }))
         .expect("configure");
     input.flush().expect("flush configure");
+    let shell_target = if events
+        .iter()
+        .any(|event| matches!(event, Event::UiShellCommand(_)))
+    {
+        write_shell_discovery(&mut input);
+        mandatory_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("discovery flush");
+        let output = bytes.lock().expect("output bytes").clone();
+        let mut reader = HarnessInputReader::new(path_std_io::Cursor::new(output));
+        Some(
+            std::iter::from_fn(|| reader.read_message().transpose())
+                .filter_map(Result::ok)
+                .find_map(|frame| {
+                    let HarnessInputMessage::Emit(emit) = frame else {
+                        return None;
+                    };
+                    let reply = tau_shell_interaction::decode_reply(&emit.event)?;
+                    matches!(
+                        reply.response,
+                        tau_shell_interaction::Response::Available { .. }
+                    )
+                    .then_some(reply.target)
+                })
+                .expect("discovered endpoint"),
+        )
+    } else {
+        None
+    };
     input
         .write_event(&action_invoke(
             "optional-saturation",
@@ -892,7 +1064,11 @@ fn run_after_production_fifo_saturation(
     condvar.notify_all();
     while mandatory_rx.try_recv().is_ok() {}
     for event in events {
-        input.write_event(&event).expect("mandatory event");
+        if let Event::UiShellCommand(command) = event {
+            write_shell_execution(&mut input, shell_target.clone().expect("endpoint"), command);
+        } else {
+            input.write_event(&event).expect("mandatory event");
+        }
     }
     input.flush().expect("flush mandatory events");
     mandatory_rx
@@ -965,6 +1141,7 @@ fn assert_mandatory_frame_failure_exits(event: Event, needle: &'static [u8], lab
     let runtime_reader = runtime_stream.try_clone().expect("runtime reader");
     let failed = Arc::new(AtomicBool::new(false));
     let writer = MandatoryFrameFailureWriter {
+        mirror: matches!(event, Event::UiShellCommand(_)).then_some(runtime_stream),
         needle,
         ready: false,
         failed: Arc::clone(&failed),
@@ -980,6 +1157,7 @@ fn assert_mandatory_frame_failure_exits(event: Event, needle: &'static [u8], lab
         .map_err(|error| error.to_string());
         let _ = done_tx.send(result);
     });
+    let mut reader = EventReader::deadline_aware(harness_stream.try_clone().expect("reader"));
     let mut input = EventWriter::new(harness_stream);
     input
         .write_frame(&HarnessOutputMessage::Configure(tau_proto::Configure {
@@ -994,7 +1172,22 @@ fn assert_mandatory_frame_failure_exits(event: Event, needle: &'static [u8], lab
             settings_files: Default::default(),
         }))
         .expect("configure");
-    input.write_event(&event).expect("mandatory input");
+    if let Event::UiShellCommand(command) = event {
+        let target = discover_shell_endpoint(&mut reader, &mut input);
+        write_shell_execution(&mut input, target, command);
+        // Continue draining the mirror: each small CBOR write consumes socket
+        // buffer space. Waiting without reading can block the writer before
+        // the terminal flush where this fixture injects its failure.
+        while let Some(event) = reader.read_event().expect("read mirrored terminal") {
+            if tau_shell_interaction::decode_reply(&event).is_some_and(|reply| {
+                matches!(reply.response, tau_shell_interaction::Response::Finished(_))
+            }) {
+                break;
+            }
+        }
+    } else {
+        input.write_event(&event).expect("mandatory input");
+    }
     input.flush().expect("flush mandatory input");
     let result = done_rx
         .recv_timeout(Duration::from_secs(2))

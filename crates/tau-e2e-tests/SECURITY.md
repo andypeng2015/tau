@@ -1,5 +1,14 @@
 # tau-e2e-tests security boundaries
 
+The shell-endpoint acceptance test reuses the private production core-shell
+fixture for one fixed `printf endpoint-completed` command from an attached test
+UI. It checks duplicate intent and two passive observers without activating the
+provider. A second fixed `sleep 30` command (preflight-resolved to an exact
+executable path) with an inert privacy-marker comment
+targets a promptless ephemeral agent; a fresh UI recovers its running row, then
+the owning UI cancels it. The ordinary debug trace must retain the public output
+but none of the private marker. No arbitrary test argument becomes shell code or filesystem input.
+
 The deterministic and VCR fixture families have different trust boundaries.
 
 The CLI-message fixture adds two closed fake-provider actions. They accept only

@@ -7,12 +7,16 @@ use tau_proto::{Event, SessionId};
 /// Events that do not request persistence normally exist only for live
 /// observers. `AgentPromptStarted` and canonical terminal tool completions are
 /// exceptions because `AgentTree` folds them into prompt-generation and
-/// terminal-tool state. A shell completion explicitly excluded from context
-/// remains transient even if a caller requests persistence.
+/// terminal-tool state. Retired DTOs remain readable in old journals but cannot
+/// create new semantic records.
 pub(crate) fn should_persist_event(event: &Event, persist: bool) -> bool {
     if matches!(
         event,
-        Event::ShellCommandFinished(finished) if !finished.include_in_context
+        Event::UiShellCommand(_)
+            | Event::ShellCommandProgress(_)
+            | Event::ShellCommandFinished(_)
+            | Event::ShellCommandProgressReported(_)
+            | Event::ShellCommandFinishedReported(_)
     ) {
         return false;
     }
@@ -35,8 +39,6 @@ pub(crate) fn should_persist_event(event: &Event, persist: bool) -> bool {
                 | Event::ToolResultReported(_)
                 | Event::ToolErrorReported(_)
                 | Event::ToolCancelledReported(_)
-                | Event::ShellCommandProgressReported(_)
-                | Event::ShellCommandFinishedReported(_)
                 | Event::ProviderQuotaReplaceReported(_)
                 | Event::ProviderQuotaPatchReported(_)
                 | Event::ProviderQuotaClearReported(_)
@@ -60,6 +62,10 @@ pub(crate) fn should_persist_event(event: &Event, persist: bool) -> bool {
                 | Event::ExtAgentContextPublish(_)
                 | Event::ExtensionContextReady(_)
                 | Event::ExtInternalPromptSubmitRequest(_)
+                | Event::ExtPassiveContextAppendRequest(_)
+                | Event::ExtActivityLeaseRequest(_)
+                | Event::ExtActivityLeaseResult(_)
+                | Event::ExtPassiveContextAppendResult(_)
                 | Event::StartAgentRequest(_)
                 | Event::AgentMetadataSetRequest(_)
                 | Event::AgentMetadataUnsetRequest(_)

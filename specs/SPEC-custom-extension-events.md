@@ -12,7 +12,9 @@ This record keeps that distributed publication contract coherent.
 event name used for interception and subscription. The nested name must have
 non-empty segments and an extension-owned category; reserved Tau categories
 cannot be represented as custom events. The payload is opaque CBOR with optional
-session routing metadata.
+session routing metadata. Optional agent metadata selects the existing generic
+ephemeral-agent diagnostic policy, not a routing or transcript authority. The
+original privacy classification survives interceptor replacement.
 
 Every authenticated live configured extension entry kind, including configured
 Core, may author a custom event without a capability. An attached
@@ -43,10 +45,17 @@ value. There is no cold replay or late historical catch-up. A durable custom
 fact requires a separately approved typed event contract.
 
 The harness has no semantic consumer for custom events. Exact and prefix
-subscribers consume the committed event directly. Internal routed deliveries
-retain the run-local connection source. The ordinary wire `EventDelivery` does
-not yet expose authenticated publisher identity; completing the general
-publisher-envelope migration remains outside this specification.
+subscribers consume the committed event directly. Attached socket UIs may select
+extension-owned categories as well as first-party families; other socket kinds
+retain their existing first-party-family subscription restriction. A historical
+custom selector does not create retained custom history. Internal routed deliveries
+retain the run-local connection source. Ordinary live wire deliveries carry
+the original authenticated publisher: configured instance name, run-local
+instance and connection identity, or attached-UI connection identity. Capture
+precedes interception; replacing opaque data does not replace attribution.
+Historical and synthetic deliveries may omit publisher metadata. Omission is
+not authenticated peer identity, and no run-local identity is reconstructed
+from journal data or payload-local labels.
 
 Configured extensions are trusted local executables. Existing decoded-frame,
 pre-activation queue, and protocol-I/O key-cardinality bounds apply. This
@@ -56,5 +65,5 @@ specification adds no custom payload limit or hostile-IPC policy.
 
 This specification implements only the custom-event row of
 [SPEC-peer-event-publication](SPEC-peer-event-publication.md).
-It does not change DTOs, client APIs, subscriber matching, first-party event
-authority, or any tool, action, shell, UI-command, or publisher-envelope row.
+It does not change subscriber matching, first-party event authority, or any
+tool, action, shell, or UI-command semantic consumer.

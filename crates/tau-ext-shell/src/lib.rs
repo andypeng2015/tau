@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -41,6 +42,7 @@ mod dir_lock;
 mod discovery_source;
 mod display;
 mod isolation;
+mod path_completion;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 mod pty_stdio;
 mod runtime;
@@ -53,6 +55,7 @@ mod tool_started_identity;
 mod tools;
 mod truncate;
 mod ui_shell_shutdown_generation;
+mod user_shell_output;
 
 #[cfg(test)]
 mod tests;
@@ -88,6 +91,8 @@ use crate::ui_shell_shutdown_generation::{
 /// adapter for direct state-machine coverage.
 #[derive(Clone)]
 pub(crate) struct Output {
+    /// Endpoint protocol adapter present only for one user command's workers.
+    user_shell: Option<user_shell_output::UserShellOutput>,
     /// Production client or test channel receiving output frames.
     inner: OutputInner,
     /// Optional local-to-wire tool-name mapping for one scoped invocation.
@@ -120,6 +125,7 @@ enum OutputInner {
 impl Output {
     fn client(handle: tau_client::ClientHandle) -> Self {
         Self {
+            user_shell: None,
             inner: OutputInner::Client(handle),
             tool_name_scope: None,
             failure: Arc::default(),
@@ -129,6 +135,7 @@ impl Output {
     #[cfg(test)]
     fn channel(tx: mpsc::Sender<HarnessInputMessage>) -> Self {
         Self {
+            user_shell: None,
             inner: OutputInner::Channel(tx),
             tool_name_scope: None,
             failure: Arc::default(),
@@ -137,6 +144,7 @@ impl Output {
 
     fn scoped_tool(&self, local: tau_proto::ToolName, wire: tau_proto::ToolName) -> Self {
         Self {
+            user_shell: None,
             inner: self.inner.clone(),
             tool_name_scope: Some((local, wire)),
             failure: Arc::clone(&self.failure),
@@ -174,7 +182,18 @@ impl Output {
 
     /// Sends mandatory lifecycle traffic in order and waits for writer flush.
     fn send_checked(&self, mut message: HarnessInputMessage) -> tau_client::ClientResult<()> {
+        if let Some(scope) = &self.user_shell
+            && let HarnessInputMessage::Emit(emit) = &message
+            && let Event::ShellCommandFinishedReported(finished) = emit.event.as_ref()
+        {
+            return scope.finish(self, finished.clone());
+        }
         self.scope_message(&mut message);
+        self.send_wire_checked(message)
+    }
+
+    /// Flush an already scoped protocol message without re-entering adaptation.
+    fn send_wire_checked(&self, message: HarnessInputMessage) -> tau_client::ClientResult<()> {
         let result = match &self.inner {
             OutputInner::Client(handle) => handle.send(message),
             #[cfg(test)]
@@ -186,6 +205,13 @@ impl Output {
     }
 
     fn scope_message(&self, message: &mut HarnessInputMessage) {
+        if let Some(scope) = &self.user_shell
+            && let HarnessInputMessage::Emit(emit) = &message
+            && let Event::ShellCommandProgressReported(progress) = emit.event.as_ref()
+        {
+            *message = scope.progress(progress.clone());
+            return;
+        }
         if let HarnessInputMessage::Emit(emit) = message {
             let tool_name = match emit.event.as_mut() {
                 Event::ToolProgressReported(event) => Some(&mut event.tool_name),
@@ -1261,10 +1287,24 @@ impl tau_client::TauExtension for ShellExtension {
                 cx.state
                     .handle_event(Event::StartAgentResult(cx.event.clone()), false)
             })
-            .on_live::<tau_proto::UiShellCommand>(|cx| {
-                cx.state
-                    .handle_event(Event::UiShellCommand(cx.event.clone()), false)
-            })
+            .on_raw_live(
+                tau_proto::EventSelector::Exact(tau_proto::EventName::EXT_ACTIVITY_LEASE_RESULT),
+                |cx| cx.state.handle_activity_lease_result(cx.delivery),
+            )
+            .on_raw_live(
+                tau_proto::EventSelector::Exact(
+                    tau_proto::EventName::EXT_PASSIVE_CONTEXT_APPEND_RESULT,
+                ),
+                |cx| cx.state.handle_passive_context_result(cx.delivery),
+            )
+            .on_raw_live(
+                tau_proto::EventSelector::Exact(
+                    tau_shell_interaction::REQUEST_EVENT
+                        .parse()
+                        .expect("request event"),
+                ),
+                |cx| cx.state.handle_interaction(cx.delivery),
+            )
             .configure_raw(|cx| {
                 let cfg = cx.parse_config::<ExtConfig>()?;
                 cx.state.apply_config(
@@ -1775,6 +1815,8 @@ fn schedule_tool_started(
 
 /// Frozen resources needed to enqueue one UI shell command.
 struct UiShellScheduleContext<'a> {
+    /// Sticky endpoint cancellation set even before scheduler admission runs.
+    cancelled: Arc<AtomicBool>,
     /// Scheduler that owns the queued command.
     scheduler: &'a WorkScheduler,
     /// Extension output used to publish command events.
@@ -1796,6 +1838,7 @@ fn schedule_ui_shell_command(
     context: UiShellScheduleContext<'_>,
 ) -> Result<(), Box<(tau_proto::UiShellCommand, String)>> {
     let UiShellScheduleContext {
+        cancelled,
         scheduler,
         tx,
         shell_config,
@@ -1806,7 +1849,9 @@ fn schedule_ui_shell_command(
     } = context;
     let meta = WorkMeta {
         call_id: None,
-        agent_id: cmd.target_agent_id.clone(),
+        // Endpoint cancellation owns user commands, including queued ones.
+        // Do not silently drop their terminal-producing jobs on agent unload.
+        agent_id: None,
         queued_bytes: cmd.command.len(),
     };
     let tx_for_job = tx.clone();
@@ -1819,7 +1864,9 @@ fn schedule_ui_shell_command(
                 .lock()
                 .expect("running ui shell registry lock poisoned")
                 .insert(command_id.clone(), cancel_tx.clone());
-            if shutdown_generation_counter.current() != scheduled_generation {
+            if shutdown_generation_counter.current() != scheduled_generation
+                || cancelled.load(Ordering::Acquire)
+            {
                 let _ = cancel_tx.send(());
             }
             path_crate_tools::shell::dispatch_user_shell_command(

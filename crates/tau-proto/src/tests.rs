@@ -4184,6 +4184,22 @@ fn custom_event_allows_extension_owned_event_names() {
     assert_eq!(decoded, event);
 }
 
+/// Optional privacy scope survives encoding, while legacy custom events retain
+/// their unscoped meaning rather than acquiring transcript authority.
+#[test]
+fn custom_event_agent_privacy_scope_roundtrips() {
+    let legacy = CustomEvent::try_new("demo.opaque".parse().expect("name"), None, CborValue::Null)
+        .expect("custom");
+    assert_eq!(legacy.agent_id(), None);
+    let scoped = legacy.with_agent_id(AgentId::parse("privacy-agent").expect("agent"));
+    let json = serde_json::to_string(&scoped).expect("serialize");
+    let decoded: CustomEvent = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(decoded, scoped);
+    let legacy: CustomEvent =
+        serde_json::from_str(r#"{"name":"demo.opaque","payload":null}"#).expect("legacy");
+    assert_eq!(legacy.agent_id(), None);
+}
+
 /// Ensures peer-to-harness emits and harness-to-peer deliveries keep distinct
 /// wire tags.
 #[test]
@@ -4486,7 +4502,7 @@ fn configure_requires_instance_name_and_keeps_state_dir_optional() {
     );
     assert_eq!(
         json["harness_protocol_version"],
-        serde_json::json!({"major": 12, "minor": 0})
+        serde_json::json!({"major": 13, "minor": 0})
     );
     let decoded: Configure = serde_json::from_value(json).expect("decode configure");
     assert_eq!(decoded, with_state);
@@ -4525,7 +4541,7 @@ fn configure_protocol_revision_advertisement_is_additive() {
     let decoded: Configure = serde_json::from_value(legacy.clone()).expect("old configure");
     assert_eq!(decoded.harness_protocol_version, None);
     let mut newer = legacy;
-    newer["harness_protocol_version"] = serde_json::json!({"major": 12, "minor": 0});
+    newer["harness_protocol_version"] = serde_json::json!({"major": 13, "minor": 0});
     newer["absent_optional_secrets"] = serde_json::json!(["optional_key"]);
     let old: OldConfigure = serde_json::from_value(newer.clone()).expect("old decoder");
     assert_eq!(old.instance_name.as_str(), "std-utils");
@@ -4595,7 +4611,7 @@ fn directional_message_wire_form_uses_flat_message_tag() {
     assert!(input_json.get("payload").is_some());
     assert_eq!(
         input_json["payload"]["protocol_version"],
-        serde_json::json!({"major": 12, "minor": 0})
+        serde_json::json!({"major": 13, "minor": 0})
     );
 
     let output = HarnessOutputMessage::Disconnect(Disconnect {
@@ -4687,7 +4703,7 @@ fn ui_session_admission_wire_round_trip() {
     );
     assert_eq!(
         accepted_json["payload"]["harness_protocol_version"],
-        serde_json::json!({"major": 12, "minor": 0})
+        serde_json::json!({"major": 13, "minor": 0})
     );
     assert_eq!(
         serde_json::from_value::<HarnessOutputMessage>(accepted_json)

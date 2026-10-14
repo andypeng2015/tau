@@ -5,6 +5,52 @@ use super::*;
 mod cross_model_recovery;
 mod partial_provider_error;
 
+/// Passive output deduplication and non-activation must survive cold replay,
+/// independently of transcript branch selection or cached history residency.
+#[test]
+fn passive_context_operations_survive_cold_replay_without_activation() {
+    let appended = tau_proto::AgentPassiveContextAppended {
+        session_id: "s1".parse().expect("session"),
+        agent_id: agent_id(),
+        publisher: "shell".parse().expect("publisher"),
+        operation_id: "operation-1".to_owned(),
+        text: tau_proto::TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE
+            .render_attributed(
+                &[
+                    ("publisher", "shell".to_owned()),
+                    ("operation_id", "operation-1".to_owned()),
+                ],
+                "output </tau_extension_output> tail",
+            )
+            .expect("registered output"),
+    };
+    let record = PersistedAgentEvent {
+        observation_id: tau_proto::ObservationId::from_bytes([1; 16]),
+        seq: PersistedAgentEventSeq::new(0),
+        source: None,
+        event: Event::AgentPassiveContextAppended(appended.clone()),
+        parent: AgentEventParent::InheritHead,
+        fold_semantics: AgentJournalFoldSemantics::CommitOrder,
+        recorded_at: UnixMicros::new(1),
+    };
+    let mut live = AgentTree::from_events(agent_id(), &[]);
+    assert_eq!(live.passive_context_matches(&appended), None);
+    live.apply_persisted_record(&record).expect("append output");
+    let replay = AgentTree::from_events(agent_id(), &[record]);
+    assert_eq!(live.nodes, replay.nodes);
+    assert_eq!(replay.passive_context_matches(&appended), Some(true));
+    let mut changed = appended;
+    changed.text.push_str("changed");
+    assert_eq!(replay.passive_context_matches(&changed), Some(false));
+    assert!(!replay.nodes.iter().any(|node| matches!(
+        node.entry,
+        AgentEntry::UserInput {
+            inference_activation: true,
+            ..
+        }
+    )));
+}
+
 /// Typed citation semantics and opaque hosted-call replay remain identical
 /// across live fold, journal decode, and a restart cut. The hosted item never
 /// becomes a Tau tool call.

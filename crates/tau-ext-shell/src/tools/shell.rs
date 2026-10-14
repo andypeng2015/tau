@@ -575,6 +575,10 @@ pub(crate) fn dispatch_user_shell_command(
     cwd: PathBuf,
 ) {
     crate::shell_output_spool::note_call();
+    if cancel_rx.try_recv().is_ok() {
+        send_user_shell_finished(cmd, "cancelled before execution".to_owned(), None, true, tx);
+        return;
+    }
     let cwd = match shell_config.authorize(&cmd.command, &cwd) {
         Ok(Some(canonical)) => canonical,
         Ok(None) => cwd,

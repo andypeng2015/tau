@@ -468,6 +468,15 @@ fn user_shell_context_modes_enforce_the_same_allowlist() {
             Some("Use the permitted printf form."),
         )],
     );
+    let target = discover_shell_endpoint(&mut reader, &mut writer);
+    writer
+        .write_event(&Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
+            session_id: "session-1".parse().expect("session"),
+            agent_id: agent_id.clone(),
+            ephemeral: false,
+            agent_initialization_id: "allowlist-init".parse().expect("initialization"),
+        }))
+        .expect("load agent");
     writer
         .write_event(&Event::AgentMetadataSet(tau_proto::AgentMetadataSet {
             agent_id: agent_id.clone(),
@@ -478,18 +487,28 @@ fn user_shell_context_modes_enforce_the_same_allowlist() {
         }))
         .expect("seed workdir");
     writer.flush().expect("flush seed");
+    writer
+        .write_event(&Event::AgentReplayComplete(
+            tau_proto::AgentReplayComplete {
+                session_id: Some("session-1".parse().expect("session")),
+                agent_id: agent_id.clone(),
+                error: None,
+            },
+        ))
+        .expect("ready workdir");
 
     for (command_id, include_in_context) in [("deny-bang", true), ("deny-double-bang", false)] {
-        writer
-            .write_event(&Event::UiShellCommand(tau_proto::UiShellCommand {
+        write_shell_execution(
+            &mut writer,
+            target.clone(),
+            tau_proto::UiShellCommand {
                 session_id: "session-1".parse().expect("session id"),
                 command_id: test_shell_command_id(command_id),
                 command: format!("touch {}", sentinel.display()),
                 include_in_context,
                 target_agent_id: Some(agent_id.clone()),
-            }))
-            .expect("send user shell");
-        writer.flush().expect("flush user shell");
+            },
+        );
         let finished = wait_for_user_shell_finished(&mut reader, command_id);
         assert_eq!(finished.include_in_context, include_in_context);
         assert!(finished.output.contains("denied by configured allowlist"));

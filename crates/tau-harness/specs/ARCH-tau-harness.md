@@ -165,7 +165,7 @@ memory-only. Normal durable and global session-ephemeral launches continue to
 use the durable agent store.
 
 The external-message, provider-model, provider-quota, provider-execution,
-tool-lifecycle, tool-request, tool-progress, terminal-tool-outcome, user-shell-report, prompt-fragment,
+tool-lifecycle, tool-request, tool-progress, terminal-tool-outcome, passive-context, prompt-fragment,
 session-discovery, per-agent-context, internal-prompt-request, start-agent-request,
 terminal-output, custom-event, attached-UI-liveness, metadata-request, and
 ambient-runtime-indicator slices
@@ -193,7 +193,12 @@ not itself become an event. UI tree inspection uses `ui_tree_request` and
 returns one requester-directed, non-published multiline notice.
 The independent `session_idle_shutdown` startup setting defaults to disabled. When
 enabled, the daemon shuts down through ordinary session teardown after the
-configured period without accepted activity or in-flight agent work. Its
+configured period without accepted activity, in-flight agent work, or generic
+extension-owned activity holds. These transient holds belong to authenticated
+connection incarnations, survive UI detach, and disappear on owner disconnect;
+the harness does not interpret their opaque operation IDs. See
+[SPEC-extension-activity-leases](../../../specs/SPEC-extension-activity-leases.md).
+Its
 monotonic inactivity window starts fresh on process launch and after work
 finishes; passive probes and housekeeping do not renew it. Scheduled timers
 alone do not hold the daemon open: their extension-owned, process-local state
@@ -353,8 +358,7 @@ They submit terminal result, error, and cancellation reports through the same
 generic commit boundary. The post-commit consumer revalidates the captured live
 generation and exact routed-call owner before applying existing terminal
 processing and publishing protected harness-sourced terminal or provider facts.
-Provider authority is limited to its own routed ordinary calls; shell reports
-remain Tool/Core-only.
+Provider authority is limited to its own routed ordinary calls.
 Successful provider and background facts then produce distinct payload-free UI
 display events in both live and replay paths; see
 [SPEC-terminal-tool-reports-and-canonical-outcomes](../../../specs/SPEC-terminal-tool-reports-and-canonical-outcomes.md).
@@ -362,16 +366,14 @@ Ownerless and harness-internal foreground errors use the same provider-first
 post-commit reaction without acquiring journal ownership: their runtime
 `provider.tool_error` commit precedes `tool.error`, wait/loop settlement,
 accounting, and teardown cleanup.
-Configured Tool/Core shell providers likewise submit
-`shell.command_progress_reported` and `shell.command_finished_reported` through
-generic publication. The post-commit consumer revalidates the captured
-generation, frame-admission session, and private routed command before publishing
-harness-sourced canonical progress/completion; transcript injection follows
-canonical completion commit. Immutable original-route classification and
-process-lifetime harness-route tombstones keep ephemeral report payloads out of
-durable debug JSONL across interception and final shutdown; unknown
-peer-chosen routes retain ordinary audit treatment. See
-[SPEC-shell-command-reports-and-canonical-facts](../../../specs/SPEC-shell-command-reports-and-canonical-facts.md).
+User-shell execution and completion are endpoint-owned opaque protocols.
+The harness transports them through ordinary custom-event publication with
+authenticated publisher metadata and captured generic privacy scope; it has no
+shell selector, command ownership, or report canonicalizer. A separate generic
+passive-context append validates publisher, session, agent, bounds, and
+publisher-scoped operation id, then reports the actual publication outcome.
+See [SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md)
+and [SPEC-passive-extension-context](../../../specs/SPEC-passive-extension-context.md).
 Configured Provider/Tool/Core peers submit `tool.request` through generic
 publication before routing. The post-commit consumer revalidates the captured
 generation and call-id correlation, installs terminal ownership, and publishes

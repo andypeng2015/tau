@@ -141,6 +141,15 @@ unpublished dependency exists in the registry.
 
 ## Historical 0.2.0 publication versions
 
+Protocol 13.0's source-only SDK revision is proto/client 0.12.0. Configured
+extensions must rebuild with the harness; older readers cannot decode new
+passive-append journal variants. This is not a release or migration instruction.
+
+The current workspace also includes `dpc-tau-shell-interaction` (0.2.1), a shared
+endpoint codec/state crate depending on `dpc-tau-proto`. The checked publication
+order places it after proto and before its ext-shell and CLI consumers. This
+addition does not authorize publishing any package.
+
 The dependencies-first order is checked by `check-crates-io-packages.py`.
 For 0.2.1, retain the order below but substitute the versions described in the
 release record above; the versions in this table record the 0.2.0 release:

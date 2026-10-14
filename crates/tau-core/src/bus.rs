@@ -84,7 +84,7 @@ fn validate_socket_subscription(
         return Ok(());
     }
 
-    fn category_allowed(category: &tau_proto::EventCategory) -> bool {
+    fn category_allowed(category: &tau_proto::EventCategory, ui: bool) -> bool {
         use tau_proto::EventCategory as C;
         match category {
             C::Tool
@@ -98,17 +98,24 @@ fn validate_socket_subscription(
             | C::Harness
             | C::Shell
             | C::Term => true,
-            C::Other(_) => false,
+            // Attached UIs participate in extension-owned opaque protocols.
+            // This grants observation, not configured-extension authority.
+            C::Other(_) => ui,
         }
     }
 
     let all_allowed = selectors.iter().all(|selector| match selector {
-        EventSelector::Exact(name) => category_allowed(name.category()),
+        EventSelector::Exact(name) => {
+            category_allowed(name.category(), connection.kind == ClientKind::Ui)
+        }
         EventSelector::Prefix(prefix) => {
             let category = prefix
                 .split_once('.')
                 .map_or(prefix.as_str(), |(value, _)| value);
-            category_allowed(&tau_proto::EventCategory::from_wire(category))
+            category_allowed(
+                &tau_proto::EventCategory::from_wire(category),
+                connection.kind == ClientKind::Ui,
+            )
         }
     });
     if all_allowed {

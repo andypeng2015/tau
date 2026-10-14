@@ -859,20 +859,8 @@ intent.
    Each `adjust_*` action carries a positive `increase` or `decrease` amount,
    resolves from the role's current effective model value, and saturates at the
    setting's lowest or highest level before storing an absolute override.
-- **`ui.shell_command`** — User submitted a `!` (in-context) or `!!`
-  (UI-only) shell command. Carries command id, command, session id,
-  `include_in_context` flag. On attach, a UI may receive replay-marked
-  current-state snapshots for at most 128 routes in ascending public-id order
-  and within a 64 KiB aggregate CBOR-encoded-payload budget. These snapshot
-  bounds do not cap or reject live routing. A route exceeding the
-  remaining byte budget is skipped while later smaller routes remain eligible;
-  one UI-only replay notice reports the omitted count.
-  The notice requires exact subscriptions to both `ui.shell_command` and
-  `harness.notice`. Omitted routes continue live, and their completion renders
-  as a standalone terminal.
-  Snapshots carry no progress or output and remain UI-only and non-durable,
-  including for `!!` and ephemeral targets; the later live completion settles
-  the same correlated row.
+- **`ui.shell_command`** — Historical DTO only; rejected at live intake.
+  Current user-shell commands use the extension-owned protocol described below.
 - **`ui.create_agent`** — UI requests creation of a user-owned agent, optionally
   with the first prompt to append after context loads. The request carries the
   request correlation id, role, initial metadata, optional parent agent, optional prompt correlation id,
@@ -912,58 +900,40 @@ intent.
   for a known agent in the session; accepted requests produce
   `agent.display_name_set`.
 
-## Shell (shell extension, user-initiated commands)
+## Extension-owned shell interaction
 
-`tau-ext-shell` (or another registered Tool/Core shell provider) reports
-progress and completion in response to a `ui.shell_command`; the harness
-publishes the canonical UI-facing facts.
+Use `!instance command` to append completed output passively to the selected
+agent, or `!!instance command` for no model context. The instance is mandatory.
+The UI discovers extension capabilities and process nonces, then sends exactly
+one addressed request. Acceptance timeout means unconfirmed outcome, not a
+safe-to-retry failure.
 
-The harness routes each request point-to-point to exactly one registered generic
-shell instance. Zero instances fail the command; multiple instances fail as
-ambiguous until an explicit selection mechanism exists. Targetless commands are
-resolved to one current-session user agent before delivery, and stale-session
-commands fail without execution. The originating command is projected to all
-attached UIs so progress and the single terminal result have a display block.
-The selected extension snapshots that target agent's per-instance workdir at
-admission. The harness records the selected provider and canonical request
-identity. It accepts progress and exactly one terminal event only from that
-provider with matching immutable fields. Stale, duplicate, non-owner, or altered
-reports remain committed observations but are rejected for canonicalization.
-Provider disconnect and session shutdown consume pending routes with a
-harness-owned terminal failure. UI command ids must be non-empty,
-at most 256 bytes, and unique while in flight; invalid or concurrent duplicate
-ids are rejected before projection. For provider execution, the harness replaces
-the UI id with a fresh internal route id and maps accepted progress/terminal
-events back to the UI id. A completed UI id may therefore be reused without a
-delayed provider event attaching to its newer route. The UI id remains reserved
-until its mapped or harness-owned terminal finishes interception and commits, so
-a parked older terminal cannot finalize a newly projected block.
-Interception may rewrite progress chunk/stream payload fields, but
-progress/terminal correlation and target identity remain harness-owned. A
-validated terminal is immutable and must-pass so its UI projection and optional
-transcript injection cannot diverge.
+`shellux.request` and `shellux.reply` are opaque, transient custom events defined
+by `tau-shell-interaction`, not first-party harness shell events. Endpoints own
+discovery, execution, progress, terminal correlation, cancellation, running
+snapshots, and path completion. Replies use generic authenticated publisher
+metadata; the harness never interprets their payloads.
 
-- **`shell.command_progress_reported`** — A peer-authored chunk of stdout/stderr
-  from a running user-initiated shell command. The harness commits the report
-  before validating the private provider route. Invalid, stale, or non-owning
-  reports remain committed observations but produce no canonical fact.
-  Transient and never stored.
-- **`shell.command_progress`** — Harness-authored canonical progress, mapped to
-  the UI lifecycle `command_id`. Transient.
-- **`shell.command_finished_reported`** — A peer-authored terminal observation
-  carrying the private provider route id and echoed request identity. The
-  harness commits it before exact generation, ownership, and identity validation.
-  Invalid reports remain committed observations but do not consume a route.
-  Transient and never stored.
-- **`shell.command_finished`** — A harness-authored user-initiated shell command exited
-  or was cancelled. Echoes session id, command, optional target agent id,
-  and `include_in_context` flag from the originating request, plus the
-  truncated combined output, exit code, and `cancelled` flag. When
-  `include_in_context` is set, the harness stores this self-contained event in
-  the non-ephemeral target agent journal and injects the output only into the
-  harness-recorded target agent for that session after the canonical completion
-  commits. UI-only `!!` completions remain transient. See
-  [`SPEC-shell-command-reports-and-canonical-facts`](../specs/SPEC-shell-command-reports-and-canonical-facts.md).
+Generic `extension.activity_lease_request` and `extension.activity_lease_result`
+events provide transient, configured-incarnation-owned activity holds. Only a
+live harness-attributed `Acquired` result authorizes effects. Requests are
+interceptable but immutable; dropped acquisition is not acknowledged. Release
+retires an opaque operation ID, and disconnect clears all owner holds. These
+events never enter semantic replay. Holds prevent idle shutdown only and have no
+expiry. See [SPEC-extension-activity-leases](../specs/SPEC-extension-activity-leases.md).
+
+For `!`, the extension submits `extension.passive_context_append_request` after its
+terminal observation. The harness publishes `agent.passive_context_appended`
+and an `extension.passive_context_append_result` reporting actual commit or failure.
+The append preserves attributed output without activating inference. OS effects,
+terminal delivery, and append commit are not atomic. `!!` never requests an
+append; it is not confidential and still uses ordinary event/debug transport.
+
+Old `shell.command_progress`, `shell.command_finished`, and their `_reported`
+forms remain decodable, but live intake rejects them. Old completed journal
+facts still render; new historical output is a generic attributed context entry.
+See [SPEC-extension-owned-shell-interaction](../specs/SPEC-extension-owned-shell-interaction.md)
+and [SPEC-passive-extension-context](../specs/SPEC-passive-extension-context.md).
 
 ## Term (terminal-output side effects)
 

@@ -23,6 +23,247 @@ const HARNESS_DAEMON: &str = env!("CARGO_BIN_EXE_tau-e2e-harness-daemon");
 const SHELL_PROBE: &str = env!("CARGO_BIN_EXE_tau-e2e-shell-probe");
 const SESSION: &str = "deterministic-e2e-session";
 
+/// The production shell endpoint and generic bus commit one passive result for
+/// two observing UIs, without provider activation or semantic custom records.
+#[test]
+fn core_shell_endpoint_passive_output_is_durable_and_nonactivating()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario = ScenarioV2::new(
+        "shell-endpoint",
+        vec![ScenarioLaneV2 {
+            ctx_id: "unused-provider-lane".to_owned(),
+            actions: vec![ScenarioActionV2::Text {
+                user_text: "must not activate".to_owned(),
+                response: "unexpected".to_owned(),
+            }],
+        }],
+    );
+    let fixture = DeterministicFixture::new_core_shell(
+        "core_shell_endpoint_passive",
+        &scenario,
+        FAKE_PROVIDER,
+    )?;
+    let socket = fixture.socket_path("shell-endpoint");
+    let daemon = spawn_daemon(&fixture, &socket, tau_harness::SessionLaunchStatus::New);
+    let selectors = [
+        tau_shell_interaction::REPLY_EVENT.parse()?,
+        tau_proto::EventName::AGENT_PASSIVE_CONTEXT_APPENDED,
+    ];
+    let mut peer = connect_ui_with_selectors(&socket, &selectors)?;
+    create_agent_without_prompt(&mut peer)?;
+    let agent = wait_agent_and_context_ready(&mut peer, false, fixture.shell_base())?;
+    let mut observer = connect_ui_with_selectors(&socket, &selectors)?;
+    recv_until_session_replay_complete(&mut observer)?;
+    let session: SessionId = SESSION.parse()?;
+    let mut observing_client = tau_shell_interaction::Client::new(session.clone());
+    observer.send(&tau_shell_interaction::request_message(
+        &observing_client.discover(),
+    ))?;
+    let observer_deadline = Instant::now() + Duration::from_secs(10);
+    while observing_client.endpoints().count() == 0 {
+        let delivery = match observer
+            .recv_timeout(observer_deadline.saturating_duration_since(Instant::now()))?
+        {
+            tau_socket::SocketReceive::Message {
+                message: tau_proto::HarnessOutputMessage::Deliver(delivery),
+            } => delivery,
+            tau_socket::SocketReceive::Message { .. } => continue,
+            _ => return Err("observer discovery deadline/disconnect".into()),
+        };
+        observing_client.observe(&delivery);
+    }
+    let mut client = tau_shell_interaction::Client::new(session.clone());
+    peer.send(&tau_shell_interaction::request_message(&client.discover()))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut sent = false;
+    let mut finished = false;
+    loop {
+        let delivery =
+            match peer.recv_timeout(deadline.saturating_duration_since(Instant::now()))? {
+                tau_socket::SocketReceive::Message {
+                    message: tau_proto::HarnessOutputMessage::Deliver(delivery),
+                } => delivery,
+                tau_socket::SocketReceive::Message { .. } => continue,
+                _ => return Err("endpoint result deadline/disconnect".into()),
+            };
+        let update = client.observe(&delivery);
+        assert!(update.diagnostics.is_empty(), "{:?}", update.diagnostics);
+        finished |= update
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ShellCommandFinished(_)));
+        if let Event::AgentPassiveContextAppended(append) = delivery.event.as_ref() {
+            assert!(finished, "terminal must precede append");
+            assert_eq!(append.agent_id, agent);
+            assert_eq!(append.publisher.as_str(), "core-shell");
+            assert!(append.text.contains("endpoint-completed"));
+            break;
+        }
+        for request in update.requests {
+            peer.send(&tau_shell_interaction::request_message(&request))?;
+        }
+        if !sent
+            && client
+                .endpoints()
+                .any(|endpoint| endpoint.target.instance.as_str() == "core-shell")
+        {
+            let request =
+                client.execute("!core-shell printf endpoint-completed", Some(agent.clone()))?;
+            peer.send(&tau_shell_interaction::request_message(&request))?;
+            // A duplicate live intent crosses the same opaque bus but cannot
+            // run twice.
+            peer.send(&tau_shell_interaction::request_message(&request))?;
+            sent = true;
+        }
+    }
+    loop {
+        let delivery =
+            match observer.recv_timeout(deadline.saturating_duration_since(Instant::now()))? {
+                tau_socket::SocketReceive::Message {
+                    message: tau_proto::HarnessOutputMessage::Deliver(delivery),
+                } => delivery,
+                tau_socket::SocketReceive::Message { .. } => continue,
+                _ => return Err("second observer missed passive output".into()),
+            };
+        if matches!(
+            delivery.event.as_ref(),
+            Event::AgentPassiveContextAppended(_)
+        ) {
+            break;
+        }
+    }
+    // Recover a still-running private command through a fresh UI correlation.
+    // The snapshot row must carry the original private scope all the way
+    // through the production bus, not merely in the endpoint's decoded DTO.
+    create_agent_without_prompt_with_privacy(&mut peer, true)?;
+    let private_agent = wait_agent_and_context_ready(&mut peer, false, fixture.shell_base())?;
+    let private_request = client.execute(
+        &format!("!!core-shell {}", fixture.shell_recovery_hold_command()?),
+        Some(private_agent.clone()),
+    )?;
+    peer.send(&tau_shell_interaction::request_message(&private_request))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let delivery = recv_shell_delivery(&mut peer, deadline)?;
+        let update = client.observe(&delivery);
+        if update.events.iter().any(|event| {
+            matches!(event, Event::UiShellCommand(command)
+            if command.command_id.as_str() == private_request.context.request_id)
+        }) {
+            break;
+        }
+    }
+    let mut recovering = tau_shell_interaction::Client::new(session.clone());
+    observer.send(&tau_shell_interaction::request_message(
+        &recovering.discover(),
+    ))?;
+    let mut recovered = false;
+    let mut recovery_query = None;
+    loop {
+        let delivery = recv_shell_delivery(&mut observer, deadline)?;
+        let reply = tau_shell_interaction::decode_reply(&delivery.event);
+        let update = recovering.observe(&delivery);
+        for request in update.requests {
+            recovery_query = Some(request.context.request_id.clone());
+            observer.send(&tau_shell_interaction::request_message(&request))?;
+        }
+        if let Some(reply) = reply {
+            match reply.response {
+                tau_shell_interaction::Response::Running { command }
+                    if command.command.command_id.as_str()
+                        == private_request.context.request_id =>
+                {
+                    assert_eq!(reply.context.agent_id.as_ref(), Some(&private_agent));
+                    let Event::ExtensionEvent(event) = delivery.event.as_ref() else {
+                        panic!("custom snapshot");
+                    };
+                    assert_eq!(event.agent_id(), Some(&private_agent));
+                    assert_eq!(update.events.len(), 1, "fresh client recovers private row");
+                    recovered = true;
+                }
+                tau_shell_interaction::Response::RunningComplete
+                    if recovery_query.as_ref() == Some(&reply.context.request_id) =>
+                {
+                    assert!(recovered, "query ended without the active private command");
+                    break;
+                }
+                tau_shell_interaction::Response::Finished(command)
+                    if command.command_id.as_str() == private_request.context.request_id =>
+                {
+                    panic!("private command ended before recovery: {command:?}");
+                }
+                _ => {}
+            }
+        }
+    }
+    for cancel in client.cancel(Some(&private_agent)) {
+        peer.send(&tau_shell_interaction::request_message(&cancel))?;
+    }
+    loop {
+        let delivery = recv_shell_delivery(&mut peer, deadline)?;
+        if client.observe(&delivery).events.iter().any(|event| {
+            matches!(
+                event, Event::ShellCommandFinished(command)
+                    if command.command_id.as_str() == private_request.context.request_id
+            )
+        }) {
+            break;
+        }
+    }
+    disconnect_ui(&mut observer)?;
+    disconnect_ui(&mut peer)?;
+    daemon.finish()?;
+    let debug = std::fs::read_to_string(
+        fixture
+            .harness_state_dir()
+            .join("sessions")
+            .join(SESSION)
+            .join("events.jsonl"),
+    )?;
+    assert!(
+        debug.contains("endpoint-completed"),
+        "public positive control"
+    );
+    assert!(
+        !debug.contains("private-running-recovery-marker"),
+        "private snapshot leaked"
+    );
+    let snapshot = DurableSnapshot::load(fixture.harness_state_dir(), &session)?;
+    assert_eq!(
+        snapshot
+            .agent_events
+            .iter()
+            .filter(|record| matches!(record.event, Event::AgentPassiveContextAppended(_)))
+            .count(),
+        1
+    );
+    assert!(!snapshot.agent_events.iter().any(|record| matches!(
+        record.event,
+        Event::ExtensionEvent(_)
+            | Event::ProviderPromptSubmitted(_)
+            | Event::AgentPromptSubmitted(_)
+            | Event::UiShellCommand(_)
+            | Event::ShellCommandFinished(_)
+    )));
+    Ok(())
+}
+
+/// Preserve authenticated metadata while waiting under one causal deadline.
+fn recv_shell_delivery(
+    peer: &mut tau_socket::SocketPeer,
+    deadline: Instant,
+) -> Result<tau_proto::EventDelivery, Box<dyn std::error::Error>> {
+    loop {
+        match peer.recv_timeout(deadline.saturating_duration_since(Instant::now()))? {
+            tau_socket::SocketReceive::Message {
+                message: tau_proto::HarnessOutputMessage::Deliver(delivery),
+            } => return Ok(delivery),
+            tau_socket::SocketReceive::Message { .. } => {}
+            _ => return Err("shell delivery deadline/disconnect".into()),
+        }
+    }
+}
+
 /// Proves one fake-provider terminal containing four sibling production shell
 /// calls reaches the ext-shell worker pool concurrently rather than serially.
 #[test]
@@ -486,9 +727,17 @@ fn core_shell_workdir_and_relative_edit_survive_cold_resume()
 fn create_agent_without_prompt(
     peer: &mut tau_socket::SocketPeer,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    create_agent_without_prompt_with_privacy(peer, false)
+}
+
+/// Create an idle public or ephemeral endpoint target without provider work.
+fn create_agent_without_prompt_with_privacy(
+    peer: &mut tau_socket::SocketPeer,
+    ephemeral: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     peer.send(&HarnessInputMessage::emit(Event::UiCreateAgent(
         UiCreateAgent {
-            request_id: "core-shell-resume-create".to_owned(),
+            request_id: format!("core-shell-resume-create-{ephemeral}"),
             literal: false,
             session_id: SESSION
                 .parse::<tau_proto::SessionId>()
@@ -502,7 +751,7 @@ fn create_agent_without_prompt(
             originator: PromptOriginator::User,
             ctx_id: Some("core-shell-lane".to_owned()),
             parent_agent: None,
-            ephemeral: false,
+            ephemeral,
         },
     )))?;
     Ok(())

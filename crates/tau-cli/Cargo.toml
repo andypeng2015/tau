@@ -43,6 +43,7 @@ tau-harness.workspace = true
 tau-harness-tools.workspace = true
 tau-proto.workspace = true
 tau-session-inspect.workspace = true
+tau-shell-interaction.workspace = true
 tau-term-screen.workspace = true
 tau-themes.workspace = true
 time.workspace = true

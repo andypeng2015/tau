@@ -80,7 +80,7 @@ that diff with an explicit truncation marker. It preserves the model-visible
 success or error, changed-file summary/details, display status, and path/range
 arguments, so an already-applied effect remains truthfully reportable.
 
-## User-shell reports
+## User-shell execution and completion
 
 On Linux, Android, and macOS, model and user shell commands attach independent
 pseudo-terminals to stdout and stderr. This makes both output descriptors
@@ -156,13 +156,25 @@ for an explicit empty allowlist. Omission leaves the existing workdir fragment
 unchanged. Selector strings use JSON escaping, including brace escapes, so
 authored glob syntax remains literal prompt content.
 
-For harness-routed `!`/`!!` work, the extension echoes the private command route
-and immutable request fields through transient
-`shell.command_progress_reported` / `shell.command_finished_reported` events.
-It never authors the canonical event names. The harness commits and validates
-these reports before mapping the private route back to the UI lifecycle id and
-publishing canonical progress/completion. See
-[SPEC-shell-command-reports-and-canonical-facts](../../../specs/SPEC-shell-command-reports-and-canonical-facts.md).
+For `!instance`/`!!instance` work, the extension owns a transient request registry,
+process nonce, duplicate tombstones, cancellation flags, and running snapshots.
+It accepts only live authenticated UI requests for its configured name and
+nonce. The shared `tau-shell-interaction` protocol carries opaque custom events;
+the harness never selects an executor or interprets a terminal.
+
+Admission reserves the ID but waits for a live harness acknowledgement of a
+generic activity lease before acceptance or worker scheduling. Cancellation
+remains sticky while waiting. `!!` releases after terminal publication; `!`
+retains the hold until the passive append reports success or failure. Unknown
+outcomes do not release or retry automatically; disconnect retires all holds.
+See [SPEC-extension-activity-leases](../../../specs/SPEC-extension-activity-leases.md).
+
+The extension sends each checked terminal before requesting generic passive
+context insertion for `!`; `!!` never requests insertion. The append outcome is
+independent of execution and never causes a rerun. Path completion uses bounded
+extension-host filesystem traversal and the selected agent's committed workdir
+on a cheap lane, without launching a shell or evaluating its wrapper.
+See [SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md).
 
 ## Scheduler and shutdown ordering
 

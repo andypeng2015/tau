@@ -8,6 +8,15 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 13.0 adds generic authenticated delivery publisher metadata, custom
+agent privacy scope, and typed passive context append requests, outcomes, and
+durable facts. It retires live first-party shell events in favor of opaque
+extension-owned interaction. Configured extensions must rebuild together;
+proto/client SDK 0.12 carries the source-incompatible DTO additions. Historical
+shell journals remain readable by new binaries, but old binaries cannot read
+new passive-append facts. Journal framing is unchanged. No automatic migration,
+extension activation, or package publication is implied.
+
 Protocol 12.0 adds typed `local_summary_unusable` provider and durable failure
 variants plus bounded strict-prefix recovery authority. Configured extensions
 must rebuild together; earlier peers cannot silently ignore the new variants.

@@ -33,8 +33,13 @@ impl RemoteRendererSender {
     }
 
     /// Enqueues one remote command and wakes the scheduler after success.
-    pub(super) fn send(&self, cmd: RendererCmd) -> Result<(), mpsc::SendError<RendererCmd>> {
-        let result = self.tx.as_ref().expect("live remote sender").send(cmd);
+    pub(super) fn send(&self, cmd: RendererCmd) -> Result<(), Box<mpsc::SendError<RendererCmd>>> {
+        let result = self
+            .tx
+            .as_ref()
+            .expect("live remote sender")
+            .send(cmd)
+            .map_err(Box::new);
         if result.is_ok() {
             self.wake.notify();
         }
@@ -103,7 +108,7 @@ impl LocalRendererSender {
     }
 
     /// Submits a local command behind the remote prefix currently admitted.
-    pub(super) fn send(&self, cmd: RendererCmd) -> Result<(), mpsc::SendError<RendererCmd>> {
+    pub(super) fn send(&self, cmd: RendererCmd) -> Result<(), Box<mpsc::SendError<RendererCmd>>> {
         let _guard = self
             .arbiter
             .lock()
@@ -117,7 +122,7 @@ impl LocalRendererSender {
             .as_ref()
             .expect("live local sender")
             .send(local)
-            .map_err(|error| mpsc::SendError(error.0.cmd));
+            .map_err(|error| Box::new(mpsc::SendError(error.0.cmd)));
         if result.is_ok() {
             self.wake.notify();
         }

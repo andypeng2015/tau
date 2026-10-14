@@ -1,0 +1,23 @@
+[package]
+name = "dpc-tau-shell-interaction"
+version = "0.2.1"
+edition.workspace = true
+description = "Endpoint-owned shell interaction protocol for Tau."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "tau_shell_interaction"
+
+[lints]
+workspace = true
+
+[dependencies]
+rand.workspace = true
+serde.workspace = true
+tau-proto.workspace = true

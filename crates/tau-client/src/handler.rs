@@ -336,6 +336,7 @@ where
             return Ok(());
         };
         let cx = EventContext {
+            publisher: delivery.publisher.as_ref(),
             state,
             event,
             replay: delivery.replay,

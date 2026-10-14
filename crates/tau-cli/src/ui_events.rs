@@ -144,28 +144,5 @@ pub(crate) fn role_update(role: impl Into<String>, action: UiRoleUpdateAction) -
     })
 }
 
-pub(crate) fn shell_command(
-    session_id: &tau_proto::SessionId,
-    command: &str,
-    include_in_context: bool,
-    target_agent_id: Option<tau_proto::AgentId>,
-) -> Event {
-    let command_id = format!(
-        "ui-sh-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    Event::UiShellCommand(tau_proto::UiShellCommand {
-        session_id: session_id.clone(),
-        command_id: tau_proto::ShellCommandId::parse(command_id)
-            .expect("Tau-generated shell command id must be valid"),
-        command: command.to_owned(),
-        include_in_context,
-        target_agent_id,
-    })
-}
-
 #[cfg(test)]
 mod tests;

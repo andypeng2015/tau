@@ -37,10 +37,16 @@ mutating final captures or publishing user-shell progress; a reader already
 blocked in the OS may remain dormant until the descendant-held pipe wakes or
 closes.
 
-User-facing `!` / `!!` shell commands stream bounded progress events separately from
+User-facing `!instance command` / `!!instance command` shell commands stream
+bounded opaque endpoint progress replies separately from
 their bounded final captured output. After the per-stream progress cap is hit, ext-shell
 keeps draining child output for process liveness and final truncation metadata but stops
 forwarding arbitrary output volume into the event stream.
+The extension owns acceptance, duplicate rejection, and cancellation, including
+sticky cancellation while queued. A request targets its configured name and
+process nonce; restart never retries execution. After `!` finishes, the extension
+requests generic passive context insertion; `!!` does not.
+See [SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md).
 
 Model shell capture retains complete byte and line totals while bounding memory.
 Its native `output` body is capped separately from the larger ephemeral saved

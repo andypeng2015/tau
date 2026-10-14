@@ -1,3 +1,4 @@
+use std::io::BufWriter;
 use std::os::unix::net as path_std_os_unix_net;
 use std::time as path_std_time;
 
@@ -14,6 +15,149 @@ use crate::test_support::TREE_PREVIEW_PARITY_NOTICE;
 use crate::ui_prompt::DEFAULT_AGENT_ROLE;
 
 const SESSION_ID: &str = "test-session";
+
+/// Headless execution subscribes before discovery, targets the advertised
+/// nonce, sends exactly once, and returns only after authenticated acceptance.
+#[test]
+fn headless_shell_socket_discovers_submits_once_and_waits_for_acceptance() {
+    use tau_shell_interaction::{Operation, Reply, Response, Target};
+    let session = SESSION_ID.parse().expect("session");
+    let (client, server) = path_std_os_unix_net::UnixStream::pair().expect("socket pair");
+    client
+        .set_read_timeout(Some(path_std_time::Duration::from_secs(3)))
+        .expect("timeout");
+    server
+        .set_read_timeout(Some(path_std_time::Duration::from_secs(3)))
+        .expect("timeout");
+    let mut reader = tau_proto::PeerInputReader::new(
+        Box::new(client.try_clone().expect("clone")) as Box<dyn std::io::Read + Send>
+    );
+    let mut writer = tau_proto::PeerOutputWriter::new(BufWriter::new(
+        Box::new(client) as Box<dyn std::io::Write + Send>
+    ));
+    let peer = std::thread::spawn(move || {
+        let mut input = tau_proto::HarnessInputReader::new(server.try_clone().expect("clone"));
+        let mut output = tau_proto::HarnessOutputWriter::new(server);
+        assert!(matches!(
+            input.read_message().expect("subscribe"),
+            Some(HarnessInputMessage::Subscribe(_))
+        ));
+        let read_request =
+            |input: &mut tau_proto::HarnessInputReader<path_std_os_unix_net::UnixStream>| {
+                let Some(HarnessInputMessage::Emit(emit)) = input.read_message().expect("request")
+                else {
+                    panic!("emit")
+                };
+                tau_shell_interaction::decode_request(&emit.event).expect("endpoint request")
+            };
+        let discover = read_request(&mut input);
+        assert!(matches!(discover.operation, Operation::Discover));
+        let target = Target {
+            instance: "remote".parse().expect("instance"),
+            nonce: tau_shell_interaction::nonce(),
+        };
+        let publish =
+            |output: &mut tau_proto::HarnessOutputWriter<path_std_os_unix_net::UnixStream>,
+             reply: Reply| {
+                let HarnessInputMessage::Emit(emit) = tau_shell_interaction::reply_message(&reply)
+                else {
+                    unreachable!()
+                };
+                let mut delivery =
+                    tau_proto::EventDelivery::live(tau_proto::UnixMicros::now(), *emit.event);
+                delivery.publisher = Some(tau_proto::EventPublisher::Extension {
+                    name: reply.target.instance.clone(),
+                    instance_id: tau_proto::ExtensionInstanceId::new(1),
+                    connection_id: "remote-connection".parse().expect("connection"),
+                });
+                output
+                    .write_message(&HarnessOutputMessage::Deliver(delivery))
+                    .expect("reply");
+                output.flush().expect("flush");
+            };
+        publish(
+            &mut output,
+            Reply {
+                context: discover.context,
+                target: target.clone(),
+                response: Response::Available {
+                    execute: true,
+                    complete: true,
+                },
+            },
+        );
+        assert!(matches!(
+            read_request(&mut input).operation,
+            Operation::Running
+        ));
+        let execute = read_request(&mut input);
+        assert_eq!(execute.target.as_ref(), Some(&target));
+        assert_eq!(execute.context.agent_id, None);
+        assert!(
+            matches!(&execute.operation, Operation::Execute { command, include_in_context: false } if command == "printf 'hé llo'")
+        );
+        let started = tau_proto::UiShellCommand {
+            session_id: execute.context.session_id.clone(),
+            command_id: execute.context.request_id.parse().expect("command ID"),
+            command: "printf 'hé llo'".to_owned(),
+            include_in_context: false,
+            target_agent_id: None,
+        };
+        publish(
+            &mut output,
+            Reply {
+                context: execute.context,
+                target,
+                response: Response::Started(tau_shell_interaction::RunningCommand {
+                    owner: "headless-ui".parse().expect("owner"),
+                    command: started,
+                }),
+            },
+        );
+        assert!(
+            input.read_message().expect("client detached").is_none(),
+            "no execution retry"
+        );
+    });
+    super::send_shell_connected(
+        &session,
+        "!!remote printf 'hé llo'",
+        &"remote".parse().expect("instance"),
+        &mut reader,
+        &mut writer,
+        path_std_time::Instant::now() + path_std_time::Duration::from_secs(3),
+    )
+    .expect("accepted");
+    drop(reader);
+    drop(writer);
+    peer.join().expect("peer");
+}
+
+/// A spent absolute deadline cannot be extended by buffered irrelevant frames.
+#[test]
+fn headless_shell_deadline_never_retries_execution() {
+    let mut reader = tau_proto::PeerInputReader::new(
+        Box::new(std::io::empty()) as Box<dyn std::io::Read + Send>
+    );
+    let mut writer = tau_proto::PeerOutputWriter::new(BufWriter::new(
+        Box::new(std::io::sink()) as Box<dyn std::io::Write + Send>
+    ));
+    let error = super::send_shell_connected(
+        &SESSION_ID.parse().expect("session"),
+        "!!remote pwd",
+        &"remote".parse().expect("instance"),
+        &mut reader,
+        &mut writer,
+        path_std_time::Instant::now(),
+    )
+    .expect_err("expired");
+    assert!(
+        error
+            .to_string()
+            .contains("discovery failed before submission")
+    );
+    assert!(error.to_string().contains("execution was not retried"));
+}
 
 fn event(text: &str) -> Option<Event> {
     event_for_test_line(SESSION_ID, text)
@@ -307,30 +451,18 @@ fn role_delete_command_updates_roles() {
     }
 }
 
-/// Shell commands produce dynamic ids but preserve command text and
-/// context-inclusion mode.
+/// Headless execution requires explicit discovery and a named instance, never a
+/// typed legacy shell event or a context append without a selected agent.
 #[test]
-fn shell_commands_record_context_mode() {
-    match event("!! echo hi").expect("ui-only shell command") {
-        Event::UiShellCommand(command) => {
-            assert_eq!(command.session_id, SESSION_ID);
-            assert!(command.command_id.as_str().starts_with("ui-sh-"));
-            assert_eq!(command.command, "echo hi");
-            assert!(!command.include_in_context);
-        }
-        other => panic!("expected UiShellCommand, got {other:?}"),
-    }
-
-    match event("! echo hi").expect("context shell command") {
-        Event::UiShellCommand(command) => {
-            assert_eq!(command.session_id, SESSION_ID);
-            assert!(command.command_id.as_str().starts_with("ui-sh-"));
-            assert_eq!(command.command, "echo hi");
-            assert!(command.include_in_context);
-        }
-        other => panic!("expected UiShellCommand, got {other:?}"),
-    }
-
+fn shell_commands_require_endpoint_discovery() {
+    let session = SESSION_ID.parse().expect("session");
+    assert!(
+        matches!(super::classify_send_line(&session, "!!shell echo hi").expect("explicit shell"),
+        super::SendLineDisposition::Shell(line) if line == "!!shell echo hi")
+    );
+    assert!(super::classify_send_line(&session, "!shell echo hi").is_err());
+    assert!(super::classify_send_line(&session, "!! echo hi").is_err());
+    assert!(event("!!shell echo hi").is_none());
     assert_eq!(event("!!"), None);
     assert_eq!(event("!"), None);
 }

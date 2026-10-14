@@ -11,19 +11,19 @@
 //! - [`render_menu_block`] — turns a [`CompletionView`] into a [`StyledBlock`]
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{collections as path_std_collections, fmt};
 
-use tau_cli_term_raw::{
-    Candidate, CompletionAcceptance, CompletionView, Span, StyledBlock, StyledText,
-};
+use tau_cli_term_raw::{Candidate, CompletionView, Span, StyledBlock, StyledText};
 use tau_term_screen::{display_width, truncate_to_width};
 use tau_themes::Theme;
 
 use crate::resolve;
 
-mod git_files;
+/// Nonblocking application callback for extension-backed completion. `None`
+/// requests bang-instance completion; `Some(fuzzy)` requests path completion.
+/// The draft stays in the UI; implementations transmit only the decoded token.
+pub type RemoteCompleter = Arc<dyn Fn(&str, usize, Option<bool>) -> Vec<Candidate> + Send + Sync>;
 
 /// One command-mode token, including its leading `:` (for example, `":model"`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -130,6 +130,8 @@ pub type ArgCompleter = Arc<dyn Fn(&[&str]) -> Vec<CompletionItem> + Send + Sync
 /// Mutable completion state shared with background renderer updates.
 #[derive(Default)]
 struct CompletionInner {
+    /// Application-owned cache lookup; never local filesystem enumeration.
+    remote_completer: Option<RemoteCompleter>,
     /// Description replacements for intrinsic command-root candidates.
     static_command_descriptions: HashMap<CommandName, String>,
     arg_completers: HashMap<CommandName, ArgCompleter>,
@@ -150,6 +152,30 @@ pub struct CompletionData {
 }
 
 impl CompletionData {
+    /// Install a nonblocking remote-completion cache lookup.
+    pub fn set_remote_completer(&self, completer: RemoteCompleter) {
+        self.inner
+            .lock()
+            .expect("completion data lock")
+            .remote_completer = Some(completer);
+    }
+
+    /// Invoke outside the storage lock so cache refreshes can update the UI.
+    fn remote_candidates(
+        &self,
+        buffer: &str,
+        cursor: usize,
+        fuzzy: Option<bool>,
+    ) -> Vec<Candidate> {
+        let completer = self
+            .inner
+            .lock()
+            .expect("completion data lock")
+            .remote_completer
+            .clone();
+        completer.map_or_else(Vec::new, |complete| complete(buffer, cursor, fuzzy))
+    }
+
     /// Creates empty, shareable dynamic completion storage.
     pub fn new() -> Self {
         Self::default()
@@ -593,77 +619,12 @@ pub fn build_candidates_with_rules(
     buffer: &str,
     cursor: usize,
 ) -> Vec<Candidate> {
-    build_candidates_with_home_and_rules(
-        commands,
-        data,
-        rules,
-        buffer,
-        cursor,
-        home_dir().as_deref(),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_candidates_with_home(
-    commands: &[CommandCompletion],
-    data: &CompletionData,
-    buffer: &str,
-    cursor: usize,
-    home_dir: Option<&Path>,
-) -> Vec<Candidate> {
-    build_candidates_with_home_and_rules(
-        commands,
-        data,
-        &CompletionRules::default(),
-        buffer,
-        cursor,
-        home_dir,
-    )
-}
-
-pub(crate) fn build_candidates_with_home_and_rules(
-    commands: &[CommandCompletion],
-    data: &CompletionData,
-    rules: &CompletionRules,
-    buffer: &str,
-    cursor: usize,
-    home_dir: Option<&Path>,
-) -> Vec<Candidate> {
-    build_candidates_with_home_and_rules_at_cwd(
-        commands, data, rules, buffer, cursor, home_dir, None,
-    )
-}
-
-/// Builds candidates against an injected current directory for hermetic tests.
-#[cfg(test)]
-pub(crate) fn build_candidates_with_home_and_cwd(
-    commands: &[CommandCompletion],
-    data: &CompletionData,
-    buffer: &str,
-    cursor: usize,
-    home_dir: Option<&Path>,
-    cwd: &Path,
-) -> Vec<Candidate> {
-    build_candidates_with_home_and_rules_at_cwd(
-        commands,
-        data,
-        &CompletionRules::default(),
-        buffer,
-        cursor,
-        home_dir,
-        Some(cwd),
-    )
-}
-
-fn build_candidates_with_home_and_rules_at_cwd(
-    commands: &[CommandCompletion],
-    data: &CompletionData,
-    rules: &CompletionRules,
-    buffer: &str,
-    cursor: usize,
-    home_dir: Option<&Path>,
-    working_dir: Option<&Path>,
-) -> Vec<Candidate> {
+    if buffer.starts_with('!') {
+        let selector_end = buffer.find(char::is_whitespace).unwrap_or(buffer.len());
+        if cursor <= selector_end {
+            return data.remote_candidates(buffer, cursor, None);
+        }
+    }
     if first_non_whitespace_starts_command(buffer) {
         let leading_len = buffer.len() - buffer.trim_start().len();
         let view = &buffer[leading_len..];
@@ -702,19 +663,15 @@ fn build_candidates_with_home_and_rules_at_cwd(
     let Some(token) = word_token(buffer, cursor) else {
         return Vec::new();
     };
-    let Some(rule) = rules.matching_rule(token.prefix) else {
+    let Some(rule) = rules.matching_rule(token.prefix.trim_start_matches(['\'', '"'])) else {
         return Vec::new();
     };
 
     match &rule.kind {
         CompletionRuleKind::Agents => build_agent_mention_candidates(data, &token, &rule.prefix),
         CompletionRuleKind::Sessions => build_session_candidates(data, &token, &rule.prefix),
-        CompletionRuleKind::Path => {
-            build_filesystem_candidates_with_home(&token, home_dir, false, working_dir)
-        }
-        CompletionRuleKind::PathFuzzy => {
-            build_filesystem_candidates_with_home(&token, home_dir, true, working_dir)
-        }
+        CompletionRuleKind::Path => data.remote_candidates(buffer, cursor, Some(false)),
+        CompletionRuleKind::PathFuzzy => data.remote_candidates(buffer, cursor, Some(true)),
         CompletionRuleKind::Actions => {
             build_action_token_candidates(commands, &data.dynamic_commands(), &token, &rule.prefix)
         }
@@ -828,17 +785,28 @@ fn first_non_whitespace_starts_command(buffer: &str) -> bool {
 }
 
 fn word_token(buffer: &str, cursor: usize) -> Option<PathToken<'_>> {
-    let before_cursor = buffer.get(..cursor)?;
-    let after_cursor = buffer.get(cursor..)?;
-    let token_start = before_cursor
-        .char_indices()
-        .rev()
-        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx + ch.len_utf8()))
-        .unwrap_or(0);
-    let token_end = after_cursor
-        .char_indices()
-        .find_map(|(idx, ch)| ch.is_whitespace().then_some(cursor + idx))
-        .unwrap_or(buffer.len());
+    buffer.get(..cursor)?;
+    let mut token_start = 0;
+    let mut token_end = buffer.len();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in buffer.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else if quote == Some(ch) {
+            quote = None;
+        } else if quote.is_none() && matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if quote.is_none() && ch.is_whitespace() {
+            if cursor <= index {
+                token_end = index;
+                break;
+            }
+            token_start = index + ch.len_utf8();
+        }
+    }
     Some(PathToken {
         prefix: &buffer[token_start..cursor],
         suffix: &buffer[cursor..token_end],
@@ -913,144 +881,6 @@ fn build_agent_mention_candidates(
         .collect()
 }
 
-fn cwd() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    if home.as_os_str().is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(home))
-    }
-}
-fn home_expanded_path(prefix: &str, home_dir: Option<&Path>) -> Option<PathBuf> {
-    if prefix == "~" {
-        Some(home_dir?.to_path_buf())
-    } else if let Some(rest) = prefix.strip_prefix("~/") {
-        Some(home_dir?.join(rest))
-    } else {
-        Some(PathBuf::from(prefix))
-    }
-}
-
-fn build_filesystem_candidates_with_home(
-    path_token: &PathToken<'_>,
-    home_dir: Option<&Path>,
-    fuzzy_git_files: bool,
-    working_dir: Option<&Path>,
-) -> Vec<Candidate> {
-    let prefix = path_token.prefix;
-    let Some(lookup_path) = home_expanded_path(prefix, home_dir) else {
-        return Vec::new();
-    };
-    let display_path = Path::new(prefix);
-    let (lookup_dir, display_dir, partial) = if prefix == "~" {
-        (lookup_path, PathBuf::from("~"), "")
-    } else if prefix.ends_with('/') {
-        (lookup_path, display_path.to_path_buf(), "")
-    } else {
-        let Some(lookup_parent) = lookup_path.parent() else {
-            return Vec::new();
-        };
-        let Some(display_parent) = display_path.parent() else {
-            return Vec::new();
-        };
-        let partial = display_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let lookup_dir = if lookup_parent.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            lookup_parent.to_path_buf()
-        };
-        let display_dir = if display_parent.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            display_parent.to_path_buf()
-        };
-        (lookup_dir, display_dir, partial)
-    };
-
-    if fuzzy_git_files && prefix.starts_with("./") && !partial.is_empty() {
-        let cwd = working_dir.map(Path::to_path_buf).unwrap_or_else(cwd);
-        if let Some((repo_root, files)) = git_files::git_repo_files(&cwd) {
-            let matches = git_files::fuzzy_match_git_files(partial, &files);
-            if !matches.is_empty() {
-                return matches
-                    .into_iter()
-                    .map(|path| {
-                        let display = git_files::dotslash_display_path(path, &repo_root, &cwd);
-                        replace_candidate(
-                            Candidate {
-                                label: display.clone(),
-                                description: "git file".to_owned(),
-                                replacement: String::new(),
-                                cursor: 0,
-                                acceptance: None,
-                            },
-                            path_token.before,
-                            &display,
-                            path_token.after,
-                        )
-                    })
-                    .collect();
-            }
-        }
-    }
-
-    let lookup_dir = working_dir
-        .filter(|_| lookup_dir.is_relative())
-        .map_or(lookup_dir.clone(), |cwd| cwd.join(lookup_dir));
-    let Ok(entries) = std::fs::read_dir(lookup_dir) else {
-        return Vec::new();
-    };
-
-    let mut candidates = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !name.starts_with(partial) {
-            continue;
-        }
-        if !partial.starts_with('.') && name.starts_with('.') {
-            continue;
-        }
-
-        let is_dir = entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false);
-        let mut replacement = display_dir.join(name).to_string_lossy().into_owned();
-        if is_dir && !replacement.ends_with('/') {
-            replacement.push('/');
-        }
-        let acceptance = home_completion_acceptance(
-            path_token,
-            home_dir,
-            &replacement,
-            path_token.before,
-            path_token.after,
-        );
-        candidates.push(replace_candidate(
-            Candidate {
-                label: replacement.clone(),
-                description: if is_dir { "directory" } else { "file" }.to_owned(),
-                replacement: String::new(),
-                cursor: 0,
-                acceptance,
-            },
-            path_token.before,
-            &replacement,
-            path_token.after,
-        ));
-    }
-
-    candidates.sort_by(|a, b| a.label.cmp(&b.label));
-    candidates
-}
-
 fn clamp_to_char_boundary(text: &str, cursor: usize) -> usize {
     let mut cursor = cursor.min(text.len());
     while 0 < cursor && !text.is_char_boundary(cursor) {
@@ -1109,28 +939,6 @@ fn build_arg_candidates(
             )
         })
         .collect()
-}
-
-/// Builds the absolute prompt replacement used only after accepting a `~/`
-/// filesystem candidate.
-fn home_completion_acceptance(
-    path_token: &PathToken<'_>,
-    home_dir: Option<&Path>,
-    display_replacement: &str,
-    before: &str,
-    after: &str,
-) -> Option<CompletionAcceptance> {
-    path_token.prefix.strip_prefix("~/")?;
-    let home_dir = home_dir?;
-    let completed = display_replacement.strip_prefix("~/")?;
-    let mut absolute = home_dir.join(completed).to_string_lossy().into_owned();
-    if display_replacement.ends_with('/') && !absolute.ends_with('/') {
-        absolute.push('/');
-    }
-    Some(CompletionAcceptance {
-        cursor: before.len() + absolute.len(),
-        replacement: format!("{before}{absolute}{after}"),
-    })
 }
 
 const COMPLETION_MENU_MAX_HEIGHT_PERCENT: usize = 30;

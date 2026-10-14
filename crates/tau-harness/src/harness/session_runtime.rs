@@ -2095,37 +2095,6 @@ impl Harness {
         self.finish_history_discovery(context);
     }
 
-    /// Persist a user-initiated `!` shell command's output as a
-    /// tagged user message so the agent sees it in the next prompt.
-    ///
-    /// The XML-ish `<user_shell>` envelope lets the model reliably
-    /// distinguish output the user pasted vs. output from its own
-    /// tool calls, and survives round-tripping through conversation
-    /// assembly.
-    pub(super) fn inject_user_shell_output(&mut self, finished: &tau_proto::ShellCommandFinished) {
-        let exit = finished
-            .exit_code
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| if finished.cancelled { "cancelled" } else { "?" }.to_owned());
-        let text = format!(
-            "<user_shell command={:?} exit_code={:?}>\n{}\n</user_shell>",
-            finished.command, exit, finished.output,
-        );
-        let Some((cid, agent_id)) = self.resolve_shell_output_target_agent(finished) else {
-            return;
-        };
-        let event = Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
-            inference_activation: false,
-            agent_id,
-            text,
-            message_class: tau_proto::PromptMessageClass::User,
-        });
-        // Stamp the publish with the target agent so the fold lands on the
-        // branch whose transcript owned the command and the post-commit hook
-        // syncs the conversation head.
-        self.publish_event_for_agent(&cid, None, event);
-    }
-
     /// Rebuild payload-free activation obligations from uncovered durable
     /// facts.
     pub(super) fn derive_replay_message_wakes(

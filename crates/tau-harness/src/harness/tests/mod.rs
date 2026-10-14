@@ -2861,11 +2861,4 @@ fn generated_runtime_initialization_and_shell_ids_accept_maximum_inputs() {
         "ffffffffffffffff-ffffffffffffffff-ffffffffffffffff"
     );
     assert!(initialization.as_str().len() <= 64);
-
-    let shell = super::shell_route_id(u64::MAX, u64::MAX);
-    assert_eq!(
-        shell.as_str(),
-        "harness-shell-ffffffffffffffffffffffffffffffff"
-    );
-    assert!(shell.as_str().len() <= 64);
 }

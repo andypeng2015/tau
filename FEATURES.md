@@ -31,7 +31,8 @@ without surrounding them with heavy chrome. It includes:
 - [best-effort persistent prompt history](docs/cli-keybindings.md#prompt-history-persistence),
   path and action completion, configurable key bindings, and prompt editing in
   `$EDITOR`;
-- local `!` shell commands, arbitrary picker commands such as `fzf`, and
+- explicit `!instance command` shell commands with passive context output,
+  `!!instance command` without context insertion, arbitrary picker commands such as `fzf`, and
   user-defined prompt templates;
 - commands for agents, sessions, roles, models, transcript branches, and
   display settings; and

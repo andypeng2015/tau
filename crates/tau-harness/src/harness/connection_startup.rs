@@ -541,7 +541,7 @@ impl Harness {
                     }
                     _ => false,
                 };
-                pending.original_shell_report_targets_ephemeral()
+                pending.original_publication_targets_ephemeral()
                     || self.debug_intercept_event_targets_ephemeral(&pending.event)
                     || replacement_targets_ephemeral
             }

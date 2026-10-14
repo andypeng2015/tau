@@ -321,24 +321,6 @@ fn provider_scoped_same_tier_alias_collision_is_rejected() {
     );
 }
 
-/// UI shell routing counts configured generic-shell owners exactly once,
-/// independently of prefixes and unrelated tools.
-#[test]
-fn ui_shell_provider_discovery_distinguishes_zero_one_and_two_instances() {
-    let mut registry = tau_core::ToolRegistry::new();
-    assert!(super::ui_shell_provider_ids(&registry).is_empty());
-    registry.register(
-        &crate::test_connection_id("shell-a"),
-        tagged_tool("shell", true, &["shell:exec:generic"]),
-    );
-    assert_eq!(super::ui_shell_provider_ids(&registry).len(), 1);
-    registry.register(
-        &crate::test_connection_id("shell-b"),
-        tagged_tool("prod_shell", true, &["shell:exec:generic"]),
-    );
-    assert_eq!(super::ui_shell_provider_ids(&registry).len(), 2);
-}
-
 fn model_info(model: &ModelId, tags: &[&str]) -> ProviderModelInfo {
     ProviderModelInfo {
         id: model.clone(),

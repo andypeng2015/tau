@@ -114,6 +114,10 @@ pub(super) struct ExtensionActivationStage {
 /// Runtime state for extension process lifecycle and pre-`Ready` activation.
 #[derive(Default)]
 pub(crate) struct ExtensionRuntimeState {
+    /// Process-local activity and retired IDs, removed with the owner
+    /// connection.
+    pub(super) activity_leases:
+        HashMap<tau_proto::ConnectionId, super::activity_leases::ActivityLeases>,
     /// Immutable process-local sink for opt-in supervised-child stderr
     /// mirroring.
     pub(crate) stderr_mirror: Option<crate::extension_stderr_mirror::ExtensionStderrMirror>,

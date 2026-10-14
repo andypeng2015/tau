@@ -2468,6 +2468,7 @@ fn papercut_runtime_lifecycle_and_replay_do_not_append() {
     let replay_frames = run_frames(
         true,
         [HarnessOutputMessage::Deliver(tau_proto::EventDelivery {
+            publisher: None,
             event: Box::new(Event::ToolStarted(replayed)),
             replay: true,
             recorded_at: Some(UnixMicros::new(4)),

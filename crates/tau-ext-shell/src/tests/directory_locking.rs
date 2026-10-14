@@ -968,19 +968,16 @@ fn live_loaded_agent_does_not_default_workdir_after_replay_error() {
         )
         .expect("late unset");
     runtime
-        .handle_event(
-            Event::UiShellCommand(tau_proto::UiShellCommand {
-                session_id: "s1"
-                    .parse::<tau_proto::SessionId>()
-                    .expect("known-safe SessionId must be valid"),
-                command_id: tau_proto::ShellCommandId::parse("replay-failed-shell")
-                    .expect("test identifier must satisfy its grammar"),
-                command: "pwd".to_owned(),
-                include_in_context: false,
-                target_agent_id: Some(agent_id),
-            }),
-            false,
-        )
+        .handle_ui_shell_command(tau_proto::UiShellCommand {
+            session_id: "s1"
+                .parse::<tau_proto::SessionId>()
+                .expect("known-safe SessionId must be valid"),
+            command_id: tau_proto::ShellCommandId::parse("replay-failed-shell")
+                .expect("test identifier must satisfy its grammar"),
+            command: "pwd".to_owned(),
+            include_in_context: false,
+            target_agent_id: Some(agent_id),
+        })
         .expect("replay-failed command is a local failure");
     let failure = rx.recv().expect("replay-failed terminal result");
     assert!(matches!(
@@ -1137,6 +1134,15 @@ fn targeted_user_shell_runs_from_agent_workdir() {
     let agent_id = tau_proto::AgentId::parse("agent-user-shell-workdir").expect("agent id");
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
+    let target = discover_shell_endpoint(&mut reader, &mut writer);
+    writer
+        .write_event(&Event::SessionAgentLoaded(tau_proto::SessionAgentLoaded {
+            session_id: "session-1".parse().expect("session"),
+            agent_id: agent_id.clone(),
+            ephemeral: false,
+            agent_initialization_id: "shell-init".parse().expect("initialization"),
+        }))
+        .expect("load agent");
     writer
         .write_event(&Event::AgentMetadataSet(tau_proto::AgentMetadataSet {
             agent_id: agent_id.clone(),
@@ -1148,7 +1154,18 @@ fn targeted_user_shell_runs_from_agent_workdir() {
         .expect("seed workdir");
     writer.flush().expect("flush seed");
     writer
-        .write_event(&Event::UiShellCommand(tau_proto::UiShellCommand {
+        .write_event(&Event::AgentReplayComplete(
+            tau_proto::AgentReplayComplete {
+                session_id: Some("session-1".parse().expect("session")),
+                agent_id: agent_id.clone(),
+                error: None,
+            },
+        ))
+        .expect("ready workdir");
+    write_shell_execution(
+        &mut writer,
+        target,
+        tau_proto::UiShellCommand {
             session_id: "session-1"
                 .parse::<tau_proto::SessionId>()
                 .expect("known-safe SessionId must be valid"),
@@ -1157,9 +1174,8 @@ fn targeted_user_shell_runs_from_agent_workdir() {
             command: "pwd".to_owned(),
             include_in_context: false,
             target_agent_id: Some(agent_id),
-        }))
-        .expect("targeted user shell");
-    writer.flush().expect("flush command");
+        },
+    );
     let finished = wait_for_user_shell_finished(&mut reader, "ui-targeted-pwd");
     assert!(
         finished

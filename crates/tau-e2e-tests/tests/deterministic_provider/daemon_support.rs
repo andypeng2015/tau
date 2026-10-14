@@ -443,6 +443,14 @@ pub(super) fn status_label(status: tau_harness::SessionLaunchStatus) -> &'static
 }
 
 pub(super) fn connect_ui(socket: &Path) -> Result<SocketPeer, Box<dyn std::error::Error>> {
+    connect_ui_with_selectors(socket, &[])
+}
+
+/// Attach with additional domain selectors in the initial subscription.
+pub(super) fn connect_ui_with_selectors(
+    socket: &Path,
+    extra: &[EventName],
+) -> Result<SocketPeer, Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut peer = loop {
         match SocketPeer::connect(socket) {
@@ -492,6 +500,7 @@ pub(super) fn connect_ui(socket: &Path) -> Result<SocketPeer, Box<dyn std::error
         EventName::AGENT_COMPACTED,
     ]
     .into_iter()
+    .chain(extra.iter().cloned())
     .map(EventSelector::Exact)
     .collect::<Vec<_>>();
     peer.send(&HarnessInputMessage::Subscribe(Subscribe {

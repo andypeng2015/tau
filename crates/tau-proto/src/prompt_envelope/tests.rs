@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use super::{
     MESSAGE_PAYLOAD_ENVELOPE, PayloadEnvelopeCarrier, PayloadEnvelopeOpening,
     PayloadEnvelopeRenderError, RegisteredPayloadEnvelope, TAU_BACKGROUND_RESULT_PAYLOAD_ENVELOPE,
-    TAU_INTERNAL_PAYLOAD_ENVELOPE, TAU_WEB_CONTENT_PAYLOAD_ENVELOPE, USER_PAYLOAD_ENVELOPE,
-    escape_exact_sentinel_close, escape_payload_envelope_attribute, registered_payload_envelopes,
+    TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE, TAU_INTERNAL_PAYLOAD_ENVELOPE,
+    TAU_WEB_CONTENT_PAYLOAD_ENVELOPE, USER_PAYLOAD_ENVELOPE, escape_exact_sentinel_close,
+    escape_payload_envelope_attribute, registered_payload_envelopes,
 };
 
 /// The registry must remain unambiguous and each family must preserve
@@ -17,6 +18,7 @@ fn registered_families_have_unique_complete_lexical_contracts() {
         families,
         &[
             USER_PAYLOAD_ENVELOPE,
+            TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE,
             TAU_INTERNAL_PAYLOAD_ENVELOPE,
             MESSAGE_PAYLOAD_ENVELOPE,
             TAU_WEB_CONTENT_PAYLOAD_ENVELOPE,

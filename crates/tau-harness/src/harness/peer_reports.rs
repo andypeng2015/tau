@@ -292,38 +292,14 @@ impl Harness {
         }
         if matches!(
             event,
-            Event::ShellCommandProgress(_) | Event::ShellCommandFinished(_)
+            Event::UiShellCommand(_)
+                | Event::ShellCommandProgress(_)
+                | Event::ShellCommandFinished(_)
+                | Event::ShellCommandProgressReported(_)
+                | Event::ShellCommandFinishedReported(_)
         ) {
-            // Canonical shell command state is harness-authored. Tool/Core
-            // extensions publish the corresponding `_reported` observation.
-            return Ok(());
-        }
-        if matches!(
-            event,
-            Event::ShellCommandProgressReported(_) | Event::ShellCommandFinishedReported(_)
-        ) {
-            // This is configured report-authority admission only. The committed
-            // consumer revalidates the exact extension generation and routed
-            // command ownership before publishing canonical shell state.
-            let authorized = self.extensions.entries.get(source_id).is_some_and(|entry| {
-                matches!(entry.kind, ClientKind::Tool | ClientKind::Core)
-                    && entry.state != ExtensionState::Disconnected
-            });
-            if !authorized {
-                tracing::warn!(
-                    target: "tau_harness",
-                    connection_id = %source_id,
-                    event = %event_name,
-                    "extension lacks shell command report authority"
-                );
-                return Ok(());
-            }
-            self.handle_extension_fallback_event_with_admission(
-                source_id,
-                event,
-                persist_override,
-                admission,
-            );
+            // These DTOs remain decodable for historical journals only.
+            // Live endpoint traffic uses opaque custom events.
             return Ok(());
         }
         if let Event::ToolRequest(request) = &event {
@@ -527,7 +503,12 @@ impl Harness {
             );
             return Ok(());
         }
-        if matches!(event, Event::ExtInternalPromptSubmitRequest(_)) {
+        if matches!(
+            event,
+            Event::ExtInternalPromptSubmitRequest(_)
+                | Event::ExtPassiveContextAppendRequest(_)
+                | Event::ExtActivityLeaseRequest(_)
+        ) {
             // This is configured request-authority admission only. Loaded-agent
             // validation and prompt submission happen after ordinary commit
             // under `SPEC-internal-prompt-submit-requests`.
@@ -935,13 +916,6 @@ impl Harness {
         }
         if matches!(
             event,
-            Event::ShellCommandProgressReported(_) | Event::ShellCommandFinishedReported(_)
-        ) {
-            self.process_committed_shell_command_report(peer_context, event);
-            return;
-        }
-        if matches!(
-            event,
             Event::ProviderQuotaReplaceReported(_)
                 | Event::ProviderQuotaPatchReported(_)
                 | Event::ProviderQuotaClearReported(_)
@@ -955,6 +929,14 @@ impl Harness {
         }
         if let Event::ExtInternalPromptSubmitRequest(request) = event {
             self.process_committed_internal_prompt_submit_request(peer_context, request);
+            return;
+        }
+        if let Event::ExtPassiveContextAppendRequest(request) = event {
+            self.process_committed_passive_context_request(peer_context, request);
+            return;
+        }
+        if let Event::ExtActivityLeaseRequest(request) = event {
+            self.process_committed_activity_lease_request(peer_context, request);
             return;
         }
         if let Event::StartAgentRequest(request) = event {
@@ -2874,139 +2856,6 @@ impl Harness {
                 Some(crate::harness::harness_connection_id()),
                 Event::ToolCancelled(cancelled),
             );
-        }
-    }
-
-    /// Validate one committed shell report against its captured extension
-    /// generation before consulting mutable routed-command state.
-    pub(super) fn process_committed_shell_command_report(
-        &mut self,
-        peer_context: &interception::PeerPublicationContext,
-        event: &Event,
-    ) {
-        let Some(extension) = peer_context
-            .extension
-            .as_ref()
-            .filter(|extension| matches!(extension.kind, ClientKind::Tool | ClientKind::Core))
-        else {
-            return;
-        };
-        let source_is_current =
-            self.extensions
-                .entries
-                .get(&extension.source)
-                .is_some_and(|entry| {
-                    entry.connection_id == extension.source
-                        && extension.admission.session_id == self.session_runtime.current_session_id
-                        && extension.admission.session_generation
-                            == self.session_runtime.current_session_generation
-                        && entry.instance_id == extension.instance_id
-                        && entry.name == extension.publisher
-                        && entry.kind == extension.kind
-                        && entry.state != ExtensionState::Disconnected
-                });
-        if !source_is_current {
-            return;
-        }
-        self.canonicalize_committed_shell_command_report(&extension.source, event.clone());
-    }
-
-    /// Validate routed-command ownership and publish one canonical shell fact.
-    pub(super) fn canonicalize_committed_shell_command_report(
-        &mut self,
-        source_id: &tau_proto::ConnectionId,
-        event: Event,
-    ) {
-        match event {
-            Event::ShellCommandProgressReported(progress) => {
-                let mut progress = progress;
-                let route_id = UiShellRouteId::new(progress.command_id.clone());
-                let Some(pending) = self.ui_runtime.pending_ui_shell_commands.get(&route_id) else {
-                    tracing::warn!(
-                        target: "tau_harness",
-                        command_id = %progress.command_id,
-                        source_id = %source_id,
-                        "discarding stale or unknown shell command progress"
-                    );
-                    return;
-                };
-                if &pending.provider_id != source_id
-                    || progress.target_agent_id != pending.command.target_agent_id
-                {
-                    tracing::warn!(
-                        target: "tau_harness",
-                        command_id = %progress.command_id,
-                        source_id = %source_id,
-                        expected_provider = %pending.provider_id,
-                        "discarding shell command progress with invalid ownership or identity"
-                    );
-                    return;
-                }
-                progress.command_id = pending.command.command_id.clone();
-                progress.target_agent_id = pending.command.target_agent_id.clone();
-                if pending.targets_ephemeral {
-                    self.mark_pending_ephemeral_shell_canonical(progress.command_id.clone());
-                }
-                self.publish_event(
-                    Some(crate::harness::harness_connection_id()),
-                    Event::ShellCommandProgress(progress),
-                );
-            }
-            Event::ShellCommandFinishedReported(finished) => {
-                let mut finished = finished;
-                let route_id = UiShellRouteId::new(finished.command_id.clone());
-                let Some(pending) = self
-                    .ui_runtime
-                    .pending_ui_shell_commands
-                    .get(&route_id)
-                    .cloned()
-                else {
-                    tracing::warn!(
-                        target: "tau_harness",
-                        command_id = %finished.command_id,
-                        source_id = %source_id,
-                        "discarding stale or duplicate shell command completion"
-                    );
-                    return;
-                };
-                let command = &pending.command;
-                if &pending.provider_id != source_id
-                    || finished.session_id != command.session_id
-                    || finished.command != command.command
-                    || finished.include_in_context != command.include_in_context
-                    || finished.target_agent_id != command.target_agent_id
-                {
-                    tracing::warn!(
-                        target: "tau_harness",
-                        command_id = %finished.command_id,
-                        source_id = %source_id,
-                        expected_provider = %pending.provider_id,
-                        "discarding shell command completion with invalid ownership or identity"
-                    );
-                    return;
-                }
-                self.ui_runtime.pending_ui_shell_commands.remove(&route_id);
-                finished.command_id = command.command_id.clone();
-                finished.session_id = command.session_id.clone();
-                finished.command.clone_from(&command.command);
-                finished.include_in_context = command.include_in_context;
-                finished.target_agent_id = command.target_agent_id.clone();
-                if pending.targets_ephemeral {
-                    self.mark_pending_ephemeral_shell_canonical(finished.command_id.clone());
-                }
-                if finished.include_in_context {
-                    self.ui_runtime
-                        .pending_ui_shell_output_injections
-                        .insert(finished.command_id.clone());
-                }
-                // The canonical completion commits before any transcript
-                // injection, so the UI always finalizes its render block first.
-                self.publish_event(
-                    Some(crate::harness::harness_connection_id()),
-                    Event::ShellCommandFinished(finished),
-                );
-            }
-            _ => unreachable!("caller filters shell command reports"),
         }
     }
 

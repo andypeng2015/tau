@@ -211,12 +211,8 @@ impl PendingIntercept {
 
     /// Return immutable original-route privacy captured before any interceptor
     /// replacement in this publication chain.
-    pub(crate) fn original_shell_report_targets_ephemeral(&self) -> bool {
-        self.source
-            .peer_context
-            .extension
-            .as_ref()
-            .is_some_and(|extension| extension.shell_report_targets_ephemeral)
+    pub(crate) fn original_publication_targets_ephemeral(&self) -> bool {
+        self.source.peer_context.suppress_debug
     }
 
     /// Select bootstrap sensitivity only for this interceptor's exact matching
@@ -265,11 +261,6 @@ pub(crate) struct AuthenticatedExtensionPublication {
     pub(crate) instance_id: tau_proto::ExtensionInstanceId,
     /// Session binding current when the peer frame originally arrived.
     pub(super) admission: ExtensionFrameAdmission,
-    /// Whether the original shell-report route targeted an ephemeral agent.
-    ///
-    /// This immutable bit keeps debug suppression safe when interception
-    /// replaces the report's peer-controlled route id.
-    pub(crate) shell_report_targets_ephemeral: bool,
     /// Activation-stage reservation made before interception.
     pub(crate) activation_reservation: Option<ActivationReservation>,
     /// Exact provider prompt route owned when a terminal report was admitted.
@@ -308,10 +299,27 @@ pub(crate) enum ActivationDeclarationFamily {
 /// Immutable authenticated metadata carried beside one generic peer publish.
 #[derive(Clone, Default)]
 pub(crate) struct PeerPublicationContext {
+    /// Authenticated original publisher, frozen before interception.
+    pub(crate) publisher: Option<tau_proto::EventPublisher>,
+    /// Original generic privacy scope suppresses diagnostic payload capture.
+    pub(crate) suppress_debug: bool,
     /// Configured extension identity, when this publish came from one.
     pub(crate) extension: Option<AuthenticatedExtensionPublication>,
     /// Exact diagnostic sensitivity selected at original publication admission.
     pub(crate) debug_sensitivity: DebugEventSensitivity,
+}
+
+impl PeerPublicationContext {
+    /// Preserve captured attribution on every live publication projection.
+    pub(crate) fn live_delivery(
+        &self,
+        recorded_at: tau_proto::UnixMicros,
+        event: Event,
+    ) -> tau_proto::HarnessOutputMessage {
+        let mut delivery = tau_proto::EventDelivery::live(recorded_at, event);
+        delivery.publisher = self.publisher.clone();
+        tau_proto::HarnessOutputMessage::Deliver(delivery)
+    }
 }
 
 /// Inputs that survive setup until the generic publish dispatcher takes
@@ -1025,9 +1033,6 @@ const MUST_PASS_BY_DEFAULT: &[EventName] = &[
     EventName::TOOL_BACKGROUND_RESULT,
     EventName::TOOL_BACKGROUND_RESULT_DISPLAY,
     EventName::TOOL_BACKGROUND_ERROR,
-    // A validated user-shell terminal consumes the harness's pending route.
-    // Dropping it would leave every attached UI waiting forever.
-    EventName::SHELL_COMMAND_FINISHED,
 ];
 
 fn mandatory_harness_notice(event: &Event) -> bool {
@@ -1103,23 +1108,6 @@ fn preserve_agent_metadata_mutation_id(original: &Event, replacement: &mut Event
     replacement.mutation_id = original.mutation_id.clone();
 }
 
-fn preserve_shell_command_identity(original: &Event, replacement: &mut Event) {
-    match (original, replacement) {
-        (Event::ShellCommandProgress(original), Event::ShellCommandProgress(replacement)) => {
-            replacement.command_id = original.command_id.clone();
-            replacement.target_agent_id = original.target_agent_id.clone();
-        }
-        (Event::ShellCommandFinished(original), Event::ShellCommandFinished(replacement)) => {
-            replacement.command_id = original.command_id.clone();
-            replacement.session_id = original.session_id.clone();
-            replacement.command.clone_from(&original.command);
-            replacement.include_in_context = original.include_in_context;
-            replacement.target_agent_id = original.target_agent_id.clone();
-        }
-        _ => {}
-    }
-}
-
 /// Reject a replacement that cannot carry tool-call correlation.
 fn invalid_tool_request_replacement(event: &Event) -> bool {
     matches!(event, Event::ToolRequest(request) if request.call_id.is_empty())
@@ -1129,6 +1117,10 @@ pub(super) fn immutable_protected_fact_was_modified(original: &Event, replacemen
     matches!(
         original,
         Event::StartAgentAccepted(_)
+            | Event::AgentPassiveContextAppended(_)
+            | Event::ExtPassiveContextAppendResult(_)
+            | Event::ExtActivityLeaseRequest(_)
+            | Event::ExtActivityLeaseResult(_)
             | Event::AgentStartFailed(_)
             | Event::AgentStarted(_)
             | Event::AgentUserInteractionRecorded(_)
@@ -1185,7 +1177,6 @@ pub(super) fn immutable_protected_fact_was_modified(original: &Event, replacemen
             | Event::ToolBackgroundResult(_)
             | Event::ToolBackgroundResultDisplay(_)
             | Event::ToolBackgroundError(_)
-            | Event::ShellCommandFinished(_)
     ) && original != replacement
 }
 
@@ -1841,7 +1832,7 @@ impl Harness {
             }
         }
         // Specialized session teardown has already completed admission, ACK,
-        // shell, and peer failure paths. Retain mandatory terminal/lifecycle
+        // and peer failure paths. Retain mandatory terminal/lifecycle
         // publications, including SessionShutdown, and force their interception
         // chains to completion before retiring the bound session.
         let mut retained = VecDeque::with_capacity(self.runtime_io.publication.deferred.len());
@@ -2192,6 +2183,7 @@ impl Harness {
             must_pass: _,
             sync_head_for,
         } = deferred;
+        self.fail_passive_context_append(&event, reason);
         if let Some(prompt_id) = sync_head_for
             .as_ref()
             .and_then(ConversationHeadSync::prompt_dispatch)
@@ -2209,9 +2201,6 @@ impl Harness {
                 reason,
                 tau_proto::ExternalAgentMessageFailure::Rejected,
             );
-        }
-        if let Event::ShellCommandProgress(progress) = &event {
-            self.discard_uncommitted_shell_canonical_marker(&progress.command_id);
         }
         self.discard_peer_activation_reservation(&source.peer_context);
         if let Some(owner) = source.ui_interaction.take() {
@@ -2932,16 +2921,6 @@ impl Harness {
         if start_owner.is_none() {
             start_owner = self.start_phase_owner_for_event(&event);
         }
-        let shell_report_targets_ephemeral = match &event {
-            Event::ShellCommandProgressReported(progress) => Some(&progress.command_id),
-            Event::ShellCommandFinishedReported(finished) => Some(&finished.command_id),
-            _ => None,
-        }
-        .is_some_and(|command_id| {
-            self.ui_runtime
-                .ephemeral_ui_shell_route_ids
-                .contains(command_id)
-        });
         let extension = source.and_then(|source_id| self.extensions.entries.get(source_id));
         let activation_reservation = extension
             .filter(|entry| entry.state != path_crate_extension::ExtensionState::Ready)
@@ -2970,7 +2949,25 @@ impl Harness {
                     declaration_family,
                 })
             });
+        let ui_source = source.filter(|source| self.is_attached_socket_ui(source));
+        let publisher = if let Some(entry) = extension {
+            Some(tau_proto::EventPublisher::Extension {
+                name: entry.name.clone(),
+                instance_id: entry.instance_id,
+                connection_id: entry.connection_id.clone(),
+            })
+        } else if let Some(source) = ui_source {
+            Some(tau_proto::EventPublisher::Ui {
+                connection_id: source.clone(),
+            })
+        } else if source.is_none() || source == Some(super::harness_connection_id()) {
+            Some(tau_proto::EventPublisher::Harness)
+        } else {
+            None
+        };
         let peer_context = PeerPublicationContext {
+            publisher,
+            suppress_debug: self.event_targets_ephemeral_agent(&event, sync_head_for.as_ref()),
             extension: extension.map(|entry| AuthenticatedExtensionPublication {
                 publisher: entry.name.clone(),
                 source: entry.connection_id.clone(),
@@ -2981,7 +2978,6 @@ impl Harness {
                     session_id: self.session_runtime.current_session_id.clone(),
                     session_generation: self.session_runtime.current_session_generation,
                 }),
-                shell_report_targets_ephemeral,
                 activation_reservation,
                 provider_terminal_prompt_owner: match &event {
                     Event::ProviderResponseFinishedReported(response)
@@ -3413,8 +3409,8 @@ impl Harness {
         }
 
         let event_name = original_event.name();
-        let shell_progress_command_id = match &original_event {
-            Event::ShellCommandProgress(progress) => Some(progress.command_id.clone()),
+        let passive_context_append = match &original_event {
+            Event::AgentPassiveContextAppended(appended) => Some(appended.clone()),
             _ => None,
         };
         let next_event = match action {
@@ -3447,7 +3443,6 @@ impl Harness {
                 } else {
                     sanitize_harness_notice_replacement(&original_event, &mut new_event);
                     preserve_agent_metadata_mutation_id(&original_event, &mut new_event);
-                    preserve_shell_command_identity(&original_event, &mut new_event);
                     if protected_prompt_fields_were_modified(&original_event, &new_event) {
                         tracing::warn!(
                             target: "tau_harness::interception",
@@ -3543,8 +3538,13 @@ impl Harness {
         };
 
         let Some(event) = next_event else {
-            if let Some(command_id) = shell_progress_command_id.as_ref() {
-                self.discard_uncommitted_shell_canonical_marker(command_id);
+            if let Some(appended) = passive_context_append.as_ref() {
+                self.passive_context_append_result(
+                    appended,
+                    tau_proto::PassiveContextAppendOutcome::Failed {
+                        reason: "passive context append rejected by interception".to_owned(),
+                    },
+                );
             }
             self.discard_peer_activation_reservation(&source.peer_context);
             if let Some(owner) = source.ui_interaction.take() {

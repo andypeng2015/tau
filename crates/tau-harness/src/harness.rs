@@ -2,10 +2,8 @@
 //! store, and the live extensions; routes every event between the agent,
 //! tools, and clients.
 
-use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
-use std::num::NonZeroUsize;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -17,8 +15,8 @@ use std::{
 };
 
 use path_tau_config_settings::ShellToolStyle;
+use rand::SeedableRng as _;
 use rand::rngs::StdRng;
-use rand::{RngCore as _, SeedableRng as _};
 use tau_config::settings as path_tau_config_settings;
 use tau_core::{
     ActionRegistry, AgentStore, Connection, ConnectionOrigin, EventBus, NodeId,
@@ -69,10 +67,8 @@ use self::session_runtime::{
 };
 use self::start_coordinator::{StartCoordinator, StartPhaseOwner};
 #[cfg(test)]
-use self::ui_runtime::{
-    CancelTarget, PendingUiShellCommand, shell_route_id, ui_shell_provider_ids,
-};
-use self::ui_runtime::{PendingActionInvocation, UiShellRouteId};
+use self::ui_runtime::CancelTarget;
+use self::ui_runtime::PendingActionInvocation;
 use crate::agent::{
     ActivationDispatchState, Agent, AgentTurnState, BackgroundCompletionCorrelation,
     FinalStatusChallenge, FinalStatusInput, InferenceCheckpointOwner, InitialPromptCorrelation,
@@ -1586,6 +1582,7 @@ mod tests;
 #[cfg(test)]
 mod tool_policy_tests;
 
+mod activity_leases;
 mod agent_context;
 mod agent_registry;
 mod agent_runtime_state;
@@ -1614,6 +1611,7 @@ mod notification_delivery;
 mod operator_agent_unload;
 mod ordinary_no_tool_terminal_reducer;
 mod output_length_continuation_reducer;
+mod passive_context;
 mod peer_messaging;
 mod peer_reports;
 mod prepared_automatic_compaction_decision;
@@ -2747,9 +2745,6 @@ impl Harness {
                 tau_proto::AgentPromptFailureStage::LifecycleTeardown,
                 "the session shut down before the initial prompt materialized",
             );
-            self.fail_all_pending_ui_shell_commands(
-                "the session shut down before the shell command completed",
-            );
             // Revoke old-session admission before forcing all already accepted
             // publications through their terminal shutdown path.
             self.session_runtime.current_session_generation = self
@@ -3417,6 +3412,10 @@ impl Harness {
             self.handle_extension_event_inner_with_persist(client_id, event, persist_override)?;
             return Ok(true);
         }
+        if Self::requires_tool_event_intake(&event) || Self::is_peer_forbidden_harness_fact(&event)
+        {
+            return Ok(true);
+        }
 
         let (keep_going, event) = self.handle_client_ui_event(client_id, event)?;
         let Some(event) = event else {
@@ -3441,7 +3440,8 @@ impl Harness {
             self.enqueue_attached_socket_ui_publish(client_id, event, persist_override);
             return Ok(true);
         }
-        self.handle_client_fallback_event(client_id, event, persist_override);
+        // All other typed client events are observations or historical DTOs,
+        // not live publication authority.
         Ok(true)
     }
 
@@ -3493,21 +3493,3 @@ impl Harness {
 }
 
 const RENDERED_PROMPT_PREVIEW_AGENT_ID: &str = "dev-preview-agent";
-
-impl Harness {
-    fn handle_client_fallback_event(
-        &mut self,
-        client_id: &tau_proto::ConnectionId,
-        event: Event,
-        persist_override: Option<bool>,
-    ) {
-        if !Self::is_client_fallback_emit_allowed(&event)
-            || Self::requires_tool_event_intake(&event)
-            || Self::is_peer_forbidden_harness_fact(&event)
-        {
-            return;
-        }
-        let persist = persist_override.unwrap_or_else(|| event.defaults_to_persist());
-        self.enqueue_publish(Some(client_id), event, persist, false, None);
-    }
-}

@@ -5,6 +5,12 @@ remains in the applicable Linked Specs.
 
 ## Protocol and UI
 
+User-endpoint tests distinguish execution intent from live authenticated activity
+acquisition acknowledgement, verify no pre-ACK effects and sticky cancellation,
+and keep the hold through passive-context settlement. Harness lifecycle tests
+cover ownership, idempotency, interception, UI detach, disconnect, and idle-only
+shutdown inhibition.
+
 Registration tests assert model-visible schemas and validate provider-owned
 examples with `tau_core::validate_tool_examples`; custom/freeform examples receive
 separate semantic coverage. Runtime tests lock startup subscriptions and
@@ -43,16 +49,17 @@ canonical committed-value scans, same-path deletion, unavailable roots, and
 installed-ACK setter reservations through cancellation. Harness discovery tests
 cover source/agent isolation, superseded tokens, timeout/disconnect fallback,
 required-skill repair, source reconnection, and both retained prompt phases.
-Harness-boundary tests cover provider cardinality,
-stale-session rejection, targeted execution, multi-UI projection, delivery loss,
-bounded IDs, delayed events, and exactly one terminal result.
+Endpoint tests cover explicit instance selection, stale-session/process rejection,
+targeted execution, owner-bound cancellation, bounded IDs, duplicate execution
+rejection, and exactly one terminal result.
 Prompt coverage asserts the shell-owned declaration and prose, default/prefixed
 and unavailable rendering, effective-capability and contributor filtering,
 shared-fragment coalescing/lifecycle, and the cold-resume prompt oracle.
-Protocol tests assert that every user-shell producer emits the `_reported`
-progress/completion names; harness-boundary tests separately lock report commit,
-canonical mapping, exact generation/route authority, activation ordering, and
-post-completion-commit transcript injection.
+User-shell producers emit opaque `shellux.reply` events rather than first-party
+`_reported` frames. Generic harness tests cover immutable publisher identity,
+agent-scoped debug suppression, and passive append commit/failure and replay.
+The production endpoint E2E covers two observing UIs, duplicate intent, one durable
+passive append, and no provider activation.
 Schema coverage keeps `shell_command` limited to its current `workdir` spelling;
 Artifact coverage drives fake correlated export and import RPC responses, proves
 original-byte equality and private imported-file permissions, asserts

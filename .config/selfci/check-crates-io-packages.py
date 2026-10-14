@@ -15,6 +15,7 @@ PUBLICATION_ORDER = [
     "dpc-tau-util-fs-err",
     "dpc-tau-vcr",
     "dpc-tau-proto",
+    "dpc-tau-shell-interaction",
     "dpc-tau-client",
     "dpc-tau-config",
     "dpc-tau-core",

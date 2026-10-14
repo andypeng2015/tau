@@ -5887,6 +5887,9 @@ impl EventRenderer {
 
     fn direct_agent_event_agent_id(event: &Event) -> EventAgentIdResolution {
         match event {
+            Event::AgentPassiveContextAppended(appended) => {
+                EventAgentIdResolution::Agent(appended.agent_id.clone())
+            }
             Event::AgentStarted(started) => EventAgentIdResolution::Agent(started.agent_id.clone()),
             Event::AgentDisplayNameSet(name) => {
                 EventAgentIdResolution::Agent(name.agent_id.clone())
@@ -6055,6 +6058,7 @@ impl EventRenderer {
         // or visible state instead of being dropped.
 
         if self.handle_session_events(event)
+            || self.handle_passive_context_event(event)
             || self.handle_prompt_events(event)
             || self.handle_provider_response_events(prepared, recorded_at)
             || self.handle_tool_events(event, recorded_at)
@@ -6070,6 +6074,22 @@ impl EventRenderer {
         }
 
         Self::trace_unhandled_event(event);
+    }
+
+    /// Render generic attributed extension context, including cold history.
+    fn handle_passive_context_event(&mut self, event: &Event) -> bool {
+        let Event::AgentPassiveContextAppended(appended) = event else {
+            return false;
+        };
+        self.resources.handle.print_output(
+            "extension-context",
+            tau_cli_term::resolve::themed_block(
+                &self.resources.theme,
+                tau_themes::names::SYSTEM_INFO,
+                appended.text.clone(),
+            ),
+        );
+        true
     }
 
     /// Render one committed message fact in the current containing view.

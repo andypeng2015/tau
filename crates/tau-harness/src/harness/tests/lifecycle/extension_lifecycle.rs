@@ -8678,39 +8678,17 @@ fn all_non_declaration_events_wait_for_the_global_activation_barrier() {
     h.extensions.initial_tool_preflight_complete = false;
     connect_handshaking_tool(&mut h, "operational-owner");
     connect_handshaking_tool(&mut h, "activation-blocker");
-    h.ui_runtime.pending_ui_shell_commands.insert(
-        UiShellRouteId::new(test_shell_command_id("startup-shell")),
-        PendingUiShellCommand {
-            provider_id: crate::test_connection_id("operational-owner"),
-            command: tau_proto::UiShellCommand {
-                command_id: tau_proto::ShellCommandId::parse("startup-shell")
-                    .expect("test identifier must satisfy its grammar"),
-                session_id: test_session_id("s1"),
-                command: "printf held".to_owned(),
-                include_in_context: false,
-                target_agent_id: None,
-            },
-            targets_ephemeral: false,
-        },
+    let held = Event::ExtensionEvent(
+        tau_proto::CustomEvent::try_new(
+            "operational.held".parse().expect("custom name"),
+            Some(test_session_id("s1")),
+            CborValue::Text("held".to_owned()),
+        )
+        .expect("custom event"),
     );
 
-    h.handle_extension_event(
-        "operational-owner",
-        TestProtocolItem::Event(Event::ShellCommandFinishedReported(
-            tau_proto::ShellCommandFinished {
-                command_id: tau_proto::ShellCommandId::parse("startup-shell")
-                    .expect("test identifier must satisfy its grammar"),
-                session_id: test_session_id("s1"),
-                command: "printf held".to_owned(),
-                include_in_context: false,
-                target_agent_id: None,
-                output: "held".to_owned(),
-                exit_code: Some(0),
-                cancelled: false,
-            },
-        )),
-    )
-    .expect("defer shell completion");
+    h.handle_extension_event("operational-owner", TestProtocolItem::Event(held.clone()))
+        .expect("defer opaque event");
     h.handle_extension_message(
         &crate::test_connection_id("operational-owner"),
         TestMessage::Ready(Default::default()),
@@ -8720,11 +8698,7 @@ fn all_non_declaration_events_wait_for_the_global_activation_barrier() {
     assert!(!event_log_contains_source_event(
         &h,
         "operational-owner",
-        |event| matches!(
-            event,
-            Event::ShellCommandFinishedReported(finished)
-                if finished.command_id.as_str() == "startup-shell"
-        )
+        |event| event == &held
     ));
 
     h.handle_extension_message(
@@ -8736,20 +8710,7 @@ fn all_non_declaration_events_wait_for_the_global_activation_barrier() {
     assert!(event_log_contains_source_event(
         &h,
         "operational-owner",
-        |event| matches!(
-            event,
-            Event::ShellCommandFinishedReported(finished)
-                if finished.command_id.as_str() == "startup-shell"
-        )
-    ));
-    assert!(event_log_contains_source_event(
-        &h,
-        HARNESS_CONNECTION_ID,
-        |event| matches!(
-            event,
-            Event::ShellCommandFinished(finished)
-                if finished.command_id.as_str() == "startup-shell"
-        )
+        |event| event == &held
     ));
     h.shutdown().expect("shutdown");
 }

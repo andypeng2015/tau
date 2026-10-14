@@ -174,7 +174,8 @@ fn event_bus_accepts_unknown_non_socket_subscription() {
 #[test]
 fn event_bus_rejects_invalid_socket_union_before_commit() {
     let mut bus = EventBus::new();
-    let (connection, _) = test_connection(ConnectionOrigin::Socket);
+    let (mut connection, _) = test_connection(ConnectionOrigin::Socket);
+    connection.metadata.kind = tau_proto::ClientKind::Tool;
     let id = bus.connect(connection);
     let existing = EventSelector::Exact(tau_proto::EventName::HARNESS_NOTICE);
     bus.set_subscriptions(&id, vec![existing.clone()], vec![existing.clone()])
@@ -197,6 +198,23 @@ fn event_bus_rejects_invalid_socket_union_before_commit() {
         Some([existing.clone()].as_slice())
     );
     assert_eq!(bus.live_subscriptions(&id), Some([existing].as_slice()));
+}
+
+/// Attached UIs can observe opaque protocols by exact name or prefix; no
+/// domain-specific family needs to enter the core bus allowlist.
+#[test]
+fn event_bus_accepts_custom_socket_ui_subscriptions() {
+    let mut bus = EventBus::new();
+    let (connection, _) = test_connection(ConnectionOrigin::Socket);
+    let id = bus.connect(connection);
+    for selector in [
+        EventSelector::Exact("example.reply".parse().expect("custom name")),
+        EventSelector::Prefix("example.".to_owned()),
+    ] {
+        bus.set_subscriptions(&id, Vec::new(), vec![selector.clone()])
+            .expect("UI custom observation");
+        assert_eq!(bus.live_subscriptions(&id), Some([selector].as_slice()));
+    }
 }
 
 /// Buffered live delivery records the publish-time live selector match so a

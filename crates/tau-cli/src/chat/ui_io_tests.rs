@@ -118,6 +118,8 @@ fn initial_quit_disposition_uses_remote_renderer_fifo() {
 fn remote_bell(delivery_id: u64) -> RendererCmd {
     RendererCmd::Remote {
         abandoned_shell_starts: Vec::new(),
+        publisher: None,
+        replay: false,
         presentation: cold_attach_stager::RendererPresentation::Ordinary,
         event: Box::new(Event::TermBell(tau_proto::TermBell {})),
         recorded_at: UnixMicros::new(delivery_id),
@@ -296,6 +298,8 @@ fn renderer_scheduler_preserves_remote_prefix_and_disconnect_order() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(1),
@@ -587,6 +591,8 @@ fn renderer_scheduler_waits_for_reserved_remote_arriving_after_local() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(1),
@@ -624,6 +630,8 @@ fn renderer_scheduler_serializes_local_capture_with_remote_dequeue() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(1),
@@ -941,6 +949,8 @@ fn renderer_scheduler_places_action_before_later_remote_result() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(1),
@@ -961,6 +971,8 @@ fn renderer_scheduler_places_action_before_later_remote_result() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(2),
@@ -1010,6 +1022,8 @@ fn renderer_scheduler_bounds_local_progress_under_remote_replenishment() {
         remote_tx
             .send(RendererCmd::Remote {
                 abandoned_shell_starts: Vec::new(),
+                publisher: None,
+                replay: false,
                 presentation: cold_attach_stager::RendererPresentation::Ordinary,
                 event: Box::new(Event::TermBell(tau_proto::TermBell {})),
                 recorded_at: UnixMicros::new(delivery_id),
@@ -1069,6 +1083,8 @@ fn saturated_remote_admission_keeps_selection_and_cancel_uplink_live() {
     remote_tx
         .send(RendererCmd::Remote {
             abandoned_shell_starts: Vec::new(),
+            publisher: None,
+            replay: false,
             presentation: cold_attach_stager::RendererPresentation::Ordinary,
             event: Box::new(Event::TermBell(tau_proto::TermBell {})),
             recorded_at: UnixMicros::new(1),
@@ -1092,6 +1108,8 @@ fn saturated_remote_admission_keeps_selection_and_cancel_uplink_live() {
         remote_tx
             .send(RendererCmd::Remote {
                 abandoned_shell_starts: Vec::new(),
+                publisher: None,
+                replay: false,
                 presentation: cold_attach_stager::RendererPresentation::Ordinary,
                 event: Box::new(Event::TermBell(tau_proto::TermBell {})),
                 recorded_at: UnixMicros::new(2),

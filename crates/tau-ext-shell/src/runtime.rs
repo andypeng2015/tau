@@ -4,8 +4,10 @@ use crate::tools as path_crate_tools;
 
 #[cfg(test)]
 mod tests;
+mod user_interaction;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
 
 use tau_proto::{
@@ -38,6 +40,10 @@ enum StartupCwdSource {
 }
 
 pub(super) struct ShellRuntime {
+    /// Configured instance plus a fresh process incarnation, never persisted.
+    interaction_target: tau_shell_interaction::Target,
+    /// Endpoint-owned admission tombstones and active command snapshots.
+    user_commands: Arc<Mutex<crate::user_shell_output::UserCommandRegistry>>,
     config: ExtConfig,
     /// Whether session discovery may read process HOME and working-directory
     /// inputs.
@@ -137,6 +143,11 @@ impl ShellRuntime {
         artifact_transfers: ArtifactTransferManager,
     ) -> Self {
         Self {
+            interaction_target: tau_shell_interaction::Target {
+                instance: "unconfigured".parse().expect("static instance"),
+                nonce: tau_shell_interaction::nonce(),
+            },
+            user_commands: Arc::default(),
             config,
             discovery_policy,
             discovery_sources: HashMap::new(),
@@ -215,6 +226,7 @@ impl ShellRuntime {
         if cfg.working_directory.is_none() {
             cfg.working_directory = self.config.working_directory.clone();
         }
+        self.interaction_target.instance = instance_name.clone();
         self.cwd_state.set_instance_name(instance_name);
         self.cwd_state.set_context_label(tool_prefix.as_ref());
         if let Err(message) = apply_working_directory(&self.config, &cfg, self.runtime_started) {
@@ -347,7 +359,9 @@ impl ShellRuntime {
                 )))?;
             }
             Event::ToolCancelRequest(request) => self.handle_tool_cancel_request(request),
-            Event::UiShellCommand(cmd) => self.handle_ui_shell_command(cmd)?,
+            // Historical typed user-shell events are data only. New commands
+            // enter through the live, nonce-targeted custom protocol.
+            Event::UiShellCommand(_) => {}
             _ => {}
         }
         Ok(())
@@ -388,6 +402,7 @@ impl ShellRuntime {
     }
 
     fn handle_session_agent_unloaded(&mut self, unloaded: tau_proto::SessionAgentUnloaded) {
+        self.cancel_user_commands_for_agent(&unloaded.agent_id);
         self.lock_manager.release_agent(&unloaded.agent_id);
         if let Some(scheduler) = &self.scheduler {
             scheduler.cancel_agent(&unloaded.agent_id);
@@ -923,9 +938,19 @@ impl ShellRuntime {
         Ok(())
     }
 
-    fn handle_ui_shell_command(
+    #[cfg(test)]
+    pub(crate) fn handle_ui_shell_command(
         &self,
         cmd: tau_proto::UiShellCommand,
+    ) -> tau_client::ClientResult<()> {
+        self.handle_scoped_ui_shell_command(cmd, &self.tx, Arc::default())
+    }
+
+    fn handle_scoped_ui_shell_command(
+        &self,
+        cmd: tau_proto::UiShellCommand,
+        tx: &Output,
+        cancelled: Arc<AtomicBool>,
     ) -> tau_client::ClientResult<()> {
         if cmd
             .target_agent_id
@@ -935,7 +960,7 @@ impl ShellRuntime {
             send_ui_shell_saturated_failure(
                 cmd,
                 "workdir replay is not complete for the target agent".to_owned(),
-                &self.tx,
+                tx,
             );
             return Ok(());
         }
@@ -946,15 +971,16 @@ impl ShellRuntime {
         let cwd = match cwd {
             Ok(cwd) => cwd,
             Err(message) => {
-                send_ui_shell_saturated_failure(cmd, message, &self.tx);
+                send_ui_shell_saturated_failure(cmd, message, tx);
                 return Ok(());
             }
         };
         if let Err(error) = schedule_ui_shell_command(
             cmd,
             UiShellScheduleContext {
+                cancelled,
                 scheduler: self.scheduler()?,
-                tx: &self.tx,
+                tx,
                 shell_config: self.config.shell.clone(),
                 running_ui_commands: Arc::clone(&self.running_ui_commands),
                 shutdown_generation_counter: Arc::clone(&self.shutdown_generation_counter),
@@ -963,7 +989,7 @@ impl ShellRuntime {
             },
         ) {
             let (cmd, message) = *error;
-            send_ui_shell_saturated_failure(cmd, message, &self.tx);
+            send_ui_shell_saturated_failure(cmd, message, tx);
         }
         Ok(())
     }

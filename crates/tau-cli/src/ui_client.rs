@@ -358,10 +358,16 @@ pub(crate) fn chat_subscription_selectors() -> Vec<EventSelector> {
     // `specs/GATE-exact-event-subscriptions.md` policy before adding broad
     // prefix selectors.
     vec![
+        EventSelector::Exact(
+            tau_shell_interaction::REPLY_EVENT
+                .parse()
+                .expect("static event name"),
+        ),
+        EventSelector::Exact(E::EXT_PASSIVE_CONTEXT_APPEND_RESULT),
+        EventSelector::Exact(E::AGENT_PASSIVE_CONTEXT_APPENDED),
         // Locally-originated UI echoes rendered by the transcript and activity
         // state.
         EventSelector::Exact(E::UI_PROMPT_SUBMITTED),
-        EventSelector::Exact(E::UI_SHELL_COMMAND),
         EventSelector::Exact(E::UI_CANCEL_PROMPT),
         // Dynamic action menus and command results.
         EventSelector::Exact(E::ACTION_SCHEMA_PUBLISHED),
@@ -407,7 +413,7 @@ pub(crate) fn chat_subscription_selectors() -> Vec<EventSelector> {
         EventSelector::Exact(E::PROVIDER_PROMPT_SUBMITTED),
         EventSelector::Exact(E::PROVIDER_RESPONSE_UPDATED),
         EventSelector::Exact(E::PROVIDER_RESPONSE_FINISHED),
-        // Tool and shell progress shown in generic ToolUseState blocks.
+        // Model tool progress shown in generic ToolUseState blocks.
         EventSelector::Exact(E::TOOL_STARTED),
         EventSelector::Exact(E::TOOL_REJECTED),
         EventSelector::Exact(E::TOOL_RESULT_DISPLAY),
@@ -416,8 +422,6 @@ pub(crate) fn chat_subscription_selectors() -> Vec<EventSelector> {
         EventSelector::Exact(E::TOOL_BACKGROUND_ERROR),
         EventSelector::Exact(E::TOOL_PROGRESS),
         EventSelector::Exact(E::TOOL_CANCELLED),
-        EventSelector::Exact(E::SHELL_COMMAND_PROGRESS),
-        EventSelector::Exact(E::SHELL_COMMAND_FINISHED),
         // Extension/context/status events rendered in the transcript or used to
         // update available actions/skills/instructions.
         EventSelector::Exact(E::EXTENSION_STARTING),
@@ -458,6 +462,10 @@ pub(crate) fn subscribe_message(selectors: Vec<EventSelector>) -> HarnessInputMe
 pub(crate) fn chat_subscribe_message() -> HarnessInputMessage {
     let live_selectors = chat_subscription_selectors();
     let live_only = [
+        tau_shell_interaction::REPLY_EVENT
+            .parse()
+            .expect("static event name"),
+        EventName::EXT_PASSIVE_CONTEXT_APPEND_RESULT,
         EventName::AGENT_PROMPT_STARTED,
         EventName::AGENT_PROMPT_TERMINATED,
         EventName::AGENT_PROMPT_FAILED,
@@ -466,7 +474,6 @@ pub(crate) fn chat_subscribe_message() -> HarnessInputMessage {
         EventName::PROVIDER_PROMPT_SUBMITTED,
         EventName::PROVIDER_RESPONSE_UPDATED,
         EventName::TOOL_PROGRESS,
-        EventName::SHELL_COMMAND_PROGRESS,
         EventName::TERM_OSC1337_SET_USER_VAR,
         EventName::TERM_BELL,
     ];
@@ -476,6 +483,8 @@ pub(crate) fn chat_subscribe_message() -> HarnessInputMessage {
             |selector| !matches!(selector, EventSelector::Exact(name) if live_only.contains(name)),
         )
         .cloned()
+        // Old journals retain their original self-contained terminal DTO.
+        .chain([EventSelector::Exact(EventName::SHELL_COMMAND_FINISHED)])
         // Historical provider errors normalize into logical tool errors during
         // cold attach. Live provider errors are deliberately ignored in favor
         // of their canonical `tool.error` counterparts.

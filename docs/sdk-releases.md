@@ -20,21 +20,24 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
-Protocol **12.0** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
-**0.11.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
-client-to-proto pin of `=0.11.0`. This line is not yet published. It packages the
-current implementation, including typed unusable-local-summary recovery.
-Protocol-11 configured extensions must rebuild together with the harness.
-Journal framing is unchanged, but older binaries cannot decode new failure
-variants; do not roll back after writing them without a compatible reader.
+Protocol **13.0** uses the prepared `dpc-tau-proto` and `dpc-tau-client`
+**0.12.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
+client-to-proto pin of `=0.12.0`. This line is not yet published. It includes
+authenticated delivery publishers, generic custom-event agent privacy scope,
+and passive context append requests/results/facts. It replaces live first-party
+shell routing with an opaque endpoint protocol. Configured extensions must
+rebuild together with the harness. Journal framing is unchanged; new binaries
+read legacy shell records, but older readers cannot decode new passive-append
+or failure variants. Do not roll back after writing them without a compatible
+reader. No publication, migration, or rollout is authorized by these source edits.
 
 Since published SDK 0.10.0 / protocol 10.2, the public API gained provider error
 categories, CLI message DTOs and optional CLI-origin metadata, typed
 exhausted-transient compaction failure variants, and optional original discovery
 paths and unusable-local-summary failure authority. These field and enum additions require a new pre-1.0 minor SDK line.
 Configured protocol-10 extensions are rejected before Configure/Ready by a
-protocol-12 harness and must migrate to the actual SDK API, not merely advertise
-a new wire version. The archive consumer check verifies protocol 12.0 and its
+protocol-13 harness and must migrate to the actual SDK API, not merely advertise
+a new wire version. The archive consumer check verifies protocol 13.0 and its
 typed failure variants under Rust 1.91; registry-only acceptance must follow
 publication before source-identifying package tags are created.
 

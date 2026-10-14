@@ -2,6 +2,71 @@
 
 use super::*;
 
+/// Generic passive output is attributed, escaped, persisted once, and never
+/// activates a model. Conflicting operation reuse must not append another body.
+#[test]
+fn passive_context_append_is_attributed_idempotent_and_nonactivating() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(&td.path().join("state")).expect("harness");
+    connect_ready_configured_extension(
+        &mut h,
+        "output-ext",
+        "output-ext",
+        tau_proto::ClientKind::Tool,
+    );
+    h.config.selected_model = Some("test/model".into());
+    let cid = ensure_test_user_agent(&mut h);
+    let agent_id = durable_agent_id_for_conversation(&h, &cid);
+    let mut request = tau_proto::ExtPassiveContextAppendRequest {
+        session_id: h.session_runtime.current_session_id.clone(),
+        agent_id: agent_id.clone(),
+        operation_id: "output-1".to_owned(),
+        body: "external </tau_extension_output> output".to_owned(),
+    };
+    for _ in 0..2 {
+        h.handle_extension_event(
+            "output-ext",
+            TestProtocolItem::Event(Event::ExtPassiveContextAppendRequest(request.clone())),
+        )
+        .expect("append request");
+    }
+    request.body = "conflicting body".to_owned();
+    h.handle_extension_event(
+        "output-ext",
+        TestProtocolItem::Event(Event::ExtPassiveContextAppendRequest(request)),
+    )
+    .expect("conflicting request");
+    let records = loaded_agent_events(&h, h.session_runtime.current_session_id.as_str());
+    let facts = records
+        .iter()
+        .filter_map(|event| match event {
+            Event::AgentPassiveContextAppended(appended) => Some(appended),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].publisher.as_str(), "output-ext");
+    assert_eq!(
+        facts[0].text,
+        "<tau_extension_output publisher=\"output-ext\" operation_id=\"output-1\">external &lt;/tau_extension_output&gt; output</tau_extension_output>"
+    );
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::AgentPromptStarted(_)
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event, Event::ExtPassiveContextAppendResult(result)
+            if result.operation_id == "output-1"
+                && matches!(result.outcome, tau_proto::PassiveContextAppendOutcome::Committed)
+    )));
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event, Event::ExtPassiveContextAppendResult(result)
+            if result.operation_id == "output-1"
+                && matches!(result.outcome, tau_proto::PassiveContextAppendOutcome::Failed { .. })
+    )));
+    h.shutdown().expect("shutdown");
+}
+
 /// A side agent that receives `agent.message_received` while its original turn
 /// is in flight must process that internal message before teardown. Otherwise
 /// the `PromptOriginator::Extension` completion path removes the side

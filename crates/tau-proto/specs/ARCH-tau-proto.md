@@ -1,5 +1,14 @@
 # ARCH-tau-proto: tau-proto architecture
 
+Generic transient activity request/result DTOs carry opaque operation IDs and
+authenticated incarnation ownership, without tool- or shell-specific state.
+They govern [SPEC-extension-activity-leases](../../../specs/SPEC-extension-activity-leases.md).
+
+Protocol 13.0 adds authenticated publisher delivery metadata, custom privacy
+scope, and generic passive append DTOs. Live first-party shell events are retired;
+legacy journal decoding remains. Configured peers must rebuild together, and
+older binaries cannot read new passive-append journal variants.
+
 Protocol 12.0 adds typed unusable-local-summary failure authority and bounded
 strict-prefix successors. Compatible configured peers must rebuild together;
 older journals retain their existing generic failure meaning. See
@@ -195,18 +204,19 @@ Terminal tool outcomes likewise use transient peer
 canonical terminal and provider projections. Reports and canonical facts reuse
 the existing full terminal payload DTOs. Provider progress and terminal reports
 are accepted only for its own routed ordinary calls under the same captured
-generation checks; this does not authorize shell reports. Successful UI display events instead
+generation checks. Successful UI display events instead
 use dedicated payload-free DTOs, so `tool.result_display` and
 `tool.background_result_display` cannot expose raw result data. Event names
 establish authorship and commit stage. See
 [SPEC-terminal-tool-reports-and-canonical-outcomes](../../../specs/SPEC-terminal-tool-reports-and-canonical-outcomes.md).
-User-shell progress/completion likewise separates transient Tool/Core
-`shell.command_progress_reported` / `shell.command_finished_reported` inputs
-from harness-authored canonical `shell.command_progress` /
-`shell.command_finished` facts. Reports and facts reuse the existing shell
-payload DTOs; `command_id` is the private provider route in reports and the
-public UI lifecycle id in canonical facts. See
-[SPEC-shell-command-reports-and-canonical-facts](../../../specs/SPEC-shell-command-reports-and-canonical-facts.md).
+The old first-party user-shell DTOs remain readable only for historical replay;
+live shell protocol codecs belong to `tau-shell-interaction`, outside the
+generic event enum. `EventDelivery.publisher` carries authenticated origin
+metadata independent of opaque payloads, and custom events may carry generic
+agent privacy scope. Passive transcript insertion uses a separate generic
+request/fact/result API. See
+[SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md)
+and [SPEC-passive-extension-context](../../../specs/SPEC-passive-extension-context.md).
 The unchanged `tool.request` name is a peer routing intent from configured
 Provider/Tool/Core extensions. Its enclosing `Emit.persist` selects live-only
 (`false`) or session-restore (`true`) publication; durable replay carries stable configured

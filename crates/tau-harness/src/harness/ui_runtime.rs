@@ -20,12 +20,13 @@ pub(super) struct UiSessionAdmission {
 ///
 /// Lifetimes intentionally differ within this owner: client writers follow
 /// connection lifetime; pending commands follow their session or provider;
-/// retry and action tombstones plus private shell-route identities survive for
+/// retry and action tombstones survive for
 /// the process lifetime. Final shutdown resolves or invalidates session-bound
 /// work field by field instead of resetting the whole state. Normal connection
 /// teardown removes its writer lifecycle, while the startup-failure path may
 /// explicitly close a socket writer; the lifecycle owns no join handle or drop
 /// side effect. This state does not own the generic event bus.
+#[derive(Default)]
 pub(crate) struct UiRuntimeState {
     /// Existing UI Hello's exact session/generation for directed local RPCs.
     pub(super) exact_session_admissions: HashMap<tau_proto::ConnectionId, UiSessionAdmission>,
@@ -36,26 +37,6 @@ pub(crate) struct UiRuntimeState {
     pub(super) pending_bootstrap_creates: HashMap<String, String>,
     /// Cause carried by the command that stopped the central event loop.
     pub(crate) shutdown_cause: Option<crate::event::ShutdownCause>,
-    /// Random stream for opaque provider-side shell route identities.
-    ///
-    /// This stream stays independent from agent-id generation so shell traffic
-    /// cannot perturb later agent identities.
-    pub(super) ui_shell_route_rng: StdRng,
-    /// Provider routes and canonical requests awaiting shell terminals.
-    pub(super) pending_ui_shell_commands: HashMap<UiShellRouteId, PendingUiShellCommand>,
-    /// Process-lifetime shell routes whose target agent was ephemeral.
-    ///
-    /// Retention excludes late or interception-replaced reports from durable
-    /// debug output, and non-reuse keeps a later command from inheriting that
-    /// classification.
-    pub(super) ephemeral_ui_shell_route_ids: HashSet<UiShellRouteId>,
-    /// Public shell ids whose next canonical fact targets an ephemeral agent.
-    pub(super) pending_ephemeral_ui_shell_canonical_events:
-        HashMap<tau_proto::ShellCommandId, NonZeroUsize>,
-    /// Public shell ids reserved from admission through terminal commit.
-    pub(super) active_ui_shell_command_ids: HashSet<tau_proto::ShellCommandId>,
-    /// Canonical shell completions that inject output after commit.
-    pub(super) pending_ui_shell_output_injections: HashSet<tau_proto::ShellCommandId>,
     /// Action invocations awaiting their exact provider and requester route.
     pub(super) pending_action_invocations: HashMap<ActionInvocationId, PendingActionInvocation>,
     /// Terminal action invocation ids that can never be routed again.
@@ -85,40 +66,6 @@ pub(crate) struct UiRuntimeState {
     /// UIs that received a quit disposition no longer keep the daemon alive,
     /// even while their reply writer is draining.
     pub(super) quitting_uis: HashSet<tau_proto::ConnectionId>,
-}
-
-impl Default for UiRuntimeState {
-    fn default() -> Self {
-        Self {
-            exact_session_admissions: HashMap::new(),
-            explicit_navigation_epoch: 0,
-            pending_bootstrap_creates: HashMap::new(),
-            shutdown_cause: None,
-            ui_shell_route_rng: StdRng::from_entropy(),
-            pending_ui_shell_commands: HashMap::new(),
-            ephemeral_ui_shell_route_ids: HashSet::new(),
-            pending_ephemeral_ui_shell_canonical_events: HashMap::new(),
-            active_ui_shell_command_ids: HashSet::new(),
-            pending_ui_shell_output_injections: HashSet::new(),
-            pending_action_invocations: HashMap::new(),
-            completed_action_invocations: HashSet::new(),
-            pending_retry_prompts: HashMap::new(),
-            seen_retry_prompt_requests: HashSet::new(),
-            seen_retry_prompt_request_order: VecDeque::new(),
-            client_writers: HashMap::new(),
-            runtime_probe_peers: HashSet::new(),
-            pending_socket_admission: HashSet::new(),
-            shutdown_requested: false,
-            exit_on_disconnect: false,
-            ever_attached: false,
-            quitting_uis: HashSet::new(),
-        }
-    }
-}
-
-pub(super) fn shell_route_id(first: u64, second: u64) -> tau_proto::ShellCommandId {
-    tau_proto::ShellCommandId::parse(format!("harness-shell-{first:016x}{second:016x}"))
-        .expect("Tau-generated shell command id must be valid")
 }
 
 #[derive(Clone, Debug)]
@@ -151,44 +98,6 @@ pub(super) fn next_provider_retry_token() -> tau_proto::RetryPromptRequestId {
         .expect("harness retry token is valid")
 }
 
-/// Harness-owned identity and selected provider for an in-flight UI shell
-/// command.
-#[derive(Clone)]
-pub(super) struct PendingUiShellCommand {
-    /// Extension connection selected for point-to-point execution.
-    pub(super) provider_id: tau_proto::ConnectionId,
-    /// Canonical request after the harness resolves its target agent.
-    pub(super) command: tau_proto::UiShellCommand,
-    /// Whether this route's target requires ephemeral debug suppression.
-    pub(super) targets_ephemeral: bool,
-}
-
-/// Harness-private provider execution identity for one UI shell route.
-///
-/// The wire protocol reuses `ShellCommandId`, so conversion is confined to the
-/// provider boundary while harness state keeps UI and execution identities
-/// distinct.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct UiShellRouteId(tau_proto::ShellCommandId);
-
-impl UiShellRouteId {
-    /// Wrap an opaque provider-side protocol id.
-    pub(super) fn new(value: tau_proto::ShellCommandId) -> Self {
-        Self(value)
-    }
-
-    /// Borrow the protocol id sent to and echoed by the selected provider.
-    pub(super) fn as_protocol_id(&self) -> &tau_proto::ShellCommandId {
-        &self.0
-    }
-}
-
-impl Borrow<tau_proto::ShellCommandId> for UiShellRouteId {
-    fn borrow(&self) -> &tau_proto::ShellCommandId {
-        &self.0
-    }
-}
-
 pub(super) struct CancelTarget {
     pub(super) call_id: ToolCallId,
     pub(super) tool_name: ToolName,
@@ -198,24 +107,6 @@ pub(super) struct CancelTarget {
     // a transcript-terminal `ToolCancelled`; cancellation is reported through
     // `ToolBackgroundError` instead.
     pub(super) backgrounded: bool,
-}
-
-pub(super) fn ui_shell_provider_ids(
-    registry: &tau_core::ToolRegistry,
-) -> std::collections::HashSet<tau_proto::ConnectionId> {
-    registry
-        .all_tool_providers()
-        .into_iter()
-        .filter(|provider| {
-            provider.kind == tau_core::ToolProviderKind::Extension
-                && provider
-                    .tool
-                    .tags
-                    .iter()
-                    .any(|tag| tag.as_str() == "shell:exec:generic")
-        })
-        .map(|provider| provider.connection_id.clone())
-        .collect()
 }
 
 impl Harness {
@@ -229,184 +120,6 @@ impl Harness {
             let persist = persist_override.unwrap_or_else(|| event.defaults_to_persist());
             self.enqueue_publish(Some(client_id), event, persist, false, None);
         }
-    }
-
-    pub(super) fn handle_ui_shell_command(
-        &mut self,
-        client_id: &tau_proto::ConnectionId,
-        mut command: tau_proto::UiShellCommand,
-    ) {
-        if self
-            .ui_runtime
-            .active_ui_shell_command_ids
-            .contains(&command.command_id)
-        {
-            self.emit_info("discarding duplicate in-flight shell command id");
-            return;
-        }
-        self.ui_runtime
-            .active_ui_shell_command_ids
-            .insert(command.command_id.clone());
-        if command.session_id != self.session_runtime.current_session_id {
-            self.project_ui_shell_command_start(client_id, &command);
-            self.finish_unroutable_ui_shell(
-                command,
-                "the shell command targets a stale session",
-                false,
-            );
-            return;
-        }
-        let providers = ui_shell_provider_ids(&self.tool_routing.registry);
-        if providers.len() != 1 {
-            let reason = if providers.is_empty() {
-                "no shell extension instance is available"
-            } else {
-                "multiple shell extension instances are available; select one explicitly before using ! or !!"
-            };
-            self.project_ui_shell_command_start(client_id, &command);
-            self.finish_unroutable_ui_shell(command, reason, false);
-            return;
-        }
-        let target_agent_id = if let Some(agent_id) = command.target_agent_id.as_ref() {
-            self.agent_runtime
-                .agent_registry
-                .agent_routes
-                .get(agent_id.as_str())
-                .and_then(|cid| self.agent_runtime.agent_registry.agents.get(cid))
-                .filter(|conversation| {
-                    conversation.identity.session_id == command.session_id
-                        && !conversation.dispatch.terminating
-                })
-                .and_then(|conversation| conversation.identity.agent_id.clone())
-        } else {
-            self.default_shell_output_target_agent()
-                .map(|(_, agent_id)| agent_id)
-        };
-        let Some(target_agent_id) = target_agent_id else {
-            self.project_ui_shell_command_start(client_id, &command);
-            self.finish_unroutable_ui_shell(
-                command,
-                "no unambiguous target agent is available",
-                false,
-            );
-            return;
-        };
-        command.target_agent_id = Some(target_agent_id);
-        let provider = providers.into_iter().next().expect("one provider");
-        let route_id = self.next_ui_shell_route_id();
-        let targets_ephemeral = command
-            .target_agent_id
-            .as_ref()
-            .is_some_and(|agent_id| self.agent_is_ephemeral(agent_id));
-        let mut provider_command = command.clone();
-        provider_command.command_id = route_id.as_protocol_id().clone();
-        self.project_ui_shell_command_start(client_id, &command);
-        let delivered = self.runtime_io.bus.send_to(
-            &provider,
-            Some(client_id),
-            HarnessOutputMessage::deliver(Event::UiShellCommand(provider_command)),
-        );
-        if delivered.is_ok_and(|report| !report.delivered_to.is_empty()) {
-            if targets_ephemeral {
-                self.ui_runtime
-                    .ephemeral_ui_shell_route_ids
-                    .insert(route_id.clone());
-            }
-            self.ui_runtime.pending_ui_shell_commands.insert(
-                route_id,
-                PendingUiShellCommand {
-                    provider_id: provider,
-                    command,
-                    targets_ephemeral,
-                },
-            );
-            return;
-        }
-        self.finish_unroutable_ui_shell(
-            command,
-            "the selected shell extension instance became unavailable",
-            targets_ephemeral,
-        );
-    }
-
-    /// Project the canonical public command identity to every attached UI.
-    pub(super) fn project_ui_shell_command_start(
-        &mut self,
-        client_id: &tau_proto::ConnectionId,
-        command: &tau_proto::UiShellCommand,
-    ) {
-        for ui in self
-            .runtime_io
-            .bus
-            .connections()
-            .into_iter()
-            .filter(|connection| connection.kind == ClientKind::Ui)
-        {
-            let _ = self.runtime_io.bus.send_to(
-                &ui.id,
-                Some(client_id),
-                HarnessOutputMessage::deliver(Event::UiShellCommand(command.clone())),
-            );
-        }
-    }
-
-    pub(super) fn fail_pending_ui_shell_commands_for_provider(
-        &mut self,
-        provider_id: &tau_proto::ConnectionId,
-        reason: &str,
-    ) {
-        let failed = self
-            .ui_runtime
-            .pending_ui_shell_commands
-            .iter()
-            .filter(|(_, pending)| &pending.provider_id == provider_id)
-            .map(|(command_id, _)| command_id.clone())
-            .collect::<Vec<_>>();
-        for command_id in failed {
-            if let Some(pending) = self
-                .ui_runtime
-                .pending_ui_shell_commands
-                .remove(&command_id)
-            {
-                self.finish_unroutable_ui_shell(pending.command, reason, pending.targets_ephemeral);
-            }
-        }
-    }
-
-    pub(super) fn fail_all_pending_ui_shell_commands(&mut self, reason: &str) {
-        let pending = std::mem::take(&mut self.ui_runtime.pending_ui_shell_commands);
-        for (_, pending) in pending {
-            self.finish_unroutable_ui_shell(pending.command, reason, pending.targets_ephemeral);
-        }
-    }
-
-    pub(super) fn finish_unroutable_ui_shell(
-        &mut self,
-        command: tau_proto::UiShellCommand,
-        reason: &str,
-        targets_ephemeral: bool,
-    ) {
-        if targets_ephemeral
-            || command
-                .target_agent_id
-                .as_ref()
-                .is_some_and(|agent_id| self.agent_is_ephemeral(agent_id))
-        {
-            self.mark_pending_ephemeral_shell_canonical(command.command_id.clone());
-        }
-        self.publish_event(
-            Some(crate::harness::harness_connection_id()),
-            Event::ShellCommandFinished(tau_proto::ShellCommandFinished {
-                command_id: command.command_id,
-                session_id: command.session_id,
-                command: command.command,
-                include_in_context: command.include_in_context,
-                target_agent_id: command.target_agent_id,
-                output: reason.to_owned(),
-                exit_code: None,
-                cancelled: false,
-            }),
-        );
     }
 
     pub(super) fn handle_ui_debug_event_stats_request(
@@ -1782,10 +1495,6 @@ impl Harness {
             Event::ActionInvoke(invoke) => self
                 .handle_action_invoke(client_id, invoke)
                 .map(|keep_going| (keep_going, None)),
-            Event::UiShellCommand(command) => {
-                self.handle_ui_shell_command(client_id, command);
-                Ok((true, None))
-            }
             Event::ActionSchemaDeclared(_)
             | Event::ActionSchemaPublished(_)
             | Event::ActionResultReported(_)
@@ -1835,26 +1544,6 @@ impl Harness {
                 Ok((true, None))
             }
             other => Ok((true, Some(other))),
-        }
-    }
-
-    pub(super) fn next_ui_shell_route_id(&mut self) -> UiShellRouteId {
-        loop {
-            let route_id = UiShellRouteId::new(shell_route_id(
-                self.ui_runtime.ui_shell_route_rng.next_u64(),
-                self.ui_runtime.ui_shell_route_rng.next_u64(),
-            ));
-            if !self
-                .ui_runtime
-                .pending_ui_shell_commands
-                .contains_key(&route_id)
-                && !self
-                    .ui_runtime
-                    .ephemeral_ui_shell_route_ids
-                    .contains(&route_id)
-            {
-                return route_id;
-            }
         }
     }
 
@@ -2480,149 +2169,6 @@ impl Harness {
             .agents
             .get(cid)
             .and_then(|conv| conv.identity.agent_id.clone())
-    }
-
-    pub(super) fn resolve_shell_output_target_agent(
-        &mut self,
-        finished: &tau_proto::ShellCommandFinished,
-    ) -> Option<(AgentId, tau_proto::AgentId)> {
-        if finished.session_id != self.session_runtime.current_session_id {
-            self.emit_info(&format!(
-                "shell output ignored: harness is bound to session `{}` but command finished for `{}`",
-                self.session_runtime.current_session_id.as_str(),
-                finished.session_id.as_str(),
-            ));
-            return None;
-        }
-
-        if let Some(target_agent_id) = finished.target_agent_id.as_ref() {
-            let Some(cid) = self
-                .agent_runtime
-                .agent_registry
-                .agent_routes
-                .get(target_agent_id)
-                .cloned()
-            else {
-                self.emit_info(&format!(
-                    "shell output ignored: unknown target agent `{target_agent_id}`"
-                ));
-                return None;
-            };
-            let Some(conv) = self.agent_runtime.agent_registry.agents.get(&cid) else {
-                self.emit_info(&format!(
-                    "shell output ignored: target agent `{target_agent_id}` is not loaded"
-                ));
-                return None;
-            };
-            if conv.identity.session_id != finished.session_id {
-                self.emit_info(&format!(
-                    "shell output ignored: target agent `{target_agent_id}` is not in session `{}`",
-                    finished.session_id.as_str(),
-                ));
-                return None;
-            }
-            if conv.dispatch.terminating {
-                self.emit_info(&format!(
-                    "shell output ignored: target agent `{target_agent_id}` is terminating"
-                ));
-                return None;
-            }
-            let Some(agent_id) = conv.identity.agent_id.clone() else {
-                self.emit_info(&format!(
-                    "shell output ignored: target agent `{target_agent_id}` has no durable id"
-                ));
-                return None;
-            };
-            return Some((cid, agent_id));
-        }
-
-        self.default_shell_output_target_agent()
-    }
-
-    pub(super) fn default_shell_output_target_agent(
-        &mut self,
-    ) -> Option<(AgentId, tau_proto::AgentId)> {
-        let mut candidates: Vec<_> = self
-            .agent_runtime
-            .agent_registry
-            .agents
-            .iter()
-            .filter_map(|(cid, conv)| {
-                if conv.identity.session_id != self.session_runtime.current_session_id
-                    || !conv.identity.originator.is_user()
-                    || conv.dispatch.terminating
-                {
-                    return None;
-                }
-                let agent_id = conv.identity.agent_id.clone()?;
-                let interaction_order = self
-                    .session_runtime
-                    .user_interaction_order
-                    .get(agent_id.as_str())
-                    .copied()
-                    .unwrap_or_default();
-                Some((interaction_order, cid.clone(), agent_id))
-            })
-            .collect();
-
-        match candidates.len() {
-            0 => {
-                if self
-                    .agent_runtime
-                    .agent_registry
-                    .agents
-                    .values()
-                    .any(|conv| {
-                        conv.identity.session_id == self.session_runtime.current_session_id
-                            && conv.identity.originator.is_user()
-                            && conv.dispatch.terminating
-                    })
-                {
-                    self.emit_info("shell output ignored: user agent is terminating");
-                    return None;
-                }
-                let role = self.config.selected_role.clone();
-                let cid = match self.try_create_durable_user_agent(
-                    self.session_runtime.current_session_id.clone(),
-                    &role,
-                ) {
-                    Ok(cid) => cid,
-                    Err(error) => {
-                        self.emit_harness_failure(&format!(
-                            "failed to create shell-output target agent: {error}"
-                        ));
-                        return None;
-                    }
-                };
-                let agent_id = self
-                    .agent_runtime
-                    .agent_registry
-                    .agents
-                    .get(&cid)
-                    .and_then(|conv| conv.identity.agent_id.clone())
-                    .expect("new user agent has durable id");
-                Some((cid, agent_id))
-            }
-            1 => {
-                let (_, cid, agent_id) = candidates.pop().expect("one candidate");
-                Some((cid, agent_id))
-            }
-            _ => {
-                candidates
-                    .sort_by_key(|(last_user_interaction_time, _, _)| *last_user_interaction_time);
-                let (selected_time, cid, agent_id) = candidates.pop().expect("last candidate");
-                let Some((previous_time, _, _)) = candidates.last() else {
-                    return Some((cid, agent_id));
-                };
-                if *previous_time < selected_time {
-                    return Some((cid, agent_id));
-                }
-                self.emit_info(
-                    "shell output ignored: multiple user agents exist and no explicit target was provided",
-                );
-                None
-            }
-        }
     }
 
     pub(super) fn cancel_remaining_tool_calls(

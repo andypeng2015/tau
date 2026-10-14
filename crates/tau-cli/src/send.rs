@@ -16,15 +16,18 @@ const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum SendLineDisposition {
     Message(Box<HarnessInputMessage>),
+    /// Requires discovery and explicit process selection before submission.
+    Shell(String),
     Noop,
 }
 
 pub(crate) fn run_send(session_id: &tau_proto::SessionId, line: &str) -> Result<(), CliError> {
     let disposition = classify_send_line(session_id, line)?;
-    let SendLineDisposition::Message(message) = disposition else {
-        return Ok(());
-    };
-    send_message(session_id, *message)
+    match disposition {
+        SendLineDisposition::Message(message) => send_message(session_id, *message),
+        SendLineDisposition::Shell(line) => send_shell(session_id, &line),
+        SendLineDisposition::Noop => Ok(()),
+    }
 }
 
 fn classify_send_line(
@@ -35,6 +38,14 @@ fn classify_send_line(
     let text = canonical_line.as_deref().unwrap_or(line).trim();
     if text.is_empty() {
         return Ok(SendLineDisposition::Noop);
+    }
+    if text.starts_with('!') {
+        let (_, _, include) = tau_shell_interaction::parse_command(text)
+            .map_err(|reason| CliError::Participant(reason.to_owned()))?;
+        if include {
+            return Err(CliError::Participant("headless send has no selected agent; use !!instance command or attach and select an agent for !".to_owned()));
+        }
+        return Ok(SendLineDisposition::Shell(text.to_owned()));
     }
 
     if canonical_line.is_some() {
@@ -79,6 +90,134 @@ fn classify_send_line(
         "unknown or unsupported command `{}`",
         text.split_whitespace().next().unwrap_or(text)
     )))
+}
+
+/// Discover and send once, then confirm extension acceptance before detaching.
+fn send_shell(session_id: &tau_proto::SessionId, line: &str) -> Result<(), CliError> {
+    let (instance, _, _) = tau_shell_interaction::parse_command(line)
+        .map_err(|reason| CliError::Participant(reason.to_owned()))?;
+    let harness = find_daemon_for_session(session_id.as_str()).ok_or_else(|| {
+        CliError::Participant(format!("no running daemon for session `{session_id}`"))
+    })?;
+    let deadline = Instant::now() + COMMAND_RESPONSE_TIMEOUT;
+    let (mut reader, mut writer) = crate::ui_client::connect_ui_client_until(
+        &tau_harness::runtime_dir::socket_path(&harness),
+        "tau-send",
+        session_id,
+        deadline,
+    )?;
+    send_shell_connected(
+        session_id,
+        line,
+        &instance,
+        &mut reader,
+        &mut writer,
+        deadline,
+    )
+}
+
+/// Complete discovery and acceptance on an already admitted exact-session
+/// socket.
+fn send_shell_connected(
+    session_id: &tau_proto::SessionId,
+    line: &str,
+    instance: &tau_proto::ExtensionName,
+    reader: &mut crate::ui_client::UiInputReader,
+    writer: &mut crate::ui_client::UiOutputWriter,
+    deadline: Instant,
+) -> Result<(), CliError> {
+    let selectors = [
+        tau_shell_interaction::REPLY_EVENT
+            .parse()
+            .expect("event name"),
+        tau_proto::EventName::EXTENSION_READY,
+        tau_proto::EventName::EXTENSION_EXITED,
+    ]
+    .into_iter()
+    .map(tau_proto::EventSelector::Exact)
+    .collect();
+    crate::ui_client::send_message(
+        writer,
+        &HarnessInputMessage::Subscribe(tau_proto::Subscribe {
+            historical_selectors: Vec::new(),
+            live_selectors: selectors,
+        }),
+    )?;
+    let mut client = tau_shell_interaction::Client::new(session_id.clone());
+    crate::ui_client::send_message(
+        writer,
+        &tau_shell_interaction::request_message(&client.discover()),
+    )?;
+    let mut sent = false;
+    let mut command_id = None;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(CliError::Participant(format!(
+                "shell {}: deadline elapsed; execution was not retried",
+                if sent {
+                    "outcome unconfirmed"
+                } else {
+                    "discovery failed before submission"
+                },
+            )));
+        }
+        let message = reader.read_message().map_err(|error| {
+            CliError::Participant(format!(
+                "shell {}: {error}; execution was not retried",
+                if sent {
+                    "outcome unconfirmed"
+                } else {
+                    "discovery failed before submission"
+                },
+            ))
+        })?;
+        let delivery = match message {
+            Some(HarnessOutputMessage::Deliver(delivery)) => delivery,
+            None | Some(HarnessOutputMessage::Disconnect(_)) => {
+                return Err(CliError::Participant(
+                    "shell connection ended; execution was not retried".to_owned(),
+                ));
+            }
+            _ => continue,
+        };
+        let update = client.observe(&delivery);
+        if let Some(diagnostic) = update.diagnostics.into_iter().next() {
+            return Err(CliError::Participant(diagnostic));
+        }
+        if update.events.iter().any(|event| {
+            matches!(event, Event::UiShellCommand(command)
+            if Some(command.command_id.as_str()) == command_id.as_deref())
+        }) {
+            println!(
+                "{instance}: command accepted; execution continues after this client detaches"
+            );
+            return Ok(());
+        }
+        for request in update.requests {
+            crate::ui_client::send_message(
+                writer,
+                &tau_shell_interaction::request_message(&request),
+            )?;
+        }
+        if !sent
+            && client
+                .endpoints()
+                .any(|endpoint| endpoint.execute && &endpoint.target.instance == instance)
+        {
+            let request = client.execute(line, None).map_err(CliError::Participant)?;
+            command_id = Some(request.context.request_id.clone());
+            sent = true;
+            crate::ui_client::send_message(
+                writer,
+                &tau_shell_interaction::request_message(&request),
+            )
+            .map_err(|error| {
+                CliError::Participant(format!(
+                    "shell send outcome unconfirmed: {error}; execution was not retried"
+                ))
+            })?;
+        }
+    }
 }
 
 fn send_message(
@@ -144,7 +283,7 @@ fn message_for_line(session_id: &str, line: &str) -> Option<HarnessInputMessage>
     let session_id = tau_proto::SessionId::parse(session_id).ok()?;
     match classify_send_line(&session_id, line).ok()? {
         SendLineDisposition::Message(message) => Some(*message),
-        SendLineDisposition::Noop => None,
+        SendLineDisposition::Noop | SendLineDisposition::Shell(_) => None,
     }
 }
 
@@ -191,24 +330,6 @@ fn event_for_line(session_id: &tau_proto::SessionId, text: &str) -> Option<Event
         return Some(crate::ui_events::agent_effort_select(
             session_id, None, effort,
         ));
-    }
-    if let Some(command) = text.strip_prefix("!!") {
-        let command = command.trim();
-        if !command.is_empty() {
-            return Some(crate::ui_events::shell_command(
-                session_id, command, false, None,
-            ));
-        }
-        return None;
-    }
-    if let Some(command) = text.strip_prefix('!') {
-        let command = command.trim();
-        if !command.is_empty() {
-            return Some(crate::ui_events::shell_command(
-                session_id, command, true, None,
-            ));
-        }
-        return None;
     }
     if text == ":skill" || text.starts_with(":skill ") || text.starts_with(":skill:") {
         return Some(Event::UiCreateAgent(create_user_agent_prompt(

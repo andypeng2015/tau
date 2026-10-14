@@ -315,6 +315,9 @@ struct ProviderWindowIndex {
 /// Complete non-persisted query indexes rebuilt by agent-journal replay.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct AgentTreeIndexes {
+    /// Publisher-scoped passive operations, retained independently of history
+    /// cache residency and rebuilt from every accepted journal occurrence.
+    passive_context_operations: HashMap<(tau_proto::ExtensionName, String), blake3::Hash>,
     /// Producing model from canonical prompt/boundary facts, never item JSON.
     provider_models_by_node: HashMap<NodeId, tau_proto::ModelId>,
     /// Materialized provider-context input nodes keyed by journal occurrence.
@@ -1051,6 +1054,18 @@ fn normalize_display_name(value: Option<&str>) -> Option<String> {
 }
 
 impl AgentTree {
+    /// Return whether this publisher-scoped operation already committed with
+    /// identical text. The index survives history eviction and cold replay.
+    pub fn passive_context_matches(
+        &self,
+        appended: &tau_proto::AgentPassiveContextAppended,
+    ) -> Option<bool> {
+        self.indexes
+            .passive_context_operations
+            .get(&(appended.publisher.clone(), appended.operation_id.clone()))
+            .map(|hash| *hash == blake3::hash(appended.text.as_bytes()))
+    }
+
     /// Reconstruct only the provisional response chain for this compact prompt.
     /// A context retreat or any other trigger ends the chain without retaining
     /// generated material from an older original-context prefix.
@@ -3473,6 +3488,18 @@ impl AgentTree {
         durable_event_seq: PersistedAgentEventSeq,
     ) -> Option<NodeId> {
         match event {
+            Event::AgentPassiveContextAppended(appended) => {
+                self.indexes.passive_context_operations.insert(
+                    (appended.publisher.clone(), appended.operation_id.clone()),
+                    blake3::hash(appended.text.as_bytes()),
+                );
+                self.record_context_entry(
+                    parent,
+                    Self::user_text_input_entry(appended.text.clone(), &[], None, false),
+                    durable_event_seq,
+                    false,
+                )
+            }
             Event::AgentPromptSubmitted(prompt) => self.record_context_entry(
                 parent,
                 Self::user_text_input_entry(
@@ -4274,6 +4301,23 @@ impl AgentTree {
             }
             Event::AgentUserMessageInjected(injected) if injected.agent_id == self.agent_id => {
                 Some(Ok(()))
+            }
+            Event::AgentPassiveContextAppended(appended) if appended.agent_id == self.agent_id => {
+                Some(if self.passive_context_matches(appended).is_some() {
+                    Err(AgentEventValidationError::new(
+                        "passive context operation already exists",
+                    ))
+                } else if appended.operation_id.is_empty()
+                    || appended.operation_id.len() > 256
+                    || !tau_proto::TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE
+                        .matches_whole(&appended.text)
+                {
+                    Err(AgentEventValidationError::new(
+                        "invalid passive context output",
+                    ))
+                } else {
+                    Ok(())
+                })
             }
             Event::AgentPromptSteered(steered) if steered.agent_id == self.agent_id => Some(
                 check_trusted_internal_spans(&steered.text, &steered.trusted_internal_spans)
@@ -6269,6 +6313,7 @@ impl AgentTree {
                 | Event::AgentPromptCreated(_)
                 | Event::AgentPromptStarted(_)
                 | Event::AgentUserMessageInjected(_)
+                | Event::AgentPassiveContextAppended(_)
                 | Event::AgentPromptSteered(_)
                 | Event::AgentPromptTerminated(_)
                 | Event::AgentCompactionTriggered(_)

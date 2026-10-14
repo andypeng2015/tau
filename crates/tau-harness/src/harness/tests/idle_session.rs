@@ -4,6 +4,78 @@ use super::lifecycle::connect_socket_ui;
 use super::*;
 use crate::event::{HarnessCommand, ShutdownCause};
 
+/// Generic extension work survives UI detach and an expired idle deadline, but
+/// explicit shutdown still wins. Releasing the hold starts a fresh idle window.
+#[test]
+fn extension_activity_lease_defers_only_idle_shutdown() {
+    let td = TempDir::new().expect("tempdir");
+    let mut harness = echo_harness(td.path().join("state")).expect("start");
+    connect_ready_configured_extension(
+        &mut harness,
+        "worker",
+        "worker",
+        tau_proto::ClientKind::Tool,
+    );
+    let (ui, _client) = connect_socket_ui(&mut harness);
+    harness
+        .config
+        .accepted_harness_settings
+        .session_idle_shutdown = Some("1s".parse().expect("duration"));
+    harness.runtime_io.idle_session = IdleSession::new(Some(Duration::from_secs(1)));
+    let owner = crate::test_connection_id("worker");
+    let mut request = tau_proto::ExtActivityLeaseRequest {
+        session_id: harness.session_runtime.current_session_id.clone(),
+        operation_id: "opaque-work".to_owned(),
+        action: tau_proto::ActivityLeaseAction::Acquire,
+    };
+    harness
+        .handle_extension_event_inner(&owner, Event::ExtActivityLeaseRequest(request.clone()))
+        .expect("acquire");
+    harness.handle_disconnect(&ui);
+    harness.runtime_io.idle_session.checkpoint(
+        Instant::now() - Duration::from_secs(2),
+        false,
+        true,
+    );
+    harness
+        .runtime_io
+        .tx
+        .send(HarnessEvent::Command(HarnessCommand::Shutdown(
+            ShutdownCause::ExternalSignal,
+        )))
+        .expect("signal");
+    harness.run_event_loop(None).expect("explicit shutdown");
+    assert_eq!(harness.runtime_io.idle_session.deadline(), None);
+    assert_eq!(
+        harness.ui_runtime.shutdown_cause,
+        Some(ShutdownCause::ExternalSignal)
+    );
+    request.action = tau_proto::ActivityLeaseAction::Release;
+    harness
+        .handle_extension_event_inner(&owner, Event::ExtActivityLeaseRequest(request))
+        .expect("release");
+    harness
+        .runtime_io
+        .tx
+        .send(HarnessEvent::Command(HarnessCommand::Shutdown(
+            ShutdownCause::ExternalSignal,
+        )))
+        .expect("signal");
+    let before = Instant::now();
+    harness
+        .run_event_loop(None)
+        .expect("checkpoint released hold");
+    assert!(
+        harness
+            .runtime_io
+            .idle_session
+            .deadline()
+            .expect("idle again")
+            >= before + Duration::from_secs(1)
+    );
+    harness.shutdown().expect("shutdown");
+}
+
 /// Work cannot expire an idle window, and completion starts a fresh full
 /// window.
 #[test]

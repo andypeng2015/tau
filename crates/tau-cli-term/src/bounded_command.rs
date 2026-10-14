@@ -64,16 +64,16 @@ impl ForegroundRestoreFailureInjection {
 
 /// How much subprocess ownership the bounded runner should take on failures.
 ///
-/// Use [`ProcessOwnership::ProcessGroup`] for bounded non-interactive
-/// completion/git helpers: a separate process group lets Tau kill descendants
-/// that inherit stdout without changing foreground terminal ownership. Use
-/// [`ProcessOwnership::ForegroundProcessGroup`] for terminal-releasing prompt
-/// shell actions, where interactive descendants also need temporary foreground
-/// control of the terminal.
+/// Use [`ProcessOwnership::ForegroundProcessGroup`] for terminal-releasing
+/// prompt shell actions, where interactive descendants also need temporary
+/// foreground control of the terminal. Tests also exercise the non-foreground
+/// process-group cleanup path without needing a controlling terminal. Path
+/// enumeration itself belongs to remote extensions, not this runner.
 #[derive(Clone, Copy)]
 pub(crate) enum ProcessOwnership {
     /// Put the child in a new process group and terminate that group on errors,
     /// without changing foreground terminal ownership.
+    #[cfg(test)]
     ProcessGroup,
     /// Put the child in a new process group, hand it foreground terminal
     /// ownership, and terminate that group on errors.
@@ -298,11 +298,7 @@ pub(crate) fn run_with_bounded_stdout_after_spawn(
         Err(error) => {
             #[cfg(test)]
             LAST_FAILED_FOREGROUND_CHILD_ID.store(child.id(), Ordering::SeqCst);
-            let child_pgid = match ownership {
-                ProcessOwnership::ProcessGroup | ProcessOwnership::ForegroundProcessGroup => {
-                    process_group_id(child.id())
-                }
-            };
+            let child_pgid = process_group_id(child.id());
             terminate_child(&mut child, child_pgid);
             return Err(error);
         }
@@ -669,11 +665,7 @@ fn run_with_inherited_stdio_after_spawn(
         Err(error) => {
             #[cfg(test)]
             LAST_FAILED_FOREGROUND_CHILD_ID.store(child.id(), Ordering::SeqCst);
-            let child_pgid = match ownership {
-                ProcessOwnership::ProcessGroup | ProcessOwnership::ForegroundProcessGroup => {
-                    process_group_id(child.id())
-                }
-            };
+            let child_pgid = process_group_id(child.id());
             terminate_child(&mut child, child_pgid);
             return Err(error);
         }
@@ -816,13 +808,9 @@ fn terminate_process_group(child_pgid: ChildProcessGroupId) {
 
 fn configure_process_ownership(
     command: &mut std::process::Command,
-    ownership: ProcessOwnership,
+    _ownership: ProcessOwnership,
 ) -> Result<(), String> {
-    match ownership {
-        ProcessOwnership::ProcessGroup | ProcessOwnership::ForegroundProcessGroup => {
-            configure_process_group(command)
-        }
-    }
+    configure_process_group(command)
 }
 
 #[cfg(unix)]
@@ -860,6 +848,7 @@ struct ProcessGroupHandle {
 impl ProcessGroupHandle {
     fn new(ownership: ProcessOwnership, child_id: u32) -> Result<Self, BoundedCommandError> {
         match ownership {
+            #[cfg(test)]
             ProcessOwnership::ProcessGroup => Ok(Self {
                 child_pgid: process_group_id(child_id),
                 #[cfg(unix)]

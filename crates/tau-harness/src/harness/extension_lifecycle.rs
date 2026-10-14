@@ -104,6 +104,7 @@ impl Harness {
             .protocol_version_skew_warned
             .remove(connection_id);
         self.extensions.startup_deadlines.remove(connection_id);
+        self.extensions.activity_leases.remove(connection_id);
         self.extensions
             .expired_startup_connects
             .remove(connection_id);
@@ -232,10 +233,6 @@ impl Harness {
         self.ui_runtime
             .pending_retry_prompts
             .retain(|_, pending| &pending.requester_client_id != connection_id);
-        self.fail_pending_ui_shell_commands_for_provider(
-            connection_id,
-            "the shell extension instance disconnected before the command completed",
-        );
         let completed_foreground_calls = self.fail_pending_tool_calls_for_connection(connection_id);
         let lost_provider_prompts = self
             .provider_runtime
@@ -1362,8 +1359,6 @@ impl Harness {
                 | Event::ToolErrorReported(_)
                 | Event::ToolCancelledReported(_)
                 | Event::AgentRuntimeIndicatorsDeclared(_)
-                | Event::ShellCommandProgressReported(_)
-                | Event::ShellCommandFinishedReported(_)
                 | Event::ProviderQuotaReplaceReported(_)
                 | Event::ProviderQuotaPatchReported(_)
                 | Event::ProviderQuotaClearReported(_)
@@ -1374,10 +1369,6 @@ impl Harness {
                 | Event::ProviderCacheMissDiagnosticReported(_)
                 | Event::ProviderCacheRefreshFinishedReported(_)
         )
-    }
-
-    pub(super) fn is_client_fallback_emit_allowed(event: &Event) -> bool {
-        matches!(event, Event::UiShellCommand(_))
     }
 
     pub(super) fn requires_tool_event_intake(event: &Event) -> bool {
@@ -1406,6 +1397,9 @@ impl Harness {
         matches!(
             event,
             Event::SessionStarted(_)
+                | Event::AgentPassiveContextAppended(_)
+                | Event::ExtPassiveContextAppendResult(_)
+                | Event::ExtActivityLeaseResult(_)
                 | Event::SessionShutdown(_)
                 | Event::SessionAgentLoaded(_)
                 | Event::SessionAgentUnloaded(_)

@@ -272,6 +272,8 @@ impl<'a, State, Config> ConfigureContext<'a, State, Config> {
 
 /// Context passed to a typed event handler.
 pub struct EventContext<'a, State, Payload> {
+    /// Authenticated original live publisher, absent for legacy/replay input.
+    pub publisher: Option<&'a tau_proto::EventPublisher>,
     /// Mutable extension state shared by handlers.
     pub state: &'a mut State,
     /// Typed event payload selected from the delivery.

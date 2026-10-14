@@ -30,6 +30,16 @@ macro_rules! impl_event_payload {
 }
 
 impl_event_payload!(
+    tau_proto::ExtActivityLeaseRequest,
+    tau_proto::EventName::EXT_ACTIVITY_LEASE_REQUEST,
+    tau_proto::Event::ExtActivityLeaseRequest
+);
+impl_event_payload!(
+    tau_proto::ExtActivityLeaseResult,
+    tau_proto::EventName::EXT_ACTIVITY_LEASE_RESULT,
+    tau_proto::Event::ExtActivityLeaseResult
+);
+impl_event_payload!(
     tau_proto::ToolStarted,
     tau_proto::EventName::TOOL_STARTED,
     tau_proto::Event::ToolStarted

@@ -31,6 +31,7 @@ model-facing payload families:
 | Family | Carrier | Opening schema |
 | --- | --- | --- |
 | `user` | Generic user-role text | Fixed `source="ui"`; direct Tau user-channel input |
+| `tau_extension_output` | Generic user-role text | `publisher`, `operation_id`; passive configured-extension output |
 | `tau_internal` | Generic user-role text | Fieldless; typed harness-internal projection |
 | `message` | Canonical user- or assistant-role text, selected by event direction | Canonical ordered message-fact attributes, including operation-only `message_ref_publisher` and optional `sender_trust` |
 | `tau_web_content` | Typed tool result | `adapter`, `operation`, `content_trust` |
@@ -52,6 +53,8 @@ The family-specific schemas remain in
 [SPEC-agent-message-delivery](SPEC-agent-message-delivery.md),
 [SPEC-agent-watch](SPEC-agent-watch.md), and
 [SPEC-interactive-user-prompt-envelope](SPEC-interactive-user-prompt-envelope.md).
+Passive configured output follows
+[SPEC-passive-extension-context](SPEC-passive-extension-context.md).
 
 ## Selection, attributes, and exact-close framing
 

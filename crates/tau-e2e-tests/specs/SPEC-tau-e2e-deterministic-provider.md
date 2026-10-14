@@ -6,6 +6,14 @@ This contract is necessarily distributed across fixture configuration, fake-prov
 
 ## Closed sibling-shell concurrency
 
+The same private core-shell fixture also admits one fixed UI-owned
+`printf endpoint-completed` command through the opaque shell endpoint protocol.
+Two attached UIs observe it; duplicate intent produces one durable generic
+passive append and no provider activation. A fixed, cancellable `sleep 30` on an
+ephemeral target also checks running-row recovery and generic debug suppression
+through the production bus. This adds no fake-provider grammar,
+network peer, ambient path access, or arbitrary model-directed shell surface.
+
 One closed V2 core-shell scenario emits exactly four sibling `shell` calls in
 one canonical provider terminal. It runs in both capability modes: the positive
 case advertises parallel calls, while the violating-response control retains

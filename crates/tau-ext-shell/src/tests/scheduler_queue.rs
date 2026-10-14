@@ -7,13 +7,13 @@ fn disconnect_cancels_active_user_shell_command_before_scheduler_join() {
     let (mut reader, mut writer, done_rx) = spawn_extension_with_exit();
     drain_startup(&mut reader);
 
-    writer
-        .write_event(&ui_shell_command(
-            "ui-sleep-disconnect",
-            "printf started; sleep 30",
-        ))
-        .expect("ui shell");
-    writer.flush().expect("flush ui shell");
+    let target = discover_shell_endpoint(&mut reader, &mut writer);
+    let Event::UiShellCommand(command) =
+        ui_shell_command("ui-sleep-disconnect", "printf started; sleep 30")
+    else {
+        unreachable!()
+    };
+    write_shell_execution(&mut writer, target, command);
     wait_for_user_shell_progress(&mut reader, "ui-sleep-disconnect", "started");
 
     writer
@@ -32,19 +32,13 @@ fn session_shutdown_cancels_active_user_shell() {
     let (mut reader, mut writer) = spawn_extension();
     drain_startup(&mut reader);
 
-    writer
-        .write_event(&Event::SessionStarted(tau_proto::SessionStarted {
-            session_id: "session-1".parse().expect("session id"),
-            reason: tau_proto::SessionStartReason::Initial,
-        }))
-        .expect("session start");
-    writer
-        .write_event(&ui_shell_command(
-            "ui-sleep-session",
-            "printf started; sleep 30",
-        ))
-        .expect("ui shell");
-    writer.flush().expect("flush ui shell");
+    let target = discover_shell_endpoint(&mut reader, &mut writer);
+    let Event::UiShellCommand(command) =
+        ui_shell_command("ui-sleep-session", "printf started; sleep 30")
+    else {
+        unreachable!()
+    };
+    write_shell_execution(&mut writer, target, command);
     wait_for_user_shell_progress(&mut reader, "ui-sleep-session", "started");
 
     writer
@@ -185,7 +179,7 @@ fn saturated_production_fifo_preserves_model_cancellation() {
 }
 
 /// A user-shell completion queued after actual detached FIFO exhaustion must
-/// retain include-in-context correlation and publish exactly once.
+/// retain its UI-only correlation and publish exactly once.
 #[test]
 fn saturated_production_fifo_preserves_user_shell_completion() {
     let frames = run_after_production_fifo_saturation(
@@ -198,52 +192,53 @@ fn saturated_production_fifo_preserves_user_shell_completion() {
     let completions = frames
         .iter()
         .filter_map(|frame| match frame {
-            HarnessInputMessage::Emit(emit) => match emit.event.as_ref() {
-                Event::ShellCommandFinishedReported(event)
-                    if event.command_id.as_str() == "ui-saturated-completion" =>
-                {
-                    Some(event)
+            HarnessInputMessage::Emit(emit) => {
+                match tau_shell_interaction::decode_reply(&emit.event).map(|reply| reply.response) {
+                    Some(tau_shell_interaction::Response::Finished(event))
+                        if event.command_id.as_str() == "ui-saturated-completion" =>
+                    {
+                        Some(event)
+                    }
+                    _ => None,
                 }
-                _ => None,
-            },
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(completions.len(), 1);
-    assert!(completions[0].include_in_context);
+    assert!(!completions[0].include_in_context);
     assert_eq!(completions[0].output, "settled");
 }
 
-/// Scheduler rejection after actual detached FIFO exhaustion still publishes
-/// one include-in-context user-shell completion.
+/// Endpoint admission rejection after actual detached FIFO exhaustion still
+/// publishes one checked response without accepting an oversized command.
 #[test]
-fn saturated_production_fifo_preserves_rejected_user_shell_completion() {
-    let Event::UiShellCommand(mut command) = ui_shell_command(
+fn saturated_production_fifo_preserves_rejected_user_shell_request() {
+    let Event::UiShellCommand(command) = ui_shell_command(
         "ui-saturated-rejection",
-        "x".repeat(crate::scheduler::DEFAULT_QUEUED_BYTES_LIMIT + 1)
+        "x".repeat(tau_shell_interaction::COMMAND_LIMIT + 1)
             .as_str(),
     ) else {
         unreachable!();
     };
-    command.include_in_context = true;
     let frames = run_after_production_fifo_saturation(vec![Event::UiShellCommand(command)], false);
     let completions = frames
         .iter()
         .filter_map(|frame| match frame {
-            HarnessInputMessage::Emit(emit) => match emit.event.as_ref() {
-                Event::ShellCommandFinishedReported(event)
-                    if event.command_id.as_str() == "ui-saturated-rejection" =>
-                {
-                    Some(event)
-                }
-                _ => None,
-            },
+            HarnessInputMessage::Emit(emit) => tau_shell_interaction::decode_reply(&emit.event)
+                .and_then(|reply| match reply.response {
+                    tau_shell_interaction::Response::Rejected { reason }
+                        if reply.context.request_id == "ui-saturated-rejection" =>
+                    {
+                        Some(reason)
+                    }
+                    _ => None,
+                }),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(completions.len(), 1);
-    assert!(completions[0].include_in_context);
-    assert!(completions[0].output.contains("queue"));
+    assert!(completions[0].contains("invalid command"));
 }
 
 /// Ensures cancellation at the scheduler dequeue-to-dispatch handoff wins the

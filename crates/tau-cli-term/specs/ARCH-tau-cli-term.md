@@ -43,10 +43,10 @@ Bounded subprocess execution lives in `src/bounded_command.rs`.
   terminal features are released, input stays parked, and shutdown still renders
   the final retained content and places the cursor below it. External callbacks
   remain fully redraw-muted through teardown.
-- Git/fuzzy completion helpers use `ProcessOwnership::ProcessGroup`: Tau bounds
-  stdout and elapsed time, kills the process group on overflow, timeout, or
-  inherited-pipe failures, but does not hand foreground terminal ownership to the
-  child.
+- Built-in path and fuzzy-path completion never spawn local helpers or inspect
+  the terminal host's filesystem. Rule selection calls the application's
+  nonblocking completion cache; `tau-cli` owns asynchronous endpoint requests.
+  See [SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md).
 - The built-in agent picker starts `fzf` directly with fixed arguments and
   bounded stdin/stdout. It appends one terminal-width-aware, Unicode-width
   presentation field to each stable TSV row, including two-display-column work
@@ -99,9 +99,10 @@ open. Unchanged trailers and deleted marker lines clear that recovery. Recovery
 text remains below the marker and is never submitted unless the user manually
 moves it above the marker.
 
-## Git completion cache
+## Remote completion cache
 
-Git file enumeration caches results per current directory. Positive results are
-kept for the process/cwd snapshot. Negative results are short-lived only, so a
-transient git failure, missing repository, or output-limit error does not disable
-fuzzy git completion until Tau exits.
+`CompletionData` exposes a transport-neutral callback for instance and path
+suggestions. The callback returns already-cached candidates; it must not wait on
+remote replies. The application refreshes completion when a bounded asynchronous
+reply arrives. Local intrinsic action, agent, and session completion retains its
+existing precedence, as do explicit terminal-owning custom commands.

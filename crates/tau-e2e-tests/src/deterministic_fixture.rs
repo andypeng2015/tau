@@ -1171,6 +1171,17 @@ impl DeterministicFixture {
         Ok(tau_test_support::parse_published_trace_events(&bytes)?)
     }
 
+    /// Build the single fixed, cancellable command used by the running-recovery
+    /// privacy oracle. Resolve its utility before entering the empty shell
+    /// PATH.
+    pub fn shell_recovery_hold_command(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let sleep = exact_path_command("sleep")?;
+        Ok(format!(
+            "'{}' 30 # private-running-recovery-marker",
+            sleep.replace('\'', "'\\''"),
+        ))
+    }
+
     /// Reads one supervised extension's captured stderr log.
     pub fn extension_log(&self, instance: &str) -> Result<String, std::io::Error> {
         tau_util_fs_err::read_to_string(

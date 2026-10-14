@@ -25,10 +25,10 @@ use crate::harness::provider_startup::{self, ProviderStartupSnapshot};
 use crate::harness::{
     ClientWriterFailure, EXTENSION_RESTART_DELAY, HarnessSessionLaunch, HarnessStartupInputs,
     MAX_EXTENSION_RESTART_ATTEMPTS, MAX_EXTENSION_RESTART_NOTICE_BYTES, PendingTool,
-    PendingUiShellCommand, UiShellRouteId, extension_disconnected_tool_call_error_message,
-    extension_restart_disabled_notice, prompt_snapshot_tool_error_message,
-    tool_available_again_notice_prompt, tool_unavailable_notice_prompt,
-    unavailable_tool_error_message, validate_protocol_version_against,
+    extension_disconnected_tool_call_error_message, extension_restart_disabled_notice,
+    prompt_snapshot_tool_error_message, tool_available_again_notice_prompt,
+    tool_unavailable_notice_prompt, unavailable_tool_error_message,
+    validate_protocol_version_against,
 };
 use crate::settings::{Config, ExtensionConfig, ExtensionStartupDiagnosticKind};
 
@@ -849,12 +849,6 @@ pub(super) fn reasoning_only_length_response(
         provider_response_id: None,
         ws_pool_delta: None,
     }
-}
-
-/// Builds a validated shell command id used by this test module.
-fn test_shell_command_id(value: impl AsRef<str>) -> tau_proto::ShellCommandId {
-    tau_proto::ShellCommandId::parse(value.as_ref())
-        .expect("test identifier must satisfy its grammar")
 }
 
 mod agent_lifecycle;

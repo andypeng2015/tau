@@ -140,6 +140,18 @@ pub const USER_PAYLOAD_ENVELOPE: RegisteredPayloadEnvelope = RegisteredPayloadEn
     carrier: PayloadEnvelopeCarrier::GenericUserText,
 };
 
+/// Registered attributed output from a configured extension, not direct user
+/// input.
+pub const TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE: RegisteredPayloadEnvelope =
+    RegisteredPayloadEnvelope {
+        name: "tau_extension_output",
+        opening: PayloadEnvelopeOpening::Attributed("<tau_extension_output "),
+        ordered_attributes: &["publisher", "operation_id"],
+        exact_close: "</tau_extension_output>",
+        visible_close: "&lt;/tau_extension_output&gt;",
+        carrier: PayloadEnvelopeCarrier::GenericUserText,
+    };
+
 /// Registered fieldless envelope for harness-authenticated asynchronous input.
 pub const TAU_INTERNAL_PAYLOAD_ENVELOPE: RegisteredPayloadEnvelope = RegisteredPayloadEnvelope {
     name: "tau_internal",
@@ -216,6 +228,7 @@ pub const TAU_BACKGROUND_RESULT_PAYLOAD_ENVELOPE: RegisteredPayloadEnvelope =
 pub const fn registered_payload_envelopes() -> &'static [RegisteredPayloadEnvelope] {
     &[
         USER_PAYLOAD_ENVELOPE,
+        TAU_EXTENSION_OUTPUT_PAYLOAD_ENVELOPE,
         TAU_INTERNAL_PAYLOAD_ENVELOPE,
         MESSAGE_PAYLOAD_ENVELOPE,
         TAU_WEB_CONTENT_PAYLOAD_ENVELOPE,

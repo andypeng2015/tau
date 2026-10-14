@@ -1,149 +1,66 @@
-use std::{fs, sync as path_std_sync};
+use std::sync as path_std_sync;
 
 use crate::completion::{
     CommandCompletion, CompletionData, CompletionRule, CompletionRules, build_candidates,
-    build_candidates_with_home, build_candidates_with_home_and_cwd, build_candidates_with_rules,
+    build_candidates_with_rules,
 };
 
-/// Ensures the built-in `./` rule reads the injected working directory and
-/// keeps its local prefix in both preview and accepted file candidates.
+/// Path rules never inspect the terminal host when no remote cache is
+/// installed.
 #[test]
-fn dotslash_token_triggers_filesystem_candidates() {
-    let cwd = tempfile::tempdir().expect("tempdir");
-    fs::write(cwd.path().join("tau-cli-term-dotslash.txt"), "").expect("write test file");
-    let buffer = "./tau-cli-term-dotslash";
-    let candidates = build_candidates_with_home_and_cwd(
-        &[CommandCompletion::new(":whatever", "")],
-        &CompletionData::new(),
-        buffer,
-        buffer.len(),
-        None,
-        cwd.path(),
-    );
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].label, "./tau-cli-term-dotslash.txt");
-    assert_eq!(candidates[0].description, "file");
-    assert_eq!(candidates[0].replacement, "./tau-cli-term-dotslash.txt");
+fn path_rules_have_no_local_fallback() {
+    for buffer in ["./", "../", "~/", "/tmp/", "!shell cat ./"] {
+        assert!(build_candidates(&[], &CompletionData::new(), buffer, buffer.len()).is_empty());
+    }
 }
 
-/// Ensures a home completion previews the typed tilde form, then expands only
-/// its accepted token while preserving cursor position and quoted prompt text.
+/// Rule selection calls the application cache with the original local cursor.
 #[test]
-fn home_relative_token_previews_tilde_and_accepts_absolute_home_path() {
-    let home = tempfile::tempdir().expect("tempdir");
-    fs::write(home.path().join("alpha.txt"), "").expect("write alpha");
-    fs::write(home.path().join("beta.txt"), "").expect("write beta");
-    let buffer = r#"open ~/a and "~/literal""#;
-    let cursor = "open ~/a".len();
+fn path_rules_delegate_to_remote_cache() {
+    let data = CompletionData::new();
+    let calls = path_std_sync::Arc::new(path_std_sync::Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    data.set_remote_completer(path_std_sync::Arc::new(move |buffer, cursor, mode| {
+        observed
+            .lock()
+            .expect("calls")
+            .push((buffer.to_owned(), cursor, mode));
+        Vec::new()
+    }));
+    for buffer in ["./x", "../x", "~/x", "/tmp/x", "!sh", "!!sh"] {
+        build_candidates(&[], &data, buffer, buffer.len());
+    }
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.len(), 6);
+    assert_eq!(calls[0].2, Some(false));
+    assert_eq!(calls[1].2, Some(false));
+    assert_eq!(calls[4].2, None);
+    assert_eq!(calls[5].2, None);
+}
 
-    let cands = build_candidates_with_home(
-        &[CommandCompletion::new(":whatever", "")],
-        &CompletionData::new(),
-        buffer,
-        cursor,
-        Some(home.path()),
-    );
-
-    assert_eq!(cands.len(), 1);
-    assert_eq!(cands[0].label, "~/alpha.txt");
-    assert_eq!(cands[0].replacement, r#"open ~/alpha.txt and "~/literal""#);
-    assert_eq!(cands[0].cursor, "open ~/alpha.txt".len());
-    let acceptance = cands[0].acceptance.as_ref().expect("home acceptance");
+/// Explicit fuzzy rules select the remote fuzzy mode, including quoted paths.
+#[test]
+fn path_fuzzy_rules_delegate_quoted_unicode_token() {
+    let data = CompletionData::new();
+    let calls = path_std_sync::Arc::new(path_std_sync::Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    data.set_remote_completer(path_std_sync::Arc::new(move |buffer, cursor, mode| {
+        observed
+            .lock()
+            .expect("calls")
+            .push((buffer.to_owned(), cursor, mode));
+        Vec::new()
+    }));
+    let rules = CompletionRules::new(vec![
+        CompletionRule::parse("./", "complete_path_fuzzy").expect("fuzzy rule"),
+    ]);
+    let buffer = "!remote cat './hé llo'";
+    let cursor = "!remote cat './hé".len();
+    build_candidates_with_rules(&[], &data, &rules, buffer, cursor);
     assert_eq!(
-        acceptance.replacement,
-        format!(
-            r#"open {} and "~/literal""#,
-            home.path().join("alpha.txt").display()
-        )
+        *calls.lock().expect("calls"),
+        [(buffer.to_owned(), cursor, Some(true))]
     );
-    assert_eq!(
-        acceptance.cursor,
-        "open ".len() + home.path().join("alpha.txt").to_string_lossy().len()
-    );
-}
-
-/// Ensures a missing HOME retains the existing behavior: no `~/` candidate
-/// exists, so prompt text cannot be expanded by completion.
-#[test]
-fn home_relative_token_without_home_has_no_completion() {
-    let buffer = "open ~/a";
-    assert!(
-        build_candidates_with_home(
-            &[CommandCompletion::new(":whatever", "")],
-            &CompletionData::new(),
-            buffer,
-            buffer.len(),
-            None,
-        )
-        .is_empty()
-    );
-}
-
-/// Ensures accepted candidates use the same lossy path conversion as existing
-/// filesystem completion when the configured HOME path is not UTF-8.
-#[cfg(unix)]
-#[test]
-fn home_relative_token_with_non_utf8_home_uses_lossy_absolute_acceptance() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
-    let parent = tempfile::tempdir().expect("tempdir");
-    let home = parent.path().join(OsString::from_vec(vec![b'h', 0x80]));
-    fs::create_dir(&home).expect("create non-UTF-8 home");
-    fs::write(home.join("alpha.txt"), "").expect("write alpha");
-    let buffer = "open ~/a";
-    let candidates = build_candidates_with_home(
-        &[CommandCompletion::new(":whatever", "")],
-        &CompletionData::new(),
-        buffer,
-        buffer.len(),
-        Some(&home),
-    );
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].replacement, "open ~/alpha.txt");
-    assert_eq!(
-        candidates[0]
-            .acceptance
-            .as_ref()
-            .expect("home acceptance")
-            .replacement,
-        format!("open {}", home.join("alpha.txt").to_string_lossy())
-    );
-}
-
-#[test]
-fn filesystem_directory_candidates_include_trailing_slash() {
-    // Directory completions should be visibly distinct from files and accepting
-    // one should leave the prompt ready to complete or type a child path.
-    let home = tempfile::tempdir().expect("tempdir");
-    fs::create_dir(home.path().join("alpha-dir")).expect("mkdir alpha-dir");
-    fs::write(home.path().join("alpha.txt"), "").expect("write alpha file");
-    let buffer = "open ~/alpha";
-    let cursor = buffer.len();
-
-    let cands = build_candidates_with_home(
-        &[CommandCompletion::new(":whatever", "")],
-        &CompletionData::new(),
-        buffer,
-        cursor,
-        Some(home.path()),
-    );
-
-    let dir = cands
-        .iter()
-        .find(|cand| cand.description == "directory")
-        .expect("directory candidate");
-    assert_eq!(dir.label, "~/alpha-dir/");
-    assert_eq!(dir.replacement, "open ~/alpha-dir/");
-
-    let file = cands
-        .iter()
-        .find(|cand| cand.description == "file")
-        .expect("file candidate");
-    assert_eq!(file.label, "~/alpha.txt");
-    assert_eq!(file.replacement, "open ~/alpha.txt");
 }
 
 /// Keeps an intrinsic command buffer out of generic filesystem completion.
@@ -162,23 +79,27 @@ fn command_buffer_does_not_route_to_filesystem() {
 /// Ensures a leading absolute path uses the shipped slash path rule rather than
 /// entering command completion.
 #[test]
-fn leading_absolute_path_completes_from_the_filesystem() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    fs::write(directory.path().join("alpha.txt"), "").expect("write alpha");
-    let buffer = format!("{}/a", directory.path().display());
-
+fn leading_absolute_path_completes_from_remote_cache() {
+    let buffer = "/elsewhere/a";
+    let data = CompletionData::new();
+    data.set_remote_completer(path_std_sync::Arc::new(|_, _, _| {
+        vec![crate::Candidate {
+            label: "/elsewhere/alpha.txt".to_owned(),
+            description: "remote · file".to_owned(),
+            replacement: "/elsewhere/alpha.txt".to_owned(),
+            cursor: "/elsewhere/alpha.txt".len(),
+            acceptance: None,
+        }]
+    }));
     let candidates = build_candidates(
         &[CommandCompletion::new(":model", "Switch model")],
-        &CompletionData::new(),
-        &buffer,
+        &data,
+        buffer,
         buffer.len(),
     );
 
     assert_eq!(candidates.len(), 1);
-    assert_eq!(
-        candidates[0].replacement,
-        format!("{}/alpha.txt", directory.path().display())
-    );
+    assert_eq!(candidates[0].replacement, "/elsewhere/alpha.txt");
     assert!(!candidates[0].label.starts_with(':'));
 }
 
@@ -377,28 +298,4 @@ fn non_slash_non_path_buffer_returns_nothing() {
         "hello".len(),
     );
     assert!(cands.is_empty());
-}
-
-/// Ensures the built-in `../` rule reads the injected parent directory and
-/// preserves the traversal prefix in an accepted file candidate.
-#[test]
-fn parent_traversal_token_is_recognised() {
-    let parent = tempfile::tempdir().expect("tempdir");
-    let cwd = parent.path().join("child");
-    fs::create_dir(&cwd).expect("create child directory");
-    fs::write(parent.path().join("tau-cli-term-parent.txt"), "").expect("write test file");
-    let buffer = "../tau-cli-term-parent";
-    let candidates = build_candidates_with_home_and_cwd(
-        &[CommandCompletion::new(":whatever", "")],
-        &CompletionData::new(),
-        buffer,
-        buffer.len(),
-        None,
-        &cwd,
-    );
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].label, "../tau-cli-term-parent.txt");
-    assert_eq!(candidates[0].description, "file");
-    assert_eq!(candidates[0].replacement, "../tau-cli-term-parent.txt");
 }

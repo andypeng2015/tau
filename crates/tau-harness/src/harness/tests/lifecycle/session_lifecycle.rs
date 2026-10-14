@@ -3,37 +3,6 @@
 use super::*;
 use crate::harness::HarnessCommand;
 
-/// Ensures stale or malformed shell finish events cannot inject output into the
-/// wrong session when an explicit target agent belongs to another session.
-#[test]
-fn shell_output_for_wrong_session_is_ignored() {
-    let td = TempDir::new().expect("tempdir");
-    let sp = td.path().join("state");
-    let mut h = echo_harness(&sp).expect("start");
-    let cid = ensure_test_user_agent(&mut h);
-    let agent_id = durable_agent_id_for_conversation(&h, &cid);
-
-    h.inject_user_shell_output(&tau_proto::ShellCommandFinished {
-        command_id: tau_proto::ShellCommandId::parse("shell-2")
-            .expect("test identifier must satisfy its grammar"),
-        session_id: test_session_id("other-session"),
-        command: "printf wrong".to_owned(),
-        include_in_context: true,
-        target_agent_id: Some(agent_id),
-        output: "wrong".to_owned(),
-        exit_code: Some(0),
-        cancelled: false,
-    });
-
-    assert!(loaded_agent_events(&h, "s1").into_iter().all(|event| {
-        !matches!(
-            event,
-            Event::AgentUserMessageInjected(injected)
-                if injected.text.contains("printf wrong")
-        )
-    }));
-}
-
 #[test]
 fn resumed_session_init_does_not_reinject_agents_context() {
     // Regression: cold resume must wait for extensions to refresh their

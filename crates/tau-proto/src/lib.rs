@@ -33,12 +33,14 @@ mod inter_session_notice;
 mod interception;
 mod local_summary_continuation;
 pub use local_summary_continuation::*;
+mod activity_lease;
 mod inspection;
 mod message_extension_data;
 mod message_fact;
 mod messages;
 pub mod notice_kind;
 mod observation;
+mod passive_context;
 mod prompt_envelope;
 mod prompt_fragment;
 mod prompt_submission;
@@ -62,6 +64,7 @@ mod tool_name_prefix;
 use std::io::{BufReader, Cursor, Read, Write};
 use std::marker::PhantomData;
 
+pub use activity_lease::*;
 pub use artifact::*;
 pub use bridge_receiver::*;
 pub use byte_count::ByteCount;
@@ -81,6 +84,7 @@ pub use message_extension_data::*;
 pub use message_fact::*;
 pub use messages::*;
 pub use observation::*;
+pub use passive_context::*;
 pub use prompt_envelope::*;
 pub use prompt_fragment::*;
 pub use prompt_submission::*;
@@ -109,7 +113,7 @@ pub use tool_name_prefix::{
 /// Current harness-peer wire and extension-visible event contract revision.
 ///
 /// `SPEC-extension-protocol-versioning` defines bump and admission policy.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(12, 0);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(13, 0);
 
 /// Reporter-owned filename used by the locked papercut history RPC.
 pub const PAPERCUT_FILE_NAME: &str = "papercuts.jsonl";

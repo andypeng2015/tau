@@ -119,11 +119,12 @@ Attached-UI prompt-draft and focus observations likewise use ordinary
 interception and commit before live subscriber reaction. Both remain outside
 semantic history for either caller `persist` value. See
 [SPEC-ui-prompt-draft-and-focus-events](../../../specs/SPEC-ui-prompt-draft-and-focus-events.md).
-Tool/Core user-shell reports also cross ordinary interception and commit before
-the downstream consumer revalidates captured generation/session and private
-route identity. Reports remain outside semantic history; only the harness
-publishes canonical progress/completion. See
-[SPEC-shell-command-reports-and-canonical-facts](../../../specs/SPEC-shell-command-reports-and-canonical-facts.md).
+User-shell execution and completion use opaque custom events with generic
+publisher and privacy metadata. No shell-specific consumer runs after commit.
+The separately requested generic passive-context append uses ordinary
+publication; see
+[SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md)
+and [SPEC-passive-extension-context](../../../specs/SPEC-passive-extension-context.md).
 Tool/Core ambient-indicator declarations likewise cross ordinary interception
 and commit before current-generation and live-agent revalidation updates the
 harness-owned transient per-source contribution. They never enter semantic
@@ -167,10 +168,9 @@ backpressure policy to `pending_intercept` or `deferred_publishes`. Deferred
 publications retain their full events while stalled and can therefore consume
 memory without bound. This is an accepted consequence of granting trusted
 interceptors authority to stop publication pending an explicit decision.
-Canonical `shell.command_finished` is likewise immutable and must-pass so UI
-completion and optional post-commit transcript injection cannot diverge.
-Canonical shell progress retains its harness-owned mapped command/target
-identity while allowing the established chunk/stream interception changes.
+Generic passive-context facts are immutable but droppable. Their correlated
+result reports actual commit or failure; transient endpoint observations and
+transcript publication are independent, not an atomic operation.
 
 Committed harness-owned agent-message projections are their owning
 transcript's sole payload occurrence. Their post-commit reaction may install a

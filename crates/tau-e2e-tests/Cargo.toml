@@ -41,6 +41,7 @@ tau-ext-test-dummy.workspace = true
 tau-harness = { workspace = true, features = ["output-length-test-barrier"] }
 tau-harness-tools.workspace = true
 tau-proto.workspace = true
+tau-shell-interaction.workspace = true
 tau-socket.workspace = true
 tau-test-support.workspace = true
 tau-util-fs-err.workspace = true

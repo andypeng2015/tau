@@ -561,6 +561,21 @@ impl EventName {
         Self::from_static(EventCategory::Agent, "cache_refresh_cancel_requested");
     pub const AGENT_USER_MESSAGE_INJECTED: Self =
         Self::from_static(EventCategory::Agent, "user_message_injected");
+    /// Generic configured-extension passive transcript request.
+    pub const EXT_PASSIVE_CONTEXT_APPEND_REQUEST: Self =
+        Self::from_static(EventCategory::Extension, "passive_context_append_request");
+    /// Request a transient extension-owned activity hold transition.
+    pub const EXT_ACTIVITY_LEASE_REQUEST: Self =
+        Self::from_static(EventCategory::Extension, "activity_lease_request");
+    /// Confirm an actual activity hold disposition.
+    pub const EXT_ACTIVITY_LEASE_RESULT: Self =
+        Self::from_static(EventCategory::Extension, "activity_lease_result");
+    /// Generic passive append outcome.
+    pub const EXT_PASSIVE_CONTEXT_APPEND_RESULT: Self =
+        Self::from_static(EventCategory::Extension, "passive_context_append_result");
+    /// Canonical passive transcript fact.
+    pub const AGENT_PASSIVE_CONTEXT_APPENDED: Self =
+        Self::from_static(EventCategory::Agent, "passive_context_appended");
     pub const AGENT_HEAD_MOVED: Self = Self::from_static(EventCategory::Agent, "head_moved");
 }
 

@@ -10,6 +10,7 @@ fn protocol_item_delivery_classification_preserves_all_metadata_cases() {
     for replay in [false, true] {
         for recorded_at in [None, Some(tau_proto::UnixMicros::new(123))] {
             let delivery = EventDelivery {
+                publisher: None,
                 event: Box::new(event.clone()),
                 replay,
                 recorded_at,

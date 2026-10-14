@@ -1,6 +1,8 @@
 //! Contract tests for `SPEC-custom-extension-events`.
 
 use super::*;
+use crate::debug_log::DebugEventLog;
+use crate::event::HarnessEvent;
 use crate::{event_log as path_crate_event_log, extension as path_crate_extension};
 
 /// Build one custom event with an extension-owned nested name.
@@ -16,6 +18,133 @@ fn custom(name: &str, payload: &str) -> Event {
         )
         .expect("extension-owned custom event"),
     )
+}
+
+/// Retired shell DTOs still decode for history, but neither a configured peer
+/// nor an authenticated UI may turn them into new live work or publications.
+#[test]
+fn retired_shell_events_are_readable_but_rejected_at_live_intake() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = quiet_provider_harness(tmp.path()).expect("harness");
+    connect_ready_configured_extension(
+        &mut h,
+        "publisher",
+        "publisher",
+        tau_proto::ClientKind::Tool,
+    );
+    connect_test_client_with_origin(
+        &mut h,
+        "ui",
+        tau_proto::ClientKind::Ui,
+        ConnectionOrigin::Socket,
+    );
+    let command = tau_proto::UiShellCommand {
+        session_id: "s1".parse().expect("session"),
+        command_id: "legacy".parse().expect("id"),
+        command: "must not execute".to_owned(),
+        include_in_context: true,
+        target_agent_id: None,
+    };
+    let progress = tau_proto::ShellCommandProgress {
+        command_id: command.command_id.clone(),
+        stream: tau_proto::ShellStream::Stdout,
+        chunk: "old progress".to_owned(),
+        target_agent_id: None,
+    };
+    let finished = tau_proto::ShellCommandFinished {
+        command_id: command.command_id.clone(),
+        session_id: command.session_id.clone(),
+        command: command.command.clone(),
+        include_in_context: true,
+        target_agent_id: None,
+        output: "old output".to_owned(),
+        exit_code: Some(0),
+        cancelled: false,
+    };
+    for event in [
+        Event::UiShellCommand(command),
+        Event::ShellCommandProgress(progress.clone()),
+        Event::ShellCommandProgressReported(progress),
+        Event::ShellCommandFinished(finished.clone()),
+        Event::ShellCommandFinishedReported(finished),
+    ] {
+        let encoded = serde_json::to_vec(&event).expect("historical encode");
+        assert_eq!(
+            serde_json::from_slice::<Event>(&encoded).expect("historical decode"),
+            event
+        );
+        h.handle_extension_event_inner_with_persist(
+            &crate::test_connection_id("publisher"),
+            event.clone(),
+            Some(true),
+        )
+        .expect("reject old peer event");
+        h.handle_client_event_inner_with_persist(
+            &crate::test_connection_id("ui"),
+            event.clone(),
+            Some(true),
+        )
+        .expect("reject old UI event");
+        assert!(!event_log_events(&h).contains(&event));
+        assert!(!crate::harness::semantic_event_router::should_persist_event(&event, true));
+    }
+    h.shutdown().expect("shutdown");
+}
+
+/// Generic privacy metadata must survive opaque replacement without leaking
+/// either the original payload or interceptor replies to debug JSONL.
+#[test]
+fn custom_agent_privacy_survives_interception() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut h = quiet_provider_harness(tmp.path()).expect("harness");
+    h.session_runtime
+        .agent_store
+        .mark_agent_ephemeral("private-agent")
+        .expect("ephemeral scope");
+    let debug_dir = tmp.path().join("debug");
+    h.runtime_io.debug_log = Some(DebugEventLog::open(&debug_dir).expect("debug log"));
+    connect_ready_configured_extension(
+        &mut h,
+        "publisher",
+        "stable-publisher",
+        tau_proto::ClientKind::Core,
+    );
+    connect_test_tool(&mut h, "interceptor");
+    h.handle_extension_event(
+        "interceptor",
+        TestProtocolItem::Message(TestMessage::Intercept(Intercept {
+            selectors: vec![EventSelector::Exact("demo.private".parse().expect("name"))],
+            priority: InterceptionPriority::new(0),
+        })),
+    )
+    .expect("intercept");
+    let Event::ExtensionEvent(event) = custom("demo.private", "private original") else {
+        unreachable!();
+    };
+    let event = Event::ExtensionEvent(event.with_agent_id(crate::parse_agent_id("private-agent")));
+    assert!(h.event_targets_ephemeral_agent(&event, None));
+    h.handle_extension_event_inner(&crate::test_connection_id("publisher"), event)
+        .expect("publish");
+    let reply = InterceptReply {
+        action: InterceptAction::Pass(Some(Box::new(custom(
+            "demo.private",
+            "private replacement",
+        )))),
+    };
+    h.log_event(&HarnessEvent::from_connection_for_test(
+        crate::test_connection_id("interceptor"),
+        tau_proto::HarnessInputMessage::InterceptReply(reply.clone()),
+    ));
+    h.handle_extension_event(
+        "interceptor",
+        TestProtocolItem::Message(TestMessage::InterceptReply(reply)),
+    )
+    .expect("replace");
+    assert!(source_committed(&h, "publisher", |event| event.payload()
+        == &CborValue::Text("private replacement".to_owned())));
+    let jsonl = std::fs::read_to_string(debug_dir.join("events.jsonl")).expect("debug output");
+    assert!(!jsonl.contains("private original"));
+    assert!(!jsonl.contains("private replacement"));
 }
 
 /// Return whether one source committed a matching custom event.
@@ -87,6 +216,11 @@ fn every_configured_extension_kind_can_publish_custom_events() {
                     &routed.frame,
                     HarnessOutputMessage::Deliver(delivery)
                         if !delivery.replay
+                            && matches!(&delivery.publisher,
+                                Some(tau_proto::EventPublisher::Extension {
+                                    name, connection_id, ..
+                                }) if name.as_str() == stable_name
+                                    && connection_id.as_str() == source)
                             && matches!(
                                 delivery.event.as_ref(),
                                 Event::ExtensionEvent(event)
@@ -291,6 +425,7 @@ fn same_name_replacement_changes_payload_and_retains_source() {
                 };
                 Some((
                     routed.source_id.clone(),
+                    delivery.publisher.clone(),
                     delivery.replay,
                     event.payload().clone(),
                 ))
@@ -305,6 +440,14 @@ fn same_name_replacement_changes_payload_and_retains_source() {
                 tau_proto::ConnectionId::parse("publisher")
                     .expect("test connection id must satisfy the identifier grammar")
             ),
+            Some(tau_proto::EventPublisher::Extension {
+                name: h.extensions.entries[&crate::test_connection_id("publisher")]
+                    .name
+                    .clone(),
+                instance_id: h.extensions.entries[&crate::test_connection_id("publisher")]
+                    .instance_id,
+                connection_id: crate::test_connection_id("publisher"),
+            }),
             false,
             CborValue::Text("replacement".to_owned()),
         )]

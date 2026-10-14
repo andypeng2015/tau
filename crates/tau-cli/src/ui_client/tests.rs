@@ -52,24 +52,33 @@ fn chat_subscription_includes_agent_start_failure_terminal() {
     assert!(subscription.historical_selectors.contains(&selector));
 }
 
-/// Cold attach requests running shell snapshots and omission notices while
-/// retaining live terminal delivery.
+/// Live shell traffic is endpoint-owned; only legacy completed facts are
+/// selected from historical journals.
 #[test]
 fn chat_subscription_includes_shell_reconciliation_events() {
     let HarnessInputMessage::Subscribe(subscription) = chat_subscribe_message() else {
         panic!("chat subscription must produce Subscribe")
     };
-    for event in [EventName::UI_SHELL_COMMAND, EventName::HARNESS_NOTICE] {
-        assert!(
-            subscription
-                .historical_selectors
-                .contains(&EventSelector::Exact(event))
-        );
+    for event in [
+        EventName::UI_SHELL_COMMAND,
+        EventName::SHELL_COMMAND_PROGRESS,
+    ] {
+        let selector = EventSelector::Exact(event);
+        assert!(!subscription.historical_selectors.contains(&selector));
+        assert!(!subscription.live_selectors.contains(&selector));
     }
+    let terminal = EventSelector::Exact(EventName::SHELL_COMMAND_FINISHED);
+    assert!(subscription.historical_selectors.contains(&terminal));
+    assert!(!subscription.live_selectors.contains(&terminal));
+    let reply = EventSelector::Exact(tau_shell_interaction::REPLY_EVENT.parse().expect("event"));
+    assert!(subscription.live_selectors.contains(&reply));
+    assert!(!subscription.historical_selectors.contains(&reply));
     assert!(
         subscription
-            .live_selectors
-            .contains(&EventSelector::Exact(EventName::SHELL_COMMAND_FINISHED))
+            .historical_selectors
+            .contains(&EventSelector::Exact(
+                EventName::AGENT_PASSIVE_CONTEXT_APPENDED
+            ))
     );
 }
 
@@ -105,7 +114,6 @@ fn chat_subscription_keeps_runtime_side_effects_live_only() {
         EventName::PROVIDER_PROMPT_SUBMITTED,
         EventName::PROVIDER_RESPONSE_UPDATED,
         EventName::TOOL_PROGRESS,
-        EventName::SHELL_COMMAND_PROGRESS,
         EventName::TERM_OSC1337_SET_USER_VAR,
         EventName::TERM_BELL,
     ] {

@@ -413,8 +413,9 @@ fn tool_progress_never_enters_semantic_history() {
     }
 }
 
-/// Peer shell reports and canonical progress never enter semantic history,
-/// while canonical completion persists only when included in context.
+/// Retired live shell DTOs never enter new semantic history, including
+/// terminals whose old include-in-context flag is true. Old journals remain
+/// readable.
 #[test]
 fn shell_reports_never_enter_semantic_history() {
     let progress = tau_proto::ShellCommandProgress {
@@ -448,7 +449,7 @@ fn shell_reports_never_enter_semantic_history() {
         &Event::ShellCommandProgress(progress),
         false
     ));
-    assert!(should_persist_event(
+    assert!(!should_persist_event(
         &Event::ShellCommandFinished(finished.clone()),
         true
     ));

@@ -798,6 +798,7 @@ dependencies = [
  "dpc-tau-harness-tools",
  "dpc-tau-proto",
  "dpc-tau-session-inspect",
+ "dpc-tau-shell-interaction",
  "dpc-tau-term-screen",
  "dpc-tau-test-support",
  "dpc-tau-themes",
@@ -860,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "dpc-tau-client"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "blake3",
  "ciborium",
@@ -945,6 +946,7 @@ dependencies = [
  "dpc-tau-harness",
  "dpc-tau-harness-tools",
  "dpc-tau-proto",
+ "dpc-tau-shell-interaction",
  "dpc-tau-socket",
  "dpc-tau-test-support",
  "dpc-tau-util-fs-err",
@@ -1019,6 +1021,7 @@ dependencies = [
  "dpc-tau-client",
  "dpc-tau-core",
  "dpc-tau-proto",
+ "dpc-tau-shell-interaction",
  "dpc-tau-skills",
  "dpc-tau-vcr",
  "fs2",
@@ -1145,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "dpc-tau-proto"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ciborium",
  "dpc-tau-actions",
@@ -1303,6 +1306,15 @@ dependencies = [
  "tempfile",
  "time",
  "zstd",
+]
+
+[[package]]
+name = "dpc-tau-shell-interaction"
+version = "0.2.1"
+dependencies = [
+ "dpc-tau-proto",
+ "rand 0.8.6",
+ "serde",
 ]
 
 [[package]]

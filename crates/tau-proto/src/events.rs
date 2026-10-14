@@ -3480,6 +3480,8 @@ pub enum ProviderModelDeclarationIssue {
 /// events in routing code keyed by [`Event::name`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct CustomEvent {
+    /// Optional generic privacy scope; never interpreted as payload semantics.
+    agent_id: Option<AgentId>,
     name: EventName,
     session_id: Option<SessionId>,
     payload: CborValue,
@@ -3533,6 +3535,7 @@ impl CustomEvent {
             return Err(InvalidCustomEventName { name });
         }
         Ok(Self {
+            agent_id: None,
             name,
             session_id,
             payload,
@@ -3549,6 +3552,21 @@ impl CustomEvent {
     #[must_use]
     pub fn session_id(&self) -> Option<&SessionId> {
         self.session_id.as_ref()
+    }
+
+    /// Associates opaque data with an agent's diagnostic privacy policy.
+    ///
+    /// This does not grant transcript, routing, or inference authority.
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
+        self.agent_id = Some(agent_id);
+        self
+    }
+
+    /// Returns the generic agent privacy scope, if the publisher supplied one.
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&AgentId> {
+        self.agent_id.as_ref()
     }
 
     /// Extension-owned CBOR payload.
@@ -3581,6 +3599,8 @@ impl Serialize for CustomEvent {
 
         #[derive(Serialize)]
         struct WireCustomEvent<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_id: Option<&'a AgentId>,
             name: &'a EventName,
             #[serde(skip_serializing_if = "Option::is_none")]
             session_id: Option<&'a SessionId>,
@@ -3588,6 +3608,7 @@ impl Serialize for CustomEvent {
         }
 
         WireCustomEvent {
+            agent_id: self.agent_id.as_ref(),
             name: &self.name,
             session_id: self.session_id.as_ref(),
             payload: &self.payload,
@@ -3603,6 +3624,8 @@ impl<'de> Deserialize<'de> for CustomEvent {
     {
         #[derive(Deserialize)]
         struct WireCustomEvent {
+            #[serde(default)]
+            agent_id: Option<AgentId>,
             name: EventName,
             #[serde(default)]
             session_id: Option<SessionId>,
@@ -3610,8 +3633,10 @@ impl<'de> Deserialize<'de> for CustomEvent {
         }
 
         let wire = WireCustomEvent::deserialize(deserializer)?;
-        Self::try_new(wire.name, wire.session_id, wire.payload)
-            .map_err(path_serde_de::Error::custom)
+        let mut event = Self::try_new(wire.name, wire.session_id, wire.payload)
+            .map_err(path_serde_de::Error::custom)?;
+        event.agent_id = wire.agent_id;
+        Ok(event)
     }
 }
 
@@ -4351,21 +4376,17 @@ pub enum ShellStream {
 
 /// The user submitted a `!`/`!!` shell command.
 ///
-/// `include_in_context`: when `true` (from `!<cmd>`), the harness
-/// injects a tagged user message containing the command and its
-/// output into the target agent's transcript on completion, so the
-/// agent sees it on its next turn. When `false` (from `!!<cmd>`),
-/// the result is UI-only and never reaches the model.
+/// Retained for historical decoding and local UI projection only. Live harness
+/// intake rejects this event. Endpoint codecs live in `tau-shell-interaction`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UiShellCommand {
     pub session_id: SessionId,
-    /// UI lifecycle correlation id. The harness accepts 1..=256 UTF-8 bytes
-    /// and requires uniqueness until the terminal event commits.
+    /// Historical or local UI lifecycle correlation id.
     pub command_id: crate::ShellCommandId,
     pub command: String,
     pub include_in_context: bool,
-    /// Target agent for this user-authored shell command. `None` means no
-    /// explicit target; the harness uses its default conversation state.
+    /// Original target, if present. Live endpoints never ask the harness to
+    /// infer a target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_agent_id: Option<AgentId>,
 }
@@ -4373,47 +4394,33 @@ pub struct UiShellCommand {
 /// A chunk of output from a running user-initiated shell command.
 /// Correlated to the request by `command_id`.
 ///
-/// The selected provider submits this payload as
-/// [`Event::ShellCommandProgressReported`] with the opaque command id received
-/// from the harness. After commit and routed-owner validation, the harness maps
-/// that provider route id back to the UI lifecycle id and publishes
-/// [`Event::ShellCommandProgress`].
+/// Retained for historical decoding and endpoint-local renderer projection.
+/// Live first-party progress and report events are rejected by the harness.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ShellCommandProgress {
-    /// Private provider route id in reports; public UI lifecycle id in
-    /// canonical facts.
+    /// Historical correlation or endpoint-local UI lifecycle id.
     pub command_id: crate::ShellCommandId,
     pub stream: ShellStream,
     pub chunk: String,
-    /// Target agent for this user-authored shell command. `None` means no
-    /// explicit target; the harness uses its default conversation state.
+    /// Original target, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_agent_id: Option<AgentId>,
 }
 
 /// A user-initiated shell command completed (exited or was cancelled).
 ///
-/// The extension echoes `command`, `session_id`, `include_in_context`, and the
-/// resolved target from the originating `UiShellCommand`. The harness validates
-/// those immutable fields and the event source against its pending-command
-/// route after the extension's [`Event::ShellCommandFinishedReported`] commits.
-/// The provider also echoes the opaque harness route id it received; the
-/// harness maps that id back to the UI lifecycle id before publishing the
-/// immutable, must-pass [`Event::ShellCommandFinished`] fact.
-///
-/// A canonical completion defaults to durable only when `include_in_context`
-/// is true. Its complete payload then supports self-contained terminal replay;
-/// reports and UI-only completions remain transient.
+/// Historical journal facts retain this self-contained terminal payload. Live
+/// endpoints also use it as local renderer data, but never publish the old
+/// first-party event. New durable output is
+/// [`crate::AgentPassiveContextAppended`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ShellCommandFinished {
-    /// Private provider route id in reports; public UI lifecycle id in
-    /// canonical facts.
+    /// Historical correlation or endpoint-local UI lifecycle id.
     pub command_id: crate::ShellCommandId,
     pub session_id: SessionId,
     pub command: String,
     pub include_in_context: bool,
-    /// Target agent for this user-authored shell command. `None` means no
-    /// explicit target; the harness uses its default conversation state.
+    /// Original target, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_agent_id: Option<AgentId>,
     /// Native user-shell stdout followed by an optional `[stderr]` section.
@@ -7220,6 +7227,16 @@ pub enum Event {
     ExtPromptFragmentPublish(ExtPromptFragmentPublish),
     #[serde(rename = "extension.internal_prompt_submit_request")]
     ExtInternalPromptSubmitRequest(ExtInternalPromptSubmitRequest),
+    #[serde(rename = "extension.activity_lease_request")]
+    ExtActivityLeaseRequest(crate::ExtActivityLeaseRequest),
+    #[serde(rename = "extension.activity_lease_result")]
+    ExtActivityLeaseResult(crate::ExtActivityLeaseResult),
+    #[serde(rename = "extension.passive_context_append_request")]
+    ExtPassiveContextAppendRequest(crate::ExtPassiveContextAppendRequest),
+    #[serde(rename = "extension.passive_context_append_result")]
+    ExtPassiveContextAppendResult(crate::ExtPassiveContextAppendResult),
+    #[serde(rename = "agent.passive_context_appended")]
+    AgentPassiveContextAppended(crate::AgentPassiveContextAppended),
     #[serde(rename = "agent.start_request")]
     StartAgentRequest(StartAgentRequest),
     #[serde(rename = "agent.start_accepted")]
@@ -7340,17 +7357,17 @@ pub enum Event {
     #[serde(rename = "term.bell")]
     TermBell(TermBell),
 
-    // Shell (user-initiated)
-    /// Peer-authored progress awaiting routed-command validation.
+    // Historical shell events; never admitted as live publications.
+    /// Historical peer-authored progress.
     #[serde(rename = "shell.command_progress_reported")]
     ShellCommandProgressReported(ShellCommandProgress),
-    /// Harness-authored canonical progress fact.
+    /// Historical canonical progress or endpoint-local UI projection.
     #[serde(rename = "shell.command_progress")]
     ShellCommandProgress(ShellCommandProgress),
-    /// Peer-authored completion awaiting routed-command validation.
+    /// Historical peer-authored completion.
     #[serde(rename = "shell.command_finished_reported")]
     ShellCommandFinishedReported(ShellCommandFinished),
-    /// Harness-authored canonical completion fact.
+    /// Historical canonical terminal or endpoint-local UI projection.
     #[serde(rename = "shell.command_finished")]
     ShellCommandFinished(ShellCommandFinished),
 
@@ -7863,6 +7880,13 @@ impl Event {
                 EventName::AGENT_CACHE_REFRESH_CANCEL_REQUESTED
             }
             Self::AgentUserMessageInjected(_) => EventName::AGENT_USER_MESSAGE_INJECTED,
+            Self::ExtPassiveContextAppendRequest(_) => {
+                EventName::EXT_PASSIVE_CONTEXT_APPEND_REQUEST
+            }
+            Self::ExtActivityLeaseRequest(_) => EventName::EXT_ACTIVITY_LEASE_REQUEST,
+            Self::ExtActivityLeaseResult(_) => EventName::EXT_ACTIVITY_LEASE_RESULT,
+            Self::ExtPassiveContextAppendResult(_) => EventName::EXT_PASSIVE_CONTEXT_APPEND_RESULT,
+            Self::AgentPassiveContextAppended(_) => EventName::AGENT_PASSIVE_CONTEXT_APPENDED,
             Self::AgentHeadMoved(_) => EventName::AGENT_HEAD_MOVED,
             Self::AgentStarted(_) => EventName::AGENT_STARTED,
             Self::AgentUserInteractionRecorded(_) => EventName::AGENT_USER_INTERACTION_RECORDED,
@@ -7991,6 +8015,10 @@ impl Event {
                 | Self::ExtensionContextReady(_)
                 | Self::ExtAgentContextPublish(_)
                 | Self::ExtInternalPromptSubmitRequest(_)
+                | Self::ExtActivityLeaseRequest(_)
+                | Self::ExtActivityLeaseResult(_)
+                | Self::ExtPassiveContextAppendRequest(_)
+                | Self::ExtPassiveContextAppendResult(_)
                 | Self::StartAgentRequest(_)
                 | Self::StartAgentAccepted(_)
                 | Self::AgentStartFailed(_)

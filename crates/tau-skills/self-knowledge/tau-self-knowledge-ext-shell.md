@@ -96,9 +96,26 @@ setter in a later tool turn because sibling calls have no workdir-first
 ordering. Prefixed shell instances show their matching prefix and independent
 path/status, and hidden workdir capabilities do not emit this guidance.
 
-User `!`/`!!` commands are routed to exactly one generic shell instance. They
-fail without execution when none is available, when several are ambiguous, or
-when the target session/agent workdir is not ready.
+User commands require `!instance command` or `!!instance command`, even with one
+available instance. Instance names autocomplete; Tau never chooses a default.
+The named extension owns discovery, execution, cancellation, and running-state
+queries through opaque custom events. An acceptance timeout is an unconfirmed
+outcome, not permission to retry. `!` appends attributed output to the selected
+agent without activating inference; `!!` does not append. Headless `tau send`
+supports only `!!instance command` because it has no selected agent.
+
+The extension acquires a generic activity lease before accepting or executing
+user commands. Quiet commands keep an idle-timeout session alive even after the
+UI detaches; the hold releases after completion and any `!` context outcome.
+This does not protect against explicit shutdown or crashes. Holds have no expiry;
+an unconfirmed acknowledgement or context outcome can retain one until extension
+disconnect or operator shutdown.
+
+Path and fuzzy-path completion also run in the extension, using its host
+filesystem and remembered per-agent cwd. Arbitrary shell wrappers do not
+virtualize that namespace. Bang paths query only the named instance; ordinary
+prompt paths merge labeled candidates from available instances. There is no
+terminal-local filesystem fallback.
 
 On Linux, Android, and macOS, the model-visible `shell` / `shell_command` surfaces and user
 `!`/`!!` commands use independent stdout/stderr PTYs. Commands detect TTY output

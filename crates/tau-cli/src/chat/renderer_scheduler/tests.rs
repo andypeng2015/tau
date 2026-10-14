@@ -55,6 +55,8 @@ fn update(
     stats: Option<ProviderResponseStats>,
 ) -> RendererCmd {
     RendererCmd::Remote {
+        publisher: None,
+        replay: false,
         event: Box::new(Event::ProviderResponseUpdated(
             tau_proto::ProviderResponseUpdated {
                 agent_prompt_id: AgentPromptId::parse(prompt).expect("prompt id"),
@@ -463,6 +465,8 @@ fn other_event_and_disconnect_are_fifo_barriers() {
         .expect("provider update");
     remote_tx
         .send(RendererCmd::Remote {
+            publisher: None,
+            replay: false,
             event: Box::new(Event::AgentPromptTerminated(
                 tau_proto::AgentPromptTerminated {
                     agent_id: AgentId::parse("main").expect("agent id"),

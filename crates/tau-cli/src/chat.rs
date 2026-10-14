@@ -22,6 +22,7 @@ mod paste_upload;
 mod recorded_line_routing_tests;
 mod renderer_scheduler;
 mod session_completion;
+mod shell_completion;
 
 #[cfg(test)]
 mod ui_io_tests;
@@ -1017,6 +1018,8 @@ fn enqueue_remote_delivery(
     let abandoned_shell_starts = delivery.abandoned_shell_starts;
     let cmd = RendererCmd::Remote {
         event: delivery.event,
+        publisher: delivery.publisher,
+        replay: delivery.replay,
         presentation,
         abandoned_shell_starts,
         recorded_at: delivery.recorded_at,
@@ -1120,7 +1123,7 @@ fn enqueue_remote_quit_disposition(
         disposition,
         initial_applied,
     };
-    match remote_tx.send(cmd) {
+    match remote_tx.send(cmd).map_err(|error| *error) {
         Ok(()) => Ok(()),
         Err(mpsc::SendError(RendererCmd::UiQuitDispositionChanged {
             initial_applied, ..
@@ -1378,6 +1381,11 @@ fn run_chat_session(
         Arc::new(Mutex::new(None));
     let socket_input_shutdown = input_shutdown_handle.clone();
     let completion_data = tau_cli_term::CompletionData::new();
+    let shell_client = Arc::new(Mutex::new(tau_shell_interaction::Client::new(
+        session_id.clone(),
+    )));
+    let shell_completion =
+        shell_completion::ShellCompletion::new(shell_client.clone(), writer.clone());
     let (initial_quit_applied_tx, initial_quit_applied_rx) = mpsc::sync_channel(1);
     let socket_initial_quit_applied = Arc::new(Mutex::new(Some(initial_quit_applied_tx)));
     let remote_disconnected = Arc::new(AtomicBool::new(false));
@@ -1569,6 +1577,11 @@ fn run_chat_session(
     );
     completion_data
         .set_agent_mention_completer(build_agent_mention_completer(input_routing.clone()));
+    completion_data.set_remote_completer(shell_completion.completer(
+        shell_client.clone(),
+        input_routing.clone(),
+        handle.clone(),
+    ));
     let session_completion = SessionCompletion::new(session_id.clone(), handle.clone());
     completion_data.set_session_completer(session_completion.completer());
     completion_data.set_arg_completer(
@@ -1595,7 +1608,13 @@ fn run_chat_session(
         delivery_memory.clone(),
         queued_remote_items,
         renderer_byte_budget,
+        shell_client.clone(),
+        shell_completion.clone(),
+        writer.clone(),
+        LocalTerminalOutput::new(handle.clone(), theme.clone()),
     );
+    let discovery = shell_client.lock().expect(MUTEX_POISONED).discover();
+    send_frame(&writer, &tau_shell_interaction::request_message(&discovery))?;
     let initial_quit_disposition =
         await_initial_quit_disposition(&initial_quit_applied_rx, UI_SESSION_ADMISSION_TIMEOUT);
     if attach {
@@ -1641,6 +1660,7 @@ fn run_chat_session(
             &writer,
             &mut active_session_id,
             TerminalInputLoopCtx {
+                shell_client,
                 paste_upload: paste_upload.clone(),
                 quit_results: quit_result_rx.clone(),
                 fast_service_tier_state,
@@ -1765,6 +1785,10 @@ fn spawn_renderer_thread(
     delivery_memory: Option<Arc<DeliveryMemoryTracker>>,
     queued_remote_items: Arc<path_std_sync_atomic::AtomicUsize>,
     renderer_byte_budget: Arc<RendererByteBudget>,
+    shell_client: Arc<Mutex<tau_shell_interaction::Client>>,
+    shell_completion: shell_completion::ShellCompletion,
+    writer: WriterHandle,
+    shell_output: LocalTerminalOutput,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut renderer = renderer;
@@ -1784,6 +1808,8 @@ fn spawn_renderer_thread(
                     match cmd {
                         RendererCmd::Remote {
                             event,
+                            publisher,
+                            replay,
                             presentation,
                             abandoned_shell_starts,
                             recorded_at,
@@ -1809,7 +1835,51 @@ fn spawn_renderer_thread(
                                 |_| {},
                             );
                             renderer.abandon_shell_starts(&abandoned_shell_starts);
-                            match presentation {
+                            let update = shell_client.lock().expect(MUTEX_POISONED).observe_parts(
+                                &event,
+                                publisher.as_ref(),
+                                replay,
+                            );
+                            if !update.requests.is_empty() {
+                                shell_completion.refresh(&completion_handle);
+                            }
+                            if matches!(
+                                event.as_ref(),
+                                Event::ExtensionReady(_) | Event::ExtensionExited(_)
+                            ) {
+                                shell_completion.invalidate();
+                                shell_completion.refresh(&completion_handle);
+                            }
+                            for (context, target, candidates) in update.completions {
+                                shell_completion.observe(
+                                    context,
+                                    target,
+                                    candidates,
+                                    &completion_handle,
+                                );
+                            }
+                            for request in update.requests {
+                                if let Err(error) = send_frame(
+                                    &writer,
+                                    &tau_shell_interaction::request_message(&request),
+                                ) {
+                                    shell_output.command_feedback(&format!(
+                                        "shell discovery send failed: {error}"
+                                    ));
+                                }
+                            }
+                            for diagnostic in update.diagnostics {
+                                shell_output.command_feedback(&diagnostic);
+                            }
+                            for projection in update.events {
+                                renderer.handle_socket_delivery(
+                                    &projection,
+                                    recorded_at,
+                                    delivery_id,
+                                );
+                            }
+                            if !update.suppress_event {
+                                match presentation {
                                 cold_attach_stager::RendererPresentation::Ordinary => {
                                     renderer.handle_socket_delivery(
                                         &event,
@@ -1866,6 +1936,7 @@ fn spawn_renderer_thread(
                                         delivery_id,
                                     );
                                 }
+                            }
                             }
                             finish_remote_memory_handler(
                                 delivery_memory.as_deref(),
@@ -1932,8 +2003,19 @@ fn spawn_renderer_thread(
                     }
                     ui_io_tracker.sample_if_due(&mut renderer);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => ui_io_tracker.sample_now(&mut renderer),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    ui_io_tracker.sample_now(&mut renderer);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            // Busy streams must not starve acceptance deadlines.
+            for diagnostic in shell_client
+                .lock()
+                .expect(MUTEX_POISONED)
+                .tick()
+                .diagnostics
+            {
+                shell_output.command_feedback(&diagnostic);
             }
         }
     })
@@ -2560,6 +2642,10 @@ enum RendererCmd {
         /// Original decoded event allocation moved intact from
         /// `RendererDelivery` for renderer interpretation.
         event: Box<Event>,
+        /// Original authenticated source, never inferred from payload fields.
+        publisher: Option<tau_proto::EventPublisher>,
+        /// Historical deliveries must never restore endpoint ownership.
+        replay: bool,
         /// Presentation-only interpretation derived during cold-attach staging.
         presentation: cold_attach_stager::RendererPresentation,
         /// Presentation-only shell starts disproved by the attach snapshot.
@@ -2600,6 +2686,8 @@ struct RendererQueueFrame {
 }
 
 struct TerminalInputLoopCtx {
+    /// UI-owned authenticated extension inventory and operation correlations.
+    shell_client: Arc<Mutex<tau_shell_interaction::Client>>,
     /// Upload control on this attachment's existing bidirectional transport.
     paste_upload: paste_upload::PasteUpload,
     /// Directed quit acknowledgments, consumed before explicit detach exits.
@@ -3435,7 +3523,9 @@ impl<'a> TerminalInputSession<'a> {
                 tracing::debug!(target: "tau_cli::ui", "terminal resized");
             }
             TermEvent::FocusChanged { focused } => self.send_focus_changed(focused),
-            TermEvent::BufferChanged => self.update_draft(),
+            TermEvent::BufferChanged => {
+                self.update_draft();
+            }
             TermEvent::Action(action) => self.handle_binding_action(&action)?,
             TermEvent::BackTab => self.handle_binding_action("cycle-role-group")?,
             TermEvent::Escape => {
@@ -3818,6 +3908,21 @@ impl<'a> TerminalInputSession<'a> {
 
     fn send_cancel_prompt(&self) {
         let target_agent_id = self.selected_side_agent_id();
+        let requests = self
+            .ctx
+            .shell_client
+            .lock()
+            .expect(MUTEX_POISONED)
+            .cancel(target_agent_id.as_ref());
+        for request in requests {
+            if let Err(error) = send_frame(
+                self.writer,
+                &tau_shell_interaction::request_message(&request),
+            ) {
+                self.output
+                    .command_feedback(&format!("shell cancellation unconfirmed: {error}"));
+            }
+        }
         tracing::info!(
             target: "tau_cli::frontend_progress",
             target_agent_id = target_agent_id.as_ref().map(ToString::to_string),
@@ -4387,38 +4492,29 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn handle_shell_shortcut(&self, text: &str) -> bool {
-        // `!!<cmd>` / `!<cmd>`: run a shell command locally.
-        // `!!` excludes the result from the agent's context;
-        // `!` (single bang) includes it.
-        if let Some(command) = text.strip_prefix("!!") {
-            if let Err(error) = self.send_shell_shortcut(command, false) {
-                tracing::warn!(target: "tau_cli::ui", %error, "failed to send !! shell command");
+        if !text.starts_with('!') {
+            return false;
+        }
+        let request = self
+            .ctx
+            .shell_client
+            .lock()
+            .expect(MUTEX_POISONED)
+            .execute(text, self.ctx.routing.selected_side_agent_id());
+        match request {
+            Ok(request) => {
+                if let Err(error) = send_frame(
+                    self.writer,
+                    &tau_shell_interaction::request_message(&request),
+                ) {
+                    self.output.command_feedback(&format!(
+                        "shell command outcome unconfirmed: {error}; execution was not retried"
+                    ));
+                }
             }
-            return true;
+            Err(error) => self.output.command_feedback(&error),
         }
-        if let Some(command) = text.strip_prefix('!') {
-            if let Err(error) = self.send_shell_shortcut(command, true) {
-                tracing::warn!(target: "tau_cli::ui", %error, "failed to send ! shell command");
-            }
-            return true;
-        }
-
-        false
-    }
-
-    fn send_shell_shortcut(&self, command: &str, include_in_context: bool) -> io::Result<()> {
-        let command = command.trim();
-        if command.is_empty() {
-            return Ok(());
-        }
-        let target_agent_id = self.ctx.routing.selected_side_agent_id();
-        send_shell_command(
-            self.writer,
-            self.session_id,
-            command,
-            include_in_context,
-            target_agent_id,
-        )
+        true
     }
 
     fn submit_prompt(&mut self, text: &str) -> Option<InputLoopExit> {
@@ -4555,18 +4651,12 @@ impl<'a> TerminalInputSession<'a> {
     }
 
     fn update_draft(&self) {
-        // Queue the first change immediately, then coalesce later changes into
-        // one `UiPromptDraft` per `DRAFT_DEBOUNCE` window.
-        let text = self.term.handle().get_buffer();
-        self.ctx.routing.record_editable_draft(&text);
-        let target_agent_id = self.selected_side_agent_id();
-        queue_prompt_draft_snapshot(
+        handle_prompt_buffer_changed(
+            self.term.handle(),
+            &self.ctx.routing,
             self.ctx.draft_handle.as_ref(),
             self.session_id.clone(),
-            target_agent_id,
-            text,
         );
-        tracing::trace!(target: "tau_cli::ui", "prompt draft updated");
     }
 
     fn retarget_current_draft(&self) {
@@ -4761,6 +4851,25 @@ impl<'a> TerminalInputSession<'a> {
             self.pending_new_agent_options.stage_role(role);
         }
     }
+}
+
+/// Record editor changes without disturbing terminal-owned completion previews
+/// or dismissal. Remote replies use generation-checked refreshes separately.
+fn handle_prompt_buffer_changed(
+    handle: &tau_cli_term::TermHandle,
+    routing: &InputRoutingState,
+    draft_handle: &(Mutex<DraftSlot>, Condvar),
+    session_id: SessionId,
+) {
+    let text = handle.get_buffer();
+    routing.record_editable_draft(&text);
+    queue_prompt_draft_snapshot(
+        draft_handle,
+        session_id,
+        routing.selected_side_agent_id(),
+        text,
+    );
+    tracing::trace!(target: "tau_cli::ui", "prompt draft updated");
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -5656,19 +5765,6 @@ fn run_provider_auth(
         Ok(()) => print_local("provider profile saved; new prompts will use updated credentials"),
         Err(error) => print_local(&format!("provider registration failed: {error}")),
     }
-}
-
-fn send_shell_command(
-    writer: &WriterHandle,
-    session_id: &tau_proto::SessionId,
-    command: &str,
-    include_in_context: bool,
-    target_agent_id: Option<tau_proto::AgentId>,
-) -> io::Result<()> {
-    send_event(
-        writer,
-        &crate::ui_events::shell_command(session_id, command, include_in_context, target_agent_id),
-    )
 }
 
 #[cfg(test)]

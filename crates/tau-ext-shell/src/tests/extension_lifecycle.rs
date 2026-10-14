@@ -329,7 +329,13 @@ fn startup_declares_exact_shell_subscriptions_and_ready_after_publications() {
             EventSelector::Exact(EventName::SESSION_SHUTDOWN),
             EventSelector::Exact(EventName::AGENT_START_ACCEPTED),
             EventSelector::Exact(EventName::AGENT_START_RESULT),
-            EventSelector::Exact(EventName::UI_SHELL_COMMAND),
+            EventSelector::Exact(EventName::EXT_ACTIVITY_LEASE_RESULT),
+            EventSelector::Exact(EventName::EXT_PASSIVE_CONTEXT_APPEND_RESULT),
+            EventSelector::Exact(
+                tau_shell_interaction::REQUEST_EVENT
+                    .parse()
+                    .expect("request name")
+            ),
         ]
     );
     assert_eq!(
@@ -2102,12 +2108,12 @@ fn startup_registers_echo_disabled_by_default_and_gpt_shell_visible_name() {
 }
 
 /// A user-shell completion flush failure must exit the extension loop so the
-/// harness can release its private route and command-id reservation.
+/// UI observes endpoint loss instead of an indefinitely accepted command.
 #[test]
 fn mandatory_user_shell_completion_failure_exits_production_manual_loop() {
     assert_mandatory_frame_failure_exits(
         ui_shell_command("ui-mandatory-completion-failure", "printf done"),
-        b"shell.command_finished_reported",
+        b"finished",
         "user shell completion",
     );
 }

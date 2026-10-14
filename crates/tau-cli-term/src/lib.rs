@@ -28,18 +28,18 @@ use bounded_command::{
 };
 pub use completion::{
     ArgCompleter, CommandCompletion, CommandName, CompletionData, CompletionItem, CompletionRule,
-    CompletionRules,
+    CompletionRules, RemoteCompleter,
 };
+use tau_cli_term_raw::Event as RawEvent;
 #[cfg(test)]
 pub(crate) use tau_cli_term_raw::RawEvent as TestRawEvent;
 pub use tau_cli_term_raw::{
-    Align, BlockId, Cell, ClipboardFiles, Color, CursorShape, OpaquePresentationFact,
+    Align, BlockId, Candidate, Cell, ClipboardFiles, Color, CursorShape, OpaquePresentationFact,
     OutputSnapshot, PasteContent, PresentationInvalidation, PresentationObservationKey,
     PriorityLine, PriorityLineAlignment, PriorityLinePriority, PriorityLineTruncation,
     RedrawSuppressionGuard, RendererDeliveryId, Span, Style, StyledBlock, StyledText, TermHandle,
     TerminalOptions, TwoLineElision, is_output_failure, sanitize_hyperlink_target,
 };
-use tau_cli_term_raw::{Candidate, Event as RawEvent};
 use tau_term_screen::{display_width, truncate_to_width};
 use tau_themes::Theme;
 

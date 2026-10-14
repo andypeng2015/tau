@@ -102,7 +102,8 @@ Then verify the live surfaces. Configure every listed variable to a distinct
 hostile value under `extensions.core-shell.config.shell.extra_env`, configure
 `TERM: tau-verification-term`, restart Tau, and run this exact command once
 through an exposed model `shell` / `shell_command` and once as user
-`!! <command>`:
+`!!instance <command>` (replace `instance` with the explicitly selected configured
+shell instance; no default executor is inferred):
 
 ```sh
 printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
@@ -112,6 +113,12 @@ printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \
 
 Both surfaces must print five `cat` values, the configured TERM, and the two
 ordinary tool-specific values in that order.
+
+With idle shutdown enabled, a quiet accepted user command must keep the session
+alive after the UI detaches. Acquisition acknowledgement must precede effects;
+release follows the `!!` terminal or `!` passive-context settlement. Explicit
+shutdown still stops the session. Never retry execution to resolve an unknown
+acquisition or context result.
 
 To verify the explicit opt-out, copy
 `crates/tau-ext-shell/tests/fixtures/hostile-pager.sh` to an executable temporary

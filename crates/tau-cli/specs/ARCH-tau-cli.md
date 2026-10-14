@@ -249,10 +249,12 @@ degrade to `compact ok`.
 Provider stream content remains private, and detachable per-agent correlation
 makes live, late-attach, and cold-replay rendering identical.
 
-Prompt completion may read the local filesystem and query `git` for tracked and
-unignored files. These operations should stay bounded and best-effort: failures
-or quota/size limits should disable the completion source or surface a local
-notice, not wedge the prompt.
+Prompt `Path` and `PathFuzzy` completion queries advertised extension endpoints
+asynchronously. The terminal reads only a bounded cache, never local filesystem
+or Git fallback results. Draft/cursor/agent/incarnation changes invalidate stale
+responses. Bang commands query only their explicitly named instance; ordinary
+prompt paths merge attributed candidates from available completers.
+See [SPEC-extension-owned-shell-interaction](../../../specs/SPEC-extension-owned-shell-interaction.md).
 
 Theme completion and no-argument `:theme` listings may inspect custom theme
 files only for optional display metadata. These reads must remain best-effort

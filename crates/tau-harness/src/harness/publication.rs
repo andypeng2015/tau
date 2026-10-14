@@ -2176,6 +2176,31 @@ impl Harness {
         peer_context: &interception::PeerPublicationContext,
         event: Event,
         persist: bool,
+        sync_head_for: Option<ConversationHeadSync>,
+        owners: interception::PublicationOutcomeOwners,
+    ) {
+        let passive = match &event {
+            Event::AgentPassiveContextAppended(appended) => {
+                if !self.admit_passive_context_commit(appended) {
+                    return;
+                }
+                Some(appended.clone())
+            }
+            _ => None,
+        };
+        self.commit_event_inner(source, peer_context, event, persist, sync_head_for, owners);
+        if let Some(appended) = passive {
+            self.finish_passive_context_commit(&appended);
+        }
+    }
+
+    /// Perform one already-admitted ordinary publication.
+    fn commit_event_inner(
+        &mut self,
+        source: Option<&tau_proto::ConnectionId>,
+        peer_context: &interception::PeerPublicationContext,
+        event: Event,
+        persist: bool,
         mut sync_head_for: Option<ConversationHeadSync>,
         owners: interception::PublicationOutcomeOwners,
     ) {
@@ -2617,10 +2642,7 @@ impl Harness {
         #[cfg(not(test))]
         let _ = seq;
         let debug_log_started = Instant::now();
-        let skip_debug_log = peer_context
-            .extension
-            .as_ref()
-            .is_some_and(|extension| extension.shell_report_targets_ephemeral)
+        let skip_debug_log = peer_context.suppress_debug
             || self.event_targets_ephemeral_agent(&event, sync_head_for.as_ref());
         if !skip_debug_log && let Some(log) = &mut self.runtime_io.debug_log {
             let result = log.log_published_event_with_sensitivity(
@@ -2832,7 +2854,7 @@ impl Harness {
             // directed route so replay/live delivery metadata
             // matches the subscribed-provider path.
             let execution_kinds = [ClientKind::Provider];
-            let provider_frame = HarnessOutputMessage::deliver_live(recorded_at, event.clone());
+            let provider_frame = peer_context.live_delivery(recorded_at, event.clone());
             let provider_frame = self
                 .runtime_io
                 .bus
@@ -2841,10 +2863,8 @@ impl Harness {
                     provider_frame,
                     &execution_kinds,
                     || {
-                        HarnessOutputMessage::deliver_live(
-                            recorded_at,
-                            event_without_provider_image_bytes(&event),
-                        )
+                        peer_context
+                            .live_delivery(recorded_at, event_without_provider_image_bytes(&event))
                     },
                 );
             let delivery =
@@ -2907,7 +2927,7 @@ impl Harness {
             // exclude every provider and fail the exact durable owner before
             // any remote client can see the request.
             let execution_kinds = [ClientKind::Provider];
-            let admission_frame = HarnessOutputMessage::deliver_live(recorded_at, event.clone());
+            let admission_frame = peer_context.live_delivery(recorded_at, event.clone());
             self.runtime_io
                 .bus
                 .publish_event_from_excluding_kinds_lazy_without_report(
@@ -2915,10 +2935,8 @@ impl Harness {
                     admission_frame,
                     &execution_kinds,
                     || {
-                        HarnessOutputMessage::deliver_live(
-                            recorded_at,
-                            event_without_provider_image_bytes(&event),
-                        )
+                        peer_context
+                            .live_delivery(recorded_at, event_without_provider_image_bytes(&event))
                     },
                 );
             let prompt_copy_fanout = bus_enqueue_started.elapsed();
@@ -2938,10 +2956,8 @@ impl Harness {
             event,
             Event::ProviderToolResult(_) | Event::ToolResult(_) | Event::ToolBackgroundResult(_)
         ) {
-            let observer_frame = HarnessOutputMessage::deliver_live(
-                recorded_at,
-                event_without_provider_image_bytes(&event),
-            );
+            let observer_frame =
+                peer_context.live_delivery(recorded_at, event_without_provider_image_bytes(&event));
             // Raw provider and generic result data is not a UI payload. UIs
             // receive the separately published payload-free display projection.
             self.runtime_io
@@ -2952,10 +2968,8 @@ impl Harness {
                     &[ClientKind::Ui],
                 );
         } else {
-            let observer_frame = HarnessOutputMessage::deliver_live(
-                recorded_at,
-                event_without_provider_image_bytes(&event),
-            );
+            let observer_frame =
+                peer_context.live_delivery(recorded_at, event_without_provider_image_bytes(&event));
             if prompt_acceptance.is_some() {
                 let delivery_count = self
                     .runtime_io
@@ -2980,22 +2994,6 @@ impl Harness {
             timing.finish(PromptAcceptanceTerminal::Accepted);
         }
         let post_commit_started = Instant::now();
-        if let Event::ShellCommandProgress(progress) = &event {
-            self.release_pending_ephemeral_shell_canonical_marker(&progress.command_id);
-        }
-        if let Event::ShellCommandFinished(finished) = &event {
-            self.release_pending_ephemeral_shell_canonical_marker(&finished.command_id);
-            self.ui_runtime
-                .active_ui_shell_command_ids
-                .remove(&finished.command_id);
-            if self
-                .ui_runtime
-                .pending_ui_shell_output_injections
-                .remove(&finished.command_id)
-            {
-                self.inject_user_shell_output(finished);
-            }
-        }
         // A committed acceptance makes its reserved placeholder addressable.
         // First-party `agent_start` reacts below by installing a watch, so
         // expose that post-commit state before invoking internal tool
