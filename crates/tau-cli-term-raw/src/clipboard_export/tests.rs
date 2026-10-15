@@ -4,6 +4,209 @@ use std::sync::{Arc, Mutex, mpsc};
 use super::*;
 use crate::{CursorShape, Event, RawEvent, Term, TermHandle};
 
+/// Dedicated packets carry the complete count-one bundle, including a maximum
+/// original beyond the raw cap once framing is added, without aliases.
+#[test]
+fn file_packets_preserve_bundle_and_never_use_raw_family() {
+    for size in [0, 1, 4095, 4096, 16 * 1024 * 1024] {
+        let body: Vec<_> = (0..size).map(|n| (n % 251) as u8).collect();
+        let name = crate::ClipboardFileName::new("x".repeat(255)).expect("maximum basename");
+        let mut export = ClipboardExport::new(Instant::now());
+        assert!(
+            export
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_+.".contains(&b))
+        );
+        export
+            .supply_file(body.clone(), &name)
+            .expect("bounded original");
+        let opener = export.admit_packet().expect("file opener");
+        assert_eq!(
+            opener,
+            format!("\x1b]5522;type=write-file:id={}\x1b\\", export.id).as_bytes()
+        );
+        let prefix = format!(
+            "\x1b]5522;type=write-file-data:id={}:mime={};",
+            export.id,
+            STANDARD.encode("application/vnd.tau.file-export-v1")
+        );
+        let mut encoded = String::new();
+        let mut commit = false;
+        while let Some(packet) = export.admit_packet() {
+            let text = std::str::from_utf8(&packet).expect("ASCII packet");
+            if let Some(data) = text.strip_prefix(&prefix) {
+                assert!(!commit);
+                let data = data.strip_suffix("\x1b\\").expect("OSC terminator");
+                assert!(STANDARD.decode(data).expect("base64 chunk").len() <= RAW_CHUNK);
+                encoded.push_str(data);
+            } else {
+                assert!(!commit);
+                assert_eq!(
+                    text,
+                    format!("\x1b]5522;type=write-file-data:id={}\x1b\\", export.id)
+                );
+                commit = true;
+            }
+        }
+        assert!(commit);
+        let decoded = STANDARD.decode(encoded).expect("continuous base64");
+        let mut expected = b"TAUFILES\0".to_vec();
+        expected.extend_from_slice(&1_u32.to_be_bytes());
+        expected.extend_from_slice(&255_u16.to_be_bytes());
+        expected.extend_from_slice(&0_u16.to_be_bytes());
+        expected.extend_from_slice(&(size as u64).to_be_bytes());
+        expected.extend_from_slice(name.as_str().as_bytes());
+        expected.extend_from_slice(&body);
+        assert_eq!(decoded, expected);
+        assert!(export.bytes.is_empty() && export.header.is_empty());
+    }
+    let mut export = ClipboardExport::new(Instant::now());
+    let name = crate::ClipboardFileName::new("file".into()).expect("safe basename");
+    assert!(
+        export
+            .supply_file(vec![0; 16 * 1024 * 1024 + 1], &name)
+            .is_err()
+    );
+    assert!(!export.ready());
+}
+
+/// File completion requires exactly its own schema, correlation and commit;
+/// raw/private MIME traffic cannot acknowledge or turn into a file offer.
+#[test]
+fn file_replies_are_strict_and_raw_private_mime_stays_raw() {
+    let mut export = ClipboardExport::new(Instant::now());
+    let name = crate::ClipboardFileName::new("file".into()).expect("safe basename");
+    export.supply_file(vec![], &name).expect("empty original");
+    let done = format!("5522;type=write-file:id={}:status=DONE", export.id);
+    assert!(export.receive(done.as_bytes()).is_none());
+    assert!(export.cancelled_notice().contains("before commit"));
+    while export.admit_packet().is_some() {}
+    for invalid in [
+        done.replace("write-file", "write"),
+        done.replace(&export.id, "old"),
+        done.replace(&export.id, ""),
+        done.replace(&export.id, &format!("{}!", export.id)),
+        format!("{done}:extra=x"),
+        format!("{done}:status=DONE"),
+        format!("{done};"),
+        format!("{done};payload"),
+        "5522;type=write-file:status=DONE".to_owned(),
+    ] {
+        assert!(export.receive(invalid.as_bytes()).is_none(), "{invalid}");
+    }
+    assert!(
+        export
+            .receive(done.as_bytes())
+            .expect("file DONE after commit")
+            .contains("destination paste not confirmed")
+    );
+    assert!(export.cancelled_notice().contains("unknown"));
+    for status in ["EPERM", "ENOSYS", "EBUSY", "EINVAL", "EFBIG", "EIO"] {
+        assert!(
+            export
+                .receive(done.replace("DONE", status).as_bytes())
+                .is_some()
+        );
+    }
+    export.deadline = Instant::now();
+    assert!(export.receive(done.as_bytes()).is_none());
+
+    let mut raw = ClipboardExport::new(Instant::now());
+    raw.supply(
+        b"TAUFILES\0".to_vec(),
+        "application/vnd.tau.file-export-v1",
+        false,
+    )
+    .expect("private MIME remains valid for raw writes");
+    assert!(
+        String::from_utf8(raw.admit_packet().expect("raw opener"))
+            .expect("ASCII packet")
+            .contains("type=write:")
+    );
+    assert!(
+        String::from_utf8(raw.admit_packet().expect("raw data"))
+            .expect("ASCII packet")
+            .contains("type=wdata:")
+    );
+    assert!(
+        String::from_utf8(raw.admit_packet().expect("raw commit"))
+            .expect("ASCII packet")
+            .contains("type=wdata:")
+    );
+    assert!(raw.admit_packet().is_none());
+}
+
+/// A canceled reservation cannot publish a late file body; an unsupported old
+/// hop times out after only dedicated packets, never retries as an ordinary
+/// write.
+#[test]
+fn file_reservations_cancel_and_expire_without_raw_fallback() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (_term, handle, _input) = Term::new_virtual(
+        80,
+        24,
+        "> ",
+        Box::new(Capture(output.clone())),
+        CursorShape::Bar,
+    );
+    native(&handle);
+    let name = crate::ClipboardFileName::new("file".into()).expect("safe basename");
+    let token = handle
+        .reserve_clipboard_export()
+        .expect("native reservation");
+    assert!(handle.cancel_clipboard_export());
+    assert!(
+        handle
+            .supply_clipboard_file_export(token, vec![], &name)
+            .is_err()
+    );
+    native(&handle);
+    let token = handle
+        .reserve_clipboard_export()
+        .expect("native reservation");
+    handle
+        .supply_clipboard_file_export(token, vec![1, 2, 3], &name)
+        .expect("verified original");
+    handle.redraw_sync();
+    handle
+        .lock()
+        .terminal
+        .clipboard_export
+        .as_mut()
+        .expect("active reservation")
+        .deadline = Instant::now();
+    assert!(handle.expire_clipboard_export());
+    handle.redraw_sync();
+    assert!(!handle.clipboard_export_live(token));
+    let bytes = output.lock().expect("captured output mutex");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("type=write-file:"));
+    assert!(!text.contains("type=write:"));
+    assert!(!text.contains("type=wdata:"));
+    assert!(!text.contains("type=walias:"));
+}
+
+/// Isolated terminal output collector, never connected to a real clipboard.
+struct Capture(
+    /// Shared captured wire bytes.
+    Arc<Mutex<Vec<u8>>>,
+);
+
+impl Write for Capture {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .expect("captured output mutex")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Arms only synthetic capability state; tests never query the system
 /// clipboard.
 fn native(handle: &TermHandle) {
@@ -115,9 +318,8 @@ struct BlockData {
 
 impl Write for BlockData {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes
-            .windows(b"type=wdata".len())
-            .any(|window| window == b"type=wdata")
+        let text = String::from_utf8_lossy(bytes);
+        if (text.contains("type=wdata:") || text.contains("type=write-file-data:"))
             && let Some(started) = self.started.take()
         {
             let _ = started.send(());
@@ -141,6 +343,12 @@ impl Write for BlockData {
 /// exporter to race.
 #[test]
 fn cancel_during_inflight_packet_never_admits_commit() {
+    cancel_inflight(false);
+    cancel_inflight(true);
+}
+
+/// Runs the same admission/cancel boundary for both output families.
+fn cancel_inflight(file: bool) {
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let (started, entered) = mpsc::sync_channel(1);
     let (release, gate) = mpsc::sync_channel(1);
@@ -159,9 +367,19 @@ fn cancel_during_inflight_packet_never_admits_commit() {
     let token = handle
         .reserve_clipboard_export()
         .expect("native reservation");
-    handle
-        .supply_clipboard_export(token, vec![7; 20_000], "application/octet-stream", false)
-        .expect("bounded original");
+    if file {
+        handle
+            .supply_clipboard_file_export(
+                token,
+                vec![7; 20_000],
+                &crate::ClipboardFileName::new("file".into()).expect("safe basename"),
+            )
+            .expect("verified original");
+    } else {
+        handle
+            .supply_clipboard_export(token, vec![7; 20_000], "application/octet-stream", false)
+            .expect("bounded original");
+    }
     entered
         .recv_timeout(Duration::from_secs(2))
         .expect("data admitted");
@@ -175,9 +393,19 @@ fn cancel_during_inflight_packet_never_admits_commit() {
     assert!(!handle.lock().terminal.clipboard_export_inflight);
     let output = String::from_utf8(bytes.lock().expect("captured output mutex").clone())
         .expect("ASCII wire output");
-    assert_eq!(output.matches("type=write:").count(), 1);
-    assert_eq!(output.matches("type=wdata:").count(), 1);
-    let data = output.split("type=wdata:").nth(1).expect("data packet");
+    let opener = if file {
+        "type=write-file:"
+    } else {
+        "type=write:"
+    };
+    let continuation = if file {
+        "type=write-file-data:"
+    } else {
+        "type=wdata:"
+    };
+    assert_eq!(output.matches(opener).count(), 1);
+    assert_eq!(output.matches(continuation).count(), 1);
+    let data = output.split(continuation).nth(1).expect("data packet");
     assert!(data.contains(":mime="));
     assert!(data.contains("\x1b\\"));
 }
@@ -290,7 +518,8 @@ struct BlockCommit {
 impl Write for BlockCommit {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let text = String::from_utf8_lossy(bytes);
-        self.commit |= text.contains("type=wdata:") && !text.contains(":mime=");
+        self.commit |= (text.contains("type=wdata:") || text.contains("type=write-file-data:"))
+            && !text.contains(":mime=");
         Ok(bytes.len())
     }
 
@@ -311,6 +540,12 @@ impl Write for BlockCommit {
 /// export must remain excluded until that admitted packet finishes.
 #[test]
 fn done_before_commit_flush_keeps_inflight_exclusion() {
+    done_before_flush(false);
+    done_before_flush(true);
+}
+
+/// Checks that file ACKs have the same packet-drain exclusion as raw ACKs.
+fn done_before_flush(file: bool) {
     let (entered, started) = mpsc::sync_channel(1);
     let (release, gate) = mpsc::sync_channel(1);
     let (term, handle, input) = Term::new_virtual(
@@ -336,18 +571,34 @@ fn done_before_commit_flush_keeps_inflight_exclusion() {
         .expect("reservation")
         .id
         .clone();
-    handle
-        .supply_clipboard_export(token, b"exact".to_vec(), "application/octet-stream", false)
-        .expect("verified original");
+    if file {
+        handle
+            .supply_clipboard_file_export(
+                token,
+                b"exact".to_vec(),
+                &crate::ClipboardFileName::new("file".into()).expect("safe basename"),
+            )
+            .expect("verified original");
+    } else {
+        handle
+            .supply_clipboard_export(token, b"exact".to_vec(), "application/octet-stream", false)
+            .expect("verified original");
+    }
     started
         .recv_timeout(Duration::from_secs(2))
         .expect("commit flush entered");
+    let family = if file { "write-file" } else { "write" };
     input
         .send(RawEvent::Osc(
-            format!("5522;type=write:id={id}:status=DONE").into_bytes(),
+            format!("5522;type={family}:id={id}:status=DONE").into_bytes(),
         ))
         .expect("synthetic DONE");
-    assert!(matches!(next(&term), Event::Notice(notice) if notice.contains("acknowledged")));
+    let expected = if file {
+        "offered a copied file"
+    } else {
+        "acknowledged"
+    };
+    assert!(matches!(next(&term), Event::Notice(notice) if notice.contains(expected)));
     assert!(!handle.clipboard_export_live(token));
     assert!(handle.reserve_clipboard_export().is_err());
     release.send(()).expect("release commit flush");

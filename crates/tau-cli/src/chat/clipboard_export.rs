@@ -1,5 +1,6 @@
 //! UI-only discovery and verified download on the existing admitted transport.
 
+mod command;
 mod rpc;
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,8 @@ struct Export {
     key: ArtifactKey,
     /// Optional user-declared per-invocation media type.
     mime: Option<String>,
+    /// Explicit local copied-file name; absent means the existing raw write.
+    file_name: Option<tau_cli_term::ClipboardFileName>,
     /// Terminal reservation captured before any asynchronous work.
     token: u64,
     /// Destination attachment, never a second terminal output owner.
@@ -108,21 +111,11 @@ impl ClipboardExport {
     /// Validates command grammar and reserves lifecycle authority before
     /// queuing.
     pub(super) fn start(&self, args: &str, term: TermHandle) -> Result<(), &'static str> {
-        let words: Vec<_> = args.split_whitespace().collect();
-        let (key, mime) = match words.as_slice() {
-            [key] => (*key, None),
-            [key, "--mime", mime] => (*key, Some((*mime).to_owned())),
-            _ => {
-                return Err(
-                    "usage: :export-to-clipboard KEY [--mime TYPE/SUBTYPE[;charset=TOKEN]]",
-                );
-            }
-        };
-        let key = tau_proto::parse_artifact_reference(key)
-            .map_err(|_| "Expected a full artifact key or canonical artifact reference")?;
-        // Validate declaration syntax before any remote read or terminal
-        // effect.
-        tau_client::ArtifactMedia::select(&[], mime.as_deref())?;
+        let command::Command {
+            key,
+            mime,
+            file_name,
+        } = command::Command::parse(args)?;
         if self
             .exporting
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -143,6 +136,7 @@ impl ClipboardExport {
             .export = Some(Export {
             key,
             mime,
+            file_name,
             token,
             term,
         });
@@ -237,6 +231,11 @@ impl ClipboardExport {
                 export.term.clipboard_export_live(export.token)
             })
             .and_then(|bytes| {
+                if let Some(name) = &export.file_name {
+                    return export
+                        .term
+                        .supply_clipboard_file_export(export.token, bytes, name);
+                }
                 let media = tau_client::ArtifactMedia::select(&bytes, export.mime.as_deref())?;
                 export.term.supply_clipboard_export(
                     export.token,

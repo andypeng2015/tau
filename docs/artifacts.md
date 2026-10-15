@@ -32,6 +32,40 @@ It never silently falls back to OSC52 or runs a remote clipboard utility.
 Arbitrary binary data does not necessarily become a desktop file or have a
 paste target in another application.
 
+### Copy as a local file
+
+Use `:export-to-clipboard KEY --file` to offer a real file for pasting into a
+local file manager. The default basename is `artifact-<full BLAKE3 digest>.bin`.
+Choose a name with `--file --name "quarterly report.pdf"`; single quotes also
+work. Quotes group the whole name literally, without shell expansion or escape
+syntax. Names must be 1–255 UTF-8 bytes, not `.` or `..`, and contain no path
+separators or control characters. `--name` requires `--file`; `--mime` and
+`--file` cannot be combined. Names are per-use hints, not shared artifact metadata.
+
+This requires the dedicated file-export support in the terminal and **every**
+multiplexer hop, plus the existing clipboard write permission. WezTerm stages
+the verified original on the workstation, including when Tau runs over SSH.
+Tau never writes a remote path or substitutes a raw MIME write. An old terminal
+or multiplexer may ignore the request; Tau then times out without fallback.
+Successful acknowledgment means the terminal offered a copied file, **not**
+that a destination application pasted it.
+
+The staged file has a **hard one-hour validity**, even if the clipboard selection
+is still owned. Ownership loss does not immediately delete it, but clipboard
+managers cannot extend its lifetime. Paste before expiry; export again explicitly
+if needed. Stage capacity can be busy rather than evicting an unexpired file.
+
+File export uses OSC5522 `write-file` / `write-file-data` / `write-file` replies,
+with the same fresh safe ID on the opener, every chunk and the empty commit.
+Every data chunk declares `application/vnd.tau.file-export-v1`; ordinary raw
+writes of that MIME remain raw. The decoded count-one `TAUFILES\0` bundle contains
+u32BE count, u16BE basename length, u16BE MIME-hint length, u64BE body length,
+then UTF-8 basename, optional ASCII hint and exact original body. Tau currently
+sends an empty hint. The protocol permits a 16 MiB original plus at most 535 bytes
+of framing/metadata; this does not enlarge the existing raw-write limit.
+There is no admission handshake, alias, or raw-write fallback. Only an exact
+file-family reply can acknowledge this operation.
+
 Only one clipboard transfer runs at a time. Ctrl-C cancels export before agent
 prompt cancellation; focus changes, foreground handoff and disconnect revoke
 pending work. The operation has a fixed 60-second budget. Cancellation stops

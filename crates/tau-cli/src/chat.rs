@@ -723,7 +723,7 @@ pub(crate) fn parse_retry_extension_command(
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     (
         ":export-to-clipboard",
-        "Copy an artifact's original bytes to the local terminal clipboard",
+        "Copy artifact bytes to the local clipboard; --file [--name BASENAME] offers a local file",
     ),
     (":quit", "Quit this UI using the current session policy"),
     (":q", "Alias for :quit"),

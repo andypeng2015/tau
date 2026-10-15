@@ -29,6 +29,10 @@ pub(super) struct ClipboardExport {
     pub(super) deadline: Instant,
     /// Original bounded bytes, never logged.
     bytes: Vec<u8>,
+    /// Small count-one file envelope; original bytes remain separately owned.
+    header: Vec<u8>,
+    /// Explicit file intent selects a distinct packet and reply family.
+    file: bool,
     /// Base64 media declaration; never raw terminal text.
     mime: String,
     /// Whether default UTF-8 inference permits a plain-text alias.
@@ -75,6 +79,8 @@ impl ClipboardExport {
             id: format!("tau-write-{}-{nanos}-{token}", std::process::id()),
             deadline: now + LIFETIME,
             bytes: Vec::new(),
+            header: Vec::new(),
+            file: false,
             mime: String::new(),
             plain_alias: false,
             offset: 0,
@@ -105,6 +111,37 @@ impl ClipboardExport {
         Ok(())
     }
 
+    /// Installs one verified original with a bounded basename and no MIME hint.
+    pub(super) fn supply_file(
+        &mut self,
+        bytes: Vec<u8>,
+        name: &crate::ClipboardFileName,
+    ) -> Result<(), &'static str> {
+        self.supply(bytes, "application/vnd.tau.file-export-v1", false)?;
+        self.file = true;
+        self.header.extend_from_slice(b"TAUFILES\0");
+        self.header.extend_from_slice(&1_u32.to_be_bytes());
+        self.header
+            .extend_from_slice(&(name.as_str().len() as u16).to_be_bytes());
+        self.header.extend_from_slice(&0_u16.to_be_bytes());
+        self.header
+            .extend_from_slice(&(self.bytes.len() as u64).to_be_bytes());
+        self.header.extend_from_slice(name.as_str().as_bytes());
+        Ok(())
+    }
+
+    fn write_type(&self) -> &'static str {
+        if self.file { "write-file" } else { "write" }
+    }
+
+    fn data_type(&self) -> &'static str {
+        if self.file {
+            "write-file-data"
+        } else {
+            "wdata"
+        }
+    }
+
     /// Indicates bounded pending output, excluding download and ACK waits.
     pub(super) fn ready(&self) -> bool {
         !matches!(self.phase, Phase::Download | Phase::Acknowledgment)
@@ -119,20 +156,36 @@ impl ClipboardExport {
             Phase::Download | Phase::Acknowledgment => return None,
             Phase::Start => {
                 self.phase = Phase::Data;
-                format!("type=write:id={}", self.id)
+                format!("type={}:id={}", self.write_type(), self.id)
             }
             Phase::Data => {
-                let end = (self.offset + RAW_CHUNK).min(self.bytes.len());
-                let data = STANDARD.encode(&self.bytes[self.offset..end]);
+                let length = self.header.len() + self.bytes.len();
+                let end = (self.offset + RAW_CHUNK).min(length);
+                let mut chunk = Vec::with_capacity(end - self.offset);
+                if self.offset < self.header.len() {
+                    chunk.extend_from_slice(&self.header[self.offset..end.min(self.header.len())]);
+                }
+                if end > self.header.len() {
+                    chunk.extend_from_slice(
+                        &self.bytes[self.offset.saturating_sub(self.header.len())
+                            ..end - self.header.len()],
+                    );
+                }
+                let data = STANDARD.encode(chunk);
                 self.offset = end;
-                if end == self.bytes.len() {
+                if end == length {
                     self.phase = if self.plain_alias {
                         Phase::Alias
                     } else {
                         Phase::Commit
                     };
                 }
-                format!("type=wdata:id={}:mime={};{data}", self.id, self.mime)
+                format!(
+                    "type={}:id={}:mime={};{data}",
+                    self.data_type(),
+                    self.id,
+                    self.mime
+                )
             }
             Phase::Alias => {
                 self.phase = Phase::Commit;
@@ -147,7 +200,8 @@ impl ClipboardExport {
                 self.phase = Phase::Acknowledgment;
                 // No further packet needs the body; release it before waiting.
                 self.bytes = Vec::new();
-                format!("type=wdata:id={}", self.id)
+                self.header = Vec::new();
+                format!("type={}:id={}", self.data_type(), self.id)
             }
         };
         Some(format!("\x1b]5522;{body}\x1b\\").into_bytes())
@@ -170,7 +224,11 @@ impl ClipboardExport {
             return None;
         }
         let text = std::str::from_utf8(body).ok()?.strip_prefix("5522;")?;
-        let metadata = text.strip_suffix(';').unwrap_or(text);
+        let metadata = if self.file {
+            text
+        } else {
+            text.strip_suffix(';').unwrap_or(text)
+        };
         let mut fields = HashMap::new();
         for field in metadata.split(':') {
             let (name, value) = field.split_once('=')?;
@@ -178,13 +236,18 @@ impl ClipboardExport {
                 return None;
             }
         }
-        if fields.get("type") != Some(&"write") || fields.get("id") != Some(&self.id.as_str()) {
+        if (self.file && fields.len() != 3)
+            || fields.get("type") != Some(&self.write_type())
+            || fields.get("id") != Some(&self.id.as_str())
+        {
             return None;
         }
         match *fields.get("status")? {
-            "DONE" if self.phase == Phase::Acknowledgment => {
-                Some("Terminal acknowledged clipboard export.")
-            }
+            "DONE" if self.phase == Phase::Acknowledgment => Some(if self.file {
+                "Terminal offered a copied file to the local clipboard (valid for one hour); destination paste not confirmed."
+            } else {
+                "Terminal acknowledged clipboard export."
+            }),
             "EPERM" => Some("Terminal denied clipboard export permission; no fallback attempted."),
             "ENOSYS" => Some("Native clipboard export is unavailable in this terminal."),
             "EBUSY" => Some("Terminal clipboard is busy; export stopped. Retry explicitly."),

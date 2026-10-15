@@ -71,7 +71,13 @@ Clipboard export is an explicit UI-local operation. The consumer verifies the
 complete original size/digest and closes its read before admitting terminal
 output. It preserves bytes under an explicit per-use media declaration or
 conservative local inference, including generic binary fallback. This does not
-validate media or create desktop files. Export uses the sole terminal writer,
+validate media; ordinary raw writes do not create desktop files. Explicit
+copied-file intent instead sends a count-one bundle through a dedicated terminal
+packet family, never by interpreting a private MIME on the raw-write path.
+The terminal owns local staging and native copied-file publication; success
+acknowledges an offer, not a destination paste. Staged files have hard one-hour
+validity, not indefinite clipboard-manager retention.
+Export uses the sole terminal writer,
 one bounded packet at a time, and requires a correlated native acknowledgment;
 permission denial never triggers a different clipboard protocol. Lifecycle
 revocation prevents later packet admission, including commit, but cannot retract

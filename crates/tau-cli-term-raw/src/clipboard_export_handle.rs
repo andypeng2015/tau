@@ -99,6 +99,27 @@ impl TermHandle {
         Ok(())
     }
 
+    /// Streams a verified original as an explicit copied-file offer, never a
+    /// raw MIME write. The caller must have completed verification and Close.
+    pub fn supply_clipboard_file_export(
+        &self,
+        token: u64,
+        bytes: Vec<u8>,
+        name: &crate::ClipboardFileName,
+    ) -> Result<(), &'static str> {
+        let mut st = self.lock();
+        let export = st
+            .terminal
+            .clipboard_export
+            .as_mut()
+            .filter(|export| export.token == token && Instant::now() < export.deadline)
+            .ok_or("Clipboard export reservation expired or was cancelled")?;
+        export.supply_file(bytes, name)?;
+        drop(st);
+        self.notify_redraw();
+        Ok(())
+    }
+
     /// Retires a failed download only if it still owns the reservation.
     pub fn fail_clipboard_export(&self, token: u64, notice: &'static str) {
         let mut st = self.lock();
