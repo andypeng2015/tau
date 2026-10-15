@@ -2,6 +2,7 @@
 
 mod command;
 mod rpc;
+mod selection;
 #[cfg(test)]
 mod tests;
 
@@ -33,10 +34,8 @@ struct State {
 struct Export {
     /// Full validated content address.
     key: ArtifactKey,
-    /// Optional user-declared per-invocation media type.
-    mime: Option<String>,
-    /// Explicit local copied-file name; absent means the existing raw write.
-    file_name: Option<tau_cli_term::ClipboardFileName>,
+    /// Explicit or automatic clipboard intent resolved after download.
+    mode: command::Mode,
     /// Terminal reservation captured before any asynchronous work.
     token: u64,
     /// Destination attachment, never a second terminal output owner.
@@ -111,11 +110,7 @@ impl ClipboardExport {
     /// Validates command grammar and reserves lifecycle authority before
     /// queuing.
     pub(super) fn start(&self, args: &str, term: TermHandle) -> Result<(), &'static str> {
-        let command::Command {
-            key,
-            mime,
-            file_name,
-        } = command::Command::parse(args)?;
+        let command::Command { key, mode } = command::Command::parse(args)?;
         if self
             .exporting
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -135,8 +130,7 @@ impl ClipboardExport {
             .expect("clipboard completion state")
             .export = Some(Export {
             key,
-            mime,
-            file_name,
+            mode,
             token,
             term,
         });
@@ -225,25 +219,24 @@ impl ClipboardExport {
             return;
         }
         let deadline = Instant::now() + Duration::from_secs(50);
-        let result = self
-            .rpc
-            .download(export.key, deadline, || {
-                export.term.clipboard_export_live(export.token)
-            })
-            .and_then(|bytes| {
-                if let Some(name) = &export.file_name {
-                    return export
-                        .term
-                        .supply_clipboard_file_export(export.token, bytes, name);
-                }
-                let media = tau_client::ArtifactMedia::select(&bytes, export.mime.as_deref())?;
-                export.term.supply_clipboard_export(
-                    export.token,
-                    bytes,
-                    &media.mime,
-                    media.plain_alias,
-                )
-            });
+        let result =
+            self.rpc
+                .download(export.key.clone(), deadline, || {
+                    export.term.clipboard_export_live(export.token)
+                })
+                .and_then(|bytes| {
+                    match selection::Selection::select(&export.key, export.mode, &bytes)? {
+                        selection::Selection::File(name) => export
+                            .term
+                            .supply_clipboard_file_export(export.token, bytes, &name),
+                        selection::Selection::Raw(media) => export.term.supply_clipboard_export(
+                            export.token,
+                            bytes,
+                            &media.mime,
+                            media.plain_alias,
+                        ),
+                    }
+                });
         if let Err(error) = result {
             export.term.fail_clipboard_export(export.token, error);
         }

@@ -723,7 +723,7 @@ pub(crate) fn parse_retry_extension_command(
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     (
         ":export-to-clipboard",
-        "Copy artifact bytes to the local clipboard; --file [--name BASENAME] offers a local file",
+        "Copy artifact as text, native image, or file automatically; override with --raw, --mime TYPE, or --file [--name BASENAME]",
     ),
     (":quit", "Quit this UI using the current session policy"),
     (":q", "Alias for :quit"),

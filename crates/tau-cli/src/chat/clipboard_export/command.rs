@@ -1,18 +1,26 @@
-//! Explicit clipboard intent, validated before reserving terminal authority.
+//! Clipboard intent, validated before reserving terminal authority.
 
 use tau_cli_term::ClipboardFileName;
 use tau_proto::ArtifactKey;
 
-const USAGE: &str = "usage: :export-to-clipboard KEY [--mime TYPE/SUBTYPE[;charset=TOKEN] | --file [--name BASENAME]]";
+const USAGE: &str = "usage: :export-to-clipboard KEY [--raw [--mime TYPE/SUBTYPE[;charset=TOKEN]] | --mime TYPE/SUBTYPE[;charset=TOKEN] | --file [--name BASENAME]]";
 
 /// One validated invocation; raw MIME and file intent are mutually exclusive.
 pub(super) struct Command {
     /// Full original-byte content address.
     pub(super) key: ArtifactKey,
-    /// Existing raw-write override.
-    pub(super) mime: Option<String>,
-    /// Validated local basename selects the dedicated copied-file protocol.
-    pub(super) file_name: Option<ClipboardFileName>,
+    /// User intent, resolved against verified bytes rather than catalog hints.
+    pub(super) mode: Mode,
+}
+
+/// Mutually exclusive automatic, raw-MIME, and copied-file intents.
+pub(super) enum Mode {
+    /// Infer ordinary text, native image, or a copied file.
+    Auto,
+    /// Force raw bytes, optionally under an explicit MIME declaration.
+    Raw(Option<String>),
+    /// Force a copied file, optionally with a validated literal basename.
+    File(Option<ClipboardFileName>),
 }
 
 impl Command {
@@ -24,34 +32,39 @@ impl Command {
         let (option, rest) = word(rest);
         let mut command = Self {
             key,
-            mime: None,
-            file_name: None,
+            mode: Mode::Auto,
         };
         match option {
             "" => {}
-            "--mime" => {
+            "--raw" | "--mime" => {
+                let rest = if option == "--raw" {
+                    let (option, rest) = word(rest);
+                    if option.is_empty() {
+                        command.mode = Mode::Raw(None);
+                        return Ok(command);
+                    }
+                    if option != "--mime" {
+                        return Err(USAGE);
+                    }
+                    rest
+                } else {
+                    rest
+                };
                 let (mime, tail) = word(rest);
                 if mime.is_empty() || !tail.is_empty() {
                     return Err(USAGE);
                 }
                 tau_client::ArtifactMedia::select(&[], Some(mime))?;
-                command.mime = Some(mime.to_owned());
+                command.mode = Mode::Raw(Some(mime.to_owned()));
             }
             "--file" => {
                 let (option, rest) = word(rest);
                 let name = match option {
-                    "" => format!(
-                        "artifact-{}.bin",
-                        command
-                            .key
-                            .as_str()
-                            .strip_prefix("blake3:")
-                            .expect("validated BLAKE3 key")
-                    ),
-                    "--name" => basename(rest)?.to_owned(),
+                    "" => None,
+                    "--name" => Some(ClipboardFileName::new(basename(rest)?.to_owned())?),
                     _ => return Err(USAGE),
                 };
-                command.file_name = Some(ClipboardFileName::new(name)?);
+                command.mode = Mode::File(name);
             }
             _ => return Err(USAGE),
         }

@@ -14,11 +14,26 @@ read before sending any clipboard bytes. Copying/listing does not refresh
 artifact retention. Bytes remain unchanged: no newline conversion, text
 normalization, transcoding or base64-as-text substitute.
 
-The default type is inferred from PNG/JPEG/GIF/WebP/PDF signatures, otherwise
-complete strict UTF-8 without control characters (except TAB/LF/CR) becomes
-`text/plain;charset=utf-8`, with a `text/plain` alias. Other bytes use
-`application/octet-stream`. These are guesses, not media validation.
-Override a guess with `:export-to-clipboard KEY --mime image/svg+xml`, for example.
+No options or filename are needed:
+
+- PNG/JPEG/GIF/WebP signatures select native image MIME writes, not files.
+- PDF, ZIP/GZIP/RAR, MP4, AVI, WAV, Ogg and ID3-tagged MP3 headers select copied
+  files with matching extensions.
+- Otherwise complete strict UTF-8 without control characters (except TAB/LF/CR)
+  becomes ordinary `text/plain;charset=utf-8`, with a `text/plain` alias.
+  HTML, SVG, JSON and source code remain plain text, not active formats.
+- Unknown binary data becomes a copied file with a `.bin` extension.
+
+These bounded header guesses are not media validation. MP4 recognition checks
+only a complete `ftyp` box of at most 512 bytes for `mp41`/`mp42` brands; other
+containers (including WebM, HEIF and AVIF) fall back conservatively. No parsing of
+archive contents or recovery of original filenames occurs. Completion hints keep
+their smaller existing vocabulary; export decides from the verified original.
+
+Use `--raw` to force a raw MIME write even for binary data, retaining inferred
+MIME or `application/octet-stream` for unknown binary. Override both mode and type
+with `:export-to-clipboard KEY --mime image/svg+xml`, for example;
+`--raw --mime image/svg+xml` is equivalent.
 The bounded ASCII MIME parser supports `type/subtype` and one optional unquoted
 `;charset=TOKEN` parameter, up to 256 bytes; it rejects wildcards, whitespace and
 other parameters. Explicit UTF-8 text declarations require valid UTF-8.
@@ -29,18 +44,22 @@ and multiplexers, including over SSH. Support and write permission are separate;
 paste support does not grant export permission. Tau reports a correlated
 terminal acknowledgment, denial, unavailable support, or an unknown outcome.
 It never silently falls back to OSC52 or runs a remote clipboard utility.
-Arbitrary binary data does not necessarily become a desktop file or have a
-paste target in another application.
+Explicit raw binary writes do not become desktop files and may have no paste
+target in another application.
 
 ### Copy as a local file
 
 Use `:export-to-clipboard KEY --file` to offer a real file for pasting into a
-local file manager. The default basename is `artifact-<full BLAKE3 digest>.bin`.
+local file manager, even for text or an image. Automatic binary exports use this
+same file path. The default basename is `artifact-<full BLAKE3 digest>.<extension>`
+(for example `.pdf`, `.png`, `.txt`, or `.bin` when unknown).
 Choose a name with `--file --name "quarterly report.pdf"`; single quotes also
 work. Quotes group the whole name literally, without shell expansion or escape
 syntax. Names must be 1–255 UTF-8 bytes, not `.` or `..`, and contain no path
 separators or control characters. `--name` requires `--file`; `--mime` and
-`--file` cannot be combined. Names are per-use hints, not shared artifact metadata.
+`--file` cannot be combined, nor can `--raw` and `--file`. A supplied name is
+preserved exactly: Tau does not append or correct its extension.
+Names are per-use hints, not shared artifact metadata.
 
 This requires the dedicated file-export support in the terminal and **every**
 multiplexer hop, plus the existing clipboard write permission. WezTerm stages

@@ -71,8 +71,9 @@ Clipboard export is an explicit UI-local operation. The consumer verifies the
 complete original size/digest and closes its read before admitting terminal
 output. It preserves bytes under an explicit per-use media declaration or
 conservative local inference, including generic binary fallback. This does not
-validate media; ordinary raw writes do not create desktop files. Explicit
-copied-file intent instead sends a count-one bundle through a dedicated terminal
+validate media; ordinary raw writes do not create desktop files. Copied-file
+intent (explicit or inferred for non-image binary originals) instead sends a
+count-one bundle through a dedicated terminal
 packet family, never by interpreting a private MIME on the raw-write path.
 The terminal owns local staging and native copied-file publication; success
 acknowledges an offer, not a destination paste. Staged files have hard one-hour

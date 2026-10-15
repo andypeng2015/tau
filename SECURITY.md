@@ -56,8 +56,9 @@ connection and captured session generation, including the initial owned stdio
 UI's ordinary socket-class admission. Paste originals remain outside prompt
 drafts, histories, semantic journals, raw-input tracing, and event broadcasts.
 Clipboard export verifies complete size/digest and closes the read before sending
-original bytes through the terminal's native MIME-write protocol or, with explicit
-`--file` intent, its separate copied-file protocol. Only the latter requests
+original bytes through the terminal's native MIME-write protocol or its separate
+copied-file protocol (`--file`, or inferred for non-image binary originals).
+Only the latter requests
 terminal-owned local staging; private MIME raw writes remain raw. A successful
 file reply confirms a native offer, not a destination paste, and staged files
 expire after one hour. See [artifact transfers](docs/artifacts.md).

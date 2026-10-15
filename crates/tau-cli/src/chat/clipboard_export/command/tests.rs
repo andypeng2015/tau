@@ -1,15 +1,12 @@
 use super::*;
 
-/// File intent must be explicit, preserve quoted Unicode names, and never
-/// widen raw MIME writes or accept path authority.
+/// Explicit file intent preserves quoted Unicode names and never accepts path
+/// authority; an omitted name is resolved only after verified byte inference.
 #[test]
 fn explicit_file_grammar_and_safe_names() {
     let key = format!("blake3:{}", "a".repeat(64));
     let default = Command::parse(&format!("{key} --file")).expect("default file command");
-    assert_eq!(
-        default.file_name.expect("file intent").as_str(),
-        format!("artifact-{}.bin", "a".repeat(64))
-    );
+    assert!(matches!(default.mode, Mode::File(None)));
     for name in [
         "\"two words.pdf\"",
         "'résumé final.pdf'",
@@ -17,10 +14,10 @@ fn explicit_file_grammar_and_safe_names() {
     ] {
         let parsed = Command::parse(&format!("<tau-artifact:{key}> --file --name {name}"))
             .expect("quoted name");
-        assert_eq!(
-            parsed.file_name.expect("file intent").as_str(),
-            &name[1..name.len() - 1]
-        );
+        let Mode::File(Some(parsed_name)) = parsed.mode else {
+            panic!("explicit file name")
+        };
+        assert_eq!(parsed_name.as_str(), &name[1..name.len() - 1]);
     }
     for args in [
         "--name a",
@@ -38,6 +35,13 @@ fn explicit_file_grammar_and_safe_names() {
         "--file --name 'a' trailing",
         "--file --name \"a\" \"b\"",
         "--file --file",
+        "--raw --file",
+        "--file --raw",
+        "--raw --name a",
+        "--raw --raw",
+        "--raw --mime",
+        "--raw --mime text/plain extra",
+        "--mime text/plain --raw",
     ] {
         assert!(Command::parse(&format!("{key} {args}")).is_err(), "{args}");
     }
@@ -47,17 +51,21 @@ fn explicit_file_grammar_and_safe_names() {
     for name in ["x".repeat(256), "é".repeat(128)] {
         assert!(Command::parse(&format!("{key} --file --name {name}")).is_err());
     }
-    assert!(
-        Command::parse(&key)
-            .expect("raw default")
-            .file_name
-            .is_none()
-    );
+    assert!(matches!(
+        Command::parse(&key).expect("automatic default").mode,
+        Mode::Auto
+    ));
     let raw = Command::parse(&format!("{key} --mime application/vnd.tau.file-export-v1"))
         .expect("raw MIME override");
-    assert!(raw.file_name.is_none());
-    assert_eq!(
-        raw.mime.as_deref(),
-        Some("application/vnd.tau.file-export-v1")
+    assert!(
+        matches!(raw.mode, Mode::Raw(Some(mime)) if mime == "application/vnd.tau.file-export-v1")
     );
+    assert!(matches!(
+        Command::parse(&format!("{key} --raw")).expect("raw").mode,
+        Mode::Raw(None)
+    ));
+    assert!(matches!(
+        Command::parse(&format!("{key} --raw --mime image/svg+xml")).expect("raw MIME").mode,
+        Mode::Raw(Some(mime)) if mime == "image/svg+xml"
+    ));
 }
