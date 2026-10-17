@@ -1,5 +1,7 @@
 //! Regression coverage for artifact image lifecycle helpers.
 
+mod uploads;
+
 use std::io::{BufReader, Cursor};
 #[cfg(unix)]
 use std::net::Shutdown;
@@ -239,11 +241,12 @@ fn queued_cancellation_precedes_ready_decoder_completion() {
         .artifact_images
         .as_mut()
         .expect("image manager");
+    let cancellation = Arc::new(AtomicBool::new(false));
     images.calls.insert(
         call_id.clone(),
         ActiveCall::Decoding {
             invoke,
-            cancelled: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::clone(&cancellation),
         },
     );
     images.decode_active = true;
@@ -253,6 +256,7 @@ fn queued_cancellation_precedes_ready_decoder_completion() {
         .expect("completion queue")
         .push_back(DecodeCompletion {
             call_id,
+            cancelled: cancellation,
             result: Ok(prepared),
         });
 

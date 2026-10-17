@@ -3,10 +3,11 @@
 ## Status
 
 The store has an internal transcript-root foundation and the protocol can
-represent prepared-image references, but no producer currently emits them.
-Production typed image results remain inline, and live unresolved references are
-rejected. Durable prepared-image references will use this foundation only after
-producer admission and provider resolution are complete.
+represent prepared-image references. The utility producer can upload prepared
+bytes under captured Artifact policy, but production selects Inline and live
+unresolved references are rejected. Durable prepared-image references will use
+this foundation only after producer admission and provider resolution are
+complete.
 
 ## Record justification
 

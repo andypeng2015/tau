@@ -4,9 +4,10 @@
 
 Protocol 14.0 / source SDK 0.14.0 can represent exact prepared-image references.
 Core shape validation and logical quotas understand both inline and referenced
-forms, and generic projections remove bytes and fetchable keys. Runtime producer
-upload, verified asynchronous admission, and provider resolution remain pending:
-production invocation policy is still Inline in every persistence mode.
+forms, and generic projections remove bytes and fetchable keys. The utility
+producer supports uploading exact prepared bytes when the captured policy selects
+Artifact, but verified asynchronous admission and provider resolution remain
+pending: production invocation policy is still Inline in every persistence mode.
 The harness rejects reference-bearing tool results and provider terminal outputs;
 the built-in provider rejects unresolved ordinary/compaction input and prewarm
 without fetching or submitting to a model. This is an inactive schema checkpoint,
@@ -42,6 +43,15 @@ are validated on replay, not eagerly resolved from disk. Inline history continue
 to receive its existing full media validation without rewriting old records.
 The shared lifetime and backup boundary is
 [SPEC-shared-artifacts](SPEC-shared-artifacts.md).
+
+The prepared uploader shares the original reader's bounded call/correlation loop.
+It releases the original read before beginning a prepared upload, verifies the
+Finalize descriptor against the prepared bytes, and retains tool causality and
+per-use metadata in the reference result. Pending allocation cleanup remains
+bound to its original session, including cancellation before Begin acknowledges.
+A late descriptor after cancellation cannot produce success; an unknown upload
+outcome may leave a shared object. Failure does not retry a producer effect or
+substitute inline bytes for requested Artifact storage.
 
 The provider-independent surface is `tau-ext-utils`'s one-image
 `read_image(key)` tool. The argument accepts the canonical

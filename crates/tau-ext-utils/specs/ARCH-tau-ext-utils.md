@@ -6,11 +6,25 @@
 `read_image` drives the existing directed Artifact download state machine on
 the main loop, rejects descriptors above its separate 8 MiB image-source
 limit before collecting bytes, verifies complete size and digest, and performs
-one bounded raster decode off-loop. At most eight reads are active and only one
-decode runs at a time. Cancellation and shutdown close downloads best effort.
-Successful reads preserve the existing typed image terminal and provider-route
-gating; this ownership/API migration does not change its current transcript
-retention or replay semantics.
+one bounded raster decode off-loop. At most eight image calls and pending
+canceled allocations are active, counting prepared uploads as well as downloads;
+only one decode runs at a time. The exact decoder cancellation token prevents a
+late completion from claiming a reused call id.
+
+The captured harness invocation policy alone selects prepared output storage.
+Inline preserves the existing typed bytes without another put. Artifact uploads
+the exact prepared encoded bytes through the existing Begin/Write/Finalize flow
+and emits reference-only content only after verifying the final size and digest.
+This never substitutes the original artifact key or changes crop/profile metadata.
+Cancellation and shutdown close reads and abort uploads best effort, including
+late allocation responses under their captured session. Cancellation or lost
+acknowledgment may leave shared committed bytes; errors never retry preparation
+or silently fall back to inline output.
+
+Production still requests Inline until asynchronous harness verification/root
+admission and provider resolution are integrated. This producer support alone
+does not activate reference-bearing history or change ordinary invocation policy.
+See [SPEC-typed-image-tool-results](../../../specs/SPEC-typed-image-tool-results.md).
 
 The reporter is declared unless its configured instance sets
 `papercut.enable: false`; ordinary global and role tool policy still controls

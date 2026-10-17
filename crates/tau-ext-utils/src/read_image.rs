@@ -13,7 +13,8 @@ use tau_proto::{
 };
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_ENCODED_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum encoded prepared bytes, shared with the optional artifact uploader.
+pub(crate) const MAX_ENCODED_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_SIDE: u32 = 8192;
 const MAX_SOURCE_PIXELS: u64 = 16_777_216;
 const MAX_WEBP_SOURCE_PIXELS: u64 = 4_194_304;

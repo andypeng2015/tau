@@ -45,11 +45,11 @@ fn papercut_record_parser_enforces_the_current_schema() {
 
 /// Thread-safe byte sink used by the manual extension writer thread.
 #[derive(Clone, Default)]
-struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+pub(crate) struct SharedWriter(Arc<Mutex<Vec<u8>>>);
 
 impl SharedWriter {
     /// Consume the only writer reference and return all protocol bytes.
-    fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         Arc::try_unwrap(self.0)
             .expect("single writer reference")
             .into_inner()
