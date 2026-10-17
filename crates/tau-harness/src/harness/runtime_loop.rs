@@ -855,12 +855,21 @@ impl Harness {
                 "dispatching bounded Provider cache refresh",
             );
             let refresh_id = refresh.request.refresh_id.clone();
-            let delivered = self.runtime_io.bus.send_to(
-                &refresh.connection_id,
-                Some(crate::harness::harness_connection_id()),
-                HarnessOutputMessage::deliver(Event::AgentCacheRefreshRequested(refresh.request)),
-            );
-            if !delivered.is_ok_and(|report| !report.delivered_to.is_empty()) {
+            let message =
+                HarnessOutputMessage::deliver(Event::AgentCacheRefreshRequested(refresh.request));
+            // The refresh wraps a previously admitted prompt with different
+            // metadata, so its complete frame needs independent admission too.
+            let delivered = protocol_message_fits(&message)
+                && self
+                    .runtime_io
+                    .bus
+                    .send_to(
+                        &refresh.connection_id,
+                        Some(crate::harness::harness_connection_id()),
+                        message,
+                    )
+                    .is_ok_and(|report| !report.delivered_to.is_empty());
+            if !delivered {
                 self.provider_runtime
                     .cache_residency
                     .finish(&refresh.connection_id, &refresh_id);

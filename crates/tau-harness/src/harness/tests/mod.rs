@@ -2810,6 +2810,7 @@ mod mode;
 mod model;
 mod protocol_items;
 mod provider_execution_reports;
+mod provider_prompt_size;
 mod quota;
 mod replay;
 mod required_tools;

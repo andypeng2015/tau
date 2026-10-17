@@ -512,6 +512,7 @@ impl Harness {
                 | AgentPublishCompletion::OutputLengthDormantRepair { .. }
                 | AgentPublishCompletion::ReactiveContextRecoveryStart { .. }
                 | AgentPublishCompletion::StandaloneContextRejection { .. }
+                | AgentPublishCompletion::LocalDispatchFailure { .. }
                 | AgentPublishCompletion::OwedCompactionFact { .. }
                 | AgentPublishCompletion::StandaloneExecutionAccounting { .. }
                 | AgentPublishCompletion::RollingCompactionStart { .. }
@@ -979,7 +980,9 @@ impl Harness {
             self.reduce_committed_standalone_context_rejection(cid, reducer);
             return;
         }
-        if let AgentPublishCompletion::OwedCompactionFact { .. } = completion {
+        if let AgentPublishCompletion::LocalDispatchFailure { .. }
+        | AgentPublishCompletion::OwedCompactionFact { .. } = completion
+        {
             return;
         }
         if let AgentPublishCompletion::StandaloneExecutionAccounting { .. } = completion {

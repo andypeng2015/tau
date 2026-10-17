@@ -1309,8 +1309,9 @@ impl Harness {
             "provider prompt route failed for `{agent_prompt_id}` via `{provider_connection_id}`: {reason}"
         ));
         if let Some((cid, transaction_id, cut, resume_through)) = failed_compaction {
-            self.publish_for_agent(
+            self.publish_event_for_agent_with_completion(
                 &cid,
+                None,
                 Event::AgentStandaloneCompactionFailed(
                     tau_proto::AgentStandaloneCompactionFailed {
                         agent_id: prompt.agent_id.clone(),
@@ -1323,6 +1324,11 @@ impl Harness {
                         incomplete_response: None,
                     },
                 ),
+                Some(AgentPublishCompletion::LocalDispatchFailure {
+                    agent_prompt_id,
+                    owned_publication: None,
+                }),
+                false,
             );
             return;
         };
@@ -1344,7 +1350,10 @@ impl Harness {
                 {
                     agent.turn.turn_state = turn_state;
                 }
-                self.terminalize_unroutable_owned_dispatch(&cid, Some(&prompt.model));
+                self.terminalize_undelivered_owned_dispatch(
+                    &cid,
+                    format!("provider prompt was not sent: {reason}"),
+                );
             } else {
                 self.set_agent_turn_state(&cid, AgentTurnState::Idle);
                 self.try_advance_queue();
@@ -2838,6 +2847,22 @@ impl Harness {
                 );
                 return;
             }
+            // Measure the exact final envelope before admitting it to the
+            // shared writer. A bounded reader cannot recover from a
+            // partial oversized frame, and that provider transport
+            // is shared by all agents.
+            let provider_frame = peer_context.live_delivery(recorded_at, event.clone());
+            if !protocol_message_fits(&provider_frame) {
+                self.fail_prompt_dispatch_continuation(
+                    sync_head_for.as_ref(),
+                    &format!(
+                        "encoded provider prompt exceeds the {} byte protocol limit; \
+                         no model request was made; use a fresh bounded agent context",
+                        tau_proto::MAX_PROTOCOL_MESSAGE_BYTES,
+                    ),
+                );
+                return;
+            }
             if let Event::AgentPromptCreated(prompt) = &event {
                 self.preempt_cache_refresh_for_prompt(prompt);
                 let model_info = self.provider_runtime.model_info.get(&prompt.model).cloned();
@@ -2854,7 +2879,6 @@ impl Harness {
             // directed route so replay/live delivery metadata
             // matches the subscribed-provider path.
             let execution_kinds = [ClientKind::Provider];
-            let provider_frame = peer_context.live_delivery(recorded_at, event.clone());
             let provider_frame = self
                 .runtime_io
                 .bus

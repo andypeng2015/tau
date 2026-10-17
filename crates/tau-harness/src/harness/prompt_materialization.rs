@@ -877,7 +877,17 @@ impl Harness {
             || "checkpoint has no provider-qualified model".to_owned(),
             |model| format!("checkpointed model `{model}` is unavailable"),
         );
-        if self.terminalize_output_length_before_prompt_start(cid, message) {
+        self.terminalize_undelivered_owned_dispatch(cid, message);
+    }
+
+    /// Terminalizes an owned request that never reached a provider, preserving
+    /// the existing local route-failure accounting and continuation semantics.
+    pub(super) fn terminalize_undelivered_owned_dispatch(
+        &mut self,
+        cid: &AgentId,
+        message: String,
+    ) {
+        if self.terminalize_output_length_before_prompt_start(cid, message.clone()) {
             return;
         }
         let Some(agent) = self.agent_runtime.agent_registry.agents.get(cid) else {
@@ -936,10 +946,7 @@ impl Harness {
                     agent_id,
                     output_items: Vec::new(),
                     stop_reason: ProviderStopReason::Error,
-                    error: Some(model.map_or_else(
-                        || "checkpoint has no provider-qualified model".to_owned(),
-                        |model| format!("checkpointed model `{model}` is unavailable"),
-                    )),
+                    error: Some(message),
                     failure_kind: Some(tau_proto::ProviderFailureKind::Unknown),
                     context_limit_telemetry: None,
                     final_status_disposition: tau_proto::FinalStatusDisposition::Accepted,
@@ -984,7 +991,23 @@ impl Harness {
             return;
         }
         if let Some(failure) = failure {
-            self.publish_for_agent(cid, failure);
+            let agent_prompt_id = match &failure {
+                Event::ProviderResponseFinished(response) => response.agent_prompt_id.clone(),
+                _ => {
+                    self.publish_for_agent(cid, failure);
+                    return;
+                }
+            };
+            self.publish_event_for_agent_with_completion(
+                cid,
+                None,
+                failure,
+                Some(AgentPublishCompletion::LocalDispatchFailure {
+                    agent_prompt_id,
+                    owned_publication: None,
+                }),
+                false,
+            );
         }
     }
 

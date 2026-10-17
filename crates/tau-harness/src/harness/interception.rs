@@ -566,6 +566,13 @@ pub(crate) struct OrdinarySteerBatchId(pub(crate) u64);
 /// Harness-owned continuation bound to one exact agent publication envelope.
 #[derive(Clone)]
 pub(crate) enum AgentPublishCompletion {
+    /// Retain a local pre-delivery failure until its terminal fact commits.
+    LocalDispatchFailure {
+        /// Exact prompt that was never sent to the provider.
+        agent_prompt_id: tau_proto::AgentPromptId,
+        /// Exact approved terminal retained after semantic admission rejection.
+        owned_publication: Option<OwnedPublication>,
+    },
     /// Release one exact ordinary uncertain inference only after Stale commits.
     UncertainSupersession {
         /// Exact old prompt whose marked owner remains authoritative until
@@ -723,7 +730,10 @@ impl AgentPublishCompletion {
     /// Return the retained owned publication, when admission has rejected it.
     pub(super) fn owned_publication(&self) -> Option<&OwnedPublication> {
         match self {
-            Self::UncertainSupersession {
+            Self::LocalDispatchFailure {
+                owned_publication, ..
+            }
+            | Self::UncertainSupersession {
                 owned_publication, ..
             }
             | Self::ToolTerminal {
@@ -774,7 +784,10 @@ impl AgentPublishCompletion {
     /// existing contract retains an approved publication through rejection.
     pub(super) fn owned_publication_mut(&mut self) -> Option<&mut Option<OwnedPublication>> {
         match self {
-            Self::UncertainSupersession {
+            Self::LocalDispatchFailure {
+                owned_publication, ..
+            }
+            | Self::UncertainSupersession {
                 owned_publication, ..
             }
             | Self::ToolTerminal {
@@ -833,7 +846,8 @@ impl AgentPublishCompletion {
             Self::StandaloneContinuation { batch_parent, .. } => {
                 Some(OwnedPublicationBranch::DescendantOf(*batch_parent))
             }
-            Self::UncertainSupersession { .. }
+            Self::LocalDispatchFailure { .. }
+            | Self::UncertainSupersession { .. }
             | Self::ToolTerminal { .. }
             | Self::OutputLengthDormantRepair { .. }
             | Self::ReactiveContextRecovery { .. }
@@ -849,6 +863,12 @@ impl AgentPublishCompletion {
 
     /// Return the exact provider terminal prompt retained by this completion.
     pub(super) fn provider_terminal_prompt_id(&self) -> Option<&tau_proto::AgentPromptId> {
+        if let Self::LocalDispatchFailure {
+            agent_prompt_id, ..
+        } = self
+        {
+            return Some(agent_prompt_id);
+        }
         let response = match self {
             Self::GatedFinal {
                 disposition: GatedFinalDisposition::Accept { terminal },
@@ -892,7 +912,8 @@ impl AgentPublishCompletion {
                 Event::ProviderResponseFinished(response) => Some(response),
                 _ => None,
             },
-            Self::ToolTerminal { .. }
+            Self::LocalDispatchFailure { .. }
+            | Self::ToolTerminal { .. }
             | Self::UncertainSupersession { .. }
             | Self::InitialPromptSubmission { .. }
             | Self::GatedFinal { .. }
@@ -920,7 +941,8 @@ impl AgentPublishCompletion {
     fn transaction_id(&self) -> &tau_proto::CompactionTransactionId {
         match self {
             Self::StandaloneContinuation { transaction_id, .. } => transaction_id,
-            Self::UncertainSupersession { .. }
+            Self::LocalDispatchFailure { .. }
+            | Self::UncertainSupersession { .. }
             | Self::ToolTerminal { .. }
             | Self::GatedFinal { .. }
             | Self::OutputLengthContinuation { .. }
@@ -2016,7 +2038,8 @@ impl Harness {
             | AgentPublishCompletion::StandaloneContinuation { retry_prompts, .. } => retry_prompts
                 .first()
                 .is_some_and(path_crate_agent::PendingPrompt::should_notify_watchers),
-            AgentPublishCompletion::ToolTerminal { .. }
+            AgentPublishCompletion::LocalDispatchFailure { .. }
+            | AgentPublishCompletion::ToolTerminal { .. }
             | AgentPublishCompletion::UncertainSupersession { .. }
             | AgentPublishCompletion::GatedFinal { .. } => false,
             AgentPublishCompletion::OutputLengthContinuation { .. } => false,

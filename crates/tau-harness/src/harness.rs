@@ -485,7 +485,7 @@ fn session_agent_list_error(
     }
 }
 
-/// Counting writer that rejects a roster before its encoded size exceeds the
+/// Counting writer that rejects a message before its encoded size exceeds the
 /// protocol frame limit.
 struct EncodedSizeLimit {
     /// Bytes still accepted.
@@ -498,7 +498,7 @@ impl io::Write for EncodedSizeLimit {
         if length > self.remaining {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
-                "encoded agent roster exceeds its protocol bound",
+                "encoded message exceeds its protocol bound",
             ));
         }
         self.remaining -= length;
@@ -510,7 +510,7 @@ impl io::Write for EncodedSizeLimit {
     }
 }
 
-fn session_agent_list_message_fits(message: &HarnessOutputMessage) -> bool {
+fn protocol_message_fits(message: &HarnessOutputMessage) -> bool {
     let mut encoded_size = EncodedSizeLimit {
         remaining: tau_proto::MAX_PROTOCOL_MESSAGE_BYTES,
     };

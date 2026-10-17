@@ -425,7 +425,7 @@ impl Harness {
             },
         };
         let mut message = HarnessOutputMessage::SessionAgentListResult(Box::new(result));
-        if !session_agent_list_message_fits(&message) {
+        if !protocol_message_fits(&message) {
             message = HarnessOutputMessage::SessionAgentListResult(Box::new(
                 tau_proto::SessionAgentListResult {
                     request_id,

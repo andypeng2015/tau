@@ -379,5 +379,5 @@ fn roster_response_size_check_rejects_oversized_content() {
             },
         }));
 
-    assert!(!super::super::session_agent_list_message_fits(&message));
+    assert!(!super::super::protocol_message_fits(&message));
 }
