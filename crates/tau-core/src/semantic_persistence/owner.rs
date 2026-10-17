@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, mem, thread};
 
 use super::backend::{FilesystemBackend, PersistenceBackend};
@@ -472,7 +472,7 @@ pub(crate) struct Shared {
     /// Deterministic pause after rollback poison discards append authority.
     #[cfg(test)]
     pub(crate) rollback_poison_pause: RollbackPoisonPause,
-    /// Deterministic pauses between provisional registration and enqueue.
+    /// Deterministic preparation and release lifecycle cuts.
     #[cfg(test)]
     pub(crate) preparation_pause: PreparationPause,
 }
@@ -528,7 +528,7 @@ pub(crate) struct PreparationPause {
     pub(crate) wake: Condvar,
 }
 
-/// Named registration-to-enqueue cuts used by deterministic race tests.
+/// Named prepare/release lifecycle cuts used by deterministic race tests.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PreparationPauseCut {
@@ -538,13 +538,15 @@ pub(crate) enum PreparationPauseCut {
     SessionPartiallyRegistered,
     /// A session has registered both provisional generations.
     SessionRegistered,
+    /// Every selected release handle is dropped, before Released publication.
+    ReleaseHandlesDropped,
 }
 
-/// State for one deterministic registration-to-enqueue pause.
+/// State for one deterministic lifecycle pause.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct PreparationPauseState {
-    /// The next preparation cut to pause at.
+    /// The next lifecycle cut to pause at.
     pub(crate) armed: Option<PreparationPauseCut>,
     /// Whether the armed cut has been reached.
     pub(crate) reached: bool,
@@ -614,6 +616,8 @@ pub(crate) struct ResourceLedger {
 }
 
 pub(crate) struct RegisteredStream {
+    /// Weak physical Agent lock and scoped off-loop custody count.
+    pub(super) agent_io: super::agent_io_guard::AgentIoState,
     /// Worker-proven complete-written prefix, absent before its first capture.
     pub(super) readable_agent: Option<super::agent_history_prefix::ReadableAgentJournal>,
     /// Current generation for stale-writer rejection.
@@ -961,7 +965,7 @@ impl SemanticPersistenceOwner {
         self.shared.rollback_poison_pause.wake.notify_all();
     }
 
-    /// Arms one deterministic pause after provisional preparation registration.
+    /// Arms one deterministic preparation or release lifecycle pause.
     #[cfg(test)]
     pub(crate) fn arm_preparation_pause_for_test(&self, cut: PreparationPauseCut) {
         let mut state = self
@@ -978,7 +982,7 @@ impl SemanticPersistenceOwner {
         };
     }
 
-    /// Waits until a preparation caller reaches the armed registration cut.
+    /// Waits until a lifecycle caller reaches the armed cut.
     #[cfg(test)]
     pub(crate) fn wait_for_preparation_pause_for_test(&self, timeout: Duration) -> bool {
         let state = self
@@ -996,7 +1000,7 @@ impl SemanticPersistenceOwner {
         state.reached
     }
 
-    /// Releases a preparation caller from the armed registration cut.
+    /// Releases a lifecycle caller from the armed cut.
     #[cfg(test)]
     pub(crate) fn release_preparation_pause_for_test(&self) {
         let mut state = self
@@ -1403,6 +1407,9 @@ impl SemanticPersistenceOwner {
         timeout: Duration,
         finalize: bool,
     ) -> Result<(), PersistenceAdmissionError> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            PersistenceAdmissionError::Lifecycle("release deadline overflow".to_owned())
+        })?;
         let identities: Vec<_> = leases
             .iter()
             .map(|lease| Arc::clone(&lease.identity))
@@ -1445,13 +1452,16 @@ impl SemanticPersistenceOwner {
             let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             state.commands.push_back(WorkerCommand::Release {
                 identities: identities.clone(),
+                deadline,
                 reply,
             });
         }
         self.shared.wake.notify_one();
-        receive.recv_timeout(timeout).map_err(|_| {
-            PersistenceAdmissionError::Lifecycle("release deadline elapsed".to_owned())
-        })??;
+        receive
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| {
+                PersistenceAdmissionError::Lifecycle("release deadline elapsed".to_owned())
+            })??;
         if finalize {
             let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             for identity in &identities {
@@ -1637,6 +1647,7 @@ impl SemanticPersistenceOwner {
         state.streams.insert(
             stream.clone(),
             RegisteredStream {
+                agent_io: Default::default(),
                 readable_agent: None,
                 generation,
                 lifecycle,
@@ -1954,7 +1965,7 @@ fn preparation_command_count(commands: &VecDeque<WorkerCommand>) -> usize {
 }
 
 #[cfg(test)]
-fn pause_preparation_for_test(shared: &Shared, cut: PreparationPauseCut) {
+pub(super) fn pause_preparation_for_test(shared: &Shared, cut: PreparationPauseCut) {
     let mut state = shared
         .preparation_pause
         .state

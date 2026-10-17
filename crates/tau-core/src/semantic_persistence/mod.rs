@@ -5,6 +5,7 @@
 //! lease to atomically install the replacement beside one FIFO frame.
 
 mod agent_history_prefix;
+mod agent_io_guard;
 mod backend;
 mod capacity;
 mod identity;

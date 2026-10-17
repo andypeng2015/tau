@@ -63,6 +63,12 @@ impl PersistenceLease {
     pub fn generation(&self) -> PersistenceGeneration {
         self.identity.generation
     }
+
+    /// Compares the exact owner/stream/generation capability without I/O.
+    #[must_use]
+    pub fn is_same_generation_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.identity, &other.identity)
+    }
 }
 
 impl fmt::Debug for PersistenceLease {

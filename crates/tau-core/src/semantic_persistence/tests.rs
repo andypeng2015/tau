@@ -1,5 +1,7 @@
 //! Deterministic production-backend persistence failure oracles.
 
+mod agent_io_guard;
+
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
@@ -56,6 +58,8 @@ struct LockPublicationFaults {
     lock_publication_held: Mutex<bool>,
     lock_publication_wake: Condvar,
     hold_before_pending_lock_create: AtomicBool,
+    /// Also permits pausing direct Agent lock creation before Prepared.
+    hold_before_agent_lock_create: AtomicBool,
     pending_lock_create_held: Mutex<bool>,
     pending_lock_create_wake: Condvar,
 }
@@ -108,6 +112,7 @@ impl WriteFaultBackend {
                 lock_publication_held: Mutex::new(false),
                 lock_publication_wake: Condvar::new(),
                 hold_before_pending_lock_create: AtomicBool::new(false),
+                hold_before_agent_lock_create: AtomicBool::new(false),
                 pending_lock_create_held: Mutex::new(false),
                 pending_lock_create_wake: Condvar::new(),
             },
@@ -229,11 +234,16 @@ impl PersistenceBackend for WriteFaultBackend {
         FilesystemBackend.set_permissions(path, permissions)
     }
     fn create_new_file(&self, path: &Path) -> io::Result<File> {
-        if path.file_name().is_some_and(|name| name == "lock.pending")
+        if (path.file_name().is_some_and(|name| name == "lock.pending")
             && self
                 .lock_publication
                 .hold_before_pending_lock_create
-                .load(Ordering::SeqCst)
+                .load(Ordering::SeqCst))
+            || (path.file_name().is_some_and(|name| name == "lock")
+                && self
+                    .lock_publication
+                    .hold_before_agent_lock_create
+                    .load(Ordering::SeqCst))
         {
             let mut held = self
                 .lock_publication
@@ -246,6 +256,10 @@ impl PersistenceBackend for WriteFaultBackend {
                 .lock_publication
                 .hold_before_pending_lock_create
                 .load(Ordering::SeqCst)
+                || self
+                    .lock_publication
+                    .hold_before_agent_lock_create
+                    .load(Ordering::SeqCst)
             {
                 held = self
                     .lock_publication

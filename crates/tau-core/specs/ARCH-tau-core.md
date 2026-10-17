@@ -95,14 +95,28 @@ discards the overlay with the corresponding ephemeral transcripts.
 
 One Harness-lifecycle `SemanticPersistenceOwner` serves agent, ordinary-session,
 and restore journals through one bounded global FIFO. Explicit preparation hands
-all mutable files, locks, offsets, checkpoints, manifest authority, and durability
-debt to its sole worker. Stores retain generation-bound leases and complete
+all mutable journal files, primary locks, offsets, checkpoints, manifest authority,
+and durability debt to its sole worker. Stores retain generation-bound leases and complete
 in-memory projections; live admission reserves count and aggregate bytes, builds
 the frame and replacement off-side, then performs one nonblocking revalidation,
 swap, and FIFO insertion. Rejection changes no projection or publication state.
 The atomic swap drops the superseded complete projection and releases its
 staging-only byte reservation immediately; queued work retains only its frame,
 incremental projection ownership, checkpoint candidate, and worker/debt state.
+
+An exact Prepared Agent lease may run a bounded synchronous off-loop storage
+closure under the existing agent deletion-exclusion lock. This narrow physical
+custody exception does not expose a journal handle, reopen a path, or extend
+semantic admission authority. The registry retains only a weak lock reference
+and scoped count; acquiring strong custody and dropping its final descriptor
+belong off-loop, never under the admission mutex. Closing, poison, fail-stop and
+worker exit reject new scopes immediately. An already-running scope may retain
+physical exclusion until its I/O unwinds, then drops custody before signalling
+drain or returning a completion. Callers bound scopes with their worker admission
+permits and revalidate exact lease/runtime ownership before canonical publication.
+Guarded work must not wait for the semantic worker, main-loop callbacks, extension
+RPC or completion consumption. Agent exclusion precedes the Artifact store lock.
+This capability prepares image admission; no production image path uses it yet.
 
 Managed agent projections separate authoritative trees and exact live-query facts
 from accepted-record cache residency. The core cache API can evict only a
@@ -129,7 +143,14 @@ generations whose rollback cannot be proven, coalesces watermarked checkpoint an
 session-touch debt, and synchronizes file data plus exact child-before-parent
 directory targets. Touch debt uses the prepared manifest's `created_at` and an
 exact global frame prerequisite. Release closes a complete generation set at one
-mutex cut, drains its accepted frames and debt, then drops handles and capacity;
+mutex cut, drains its accepted frames, debt and scoped Agent I/O, then drops
+handles and capacity. Finishing queued creation cannot replace Closing with
+Prepared. Queueing, debt and guard drain share the release call's original
+absolute deadline; an expired command cannot start a fresh guard-wait budget or
+claim Released/Ok. After physical handles drop outside the admission mutex, one
+final synchronized deadline, availability and generation check publishes the
+whole set as Released. A failed or timed-out release is not proof of physical unlock.
+The existing bounded owner Drop does not join unrelated storage workers;
 maintenance uses a distinct release/claim/read/finalize lifecycle. Normal
 `open`/`open_lazy` constructors are read-only inspection views. Test fixtures
 write through a fixture-owned `SemanticPersistenceOwner`. Exact semantics are

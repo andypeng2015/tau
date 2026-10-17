@@ -111,6 +111,9 @@ pub(crate) enum WorkerCommand {
     Release {
         /// Exact capabilities to release together.
         identities: Vec<Arc<LeaseIdentity>>,
+        /// One absolute deadline covering queueing, debt and scoped guard
+        /// drain.
+        deadline: std::time::Instant,
         /// Bounded reply channel.
         reply: SyncSender<Result<(), PersistenceAdmissionError>>,
     },

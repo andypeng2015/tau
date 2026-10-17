@@ -21,7 +21,10 @@ use super::agent_history_prefix::ReadableAgentJournal;
 use super::backend::{ExistingPathKind, PersistenceBackend};
 use super::identity::{PersistenceGeneration, StreamIdentity};
 #[cfg(test)]
-use super::owner::{DerivedWorkPauseState, RollbackPoisonPauseState};
+use super::owner::{
+    DerivedWorkPauseState, PreparationPauseCut, RollbackPoisonPauseState,
+    pause_preparation_for_test,
+};
 use super::owner::{
     FrameAdmissionToken, PersistenceAdmissionError, PersistenceFailureKind, RetentionCharge,
     Shared, StagedFrame, invalidate_worker, report_failure, report_rollback_failure_and_poison,
@@ -217,8 +220,8 @@ struct PreparedStream {
     /// Sole persistent owner of the optional positional-read descriptor. The
     /// registry holds only Weak references so its cleanup cannot close files.
     read_handle: Option<Arc<File>>,
-    /// Exclusive advisory lock retained for the generation.
-    _lock: File,
+    /// Exclusive lock shared only with scoped off-loop Agent I/O custody.
+    _lock: Arc<File>,
     /// Exact append offset last proven complete.
     offset: u64,
     /// Prepared canonical manifest authority for an ordinary session.
@@ -230,7 +233,7 @@ struct PoisonedSessionLock {
     /// Exact generation whose unusable append state was discarded.
     generation: PersistenceGeneration,
     /// Original exclusive session lock retained until normal release.
-    _lock: File,
+    _lock: Arc<File>,
 }
 
 /// Restartable non-destructive creation owned only by the worker.
@@ -689,10 +692,26 @@ fn process_command(
                 });
             }
         }
-        WorkerCommand::Release { identities, reply } => {
+        WorkerCommand::Release {
+            identities,
+            deadline,
+            reply,
+        } => {
+            if deadline <= Instant::now() {
+                let _ = reply.send(Err(PersistenceAdmissionError::Lifecycle(
+                    "release deadline elapsed".to_owned(),
+                )));
+                return;
+            }
             let result = flush_release_debts(shared, streams, debts, &identities);
             if let Err(error) = result {
                 let _ = reply.send(Err(PersistenceAdmissionError::Lifecycle(error.to_string())));
+                return;
+            }
+            if let Err(error) =
+                super::agent_io_guard::wait_for_agent_io(shared, &identities, deadline)
+            {
+                let _ = reply.send(Err(error));
                 return;
             }
             touches.retain(|debt| {
@@ -708,20 +727,65 @@ fn process_command(
                 {
                     poisoned_session_locks.remove(&identity.stream);
                 }
-                set_lifecycle(
-                    shared,
-                    &identity.stream,
-                    identity.generation,
-                    StreamLifecycle::Released,
-                );
             }
-            let _ = reply.send(Ok(()));
+            #[cfg(test)]
+            pause_preparation_for_test(shared, PreparationPauseCut::ReleaseHandlesDropped);
+            let _ = reply.send(publish_released(shared, &identities, deadline));
         }
         #[cfg(any(test, feature = "test-persistence"))]
         WorkerCommand::DurabilityBarrier { reply } => {
             *_durability_barrier = Some(reply);
         }
     }
+}
+
+/// Publishes the complete release set only after all physical handles are gone.
+///
+/// Deadline, availability and generation validation share the final admission
+/// mutex cut. No descriptor is closed under this mutex, and a failed decision
+/// leaves every member non-released rather than permitting maintenance.
+fn publish_released(
+    shared: &Shared,
+    identities: &[Arc<super::identity::LeaseIdentity>],
+    deadline: Instant,
+) -> Result<(), PersistenceAdmissionError> {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !state.available {
+        return Err(PersistenceAdmissionError::Unavailable);
+    }
+    for identity in identities {
+        let registered = state
+            .streams
+            .get(&identity.stream)
+            .filter(|registered| {
+                registered.generation == identity.generation
+                    && matches!(
+                        registered.lifecycle,
+                        StreamLifecycle::Closing
+                            | StreamLifecycle::Poisoned
+                            | StreamLifecycle::CreationFailed
+                    )
+                    && registered.agent_io.is_idle()
+            })
+            .ok_or(PersistenceAdmissionError::StaleLease)?;
+        let _ = registered;
+    }
+    if deadline <= Instant::now() {
+        return Err(PersistenceAdmissionError::Lifecycle(
+            "release deadline elapsed".to_owned(),
+        ));
+    }
+    for identity in identities {
+        state
+            .streams
+            .get_mut(&identity.stream)
+            .expect("release set prevalidated")
+            .lifecycle = StreamLifecycle::Released;
+    }
+    Ok(())
 }
 
 fn preparation_error(error: io::Error) -> PersistenceAdmissionError {
@@ -756,10 +820,11 @@ fn prepare_agent(
         generation: identity.generation,
         journal,
         read_handle: None,
-        _lock: lock,
+        _lock: Arc::new(lock),
         offset,
         session_meta: None,
     };
+    super::agent_io_guard::publish_agent_lock(shared, identity, &stream._lock);
     advance_agent_readable_frontier(
         shared,
         identity,
@@ -907,7 +972,7 @@ fn prepare_session(
             generation: session_identity.generation,
             journal: ordinary,
             read_handle: None,
-            _lock: lock,
+            _lock: Arc::new(lock),
             offset: ordinary_offset,
             session_meta: Some(meta.clone()),
         },
@@ -921,7 +986,7 @@ fn prepare_session(
             generation: restore_identity.generation,
             journal: restore,
             read_handle: None,
-            _lock: restore_lock,
+            _lock: Arc::new(restore_lock),
             offset: restore_offset,
             session_meta: None,
         },
@@ -1149,6 +1214,7 @@ fn append_job(
         {
             match advance_creation(shared, creations, job) {
                 Ok(Some(stream)) => {
+                    super::agent_io_guard::publish_agent_lock(shared, &job.identity, &stream._lock);
                     streams.insert(job.stream().clone(), stream);
                     creations.remove(job.stream());
                     set_lifecycle(
@@ -1426,7 +1492,7 @@ fn advance_creation(
         generation: job.generation(),
         journal,
         read_handle: None,
-        _lock: lock,
+        _lock: Arc::new(lock),
         offset: 0,
         session_meta: None,
     }))
@@ -1771,6 +1837,8 @@ pub(crate) fn worker_persistent_stream_charge() -> usize {
         .saturating_add(4 * std::mem::size_of::<File>())
         // Optional shared read handle and its Arc reference counters.
         .saturating_add(std::mem::size_of::<File>() + 2 * std::mem::size_of::<usize>())
+        // Shared deletion-exclusion handle and its Arc reference counters.
+        .saturating_add(std::mem::size_of::<File>() + 2 * std::mem::size_of::<usize>())
 }
 
 fn minimum_deadline(
@@ -1837,7 +1905,13 @@ fn set_lifecycle(
     if let Some(registered) = state.streams.get_mut(stream)
         && registered.generation == generation
     {
-        registered.lifecycle = lifecycle;
+        // Completing queued creation must not reopen admission after release
+        // closed the generation while its filesystem work was still pending.
+        if registered.lifecycle != StreamLifecycle::Closing
+            || lifecycle != StreamLifecycle::Prepared
+        {
+            registered.lifecycle = lifecycle;
+        }
     }
 }
 
