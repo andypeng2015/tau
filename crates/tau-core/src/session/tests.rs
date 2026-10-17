@@ -941,6 +941,96 @@ fn provider_image_content_rejects_per_agent_aggregate_overflow() {
     assert!(error.to_string().contains("per-agent limit"));
 }
 
+/// Builds metadata-only history without accessing a filesystem or fetching
+/// bytes.
+fn referenced_image(size: u64) -> tau_proto::ToolResultContentPart {
+    tau_proto::ToolResultContentPart::ImageReference(tau_proto::ImageReference {
+        blob: tau_proto::ArtifactDescriptor::new(
+            tau_proto::ArtifactKey::parse(format!("blake3:{}", "cd".repeat(32))).expect("key"),
+            size,
+        )
+        .expect("bounded descriptor"),
+        media_type: tau_proto::ImageMediaType::Png,
+        width: 1,
+        height: 1,
+        detail: tau_proto::ImageDetail::High,
+    })
+}
+
+/// Cold reference validation enforces image shape; it never treats a valid hash
+/// as media proof.
+#[test]
+fn provider_image_reference_shape_rejects_invalid_size_dimensions_and_tool_kind() {
+    assert!(
+        validate_provider_content_parts(tau_proto::ToolType::Function, &[referenced_image(1)])
+            .is_ok()
+    );
+    for size in [0, 8 * 1024 * 1024 + 1] {
+        assert!(
+            validate_provider_content_parts(
+                tau_proto::ToolType::Function,
+                &[referenced_image(size)]
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        validate_provider_content_parts(tau_proto::ToolType::Custom, &[referenced_image(1)])
+            .is_err()
+    );
+    let mut content = referenced_image(1);
+    let tau_proto::ToolResultContentPart::ImageReference(reference) = &mut content else {
+        panic!("reference fixture");
+    };
+    reference.width = 0;
+    assert!(validate_provider_content_parts(tau_proto::ToolType::Function, &[content]).is_err());
+    assert!(
+        validate_provider_content_parts(
+            tau_proto::ToolType::Function,
+            &[referenced_image(1), referenced_image(1)]
+        )
+        .is_err()
+    );
+}
+
+/// Repeated references count each occurrence, including copied compaction
+/// windows.
+#[test]
+fn provider_image_reference_quota_counts_occurrences_not_unique_keys() {
+    let result = tau_proto::ToolResult {
+        presentation: Default::default(),
+        call_id: "image".into(),
+        tool_name: tau_proto::ToolName::new("read_image"),
+        tool_type: tau_proto::ToolType::Function,
+        result: tau_proto::CborValue::Null,
+        provider_content: vec![referenced_image(8 * 1024 * 1024)],
+        kind: tau_proto::ToolResultKind::Final,
+        display: None,
+        originator: tau_proto::PromptOriginator::User,
+    };
+    let item = ContextItem::ToolResult(tau_proto::ToolResultItem {
+        call_id: result.call_id.clone(),
+        tool_type: result.tool_type,
+        status: tau_proto::ToolResultStatus::Success,
+        output: tau_proto::ToolResponse::from_cbor(&result.result),
+        presentation: Default::default(),
+        provider_content: result.provider_content.clone(),
+    });
+    assert_eq!(
+        [item.clone(), item]
+            .iter()
+            .map(context_item_provider_image_bytes)
+            .sum::<u64>(),
+        16 * 1024 * 1024
+    );
+    let mut tree = AgentTree::from_events(agent_id(), &[]);
+    tree.retained_provider_image_bytes = MAX_RETAINED_PROVIDER_IMAGE_BYTES_PER_AGENT - 1;
+    let error = tree
+        .validate_event(&Event::ProviderToolResult(result))
+        .expect_err("logical quota");
+    assert!(error.to_string().contains("per-agent limit"));
+}
+
 /// Ensures provider output cannot inject input-side tool results and thereby
 /// bypass the dedicated result validation, accounting, and call-pairing path.
 #[test]

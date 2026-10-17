@@ -2,10 +2,11 @@
 
 ## Status
 
-The store has an internal transcript-root foundation, but no producer or
-canonical event currently uses it. Typed image results remain inline. Durable
-prepared-image references will use this foundation only after producer admission,
-provider resolution, and the coordinated protocol update are complete.
+The store has an internal transcript-root foundation and the protocol can
+represent prepared-image references, but no producer currently emits them.
+Production typed image results remain inline, and live unresolved references are
+rejected. Durable prepared-image references will use this foundation only after
+producer admission and provider resolution are complete.
 
 ## Record justification
 

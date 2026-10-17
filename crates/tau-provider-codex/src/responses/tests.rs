@@ -377,6 +377,49 @@ fn audited_models_lower_typed_image_inside_function_output() {
     }
 }
 
+/// Direct finite-request entrypoints reject references before any JSON
+/// lowering, including native compaction and prewarm sizing.
+#[test]
+fn unresolved_image_reference_rejects_codex_request_admission() {
+    let items = [ContextItem::ToolResult(ToolResultItem {
+        call_id: "image".into(),
+        tool_type: tau_proto::ToolType::Function,
+        status: ToolResultStatus::Success,
+        output: tau_proto::ToolResponse::from_cbor(&tau_proto::CborValue::Null),
+        presentation: Default::default(),
+        provider_content: vec![ToolResultContentPart::ImageReference(
+            tau_proto::ImageReference {
+                blob: tau_proto::ArtifactDescriptor::new(
+                    tau_proto::ArtifactKey::parse(format!("blake3:{}", "ab".repeat(32)))
+                        .expect("key"),
+                    3,
+                )
+                .expect("descriptor"),
+                media_type: ImageMediaType::Png,
+                width: 1,
+                height: 1,
+                detail: ImageDetail::High,
+            },
+        )],
+    })];
+    let request = request_for_items(&items);
+    let config = chain_test_config();
+    for result in [
+        require_resolved_images(request.context),
+        full_ws_request_bytes(&config, &request).map(|_| ()),
+        compact_ws_request_bytes(&config, &request).map(|_| ()),
+        build_compact_request(&config, &request).map(|_| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(LlmError::ProviderFailure(
+                tau_proto::ProviderFailureKind::RequestRejected,
+                _
+            ))
+        ));
+    }
+}
+
 /// Ensures aggregate raw-image and expanded data-URL budgets both omit an image
 /// before base64 allocation once the request-wide limit would be crossed.
 #[test]

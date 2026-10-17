@@ -8,6 +8,16 @@ extension-visible event behavior.
 
 ## Revision scope
 
+Protocol 14.0 adds a distinct prepared-image reference content variant and a
+harness-authored per-invocation image-storage policy. Configured extensions must
+rebuild together with proto/client SDK 0.14.0; changing only an advertised version
+does not handle the new enum or policy field. New readers retain old inline image
+history, while old readers cannot decode reference-bearing records. Journal
+framing is unchanged. This unpublished schema checkpoint still selects Inline
+for all production invocations and rejects unresolved references at live
+admission and provider submission; it does not enable the full image side channel.
+See [SPEC-typed-image-tool-results](SPEC-typed-image-tool-results.md).
+
 Protocol 13.1 adds UI-only bounded artifact discovery and permits authenticated
 exact-session UIs to read originals for explicit clipboard export. UI clients
 withhold the new operations until SessionAccepted advertises 13.1 or newer.

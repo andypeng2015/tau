@@ -6,7 +6,7 @@ mod tests;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
-use tau_proto::{ToolResultContentPart, ToolResultItem, ToolResultStatus};
+use tau_proto::{ToolResultItem, ToolResultStatus};
 
 /// Shared request budget, not a separate allowance for each tool result.
 pub(super) struct ImageBudget {
@@ -43,7 +43,9 @@ impl ImageBudget {
         }
         let mut content = vec![json!({"type": "input_text", "text": text})];
         for part in &result.provider_content {
-            let ToolResultContentPart::Image(image) = part;
+            let image = part
+                .inline_image()
+                .expect("request admission rejects unresolved image references");
             let encoded_len = image.data.len().div_ceil(3).saturating_mul(4);
             let url_len = "data:;base64,"
                 .len()

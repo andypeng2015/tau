@@ -85,7 +85,9 @@ pub use openai_prompt_cache::OpenAiPromptCacheKey;
 use output_cost_observation::{
     SamplerObservation, WorkerDrainObservation, WorkerOutputObservation, WorkerQueueState,
 };
-use prewarm::{PrewarmAbort, PrewarmKey, PrewarmSupervisor};
+#[cfg(test)]
+use prewarm::prewarm_prompt;
+use prewarm::{PrewarmAbort, PrewarmKey, PrewarmSupervisor, handle_resolved_prewarm};
 use prompt_oauth::{
     PromptOAuthRefresh, PromptOAuthRefreshKey, PromptOAuthRefreshOwner, PromptOAuthRpc,
 };
@@ -144,7 +146,7 @@ use compact_route::{
 use tau_provider::retry_policy::{RetryClass, RetryDecision};
 use tau_provider_codex::{
     AttemptOutcome as CodexAttemptOutcome, ChatGptRetryIdentity, CodexError, CodexMode,
-    CodexRuntime, CompactOutcome, InferenceProfileIdentity, PrewarmOutcome, Prompt as CodexPrompt,
+    CodexRuntime, CompactOutcome, InferenceProfileIdentity, Prompt as CodexPrompt,
     QuotaProfileIdentity, ResolvedConfig, SemanticProgress as CodexSemanticProgress,
     StreamDeltaEmitter as CodexStreamDeltaEmitter, StreamState as CodexStreamState, StreamUpdate,
     TurnAbort, TurnAbortWaker,
@@ -8747,62 +8749,6 @@ fn resolve_prewarm_backend(
     Some((model.clone(), config))
 }
 
-/// Borrow every stable prefix field without changing ordinary inference
-/// lowering.
-fn prewarm_prompt(
-    prewarm: &tau_proto::AgentPromptPrewarmRequested,
-    debug_provider_requests: bool,
-) -> CodexPrompt<'_> {
-    CodexPrompt {
-        system_prompt: &prewarm.system_prompt,
-        context: &prewarm.context,
-        tools: &prewarm.tools,
-        hosted_tools: &prewarm.hosted_tools,
-        params: prewarm.model_params,
-        tool_choice: prewarm.tool_choice,
-        compaction: None,
-        originator: &prewarm.originator,
-        session_id: &prewarm.session_id,
-        agent_id: &prewarm.agent_id,
-        debug_provider_requests,
-    }
-}
-
-fn handle_resolved_prewarm(
-    prewarm: &tau_proto::AgentPromptPrewarmRequested,
-    config: &ResolvedConfig,
-    codex_runtime: &CodexRuntime,
-    refresh_id: Option<&tau_proto::ProviderCacheRefreshId>,
-    debug_provider_requests: bool,
-    abort: &mut impl TurnAbort,
-) -> tau_proto::ProviderCacheRefreshStatus {
-    let session_id_str = prewarm.session_id.as_str();
-    let request = prewarm_prompt(prewarm, debug_provider_requests);
-    tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "starting prompt prewarm");
-    match codex_runtime.prewarm_operation(config, session_id_str, &request, refresh_id, abort) {
-        PrewarmOutcome::Installed => {
-            tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "completed prompt prewarm");
-            tau_proto::ProviderCacheRefreshStatus::Succeeded
-        }
-        PrewarmOutcome::SkippedBusy => {
-            tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "skipped prompt prewarm: websocket key is busy");
-            tau_proto::ProviderCacheRefreshStatus::Failed
-        }
-        PrewarmOutcome::Retry(decision) => {
-            tracing::debug!(target: LOG_TARGET, session_id = session_id_str, retry_class = ?decision.class, "prompt prewarm ended with retryable provider failure");
-            tau_proto::ProviderCacheRefreshStatus::Failed
-        }
-        PrewarmOutcome::Canceled => {
-            tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "prompt prewarm canceled");
-            tau_proto::ProviderCacheRefreshStatus::Cancelled
-        }
-        PrewarmOutcome::Terminal(error) => {
-            tracing::debug!(target: LOG_TARGET, session_id = session_id_str, "prompt prewarm failed: {error}");
-            tau_proto::ProviderCacheRefreshStatus::Failed
-        }
-    }
-}
-
 fn handle_prompt_backend<R, S: ProviderReportSink>(
     agent_prompt_id: &tau_proto::AgentPromptId,
     backend: &PromptBackend,
@@ -8815,6 +8761,27 @@ fn handle_prompt_backend<R, S: ProviderReportSink>(
 where
     R: TurnAbort,
 {
+    if prompt.has_image_references() {
+        if retry_ctx.is_aborted() {
+            return finish_canceled_attempt(
+                agent_prompt_id,
+                prompt,
+                writer,
+                false,
+                None,
+                context.logical_attempt.provider_attempt(),
+            );
+        }
+        let mut finished = simple_finished(
+            agent_prompt_id.clone(),
+            prompt.agent_id.clone(),
+            prompt.originator.clone(),
+            "prepared image references must be resolved before provider submission",
+        );
+        finished.failure_kind = Some(tau_proto::ProviderFailureKind::RequestRejected);
+        finished.provider_attempt = context.logical_attempt.provider_attempt();
+        return finish_terminal_attempt(agent_prompt_id, prompt, writer, finished, false);
+    }
     match backend {
         PromptBackend::ChatGptPlan {
             profile,

@@ -2360,6 +2360,48 @@ fn image_tool_results_block(call_id: &str, data: impl Into<Arc<[u8]>>) -> tau_pr
     })
 }
 
+/// Ordinary and local-summary request builders cannot silently omit unresolved
+/// references, even for a route that would not support inline images.
+#[test]
+fn unresolved_image_reference_rejects_chat_request_admission() {
+    let mut created = prompt();
+    let mut block = image_tool_results_block("image", [1, 2, 3]);
+    let tau_proto::ContextBlock::ToolResults(results) = &mut block else {
+        panic!("fixture");
+    };
+    results.items[0].provider_content = vec![tau_proto::ToolResultContentPart::ImageReference(
+        tau_proto::ImageReference {
+            blob: tau_proto::ArtifactDescriptor::new(
+                tau_proto::ArtifactKey::parse(format!("blake3:{}", "ab".repeat(32))).expect("key"),
+                3,
+            )
+            .expect("descriptor"),
+            media_type: tau_proto::ImageMediaType::Png,
+            width: 1,
+            height: 1,
+            detail: tau_proto::ImageDetail::High,
+        },
+    )];
+    created.context.blocks.push(block);
+    let config = resolved_provider(&provider());
+    let model = provider().models[0].clone();
+    for operation in [
+        tau_proto::PromptOperation::Inference,
+        tau_proto::PromptOperation::StandaloneCompaction,
+    ] {
+        created.operation = operation;
+        let error = try_build_request(&config, &model, &created)
+            .err()
+            .expect("reject");
+        assert!(matches!(error, LlmError::UnresolvedImageReference));
+        assert!(error.retry_decision().is_none());
+        assert_eq!(
+            error.failure_kind(),
+            Some(tau_proto::ProviderFailureKind::RequestRejected)
+        );
+    }
+}
+
 /// An explicitly audited llama.cpp route must receive exact multimodal tool
 /// content, while the default text-only route must retain a byte-free marker.
 #[test]

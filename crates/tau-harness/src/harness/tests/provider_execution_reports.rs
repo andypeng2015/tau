@@ -2143,6 +2143,19 @@ fn benchmark_provider_terminal_subphase_scaling() {
 /// independently of terminal prompt correlation.
 #[test]
 fn finished_report_live_delivery_clears_provider_image_bytes() {
+    assert_finished_report_live_delivery_clears_image_payload(false);
+}
+
+/// Known-key authority stays private even when generic live reports are
+/// projected.
+#[test]
+fn finished_report_live_delivery_clears_provider_image_reference() {
+    assert_finished_report_live_delivery_clears_image_payload(true);
+}
+
+/// Exercises the actual subscriber delivery path for both image
+/// representations.
+fn assert_finished_report_live_delivery_clears_image_payload(referenced: bool) {
     let temp = TempDir::new().expect("temp dir");
     let mut harness = quiet_provider_harness(temp.path()).expect("harness");
     connect_ready_configured_extension(
@@ -2163,7 +2176,7 @@ fn finished_report_live_delivery_clears_provider_image_bytes() {
             })),
         )
         .expect("subscribe observer");
-    let response = tau_proto::ProviderResponseFinished {
+    let mut response = tau_proto::ProviderResponseFinished {
         error_category: None,
         automatic_compaction_decision: None,
         output_length_disposition: tau_proto::OutputLengthDisposition::None,
@@ -2209,6 +2222,25 @@ fn finished_report_live_delivery_clears_provider_image_bytes() {
         provider_response_id: None,
         ws_pool_delta: None,
     };
+    let key = format!("blake3:{}", "ab".repeat(32));
+    if referenced {
+        let tau_proto::ContextItem::ToolResult(result) = &mut response.output_items[0] else {
+            panic!("tool result fixture");
+        };
+        result.provider_content = vec![tau_proto::ToolResultContentPart::ImageReference(
+            tau_proto::ImageReference {
+                blob: tau_proto::ArtifactDescriptor::new(
+                    tau_proto::ArtifactKey::parse(key.clone()).expect("key"),
+                    3,
+                )
+                .expect("descriptor"),
+                media_type: tau_proto::ImageMediaType::Png,
+                width: 1,
+                height: 1,
+                detail: tau_proto::ImageDetail::High,
+            },
+        )];
+    }
     harness
         .handle_extension_event_inner(
             &crate::test_connection_id("provider"),
@@ -2229,8 +2261,15 @@ fn finished_report_live_delivery_clears_provider_image_bytes() {
     let tau_proto::ContextItem::ToolResult(result) = &delivered.output_items[0] else {
         panic!("tool result");
     };
-    let tau_proto::ToolResultContentPart::Image(image) = &result.provider_content[0];
+    let image = result.provider_content[0]
+        .inline_image()
+        .expect("inline projection");
     assert!(image.data.is_empty());
+    assert!(
+        !serde_json::to_string(&delivered)
+            .expect("delivered")
+            .contains(&key)
+    );
 }
 
 /// Stale-response termination derived from a committed report carries explicit

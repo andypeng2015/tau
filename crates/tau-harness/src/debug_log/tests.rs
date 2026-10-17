@@ -182,6 +182,24 @@ fn debug_image_context_item(data: Vec<u8>) -> tau_proto::ContextItem {
 }
 
 fn debug_binary_events(data: Vec<u8>) -> Vec<Event> {
+    let prewarm = tau_proto::AgentPromptPrewarmRequested {
+        agent_id: tau_proto::AgentId::parse("main").expect("agent"),
+        session_id: SessionId::parse("session").expect("session"),
+        system_prompt: String::new(),
+        context: tau_proto::PromptContext {
+            blocks: vec![tau_proto::ContextBlock::UserInput(
+                tau_proto::UserInputBlock {
+                    items: vec![debug_image_context_item(data.clone())],
+                },
+            )],
+        },
+        tools: Vec::new(),
+        model: None,
+        hosted_tools: Vec::new(),
+        model_params: Default::default(),
+        tool_choice: Default::default(),
+        originator: PromptOriginator::User,
+    };
     let compacted = tau_proto::AgentCompacted {
         original_input_tokens: None,
         compaction_output_tokens: None,
@@ -203,7 +221,87 @@ fn debug_binary_events(data: Vec<u8>) -> Vec<Event> {
         Event::AgentCompacted(compacted),
         Event::ProviderResponseFinishedReported(finished.clone().into()),
         Event::ProviderResponseFinished(finished),
+        Event::AgentPromptPrewarmRequested(prewarm.clone()),
+        Event::AgentCacheRefreshRequested(tau_proto::AgentCacheRefreshRequested {
+            refresh_id: tau_proto::ProviderCacheRefreshId::parse("refresh-image").expect("refresh"),
+            prompt: prewarm,
+            stop_after_millis: 1.try_into().expect("positive"),
+        }),
     ]
+}
+
+/// Fetchable keys require the same projection protection as inline bytes in all
+/// terminal, compaction, incoming-report, and interceptor carriers.
+#[test]
+fn referenced_images_never_expose_keys_in_debug_projections() {
+    let key = format!("blake3:{}", "ab".repeat(32));
+    let content = tau_proto::ToolResultContentPart::ImageReference(tau_proto::ImageReference {
+        blob: tau_proto::ArtifactDescriptor::new(
+            tau_proto::ArtifactKey::parse(key.clone()).expect("key"),
+            0,
+        )
+        .expect("descriptor"),
+        media_type: tau_proto::ImageMediaType::Png,
+        width: 1,
+        height: 1,
+        detail: tau_proto::ImageDetail::High,
+    });
+    let replace_items = |items: &mut Vec<tau_proto::ContextItem>| {
+        for item in items {
+            if let tau_proto::ContextItem::ToolResult(result) = item {
+                result.provider_content = vec![content.clone()];
+            }
+        }
+    };
+    for mut event in debug_binary_events(vec![1]) {
+        match &mut event {
+            Event::ToolResultReported(result)
+            | Event::ToolResult(result)
+            | Event::ProviderToolResult(result) => {
+                result.provider_content = vec![content.clone()];
+            }
+            Event::AgentCompacted(compacted) => replace_items(&mut compacted.replacement_window),
+            Event::ProviderResponseFinishedReported(finished) => {
+                replace_items(&mut finished.output_items)
+            }
+            Event::ProviderResponseFinished(finished) => replace_items(&mut finished.output_items),
+            Event::AgentPromptPrewarmRequested(prompt) => {
+                let tau_proto::ContextBlock::UserInput(block) = &mut prompt.context.blocks[0]
+                else {
+                    panic!("warm fixture");
+                };
+                replace_items(&mut block.items);
+            }
+            Event::AgentCacheRefreshRequested(refresh) => {
+                let tau_proto::ContextBlock::UserInput(block) =
+                    &mut refresh.prompt.context.blocks[0]
+                else {
+                    panic!("warm fixture");
+                };
+                replace_items(&mut block.items);
+            }
+            _ => panic!("owned fixture carrier"),
+        }
+        assert!(
+            event_has_binary_content(&event),
+            "zero size does not remove key authority"
+        );
+        let incoming = HarnessInputMessage::emit(event.clone());
+        let intercepted = HarnessInputMessage::InterceptReply(tau_proto::InterceptReply {
+            action: tau_proto::InterceptAction::Pass(Some(Box::new(event.clone()))),
+        });
+        for projected in [
+            debug_event_json(&event),
+            debug_harness_input_json(&incoming),
+            debug_harness_input_json(&intercepted),
+        ] {
+            let json = serde_json::to_string(&projected).expect("projection");
+            assert!(!json.contains(&key), "{}", event.name());
+            assert!(!json.contains("abababab"), "{}", event.name());
+            assert!(!json.contains("\"blob\""), "{}", event.name());
+        }
+        assert!(!format!("{event:?}").contains(&key));
+    }
 }
 
 /// Append timing must report exact content-free EOF boundaries so slow-write
@@ -1216,7 +1314,9 @@ fn intercept_reply_nested_event_redacts_provider_image_bytes() {
     let Event::ProviderToolResult(result) = *event else {
         panic!("provider tool result");
     };
-    let tau_proto::ToolResultContentPart::Image(image) = &result.provider_content[0];
+    let image = result.provider_content[0]
+        .inline_image()
+        .expect("inline projection");
     assert!(image.data.is_empty());
 }
 
@@ -1445,7 +1545,9 @@ fn provider_finished_report_clears_image_bytes_before_debug_serialization() {
     let tau_proto::ContextItem::ToolResult(result) = &finished.output_items[0] else {
         unreachable!("tool result")
     };
-    let tau_proto::ToolResultContentPart::Image(image) = &result.provider_content[0];
+    let image = result.provider_content[0]
+        .inline_image()
+        .expect("inline projection");
     assert!(image.data.is_empty());
 }
 

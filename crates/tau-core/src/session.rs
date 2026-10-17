@@ -6802,10 +6802,7 @@ fn context_item_provider_image_bytes(item: &ContextItem) -> u64 {
         ContextItem::ToolResult(result) => result
             .provider_content
             .iter()
-            .map(|part| {
-                let tau_proto::ToolResultContentPart::Image(image) = part;
-                image.data.len() as u64
-            })
+            .map(tau_proto::ToolResultContentPart::encoded_image_bytes)
             .sum(),
         _ => 0,
     }
@@ -6815,10 +6812,7 @@ fn tool_result_provider_image_bytes(result: &tau_proto::ToolResult) -> u64 {
     result
         .provider_content
         .iter()
-        .map(|part| {
-            let tau_proto::ToolResultContentPart::Image(image) = part;
-            image.data.len() as u64
-        })
+        .map(tau_proto::ToolResultContentPart::encoded_image_bytes)
         .sum()
 }
 
@@ -6863,7 +6857,14 @@ fn validate_provider_content_parts(
         ));
     }
     for part in provider_content {
-        let tau_proto::ToolResultContentPart::Image(image) = part;
+        let metadata;
+        let image = match part {
+            tau_proto::ToolResultContentPart::Image(image) => image,
+            tau_proto::ToolResultContentPart::ImageReference(reference) => {
+                metadata = reference.metadata_only_image();
+                &metadata
+            }
+        };
         if tool_type != tau_proto::ToolType::Function {
             return Err(AgentEventValidationError::new(
                 "typed image output requires a function tool result",
@@ -6887,10 +6888,17 @@ fn validate_provider_content_parts(
                 "WebP image dimensions exceed provider-content limits",
             ));
         }
-        if image.data.is_empty() || MAX_IMAGE_BYTES < image.data.len() {
+        if part.encoded_image_bytes() == 0 || (MAX_IMAGE_BYTES as u64) < part.encoded_image_bytes()
+        {
             return Err(AgentEventValidationError::new(
                 "image bytes exceed provider-content limits",
             ));
+        }
+        // Runtime admission owns bounded off-loop descriptor/media verification
+        // before canonical publication. Cold history validates reference shape
+        // and logical occurrence quotas without filesystem access.
+        if part.is_image_reference() {
+            continue;
         }
         let magic_matches = match image.media_type {
             tau_proto::ImageMediaType::Png => image.data.starts_with(b"\x89PNG\r\n\x1a\n"),

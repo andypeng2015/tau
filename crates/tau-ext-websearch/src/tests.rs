@@ -120,6 +120,7 @@ fn fetch_domain_policy_matches_only_exact_or_subdomain_hosts() {
     let invoke = |url: &str| ToolStarted {
         invocation_policy: tau_proto::ToolInvocationPolicy {
             allowed_web_domains: Some(vec!["example.com".to_owned()]),
+            ..Default::default()
         },
         call_id: tau_proto::ToolCallId::new("domain-test"),
         tool_name: ToolName::new(HYBRID_FETCH_TOOL_NAME),

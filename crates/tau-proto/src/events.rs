@@ -1393,6 +1393,30 @@ pub struct ToolInvocationPolicy {
     /// list denies every domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_web_domains: Option<Vec<String>>,
+    /// Harness-selected prepared image transport for this exact invocation.
+    /// Producers must not infer durable storage from session or artifact
+    /// access.
+    #[serde(default, skip_serializing_if = "PreparedImageStorage::is_inline")]
+    pub prepared_image_storage: PreparedImageStorage,
+}
+
+/// Captured harness authority for prepared image output, not a model argument.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedImageStorage {
+    /// Retain canonical bytes inline, including ephemeral and memory-only work.
+    #[default]
+    Inline,
+    /// Upload prepared bytes and report an exact typed reference for admission.
+    Artifact,
+}
+
+impl PreparedImageStorage {
+    /// Identifies the legacy/default inline mode for optional wire encoding.
+    #[must_use]
+    pub const fn is_inline(&self) -> bool {
+        matches!(self, Self::Inline)
+    }
 }
 
 /// Broadcast by the harness when a tool request is rejected before any
@@ -5408,6 +5432,28 @@ pub struct AgentPromptCreated {
     /// Provider operation requested for this prompt.
     #[serde(default, skip_serializing_if = "PromptOperation::is_inference")]
     pub operation: PromptOperation,
+}
+
+impl AgentPromptCreated {
+    /// Detects typed references in ordinary history and private summary
+    /// continuations.
+    #[must_use]
+    pub fn has_image_references(&self) -> bool {
+        self.context.has_image_references()
+            || self.local_summary_continuation.iter().any(|step| {
+                crate::context_items_have_image_references(&step.response.output_items)
+                    || crate::context_items_have_image_references(&step.steer.items)
+            })
+    }
+
+    /// Removes image bytes and fetchable keys from every owned prompt carrier.
+    pub fn clear_provider_image_payloads(&mut self) {
+        self.context.clear_provider_image_bytes();
+        for step in &mut self.local_summary_continuation {
+            crate::clear_context_items_provider_image_bytes(&mut step.response.output_items);
+            crate::clear_context_items_provider_image_bytes(&mut step.steer.items);
+        }
+    }
 }
 
 /// Provider operation represented by an [`AgentPromptCreated`] work request.

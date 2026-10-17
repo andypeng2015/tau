@@ -168,6 +168,42 @@ pub(super) fn image_result() -> ToolResultItem {
     }
 }
 
+/// Direct Grok inference and compaction cannot send or silently omit unresolved
+/// image references, independently of built-in runtime admission.
+#[test]
+fn unresolved_image_reference_rejects_grok_request_admission() {
+    let mut result = image_result();
+    result.provider_content = vec![ToolResultContentPart::ImageReference(ImageReference {
+        blob: ArtifactDescriptor::new(
+            ArtifactKey::parse(format!("blake3:{}", "ab".repeat(32))).expect("key"),
+            3,
+        )
+        .expect("descriptor"),
+        media_type: ImageMediaType::Png,
+        width: 1,
+        height: 1,
+        detail: ImageDetail::High,
+    })];
+    let mut prompt = prompt();
+    prompt
+        .context
+        .blocks
+        .push(ContextBlock::ToolResults(ToolResultsBlock {
+            items: vec![result],
+        }));
+    for supported in [false, true] {
+        assert!(Request::lower(&prompt, &model(), 0, &[], supported).is_err());
+    }
+    prompt.operation = PromptOperation::StandaloneCompaction;
+    prompt
+        .context
+        .blocks
+        .push(ContextBlock::UserInput(UserInputBlock {
+            items: vec![ContextItem::CompactionTrigger],
+        }));
+    assert!(Request::lower_compact(&prompt, &model(), &[], true).is_err());
+}
+
 /// Typed images stay in their tool result while exact opaque JSON survives.
 #[test]
 fn request_preserves_opaque_replay_and_native_tool_images() {

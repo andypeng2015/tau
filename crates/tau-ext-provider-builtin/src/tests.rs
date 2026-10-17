@@ -11,6 +11,7 @@ use crate::image_tools::ImageTools;
 
 mod compatibility;
 pub(crate) mod grok;
+mod image_references;
 
 use super::*;
 

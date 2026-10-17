@@ -482,8 +482,14 @@ impl Serialize for ProviderContentProjection<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
         for part in self.0 {
-            let ToolResultContentPart::Image(image) = part;
-            sequence.serialize_element(&ImageProjection(image))?;
+            match part {
+                ToolResultContentPart::Image(image) => {
+                    sequence.serialize_element(&ImageProjection(image))?;
+                }
+                ToolResultContentPart::ImageReference(image) => {
+                    sequence.serialize_element(&ImageProjection(&image.metadata_only_image()))?;
+                }
+            }
         }
         sequence.end()
     }

@@ -228,6 +228,16 @@ impl Harness {
             self.discard_finished_response_if_stale(&cid, &response, source);
             return Ok(());
         }
+        if tau_proto::context_items_have_image_references(&response.output_items) {
+            // No provider output can introduce unverified canonical references.
+            // Referenced-image admission is a subsequent integration stage.
+            // Preserve cancellation/stale ownership precedence above.
+            response.output_items.clear();
+            response.stop_reason = tau_proto::ProviderStopReason::Error;
+            response.failure_kind = Some(tau_proto::ProviderFailureKind::RequestRejected);
+            response.error =
+                Some("unverified prepared image references are not enabled".to_owned());
+        }
         // Cancellation, duplicate, and stale ownership checks deliberately run
         // before this aggregate pass so discarded provider output is never
         // cloned or concatenated.

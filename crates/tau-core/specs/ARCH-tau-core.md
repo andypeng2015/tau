@@ -7,6 +7,12 @@ memory-only membership does not consume that cursor. Both durable journal
 writers reject encoded records larger than the shared 64 MiB reader allocation
 limit before opening or mutating the journal.
 
+Typed image validation keeps inline history's full media checks. Prepared-image
+references receive pure metadata and logical-occurrence quota checks; runtime
+admission must verify actual bytes and establish durable protection before
+publishing them. Core neither accesses the artifact filesystem nor infers media
+safety from a digest. Reference emission is currently disabled.
+
 Startup retention uses a strict `SessionRetentionReferences` projection. It
 classifies canonical manifests without following final-component symlinks,
 fails closed on manifest or journal I/O uncertainty, streams one bounded record

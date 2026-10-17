@@ -51,7 +51,37 @@ fn standalone_rejections_do_not_mutate_context_or_compaction_authority() {
         ]
     }
 
+    fn replacement_with_unverified_reference() -> Vec<ContextItem> {
+        let mut items = replacement_with_invalid_provider_image();
+        let ContextItem::ToolResult(result) = &mut items[1] else {
+            panic!("closed result fixture");
+        };
+        result.provider_content = vec![tau_proto::ToolResultContentPart::ImageReference(
+            tau_proto::ImageReference {
+                blob: tau_proto::ArtifactDescriptor::new(
+                    tau_proto::ArtifactKey::parse(format!("blake3:{}", "ab".repeat(32)))
+                        .expect("key"),
+                    3,
+                )
+                .expect("descriptor"),
+                media_type: tau_proto::ImageMediaType::Png,
+                width: 1,
+                height: 1,
+                detail: tau_proto::ImageDetail::High,
+            },
+        )];
+        items
+    }
+
     let cases = [
+        (
+            "unverified image reference",
+            None,
+            None,
+            tau_proto::ProviderStopReason::EndTurn,
+            replacement_with_unverified_reference(),
+            tau_proto::StandaloneCompactionFailureReason::ProviderError,
+        ),
         (
             "provider error",
             Some("private provider prose"),

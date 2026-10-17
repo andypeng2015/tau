@@ -428,6 +428,7 @@ pub enum ImageDetail {
 
 /// Validated image bytes carried as typed provider-visible tool content.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageContent {
     /// Closed media type derived from the decoded image.
     pub media_type: ImageMediaType,
@@ -462,6 +463,49 @@ impl fmt::Debug for ImageContent {
 pub enum ToolResultContentPart {
     /// A validated local raster image.
     Image(ImageContent),
+    /// Exact prepared bytes resolved through the existing directed Artifact
+    /// RPC.
+    ImageReference(crate::ImageReference),
+}
+
+impl ToolResultContentPart {
+    /// Returns logical encoded bytes for this occurrence, not unique CAS
+    /// storage.
+    #[must_use]
+    pub fn encoded_image_bytes(&self) -> u64 {
+        match self {
+            Self::Image(image) => image.data.len() as u64,
+            Self::ImageReference(image) => image.blob.size.get(),
+        }
+    }
+
+    /// Borrows inline bytes; references must be resolved before adapter
+    /// lowering.
+    #[must_use]
+    pub fn inline_image(&self) -> Option<&ImageContent> {
+        match self {
+            Self::Image(image) => Some(image),
+            Self::ImageReference(_) => None,
+        }
+    }
+
+    /// Reports a fetchable reference even when its claimed size is invalid.
+    #[must_use]
+    pub fn is_image_reference(&self) -> bool {
+        matches!(self, Self::ImageReference(_))
+    }
+
+    /// Clears bytes and known-key fetch authority while retaining safe
+    /// metadata.
+    ///
+    /// Generic projections use an empty inline image for either representation;
+    /// a redacted digest is not a valid content address or canonical reference.
+    pub fn clear_payload(&mut self) {
+        match self {
+            Self::Image(image) => image.data = Arc::from([]),
+            Self::ImageReference(image) => *self = Self::Image(image.metadata_only_image()),
+        }
+    }
 }
 
 /// One rendered header in the text sent to a provider for a tool response.
@@ -2034,6 +2078,45 @@ pub struct PromptContext {
 }
 
 impl PromptContext {
+    /// Detects bytes or fetchable keys that generic projections must remove.
+    #[must_use]
+    pub fn has_provider_image_payload(&self) -> bool {
+        let has_payload = |result: &ToolResultItem| {
+            result
+                .provider_content
+                .iter()
+                .any(|part| part.is_image_reference() || part.encoded_image_bytes() != 0)
+        };
+        self.blocks.iter().any(|block| {
+            let items = match block {
+                ContextBlock::ToolResults(block) => return block.items.iter().any(has_payload),
+                ContextBlock::UserInput(block) => &block.items,
+                ContextBlock::AssistantResponse(block) => &block.output_items,
+            };
+            items
+                .iter()
+                .any(|item| matches!(item, ContextItem::ToolResult(result) if has_payload(result)))
+        })
+    }
+
+    /// Detects unresolved typed references without cloning payloads or
+    /// inspecting opaque provider JSON.
+    #[must_use]
+    pub fn has_image_references(&self) -> bool {
+        self.blocks.iter().any(|block| match block {
+            ContextBlock::UserInput(block) => context_items_have_image_references(&block.items),
+            ContextBlock::AssistantResponse(block) => {
+                context_items_have_image_references(&block.output_items)
+            }
+            ContextBlock::ToolResults(block) => block.items.iter().any(|result| {
+                result
+                    .provider_content
+                    .iter()
+                    .any(ToolResultContentPart::is_image_reference)
+            }),
+        })
+    }
+
     /// Iterates over the provider-visible item timeline.
     pub fn flatten_iter(&self) -> impl Iterator<Item = ContextItem> + '_ {
         fn context_block_items(block: &ContextBlock) -> ContextBlockItems<'_> {
@@ -2075,11 +2158,12 @@ impl PromptContext {
         self.flatten_iter().collect()
     }
 
-    /// Replaces typed provider image bytes with empty shared buffers while
-    /// retaining safe metadata and transcript structure.
+    /// Replaces image bytes and fetchable references with empty inline images
+    /// while retaining safe metadata and transcript structure.
     ///
     /// This is for incidental diagnostics and generic projections. Provider
-    /// paths, including cache-aligned local compaction, retain canonical bytes.
+    /// paths, including cache-aligned local compaction, retain canonical
+    /// payloads.
     pub fn clear_provider_image_bytes(&mut self) {
         for block in &mut self.blocks {
             match block {
@@ -2099,8 +2183,21 @@ impl PromptContext {
     }
 }
 
-/// Replaces typed provider image bytes in a context-item slice with empty
-/// shared buffers while retaining safe metadata.
+/// Detects references only in owned typed tool-result content, never opaque
+/// JSON.
+#[must_use]
+pub fn context_items_have_image_references(items: &[ContextItem]) -> bool {
+    items.iter().any(|item| match item {
+        ContextItem::ToolResult(result) => result
+            .provider_content
+            .iter()
+            .any(ToolResultContentPart::is_image_reference),
+        _ => false,
+    })
+}
+
+/// Clears bytes and fetchable references in a context-item slice while
+/// retaining safe image metadata.
 pub fn clear_context_items_provider_image_bytes(items: &mut [ContextItem]) {
     for item in items {
         if let ContextItem::ToolResult(result) = item {
@@ -2109,12 +2206,11 @@ pub fn clear_context_items_provider_image_bytes(items: &mut [ContextItem]) {
     }
 }
 
-/// Replaces typed provider image bytes in one tool result with empty shared
-/// buffers while retaining safe metadata.
+/// Clears bytes and fetchable references in one result while retaining safe
+/// image metadata.
 pub fn clear_tool_result_provider_image_bytes(result: &mut ToolResultItem) {
     for part in &mut result.provider_content {
-        let ToolResultContentPart::Image(image) = part;
-        image.data = Arc::from([]);
+        part.clear_payload();
     }
 }
 

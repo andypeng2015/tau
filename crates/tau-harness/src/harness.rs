@@ -2991,11 +2991,14 @@ fn event_without_provider_image_bytes(event: &Event) -> Event {
         | Event::ToolResult(result)
         | Event::ProviderToolResult(result) => {
             for part in &mut result.provider_content {
-                let tau_proto::ToolResultContentPart::Image(image) = part;
-                image.data = path_std_sync::Arc::from([]);
+                part.clear_payload();
             }
         }
-        Event::AgentPromptCreated(prompt) => prompt.context.clear_provider_image_bytes(),
+        Event::AgentPromptCreated(prompt) => prompt.clear_provider_image_payloads(),
+        Event::AgentPromptPrewarmRequested(prompt) => prompt.context.clear_provider_image_bytes(),
+        Event::AgentCacheRefreshRequested(refresh) => {
+            refresh.prompt.context.clear_provider_image_bytes()
+        }
         Event::AgentCompacted(compacted) => {
             tau_proto::clear_context_items_provider_image_bytes(&mut compacted.replacement_window);
         }

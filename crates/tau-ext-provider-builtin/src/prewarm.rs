@@ -1,12 +1,16 @@
 //! Main-loop-owned supervision state for best-effort provider prewarms.
 
 mod abort;
+mod request;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 
 pub(crate) use abort::PrewarmAbort;
+pub(crate) use request::handle_resolved_prewarm;
+#[cfg(test)]
+pub(crate) use request::prewarm_prompt;
 
 /// Identity used to suppress duplicate work for one provider cache bucket.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

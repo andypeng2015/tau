@@ -339,6 +339,7 @@ fn compile_web_tools_inner(
                         tool.clone(),
                         tau_proto::ToolInvocationPolicy {
                             allowed_web_domains: allowed_domains.clone(),
+                            ..Default::default()
                         },
                     );
                 }

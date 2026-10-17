@@ -97,9 +97,33 @@ fn typed_image_result_intake_fails_closed_before_success_and_retains_authorized_
             true,
             b"\x89PNG\r\n\x1a\ntruncated".to_vec(),
         ),
+        ("image-reference", true, encoded_test_png()),
     ] {
         track_image_call(&mut h, &cid, call_id, allowed);
-        let event = Event::ToolResultReported(image_result(call_id, bytes));
+        let mut result = image_result(call_id, bytes);
+        if call_id == "image-reference" {
+            let image = result.provider_content[0]
+                .inline_image()
+                .expect("inline fixture");
+            result.provider_content = vec![tau_proto::ToolResultContentPart::ImageReference(
+                tau_proto::ImageReference {
+                    blob: tau_proto::ArtifactDescriptor::new(
+                        tau_proto::ArtifactKey::parse(format!(
+                            "blake3:{}",
+                            blake3::hash(&image.data).to_hex()
+                        ))
+                        .expect("key"),
+                        image.data.len() as u64,
+                    )
+                    .expect("descriptor"),
+                    media_type: image.media_type,
+                    width: image.width,
+                    height: image.height,
+                    detail: image.detail,
+                },
+            )];
+        }
+        let event = Event::ToolResultReported(result);
         h.handle_extension_event("shell", TestProtocolItem::Event(event.clone()))
             .expect("reject unsafe image result");
         h.handle_extension_event("shell", TestProtocolItem::Event(event))
@@ -142,6 +166,7 @@ fn typed_image_result_intake_fails_closed_before_success_and_retains_authorized_
                 .contains_key(call_id)
         );
     }
+    assert!(!td.path().join("state/artifacts/transcript-roots").exists());
 
     let valid_bytes = encoded_test_png();
     track_image_call(&mut h, &cid, "image-valid", true);

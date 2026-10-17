@@ -2597,7 +2597,16 @@ impl Harness {
                 allows_provider_image = tool.allows_provider_image;
             }
             let has_provider_image = !result.provider_content.is_empty();
-            let validation = if has_provider_image && !allows_provider_image {
+            let validation = if result
+                .provider_content
+                .iter()
+                .any(tau_proto::ToolResultContentPart::is_image_reference)
+            {
+                // Source-only protocol preparation: production invocations
+                // still require inline images until verified async admission
+                // and provider resolution are installed together.
+                Err("prepared image references are not enabled for this invocation".to_owned())
+            } else if has_provider_image && !allows_provider_image {
                 Err("the originating tool is not authorized for image output".to_owned())
             } else {
                 self.agent_runtime

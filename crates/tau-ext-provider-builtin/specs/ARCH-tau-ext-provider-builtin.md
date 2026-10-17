@@ -5,6 +5,13 @@ immutable credential-free settings snapshot and runtime Secret RPC credentials, 
 model-visible prompt and tool context from the harness, invokes external model
 services, and reports provider execution through Tau protocol events.
 
+The inactive prepared-image-reference schema fails closed at the shared prompt
+backend dispatch and the separate cache-prewarm entry. Unresolved references
+produce a correlated non-retryable request failure (or prewarm failure), with
+cancellation precedence, before backend work. No artifact fetch or model-token
+cache is implemented by this checkpoint. Ordinary, native compact, and local
+summary requests share the prompt guard; prewarm cannot bypass it.
+
 The dedicated inspection branch validates supplied credential-free profile files
 and constructs candidate model metadata before operational runtime construction.
 It neither hydrates credentials nor initializes network policy, workers, quota

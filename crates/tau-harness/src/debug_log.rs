@@ -5,7 +5,6 @@
 use std::fs as path_std_fs;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync as path_std_sync;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -856,6 +855,10 @@ fn event_has_binary_content(event: &Event) -> bool {
         Event::ToolResultReported(result)
         | Event::ToolResult(result)
         | Event::ProviderToolResult(result) => tool_result_has_binary_content(result),
+        Event::AgentPromptPrewarmRequested(prompt) => prompt.context.has_provider_image_payload(),
+        Event::AgentCacheRefreshRequested(refresh) => {
+            refresh.prompt.context.has_provider_image_payload()
+        }
         Event::AgentCompacted(compacted) => {
             context_items_have_binary_content(&compacted.replacement_window)
         }
@@ -876,10 +879,9 @@ fn tool_result_has_binary_content(result: &tau_proto::ToolResult) -> bool {
 
 /// Reports whether provider content includes nonempty image bytes.
 fn provider_content_has_binary_content(parts: &[tau_proto::ToolResultContentPart]) -> bool {
-    parts.iter().any(|part| {
-        let tau_proto::ToolResultContentPart::Image(image) = part;
-        !image.data.is_empty()
-    })
+    parts
+        .iter()
+        .any(|part| part.is_image_reference() || part.encoded_image_bytes() != 0)
 }
 
 /// Reports whether one context-item slice contains provider image bytes.
@@ -1017,11 +1019,10 @@ fn prompt_created_debug_summary(prompt: &tau_proto::AgentPromptCreated) -> serde
 
     fn add_tool_result(counts: &mut Counts, result: &tau_proto::ToolResultItem) {
         for part in &result.provider_content {
-            let tau_proto::ToolResultContentPart::Image(image) = part;
             counts.images = counts.images.saturating_add(1);
             counts.image_bytes = counts
                 .image_bytes
-                .saturating_add(u64::try_from(image.data.len()).unwrap_or(u64::MAX));
+                .saturating_add(part.encoded_image_bytes());
         }
     }
 
@@ -1111,11 +1112,14 @@ fn redact_event_binary_content(event: &mut Event) {
         | Event::ToolResult(result)
         | Event::ProviderToolResult(result) => {
             for part in &mut result.provider_content {
-                let tau_proto::ToolResultContentPart::Image(image) = part;
-                image.data = path_std_sync::Arc::from([]);
+                part.clear_payload();
             }
         }
-        Event::AgentPromptCreated(prompt) => prompt.context.clear_provider_image_bytes(),
+        Event::AgentPromptCreated(prompt) => prompt.clear_provider_image_payloads(),
+        Event::AgentPromptPrewarmRequested(prompt) => prompt.context.clear_provider_image_bytes(),
+        Event::AgentCacheRefreshRequested(refresh) => {
+            refresh.prompt.context.clear_provider_image_bytes()
+        }
         Event::AgentCompacted(compacted) => {
             tau_proto::clear_context_items_provider_image_bytes(&mut compacted.replacement_window);
         }

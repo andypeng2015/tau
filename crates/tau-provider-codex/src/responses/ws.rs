@@ -789,6 +789,7 @@ impl WsConn {
         private_trace: &mut Option<private_trace::AttemptTrace>,
         mut capture_submit: impl FnMut(tau_provider::debug_capture_writer::ProviderDebugCapture),
     ) -> Result<WsTurnResult, LlmError> {
+        super::require_resolved_images(request.context)?;
         let lowering_started = private_trace::started(private_trace);
         let anchor_was_available =
             self.cached_response_anchor.is_some() || self.prewarm_baseline.is_some();
@@ -971,6 +972,7 @@ impl WsConn {
         deadline: Option<Instant>,
         observation: Option<&mut WarmObservation>,
     ) -> Result<StreamState, LlmError> {
+        super::require_resolved_images(request.context)?;
         let envelope = build_ws_envelope(config, request, None, Some(false));
         let baseline_shape = prewarm_shape(&envelope);
         let response_timeout = deadline
@@ -1712,6 +1714,7 @@ fn build_replay_request_body(
     request: &PromptPayload<'_>,
     anchor: Option<&CachedResponseAnchor>,
 ) -> Result<serde_json::Value, LlmError> {
+    super::require_resolved_images(request.context)?;
     let envelope = build_ws_envelope(config, request, anchor, None);
     let mut request_body = serde_json::to_value(&envelope).map_err(LlmError::Json)?;
     super::redact_image_data_urls(&mut request_body);

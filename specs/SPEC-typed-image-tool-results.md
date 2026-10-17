@@ -1,5 +1,17 @@
 # SPEC-typed-image-tool-results: Typed local image tool results
 
+## Status
+
+Protocol 14.0 / source SDK 0.14.0 can represent exact prepared-image references.
+Core shape validation and logical quotas understand both inline and referenced
+forms, and generic projections remove bytes and fetchable keys. Runtime producer
+upload, verified asynchronous admission, and provider resolution remain pending:
+production invocation policy is still Inline in every persistence mode.
+The harness rejects reference-bearing tool results and provider terminal outputs;
+the built-in provider rejects unresolved ordinary/compaction input and prewarm
+without fetching or submitting to a model. This is an inactive schema checkpoint,
+not activation of reference-backed image history.
+
 ## Record justification
 
 Extension preparation, protocol/harness persistence and byte-free projections,
@@ -17,6 +29,19 @@ function call retains its call id and normalized text result while carrying
 ordered typed image content as canonical encoded bytes, closed MIME type,
 dimensions, and high provider detail. Provider adapters lower that semantic
 content only on explicitly audited routes.
+
+The distinct `ImageReference` form carries the BLAKE3 key and exact encoded size
+of the prepared canonical bytes with the same closed media/detail and dimensions.
+It is not an original-image key or transformation recipe, and cannot also carry
+inline bytes. Harness-authored captured invocation policy defaults to Inline;
+producers must not guess durable authority from artifact availability or a session
+name. Artifact mode will require bounded runtime size/digest and actual-media
+verification plus durable transcript protection before canonical admission.
+Core remains filesystem-free: reference shape and each logical occurrence's size
+are validated on replay, not eagerly resolved from disk. Inline history continues
+to receive its existing full media validation without rewriting old records.
+The shared lifetime and backup boundary is
+[SPEC-shared-artifacts](SPEC-shared-artifacts.md).
 
 The provider-independent surface is `tau-ext-utils`'s one-image
 `read_image(key)` tool. The argument accepts the canonical
@@ -61,7 +86,10 @@ send image bytes.
 Canonical image bytes are durable transcript data under the same retention and
 access rules as other session data. Generic UI completion events, wait results,
 debug logs, and provider diagnostics retain safe metadata but omit image bytes
-and data URLs. The durable agent transcript and the selected provider's directed
+and data URLs. They also omit fetchable prepared-image keys, including keys with
+invalid or zero claimed sizes. Generic projections use the existing empty inline
+image shape for safe metadata, never a fake content address.
+The durable agent transcript and the selected provider's directed
 prompt retain typed bytes as the replay and inference authority; generic live
 broadcasts and subscriber replay receive byte-free projections regardless of
 client kind. Image buffers use shared immutable
@@ -83,6 +111,8 @@ windows. The quota is enforced before durable append for both durable and
 ephemeral agents. Encoded agent records are also rejected on write above the
 same 64 MiB bound enforced by the loader. These retained-data bounds complement,
 rather than replace, the per-image and per-provider-request bounds above.
+Repeated references to one digest count repeatedly against this logical quota;
+physical CAS deduplication does not expand transcript or upstream byte budgets.
 
 The utility tool is foreground-only: it declares `BackgroundSupport::Never`
 because background completion events cannot carry typed provider content. Both

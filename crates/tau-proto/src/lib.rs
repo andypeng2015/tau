@@ -29,7 +29,9 @@ mod duration_format;
 mod estimated_cost;
 mod event_name;
 mod events;
+mod image_reference;
 mod inter_session_notice;
+pub use image_reference::ImageReference;
 mod interception;
 mod local_summary_continuation;
 pub use local_summary_continuation::*;
@@ -113,7 +115,7 @@ pub use tool_name_prefix::{
 /// Current harness-peer wire and extension-visible event contract revision.
 ///
 /// `SPEC-extension-protocol-versioning` defines bump and admission policy.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(13, 1);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(14, 0);
 
 /// Reporter-owned filename used by the locked papercut history RPC.
 pub const PAPERCUT_FILE_NAME: &str = "papercuts.jsonl";

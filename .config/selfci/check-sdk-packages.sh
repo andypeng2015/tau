@@ -76,7 +76,7 @@ expected_internal_dependencies = {
     },
     "dpc-tau-client": {
         "dpc-tau-blocking-notify-channel": "=0.1.0",
-        "dpc-tau-proto": "=0.13.0",
+        "dpc-tau-proto": "=0.14.0",
     },
 }
 
@@ -162,8 +162,31 @@ fn packaged_sdk_round_trips_the_advertised_protocol_version() {
     let decoded: tau_proto::ProtocolVersion =
         tau_proto::decode_message_from_slice(&encoded).expect("protocol version should decode");
 
-    assert_eq!(decoded, tau_proto::ProtocolVersion::new(13, 1));
+    assert_eq!(decoded, tau_proto::ProtocolVersion::new(14, 0));
     let _logging_initializer: fn(&'static str) = tau_client::init_logging_for;
+}
+
+/// New consumers distinguish prepared references and default to inline output.
+#[test]
+fn packaged_sdk_round_trips_prepared_image_reference_and_invocation_policy() {
+    let content = tau_proto::ToolResultContentPart::ImageReference(tau_proto::ImageReference {
+        blob: tau_proto::ArtifactDescriptor::new(
+            tau_proto::ArtifactKey::parse(format!("blake3:{}", "ab".repeat(32))).expect("key"),
+            3,
+        ).expect("descriptor"),
+        media_type: tau_proto::ImageMediaType::Png,
+        width: 1,
+        height: 1,
+        detail: tau_proto::ImageDetail::High,
+    });
+    let encoded = tau_proto::encode_message_to_vec(&content).expect("encode reference");
+    let decoded: tau_proto::ToolResultContentPart =
+        tau_proto::decode_message_from_slice(&encoded).expect("decode reference");
+    assert_eq!(decoded, content);
+    assert!(decoded.is_image_reference());
+    assert_eq!(decoded.encoded_image_bytes(), 3);
+    let policy = tau_proto::ToolInvocationPolicy::default();
+    assert_eq!(policy.prepared_image_storage, tau_proto::PreparedImageStorage::Inline);
 }
 
 /// UI discovery DTOs and consumer-local MIME inference must survive packaging.

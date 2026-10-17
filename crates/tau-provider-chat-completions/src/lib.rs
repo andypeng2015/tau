@@ -540,6 +540,9 @@ enum LlmError {
     UnknownFinishReason,
     ExtraBodyCollision(String),
     InvalidCompaction(String),
+    /// Typed image references reached lowering without verified byte
+    /// resolution.
+    UnresolvedImageReference,
     PromptCacheSystemPromptRequired,
     StreamError(StreamFailure),
 }
@@ -605,6 +608,9 @@ impl std::fmt::Display for LlmError {
                 write!(f, "provider returned an unsupported finish reason")
             }
             Self::InvalidCompaction(message) => write!(f, "{message}"),
+            Self::UnresolvedImageReference => {
+                f.write_str("prepared image references must be resolved before provider submission")
+            }
             Self::PromptCacheSystemPromptRequired => write!(
                 f,
                 "explicit OpenAI prompt caching requires a non-empty system prompt"
@@ -629,6 +635,7 @@ impl LlmError {
             | Self::UnsupportedMessageRole
             | Self::UnknownFinishReason
             | Self::InvalidCompaction(_)
+            | Self::UnresolvedImageReference
             | Self::PromptCacheSystemPromptRequired
             | Self::ExtraBodyCollision(_) => None,
             Self::StreamError(failure) => failure.retry.clone(),
@@ -649,6 +656,7 @@ impl LlmError {
             }
             Self::ExtraBodyCollision(_)
             | Self::PromptCacheSystemPromptRequired
+            | Self::UnresolvedImageReference
             | Self::InvalidCompaction(_) => Some(tau_proto::ProviderFailureKind::RequestRejected),
             Self::StreamError(failure) => failure.failure_kind,
             _ => None,
@@ -2209,6 +2217,9 @@ fn try_build_request(
     model: &AttemptModel,
     prompt: &tau_proto::AgentPromptCreated,
 ) -> Result<ChatRequest, LlmError> {
+    if prompt.has_image_references() {
+        return Err(LlmError::UnresolvedImageReference);
+    }
     validate_extra_body(&provider.extra_body)?;
     let summary_config = (prompt.operation == tau_proto::PromptOperation::StandaloneCompaction)
         .then(|| {
@@ -2951,7 +2962,9 @@ fn chat_completions_tool_result_content(
 
     let mut content = vec![serde_json::json!({"type": "text", "text": text})];
     for part in &result.provider_content {
-        let tau_proto::ToolResultContentPart::Image(image) = part;
+        let image = part
+            .inline_image()
+            .expect("request admission rejects unresolved image references");
         if !image_budget.reserve(image) {
             content.push(serde_json::json!({
                 "type": "text",

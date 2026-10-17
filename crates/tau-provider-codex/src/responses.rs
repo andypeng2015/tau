@@ -542,6 +542,7 @@ fn build_compact_request(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<serde_json::Value, LlmError> {
+    require_resolved_images(request.context)?;
     let cached_response_anchor = CachedResponseAnchor::latest_from_context(request.context);
     let ordinary = build_request(config, request, cached_response_anchor.as_ref());
     let mut input = serde_json::to_value(ordinary.input)
@@ -2809,6 +2810,18 @@ impl path_std_io::Write for ByteCountWriter<'_> {
     }
 }
 
+/// Rejects unresolved typed payloads before any request, replay, or warm
+/// lowering.
+fn require_resolved_images(context: &tau_proto::PromptContext) -> Result<(), LlmError> {
+    if context.has_image_references() {
+        return Err(LlmError::ProviderFailure(
+            tau_proto::ProviderFailureKind::RequestRejected,
+            "prepared image references must be resolved before provider submission".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn build_request(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
@@ -3104,6 +3117,7 @@ pub(crate) fn full_ws_request_bytes(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<u64, LlmError> {
+    require_resolved_images(request.context)?;
     let envelope = build_ws_envelope(config, request, None, Some(true));
     serde_json::to_vec(&envelope)
         .map_err(LlmError::Json)
@@ -3123,6 +3137,7 @@ pub(crate) fn compact_ws_request_bytes(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<u64, LlmError> {
+    require_resolved_images(request.context)?;
     let envelope = build_ws_envelope(config, request, None, None);
     serde_json::to_vec(&envelope)
         .map_err(LlmError::Json)
@@ -3702,7 +3717,9 @@ fn convert_tool_result_output(
         "text": text,
     })];
     for part in &result.provider_content {
-        let tau_proto::ToolResultContentPart::Image(image) = part;
+        let image = part
+            .inline_image()
+            .expect("request admission rejects unresolved image references");
         let encoded_len = image.data.len().div_ceil(3).saturating_mul(4);
         let prefix_len = "data:;base64,".len() + image.media_type.mime_type().len();
         let data_url_len = prefix_len.saturating_add(encoded_len);

@@ -20,6 +20,34 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
+### Unpublished source: protocol 14.0 / SDK 0.14.0
+
+The current source requires `dpc-tau-proto` and `dpc-tau-client` **0.14.0**, with
+an exact client-to-proto pin of `=0.14.0`. This checkpoint does **not** publish
+packages or install/restart any extension. All configured peers must rebuild
+together before activation; a protocol-13 peer is rejected before configuration.
+
+Source migration:
+
+- Handle `ToolResultContentPart::ImageReference` separately from inline `Image`.
+  Its descriptor addresses the exact prepared image, not the original artifact.
+- `ToolInvocationPolicy` gains `prepared_image_storage`; use
+  `..Default::default()` for ordinary initializers. `Inline` is the default.
+  Only the harness may select `Artifact` for a captured invocation.
+- Generic observers must remove fetchable keys, not merely image bytes. Shared
+  projection helpers do this; derived `Debug` also hides the reference key.
+- New readers accept legacy inline history. Old readers cannot decode new
+  reference-bearing records; no downgrade migration or journal-only backup
+  guarantee is provided. Physical journal framing is unchanged.
+
+Production still requests inline images in all persistence modes. Reference
+tool results and unresolved provider requests fail closed until producer upload,
+verified admission, and provider fetch/cache are integrated. Source/archive
+consumer checks are distinct from registry-only release acceptance, which must
+wait for coordinated publication. No registry-only 0.14.0 acceptance is claimed.
+
+### Published SDK 0.13.0
+
 Protocol **13.1** uses published `dpc-tau-proto` and `dpc-tau-client`
 **0.13.0** package line, with unchanged leaf dependencies at 0.1.0 and an exact
 client-to-proto pin of `=0.13.0`. It adds UI-only
@@ -39,7 +67,7 @@ exhausted-transient compaction failure variants, and optional original discovery
 paths and unusable-local-summary failure authority. These field and enum additions require a new pre-1.0 minor SDK line.
 Configured protocol-10 extensions are rejected before Configure/Ready by a
 protocol-13 harness and must migrate to the actual SDK API, not merely advertise
-a new wire version. The archive consumer check verifies protocol 13.1 and its
+a new wire version. The 0.13.0 archive consumer check verified protocol 13.1 and its
 typed failure variants under Rust 1.91; registry-only acceptance must follow
 publication before source-identifying package tags are created; this acceptance
 has passed for 0.13.0.

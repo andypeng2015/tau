@@ -20,6 +20,13 @@ Closed media/detail enums and decoded dimensions accompany canonical binary
 bytes. Old events and transcript items omit the additive content field and
 remain text-only.
 
+`ToolResultContentPart::ImageReference` instead names exact prepared bytes through
+an artifact descriptor with the same typed media metadata. It does not grant tool
+authority or prove media validity. Generic projections remove that fetchable key
+and emit only the established empty inline image metadata shape. Source 14.0
+defines this representation but production emission remains disabled until
+verified admission and provider resolution are integrated.
+
 `ToolResponse::render()` must keep headers as safe single lines, preserve ASCII LF body separators for line-oriented records, escape other model-visible control and separator characters, and keep binary/fallback rendering bounded. This is not terminal/UI escaping; terminal renderers still need their own sanitization for display state and layout.
 
 Bounded model-visible diagnostic text helpers that are shared by harness, core,
