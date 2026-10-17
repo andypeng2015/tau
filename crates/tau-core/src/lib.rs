@@ -60,7 +60,8 @@ pub use session::{
     ManualCompactionOutcome, ManualCompactionRecovery, NodeId, OutputLengthContinuationRecovery,
     OutputLengthDormantRepair, OutputLengthTerminalIncomplete, PersistedAgentEvent,
     PersistedAgentEventSeq, PersistedEventSource, ReactiveCompactionProgress, SessionMeta,
-    StandaloneCompactionRecovery,
+    StandaloneCompactionRecovery, validate_inline_provider_image,
+    validate_provider_image_reference,
 };
 pub use session_store::{
     AppendOutcome, PersistedSessionEvent, PersistedSessionEventSeq, SessionMembership,

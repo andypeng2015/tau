@@ -3421,6 +3421,7 @@ impl Harness {
                 internal_name: call.name.clone(),
                 tool_type: call.tool_type,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         self.bump_tools_started_for(cid);

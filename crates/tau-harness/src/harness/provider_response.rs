@@ -4169,6 +4169,7 @@ impl Harness {
                     internal_name: entry.call.name.clone(),
                     tool_type: entry.call.tool_type,
                     allows_provider_image: false,
+                    image_storage: Default::default(),
                 },
             );
         }

@@ -44,6 +44,17 @@ disconnect or respawn cannot substitute a new generation before validation.
 Pre-Ready reports remain ordinary bounded operational messages, preserving
 their complete encoded envelope and global activation ordering.
 
+Prepared image references require the exact captured Artifact storage policy,
+durable transcript authority and image-output permission. The committed report
+may wait in a bounded cancelable verification state while actual media and
+durable artifact roots are checked off-loop. The producer has already completed,
+so a committed cancellation request settles this harness-owned phase directly.
+No success, tool-turn settlement or next inference precedes the ordinary canonical
+terminal. Verified results use the existing immutable/intercepted publication
+path and retained-terminal backpressure handling; retrying semantic admission
+does not repeat image I/O. See
+[SPEC-typed-image-tool-results](SPEC-typed-image-tool-results.md).
+
 ## Canonical projections and completion
 
 A valid foreground result report publishes protected harness-sourced

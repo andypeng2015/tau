@@ -4,10 +4,9 @@
 
 The store has an internal transcript-root foundation and the protocol can
 represent prepared-image references. The utility producer can upload prepared
-bytes under captured Artifact policy, but production selects Inline and live
-unresolved references are rejected. Durable prepared-image references will use
-this foundation only after producer admission and provider resolution are
-complete.
+bytes under captured Artifact policy, and tool admission verifies and retains them
+off-loop. Production still selects Inline until provider resolution is complete;
+generic provider replacement-reference admission remains pending.
 
 ## Record justification
 
@@ -133,6 +132,11 @@ originals; a later read may be unavailable even while a transcript preserves
 its digest. A later new put of identical bytes can restore that same key.
 Processes sharing a root should use consistent retention settings: any enabled
 cleaner may apply its own configured policy.
+
+Generic corruption notices expose only closed bookkeeping categories, never
+object paths or digest components. Those paths would otherwise grant known-key
+read authority for prepared images. Detailed storage inspection remains an
+explicit local operator action, not a generic notice or diagnostic projection.
 
 ### Internal transcript retention
 

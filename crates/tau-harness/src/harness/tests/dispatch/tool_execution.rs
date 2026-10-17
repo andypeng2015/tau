@@ -436,6 +436,7 @@ fn completed_tool_call_lookup_is_owner_scoped() {
             internal_name: ToolName::new("slow_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.clear_tool_call_tracking(target.as_str());
@@ -2383,6 +2384,7 @@ fn wait_resolves_on_synthetic_tool_error() {
             internal_name: ToolName::new("missing"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.record_wait_tool_request(&target_call_id);

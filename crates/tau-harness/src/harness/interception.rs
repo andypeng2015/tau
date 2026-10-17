@@ -1130,6 +1130,24 @@ fn preserve_agent_metadata_mutation_id(original: &Event, replacement: &mut Event
     replacement.mutation_id = original.mutation_id.clone();
 }
 
+/// Prepared storage is captured harness authority, not interceptor-selected
+/// persistence. Existing argument and web-policy replacement semantics remain.
+fn preserve_prepared_image_storage(original: &Event, replacement: &mut Event) {
+    if let (Event::ToolStarted(original), Event::ToolStarted(replacement)) = (original, replacement)
+    {
+        replacement.invocation_policy.prepared_image_storage =
+            if replacement.call_id == original.call_id && replacement.agent_id == original.agent_id
+            {
+                original.invocation_policy.prepared_image_storage
+            } else {
+                // Identity edits retain their existing meaning but cannot move
+                // an Artifact grant to another invocation. Subsequent chain
+                // steps see Inline and cannot regain the discarded grant.
+                tau_proto::PreparedImageStorage::Inline
+            };
+    }
+}
+
 /// Reject a replacement that cannot carry tool-call correlation.
 fn invalid_tool_request_replacement(event: &Event) -> bool {
     matches!(event, Event::ToolRequest(request) if request.call_id.is_empty())
@@ -3466,6 +3484,7 @@ impl Harness {
                 } else {
                     sanitize_harness_notice_replacement(&original_event, &mut new_event);
                     preserve_agent_metadata_mutation_id(&original_event, &mut new_event);
+                    preserve_prepared_image_storage(&original_event, &mut new_event);
                     if protected_prompt_fields_were_modified(&original_event, &new_event) {
                         tracing::warn!(
                             target: "tau_harness::interception",

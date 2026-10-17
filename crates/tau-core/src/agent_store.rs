@@ -877,6 +877,13 @@ impl AgentStore {
         self.persistence_leases.values().cloned().collect()
     }
 
+    /// Captures one exact managed generation without I/O or physical lock
+    /// custody.
+    #[must_use]
+    pub fn managed_persistence_lease(&self, agent_id: &AgentId) -> Option<PersistenceLease> {
+        self.persistence_leases.get(agent_id).cloned()
+    }
+
     /// Returns whether the unique owner prepared this exact durable agent.
     #[must_use]
     pub fn has_managed_persistence_lease(&self, agent_id: &AgentId) -> bool {

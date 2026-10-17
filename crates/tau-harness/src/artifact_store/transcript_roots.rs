@@ -46,13 +46,7 @@ impl ArtifactStore {
     /// deletion racing root creation. Returned bytes still require actual
     /// media validation. No public Artifact RPC exposes this operation, and
     /// it does not renew age.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "foundation for subsequent referenced-image admission"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn retain_transcript_artifact(
         &self,
         agent_id: &AgentId,
@@ -61,11 +55,44 @@ impl ArtifactStore {
         self.retain_transcript_artifact_with(agent_id, descriptor, sync_dir)
     }
 
+    /// Validates actual bytes before publishing protection under the same CAS
+    /// lock.
+    ///
+    /// The caller must already own scoped agent deletion exclusion. Validation
+    /// must complete here, not return deferred I/O or an unverified descriptor.
+    pub(crate) fn retain_checked_transcript_artifact(
+        &self,
+        agent_id: &AgentId,
+        descriptor: &ArtifactDescriptor,
+        validate: impl FnOnce(&[u8]) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
+        self.retain_checked_transcript_artifact_with(agent_id, descriptor, validate, sync_dir)
+            .map(|_| ())
+    }
+
     /// Keeps the final publication sync injectable for crash-cut tests.
+    #[cfg(test)]
     fn retain_transcript_artifact_with(
         &self,
         agent_id: &AgentId,
         descriptor: &ArtifactDescriptor,
+        sync_registry: impl FnOnce(&Path) -> Result<(), ArtifactError>,
+    ) -> Result<Vec<u8>, ArtifactError> {
+        self.retain_checked_transcript_artifact_with(
+            agent_id,
+            descriptor,
+            |_| Ok(()),
+            sync_registry,
+        )
+    }
+
+    /// Keeps physical byte validation and publication inside one cleanup
+    /// exclusion.
+    fn retain_checked_transcript_artifact_with(
+        &self,
+        agent_id: &AgentId,
+        descriptor: &ArtifactDescriptor,
+        validate: impl FnOnce(&[u8]) -> Result<(), ArtifactError>,
         sync_registry: impl FnOnce(&Path) -> Result<(), ArtifactError>,
     ) -> Result<Vec<u8>, ArtifactError> {
         let _lock = self.lock(true)?;
@@ -82,8 +109,9 @@ impl ArtifactStore {
         let digest = artifact_digest(&descriptor.key).ok_or(ArtifactError::Invalid)?;
         let directory = self.object_directory(digest)?;
         require_directory(&directory)?;
-        let bytes = read_regular(&directory.join("data"), ARTIFACT_MAX_BYTES)?;
+        let bytes = read_regular(&directory.join("data"), descriptor.size.get())?;
         verify(descriptor, &bytes)?;
+        validate(&bytes)?;
         self.protect_transcript_object(descriptor)?;
         let registry = self.prepare_transcript_registry()?;
         let directory = registry.join(agent_id.as_str());

@@ -5,13 +5,14 @@
 Protocol 14.0 / source SDK 0.14.0 can represent exact prepared-image references.
 Core shape validation and logical quotas understand both inline and referenced
 forms, and generic projections remove bytes and fetchable keys. The utility
-producer supports uploading exact prepared bytes when the captured policy selects
-Artifact, but verified asynchronous admission and provider resolution remain
-pending: production invocation policy is still Inline in every persistence mode.
-The harness rejects reference-bearing tool results and provider terminal outputs;
-the built-in provider rejects unresolved ordinary/compaction input and prewarm
-without fetching or submitting to a model. This is an inactive schema checkpoint,
-not activation of reference-backed image history.
+producer uploads exact prepared bytes when captured policy selects Artifact;
+tool-result admission now verifies actual media and durable protection off-loop.
+Production invocation policy remains Inline in every persistence mode until
+provider resolution is ready. Generic standalone replacement-reference admission
+also remains pending: provider terminal references are still rejected. The
+built-in provider rejects unresolved ordinary/compaction input and prewarm without
+fetching or submitting to a model. Reference-backed production history is not
+activated by these prerequisites.
 
 ## Record justification
 
@@ -36,7 +37,11 @@ of the prepared canonical bytes with the same closed media/detail and dimensions
 It is not an original-image key or transformation recipe, and cannot also carry
 inline bytes. Harness-authored captured invocation policy defaults to Inline;
 producers must not guess durable authority from artifact availability or a session
-name. Artifact mode will require bounded runtime size/digest and actual-media
+name. Interception preserves the harness-selected storage field while retaining
+existing argument and web-policy edit behavior. A changed call or agent identity
+forces that field to Inline; subsequent interception cannot restore a discarded
+grant by reverting identity. The original call's captured authority is unchanged.
+Artifact mode requires bounded runtime size/digest and actual-media
 verification plus durable transcript protection before canonical admission.
 Core remains filesystem-free: reference shape and each logical occurrence's size
 are validated on replay, not eagerly resolved from disk. Inline history continues
@@ -52,6 +57,25 @@ bound to its original session, including cancellation before Begin acknowledges.
 A late descriptor after cancellation cannot produce success; an unknown upload
 outcome may leave a shared object. Failure does not retry a producer effect or
 substitute inline bytes for requested Artifact storage.
+
+Tool-reference admission uses the existing eight-operation artifact worker
+budget, including queued work and unconsumed completions. Pure call, permission,
+policy and logical-quota checks precede I/O. Scoped exact Agent lock custody
+precedes CAS coordination; actual media validation precedes protected backing and
+root publication. The main loop rechecks call, configured source, session,
+runtime incarnation and exact persistence lease before ordinary immutable
+canonical publication, then rechecks current core constraints. Head navigation
+alone does not revoke a still-owned tool round: existing core call-id ownership
+attaches its result to the original round without selecting that old branch.
+
+Verification is cancelable runtime work, not a semantic terminal reservation.
+A committed cancel request settles this harness-owned phase even though the
+producer has already finished. Late work cannot revive the terminal; a completed
+root may remain conservative orphan protection. Storage overload, missing/corrupt
+bytes and invalid media fail the affected call without inline fallback. Once
+verified output enters ordinary publication, existing interception, backpressure,
+retained-terminal retry and post-commit settlement rules apply without repeating
+storage verification.
 
 The provider-independent surface is `tau-ext-utils`'s one-image
 `read_image(key)` tool. The argument accepts the canonical

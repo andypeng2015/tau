@@ -2252,6 +2252,17 @@ impl Harness {
                     target_call_id: target.call_id.clone(),
                 }),
             );
+            if self
+                .tool_routing
+                .tool_runtime
+                .images
+                .is_settling(&target.call_id)
+            {
+                // The committed request already submitted this harness-owned
+                // verification phase's cancellation. Preserve its one terminal.
+                foreground_call_ids.push(target.call_id);
+                continue;
+            }
             if self.cancel_target_should_finish_as_background_error(&target) {
                 // A background placeholder is already the foreground terminal
                 // result. After broadcasting cancellation, synthesize a

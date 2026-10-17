@@ -144,11 +144,13 @@ struct BackgroundCompletionPromptSource {
 /// have independent lifecycles and commit authority. Final shutdown clears
 /// live ownership, scheduler state, and same-session completion tombstones
 /// explicitly; canonical terminals remove individual calls only after commit.
-/// This type has no drop side effects. Explicit provider-disconnect, session,
-/// and agent teardown paths own cancellation and terminal publication; merely
-/// dropping this state drops its collections without those effects.
+/// Explicit teardown owns cancellation and terminal publication. Dropping this
+/// state revokes pending image I/O, but never publishes terminals or performs
+/// semantic settlement.
 #[derive(Default)]
 pub(crate) struct ToolRuntimeState {
+    /// Pending prepared-image I/O and its revocable logical owners.
+    pub(super) images: super::image_admission::ImageAdmissionRuntime,
     /// Owning transcript agent for every tool call currently in flight.
     pub(crate) tool_agents: HashMap<ToolCallId, AgentId>,
     /// Tool metadata retained while a call awaits its terminal fact.
@@ -300,6 +302,7 @@ impl Harness {
                     .tool_runtime
                     .retained_terminals
                     .contains_key(&call_id)
+                    || self.tool_routing.tool_runtime.images.contains(&call_id)
                 {
                     return;
                 }
@@ -2056,6 +2059,7 @@ impl Harness {
                     internal_name: tool_name.clone(),
                     tool_type: call.tool_type,
                     allows_provider_image: false,
+                    image_storage: Default::default(),
                 },
             );
             self.bump_tools_started_for(cid);
@@ -2165,6 +2169,7 @@ impl Harness {
                 internal_name: internal_tool_name.clone(),
                 tool_type: call.tool_type,
                 allows_provider_image,
+                image_storage: Default::default(),
             },
         );
         self.bump_tools_started_for(cid);
@@ -2219,6 +2224,14 @@ impl Harness {
                         .and_then(|policies| policies.get(&internal_tool_name))
                 }) {
                     route.invoke.invocation_policy = policy.clone();
+                }
+                if let Some(pending) = self
+                    .tool_routing
+                    .tool_runtime
+                    .pending_tools
+                    .get_mut(&call_id)
+                {
+                    pending.image_storage = route.invoke.invocation_policy.prepared_image_storage;
                 }
                 let status_was_available = prompt_id
                     .as_ref()

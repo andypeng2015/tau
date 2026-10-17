@@ -400,6 +400,7 @@ fn parked_uncorrelated_peer_result_clears_tracking_after_commit() {
             internal_name: ToolName::new("peer_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     intercept_terminal_names(
@@ -468,6 +469,7 @@ fn parked_uncorrelated_peer_error_clears_tracking_after_commit() {
             internal_name: ToolName::new("peer_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     intercept_terminal_names(
@@ -557,6 +559,7 @@ fn parked_ownerless_disconnect_error_defers_teardown_until_canonical_commit() {
                 internal_name: ToolName::new("peer_tool"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         harness

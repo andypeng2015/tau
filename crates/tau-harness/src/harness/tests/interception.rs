@@ -5533,6 +5533,7 @@ fn deferred_tool_result_report_keeps_tracking_until_report_commit() {
             internal_name: tool_name.clone(),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing

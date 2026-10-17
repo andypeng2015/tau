@@ -409,7 +409,8 @@ fn startup_diagnostics_are_mandatory_warning_and_replayed() {
 }
 
 /// A cleanup warning arriving through the startup command lane remains
-/// nonfatal, identifies the offending file, and replays to a later UI attach.
+/// nonfatal, identifies the bookkeeping category without a private path, and
+/// replays to a later UI attach.
 #[test]
 fn artifact_cleanup_corruption_warning_is_visible_after_startup() {
     let td = TempDir::new().expect("tempdir");
@@ -431,7 +432,8 @@ fn artifact_cleanup_corruption_warning_is_visible_after_startup() {
                 if info.level == tau_proto::NoticeLevel::Warning
                     && info.kind == tau_proto::notice_kind::HARNESS_INTERNAL_WARNING
                     && info.purpose == tau_proto::NoticePurpose::Alert
-                    && info.message.contains(&offending.display().to_string())
+                    && !info.message.contains(&offending.display().to_string())
+                    && info.message.contains("transfer bookkeeping")
                     && info.message.contains("cleanup continued")
         )
     ));
@@ -454,7 +456,8 @@ fn artifact_cleanup_corruption_warning_is_visible_after_startup() {
             if info.level == tau_proto::NoticeLevel::Warning
                 && info.kind == tau_proto::notice_kind::HARNESS_INTERNAL_WARNING
                 && info.purpose == tau_proto::NoticePurpose::Alert
-                && info.message.contains(&offending.display().to_string())
+                && !info.message.contains(&offending.display().to_string())
+                && info.message.contains("transfer bookkeeping")
     )));
 }
 

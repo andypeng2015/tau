@@ -416,6 +416,9 @@ impl Harness {
         call_id: &ToolCallId,
         cause: tau_proto::ToolTerminalCause,
     ) -> Option<tau_proto::ObservationId> {
+        // A real terminal supersedes pending verification, without waiting for
+        // its I/O or permitting its late completion to become another terminal.
+        self.tool_routing.tool_runtime.images.cancel(call_id);
         if let Some(terminal) = self
             .tool_routing
             .tool_runtime

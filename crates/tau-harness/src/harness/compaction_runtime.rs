@@ -2445,6 +2445,7 @@ impl Harness {
                 ),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         self.tool_routing

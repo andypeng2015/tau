@@ -908,6 +908,8 @@ pub(crate) struct PendingTool {
     pub(crate) internal_name: ToolName,
     pub(crate) tool_type: ToolType,
     pub(crate) allows_provider_image: bool,
+    /// Harness-authored prepared-image storage policy frozen before dispatch.
+    pub(crate) image_storage: tau_proto::PreparedImageStorage,
 }
 
 impl PendingTool {
@@ -1606,6 +1608,7 @@ mod harness_config_state;
 mod history_lifecycle;
 mod history_runtime;
 mod idle_session;
+mod image_admission;
 mod local_summary_continuation;
 mod notification_delivery;
 mod operator_agent_unload;
@@ -2736,6 +2739,7 @@ impl Harness {
         &mut self,
         in_process_cleanup_grace: Duration,
     ) -> Result<(), HarnessError> {
+        self.tool_routing.tool_runtime.images.revoke_all();
         self.cancel_ui_interactions_for_shutdown();
         self.peer_messaging.cli_replies.clear();
         self.peer_messaging.cli_connections.clear();

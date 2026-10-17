@@ -328,6 +328,7 @@ fn disconnected_tool_completes_pending_call() {
             internal_name: tool_name.clone(),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -2360,6 +2361,7 @@ fn extension_tool_request_cannot_reuse_in_flight_agent_call_id() {
             internal_name: ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing

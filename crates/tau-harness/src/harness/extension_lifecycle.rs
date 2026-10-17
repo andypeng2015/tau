@@ -93,6 +93,10 @@ impl Harness {
         now: Instant,
     ) {
         self.cancel_connection_history(connection_id);
+        self.tool_routing
+            .tool_runtime
+            .images
+            .disconnect(connection_id);
         self.ui_runtime
             .exact_session_admissions
             .remove(connection_id);
@@ -1224,6 +1228,7 @@ impl Harness {
                 internal_name: request.tool_name.clone(),
                 tool_type: request.tool_type,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
     }
@@ -1240,6 +1245,7 @@ impl Harness {
     /// terminal-event enrichment and transcript attribution can still read the
     /// runtime metadata.
     pub(crate) fn clear_tool_call_tracking(&mut self, call_id: &str) {
+        self.tool_routing.tool_runtime.images.remove(call_id);
         let owner = self
             .tool_routing
             .tool_runtime

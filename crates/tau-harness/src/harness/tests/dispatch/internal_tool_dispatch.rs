@@ -175,6 +175,7 @@ fn correlated_start(
             internal_name: ToolName::new("target"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     Event::ToolStarted(tau_proto::ToolStarted {
@@ -284,6 +285,7 @@ fn unknown_starts_are_ignored_and_non_start_correlation_still_broadcasts() {
             internal_name: ToolName::new("external"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     let unowned = Event::ToolStarted(tau_proto::ToolStarted {
@@ -315,6 +317,7 @@ fn unknown_starts_are_ignored_and_non_start_correlation_still_broadcasts() {
             internal_name: ToolName::new("target"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     let late = Event::ToolStarted(tau_proto::ToolStarted {

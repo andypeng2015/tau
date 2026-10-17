@@ -13,7 +13,7 @@ use crate::dedup::DEFAULT_THRESHOLD_BYTES;
 use crate::harness::PendingTool;
 use crate::{agent as path_crate_agent, dedup as path_crate_dedup};
 
-fn encoded_test_png() -> Vec<u8> {
+pub(super) fn encoded_test_png() -> Vec<u8> {
     let mut encoded = path_std_io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(2, 2)
         .write_to(&mut encoded, image::ImageFormat::Png)
@@ -21,7 +21,7 @@ fn encoded_test_png() -> Vec<u8> {
     encoded.into_inner()
 }
 
-fn image_result(call_id: &str, bytes: Vec<u8>) -> ToolResult {
+pub(super) fn image_result(call_id: &str, bytes: Vec<u8>) -> ToolResult {
     ToolResult {
         presentation: Default::default(),
         call_id: call_id.into(),
@@ -43,7 +43,12 @@ fn image_result(call_id: &str, bytes: Vec<u8>) -> ToolResult {
     }
 }
 
-fn track_image_call(h: &mut Harness, cid: &crate::AgentId, call_id: &str, allowed: bool) {
+pub(super) fn track_image_call(
+    h: &mut Harness,
+    cid: &crate::AgentId,
+    call_id: &str,
+    allowed: bool,
+) {
     seed_assistant_tool_round(h, cid, &[(call_id, "read_image")]);
     h.tool_routing
         .tool_runtime
@@ -56,6 +61,7 @@ fn track_image_call(h: &mut Harness, cid: &crate::AgentId, call_id: &str, allowe
             internal_name: ToolName::new("read_image"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: allowed,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -311,6 +317,7 @@ fn run_tool_result(
             internal_name: name.clone(),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -392,6 +399,7 @@ fn run_tool_error(
             internal_name: name.clone(),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -783,6 +791,7 @@ fn same_round_identical_results_collapse_to_first_call() {
                 internal_name: ToolName::new(tool_name),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.tool_routing

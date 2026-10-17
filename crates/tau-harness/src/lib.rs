@@ -49,6 +49,7 @@ mod format;
 mod frozen_agent_discovery;
 mod harness;
 mod history_reader;
+mod image_verification;
 mod internal_envelope;
 pub mod internal_tools;
 mod model;

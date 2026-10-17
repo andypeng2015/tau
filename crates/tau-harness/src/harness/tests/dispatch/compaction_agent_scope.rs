@@ -44,6 +44,7 @@ fn equal_local_model_request_ids_commit_and_continue_for_both_targets() {
                     internal_name: ToolName::new(name),
                     tool_type: tau_proto::ToolType::Function,
                     allows_provider_image: false,
+                    image_storage: Default::default(),
                 },
             );
             h.tool_routing

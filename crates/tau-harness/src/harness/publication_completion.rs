@@ -2901,6 +2901,9 @@ impl Harness {
         persist: bool,
         append_outcome: Option<&tau_core::AgentAppendOutcome>,
     ) {
+        if let Event::ToolCancelRequest(cancel) = event {
+            self.cancel_tool_image_admission(&cancel.target_call_id);
+        }
         if let Event::AgentDisplayNameSet(name) = event {
             self.project_committed_agent_display_name(name);
         }

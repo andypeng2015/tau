@@ -2565,6 +2565,7 @@ fn queued_other_completion_preempts_exact_wait_but_remains_bare_waitable() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_request(call_id);

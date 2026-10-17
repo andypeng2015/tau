@@ -1981,6 +1981,7 @@ fn register_manual_cross_compaction_call(
             internal_name: ToolName::new("agent_compact"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing

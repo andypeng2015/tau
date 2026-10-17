@@ -578,6 +578,9 @@ impl Harness {
             HarnessCommand::ArtifactCompleted(command) => {
                 self.send_artifact_result(&command.connection, command.result);
             }
+            HarnessCommand::ImageVerificationCompleted(completed) => {
+                self.complete_tool_image_admission(*completed);
+            }
             HarnessCommand::ArtifactCleanupCorruption(paths) => {
                 for path in paths {
                     self.emit_notice(
@@ -585,9 +588,9 @@ impl Harness {
                         tau_proto::NoticeLevel::Warning,
                         tau_proto::NoticePurpose::Alert,
                         &format!(
-                            "shared artifact cleanup preserved corrupt bookkeeping at `{}`; \
-                             cleanup continued; inspect the affected artifact entry for manual cleanup",
-                            path.display()
+                            "shared artifact cleanup preserved corrupt {}; \
+                             startup cleanup continued; inspect private artifact storage locally",
+                            artifact_corruption_category(&path)
                         ),
                     );
                 }
@@ -860,5 +863,18 @@ impl Harness {
             );
         }
         Ok(())
+    }
+}
+
+/// Object paths contain known-key read authority, so generic notices expose
+/// only closed bookkeeping categories, never filenames or digest components.
+fn artifact_corruption_category(path: &std::path::Path) -> &'static str {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("meta.json") => "object metadata",
+        Some("receipt.json") => "transfer bookkeeping",
+        Some("roots.json" | "transcript-roots" | ".transcript-roots-v1") => {
+            "transcript retention metadata"
+        }
+        _ => "artifact retention bookkeeping",
     }
 }

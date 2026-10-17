@@ -11,6 +11,9 @@ use tau_proto::{ArtifactError, ArtifactRequest, ArtifactResult, ConnectionId};
 
 use crate::artifact_store::ArtifactStore;
 use crate::event::{HarnessCommand, HarnessEvent};
+#[cfg(test)]
+use crate::image_verification::ImageVerificationCut;
+use crate::image_verification::{ImageVerificationCompleted, ImageVerificationRequest};
 
 #[cfg(test)]
 mod tests;
@@ -28,8 +31,16 @@ pub(crate) struct ArtifactWorker {
     connections: HashMap<ConnectionId, Arc<AtomicBool>>,
 }
 
-/// Request and its captured admission authority.
-struct Job {
+/// Both work families share the same queue and outstanding-operation budget.
+enum Job {
+    /// Existing directed extension/UI transfer work.
+    Artifact(Box<ArtifactJob>),
+    /// Internal prepared-image verification, never an extension pin operation.
+    Image(Box<ImageJob>),
+}
+
+/// Directed request and its captured admission authority.
+struct ArtifactJob {
     /// Configured instance plus exact session, derived by the harness.
     owner: String,
     /// Connection generation that submitted the request.
@@ -41,6 +52,19 @@ struct Job {
     /// Keeps completion delivery within the same finite admission bound.
     permit: Permit,
 }
+
+/// One internal verification job whose physical guard never leaves the worker.
+struct ImageJob {
+    /// Exact tool result and its captured runtime/lease ownership.
+    request: ImageVerificationRequest,
+    /// Revoked independently when this configured connection disconnects.
+    alive: Arc<AtomicBool>,
+    /// Shared permit retained through completion consumption.
+    permit: Permit,
+}
+
+#[cfg(test)]
+type ImageHook = Arc<dyn Fn(ImageVerificationCut) + Send + Sync>;
 
 /// Admission remains charged until the central loop consumes its completion.
 pub(crate) struct Permit(
@@ -70,6 +94,29 @@ impl ArtifactWorker {
         root: &Path,
         completion: mpsc::Sender<HarnessEvent>,
     ) -> Result<Self, ArtifactError> {
+        Self::start_inner(
+            root,
+            completion,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    /// Installs deterministic physical-I/O cuts without affecting production.
+    #[cfg(test)]
+    pub(crate) fn start_with_image_hook(
+        root: &Path,
+        completion: mpsc::Sender<HarnessEvent>,
+        hook: ImageHook,
+    ) -> Result<Self, ArtifactError> {
+        Self::start_inner(root, completion, Some(hook))
+    }
+
+    fn start_inner(
+        root: &Path,
+        completion: mpsc::Sender<HarnessEvent>,
+        #[cfg(test)] image_hook: Option<ImageHook>,
+    ) -> Result<Self, ArtifactError> {
         let mut store = ArtifactStore::new(root);
         let (tx, rx) = mpsc::sync_channel::<Job>(REQUEST_LIMIT);
         thread::Builder::new()
@@ -91,35 +138,65 @@ impl ArtifactWorker {
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    if !job.alive.load(Ordering::Acquire) {
-                        store.disconnect(job.connection.as_str());
-                        continue;
-                    }
-                    connections.insert(job.connection.clone(), Arc::clone(&job.alive));
-                    let result = match job.request.op {
-                        tau_proto::ArtifactOp::List { prefix, limit } => {
-                            store.list(&prefix, limit, || job.alive.load(Ordering::Acquire))
+                    let command = match job {
+                        Job::Artifact(job) => {
+                            if !job.alive.load(Ordering::Acquire) {
+                                store.disconnect(job.connection.as_str());
+                                continue;
+                            }
+                            connections.insert(job.connection.clone(), Arc::clone(&job.alive));
+                            let result = match job.request.op {
+                                tau_proto::ArtifactOp::List { prefix, limit } => {
+                                    store.list(&prefix, limit, || job.alive.load(Ordering::Acquire))
+                                }
+                                op => store.execute(
+                                    &job.owner,
+                                    job.connection.as_str(),
+                                    op,
+                                    unix_now(),
+                                ),
+                            };
+                            HarnessCommand::ArtifactCompleted(Box::new(ArtifactCompleted {
+                                connection: job.connection,
+                                result: ArtifactResult {
+                                    request_id: job.request.request_id,
+                                    result,
+                                },
+                                _permit: job.permit,
+                            }))
                         }
-                        op => store.execute(&job.owner, job.connection.as_str(), op, unix_now()),
+                        Job::Image(job) => {
+                            connections.insert(
+                                job.request.owner.connection.clone(),
+                                Arc::clone(&job.alive),
+                            );
+                            // A decoder panic must unwind scoped lock custody
+                            // and fail this call, not lose the
+                            // worker/completion.
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    job.request.verify(&store, &job.alive, |cut| {
+                                        #[cfg(test)]
+                                        if let Some(hook) = &image_hook {
+                                            hook(cut);
+                                        }
+                                        #[cfg(not(test))]
+                                        let _ = cut;
+                                    })
+                                }))
+                                .unwrap_or(Err(ArtifactError::Io));
+                            HarnessCommand::ImageVerificationCompleted(Box::new(
+                                ImageVerificationCompleted {
+                                    request: job.request,
+                                    outcome,
+                                    _permit: job.permit,
+                                },
+                            ))
+                        }
                     };
                     // Cancellation/disconnect may race a committed publication.
-                    // Never delete its object or undo a
-                    // shared duplicate's age update.
-                    let result = ArtifactResult {
-                        request_id: job.request.request_id,
-                        result,
-                    };
-                    let command = ArtifactCompleted {
-                        connection: job.connection,
-                        result,
-                        _permit: job.permit,
-                    };
-                    if completion
-                        .send(HarnessEvent::Command(HarnessCommand::ArtifactCompleted(
-                            Box::new(command),
-                        )))
-                        .is_err()
-                    {
+                    // Never roll back a shared object or conservative root.
+                    if completion.send(HarnessEvent::Command(command)).is_err() {
                         break;
                     }
                 }
@@ -140,28 +217,55 @@ impl ArtifactWorker {
         connection: ConnectionId,
         request: ArtifactRequest,
     ) -> Result<(), ArtifactError> {
-        self.pending
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < REQUEST_LIMIT).then_some(count + 1)
-            })
-            .map_err(|_| ArtifactError::Busy)?;
-        let permit = Permit(Arc::clone(&self.pending));
-        let alive = Arc::clone(
-            self.connections
-                .entry(connection.clone())
-                .or_insert_with(|| Arc::new(AtomicBool::new(true))),
-        );
+        let permit = self.reserve()?;
+        let alive = self.connection_live(&connection);
         self.tx
-            .try_send(Job {
+            .try_send(Job::Artifact(Box::new(ArtifactJob {
                 owner,
                 connection,
                 alive,
                 request,
                 permit,
-            })
+            })))
             .map_err(|_| ArtifactError::Busy)
     }
 
+    /// Admits internal verification under the same eight-operation limit as
+    /// RPC.
+    pub(crate) fn submit_image(
+        &mut self,
+        request: ImageVerificationRequest,
+    ) -> Result<(), ArtifactError> {
+        request.validate_shape()?;
+        let permit = self.reserve()?;
+        let alive = self.connection_live(&request.owner.connection);
+        self.tx
+            .try_send(Job::Image(Box::new(ImageJob {
+                request,
+                alive,
+                permit,
+            })))
+            .map_err(|_| ArtifactError::Busy)
+    }
+
+    /// Charges queued, active and unconsumed work uniformly.
+    fn reserve(&self) -> Result<Permit, ArtifactError> {
+        self.pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < REQUEST_LIMIT).then_some(count + 1)
+            })
+            .map_err(|_| ArtifactError::Busy)?;
+        Ok(Permit(Arc::clone(&self.pending)))
+    }
+
+    /// Shares one revocation token with every operation on this connection.
+    fn connection_live(&mut self, connection: &ConnectionId) -> Arc<AtomicBool> {
+        Arc::clone(
+            self.connections
+                .entry(connection.clone())
+                .or_insert_with(|| Arc::new(AtomicBool::new(true))),
+        )
+    }
     /// Revokes unfinished transfer authority immediately without waiting for
     /// I/O.
     pub(crate) fn disconnect(&mut self, connection: &ConnectionId) {

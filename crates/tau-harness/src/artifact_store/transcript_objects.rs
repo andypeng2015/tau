@@ -68,14 +68,14 @@ impl ArtifactStore {
             }
             verify(
                 descriptor,
-                &read_regular(&protected.join("data"), ARTIFACT_MAX_BYTES)?,
+                &read_regular(&protected.join("data"), descriptor.size.get())?,
             )?;
         } else {
             let ordinary = self.root.join("blake3").join(digest);
             require_directory(&ordinary)?;
             verify(
                 descriptor,
-                &read_regular(&ordinary.join("data"), ARTIFACT_MAX_BYTES)?,
+                &read_regular(&ordinary.join("data"), descriptor.size.get())?,
             )?;
             let staging = tempfile::Builder::new()
                 .prefix(".staging-")

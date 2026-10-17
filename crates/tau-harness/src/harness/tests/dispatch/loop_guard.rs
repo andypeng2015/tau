@@ -1194,6 +1194,7 @@ fn loop_guard_resets_on_successful_background_tool_result() {
             internal_name: ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
 
@@ -1257,6 +1258,7 @@ fn loop_guard_preserves_failure_history_and_pending_breaker_after_background_err
             internal_name: ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
 
@@ -1319,6 +1321,7 @@ fn loop_guard_preserves_blocked_breaker_after_background_cancellation() {
             internal_name: ToolName::new("read"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing

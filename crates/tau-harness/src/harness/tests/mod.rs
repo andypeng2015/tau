@@ -2804,6 +2804,7 @@ mod dedup;
 mod dispatch;
 mod history_reader;
 mod idle_session;
+mod image_admission;
 mod interception;
 mod lifecycle;
 mod mode;

@@ -2587,6 +2587,7 @@ impl Harness {
             .cloned()
         {
             let mut allows_provider_image = false;
+            let mut image_storage = tau_proto::PreparedImageStorage::Inline;
             if let Some(tool) = self
                 .tool_routing
                 .tool_runtime
@@ -2595,47 +2596,26 @@ impl Harness {
             {
                 tool.restore_terminal_result_metadata(&mut result);
                 allows_provider_image = tool.allows_provider_image;
+                image_storage = tool.image_storage;
             }
             let has_provider_image = !result.provider_content.is_empty();
-            let validation = if result
+            let has_reference = result
                 .provider_content
                 .iter()
-                .any(tau_proto::ToolResultContentPart::is_image_reference)
-            {
-                // Source-only protocol preparation: production invocations
-                // still require inline images until verified async admission
-                // and provider resolution are installed together.
-                Err("prepared image references are not enabled for this invocation".to_owned())
-            } else if has_provider_image && !allows_provider_image {
+                .any(tau_proto::ToolResultContentPart::is_image_reference);
+            let validation = if has_provider_image && !allows_provider_image {
                 Err("the originating tool is not authorized for image output".to_owned())
+            } else if has_reference && image_storage != tau_proto::PreparedImageStorage::Artifact {
+                Err("prepared image references are not enabled for this invocation".to_owned())
+            } else if has_provider_image
+                && !has_reference
+                && image_storage == tau_proto::PreparedImageStorage::Artifact
+            {
+                Err("this invocation requires prepared image references".to_owned())
+            } else if has_reference && result.kind != ToolResultKind::Final {
+                Err("prepared image references require a final foreground result".to_owned())
             } else {
-                self.agent_runtime
-                    .agent_registry
-                    .agents
-                    .get(&cid)
-                    .and_then(|agent| {
-                        let agent_id = agent.identity.agent_id.clone()?;
-                        let parent = agent.identity.head.map_or(
-                            tau_core::AgentEventParent::Root,
-                            tau_core::AgentEventParent::Under,
-                        );
-                        Some((agent_id, parent))
-                    })
-                    .ok_or_else(|| "the owning agent is unavailable".to_owned())
-                    .and_then(|(agent_id, parent)| {
-                        self.session_runtime
-                            .agent_store
-                            .validate_agent_event_at(
-                                &agent_id,
-                                Some(tau_core::PersistedEventSource::Connection(
-                                    crate::harness::harness_connection_id().clone(),
-                                )),
-                                parent,
-                                &Event::ProviderToolResult(result.clone()),
-                                tau_proto::UnixMicros::now(),
-                            )
-                            .map_err(|error| error.to_string())
-                    })
+                self.validate_owned_tool_result(&cid, &result)
             };
             if let Err(error) = validation {
                 tracing::warn!(
@@ -2662,6 +2642,10 @@ impl Harness {
                         originator: result.originator,
                     },
                 );
+                return;
+            }
+            if has_reference {
+                self.begin_tool_image_admission(&cid, source_id, result);
                 return;
             }
             // Collapse byte-identical large results into a pointer back to the

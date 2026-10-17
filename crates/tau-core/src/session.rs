@@ -6841,6 +6841,32 @@ fn validate_context_items_provider_content(
     Ok(())
 }
 
+/// Validates actual encoded media using the same bounded checks as inline
+/// history.
+///
+/// This CPU-heavy check belongs off-loop for referenced-image admission. It
+/// grants no tool authority and performs no filesystem access.
+pub fn validate_inline_provider_image(
+    image: &tau_proto::ImageContent,
+) -> Result<(), AgentEventValidationError> {
+    validate_provider_content_parts(
+        tau_proto::ToolType::Function,
+        &[tau_proto::ToolResultContentPart::Image(image.clone())],
+    )
+}
+
+/// Validates only reference shape and logical size, never actual backing bytes.
+pub fn validate_provider_image_reference(
+    image: &tau_proto::ImageReference,
+) -> Result<(), AgentEventValidationError> {
+    validate_provider_content_parts(
+        tau_proto::ToolType::Function,
+        &[tau_proto::ToolResultContentPart::ImageReference(
+            image.clone(),
+        )],
+    )
+}
+
 fn validate_provider_content_parts(
     tool_type: tau_proto::ToolType,
     provider_content: &[tau_proto::ToolResultContentPart],

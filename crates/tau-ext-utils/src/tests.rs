@@ -2219,12 +2219,8 @@ fn send_read_image_cancel<W: Write>(
         .write_message(&HarnessOutputMessage::Deliver(
             tau_proto::EventDelivery::live(
                 UnixMicros::new(timestamp),
-                Event::ToolCancelled(tau_proto::ToolCancelled {
-                    call_id: ToolCallId::new(call_id),
-                    tool_name: tau_proto::ToolName::new("work_read_image"),
-                    tool_type: ToolType::Function,
-                    presentation: Default::default(),
-                    display: None,
+                Event::ToolCancelRequest(tau_proto::ToolCancelRequest {
+                    target_call_id: ToolCallId::new(call_id),
                 }),
             ),
         ))

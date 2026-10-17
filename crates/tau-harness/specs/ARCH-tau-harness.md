@@ -17,15 +17,22 @@ metadata survive session deletion; independent startup retention skips active
 cross-process-coordinated reads. Memory-only admission and cleanup never access
 the domain. See [SPEC-shared-artifacts](../../../specs/SPEC-shared-artifacts.md).
 
-The artifact store also has an internal, currently inactive transcript-root
-foundation for prepared-image references. Root creation verifies bytes and
+The artifact store also has transcript-root support for prepared-image references.
+Root creation verifies bytes and
 publishes a durable private hardlink alias before protecting a transcript;
 root-aware cleanup shares its cross-process lock. Known-key reads can resolve
 protected-only bytes without adding a UI catalog entry. Durable agent cleanup
 releases roots only after its staged history deletion is synchronized.
-The reference representation now exists, but production invocation policy remains
-Inline. Tool-result intake and ordinary/standalone provider terminal admission
-reject unverified references until the asynchronous admission path is integrated.
+Tool-result intake captures harness storage policy before dispatch and verifies
+references through the same eight-operation worker as Artifact RPC. Actual media
+checks precede root publication under scoped Agent deletion exclusion followed by
+CAS coordination. Completion revalidates exact call, source, session, runtime
+incarnation and persistence lease before normal immutable terminal publication.
+Committed cancellation settles this harness-owned phase without relying on a
+producer that has already finished. Canonical backpressure retains the verified
+terminal without repeating I/O. Production policy remains Inline until provider
+resolution is ready; generic provider replacement references still await their
+own admission path. Cleanup notices omit digest-bearing paths.
 
 The attached-socket operator path can unload one saved agent without deleting
 history. The harness classifies only committed in-memory membership, rejects

@@ -53,6 +53,7 @@ fn install_exact_wait_at(
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     harness.record_wait_tool_request(&target_call_id);

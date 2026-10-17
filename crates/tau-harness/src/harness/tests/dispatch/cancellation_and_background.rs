@@ -567,6 +567,7 @@ fn live_cancel_backgrounded_tool_queues_completion_notice_without_advancing() {
             internal_name: ToolName::new("live_cancel_bg_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -2206,6 +2207,7 @@ fn plural_wait_publishes_ordered_aggregate_and_durable_correlation() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_call_ref(call_id.clone(), call_ref);
@@ -2299,6 +2301,7 @@ fn plural_wait_terminal_append_retries_before_atomic_consumption() {
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.record_wait_tool_call_ref(
@@ -2432,6 +2435,7 @@ fn plural_wait_call_cancellation_restores_notice_without_consuming_source() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_call_ref(
@@ -2547,6 +2551,7 @@ fn plural_wait_old_generation_delivery_preserves_reused_notice() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_call_ref(
@@ -2698,6 +2703,7 @@ fn plural_wait_old_generation_delivery_removes_stale_notice_until_reuse_complete
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_call_ref(
@@ -2857,6 +2863,7 @@ fn plural_wait_multi_generation_delivery_preserves_notice_until_last_release() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
         h.record_wait_tool_call_ref(
@@ -3133,6 +3140,7 @@ fn current_generation_exact_waits_restore_released_generation_notice() {
                     internal_name: ToolName::new("slow"),
                     tool_type: tau_proto::ToolType::Function,
                     allows_provider_image: false,
+                    image_storage: Default::default(),
                 },
             );
             h.record_wait_tool_call_ref(
@@ -4482,6 +4490,7 @@ fn cancel_request_api_rejects_non_owner_conversation() {
             internal_name: ToolName::new("slow_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
 
@@ -4679,6 +4688,7 @@ fn live_cancel_passive_notice_still_advances_other_runnable_agent() {
             internal_name: ToolName::new("live_cancel_bg_tool"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -5087,6 +5097,7 @@ fn cancel_clears_active_wait_state() {
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.record_wait_tool_request(&target_call_id);
@@ -5627,6 +5638,7 @@ fn background_wait_rejections_do_not_count_as_input_timeouts() {
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.record_wait_tool_request(&background_id);
@@ -5734,6 +5746,7 @@ fn runtime_deadline_scheduler_orders_input_and_background_deadlines() {
                 internal_name: ToolName::new("slow"),
                 tool_type: tau_proto::ToolType::Function,
                 allows_provider_image: false,
+                image_storage: Default::default(),
             },
         );
     }
@@ -5936,6 +5949,7 @@ fn background_completion_from_removed_side_conversation_is_retired() {
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing
@@ -6077,6 +6091,7 @@ fn background_completion_from_removed_side_conversation_is_retired() {
             internal_name: ToolName::new("slow"),
             tool_type: tau_proto::ToolType::Function,
             allows_provider_image: false,
+            image_storage: Default::default(),
         },
     );
     h.tool_routing

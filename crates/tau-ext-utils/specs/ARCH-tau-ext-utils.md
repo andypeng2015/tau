@@ -16,7 +16,8 @@ Inline preserves the existing typed bytes without another put. Artifact uploads
 the exact prepared encoded bytes through the existing Begin/Write/Finalize flow
 and emits reference-only content only after verifying the final size and digest.
 This never substitutes the original artifact key or changes crop/profile metadata.
-Cancellation and shutdown close reads and abort uploads best effort, including
+Live `tool.cancel_request` cancels the matching invocation; canonical
+`tool.cancelled` remains an idempotent retirement signal. Cancellation and shutdown close reads and abort uploads best effort, including
 late allocation responses under their captured session. Cancellation or lost
 acknowledgment may leave shared committed bytes; errors never retry preparation
 or silently fall back to inline output.

@@ -1505,6 +1505,7 @@ fn send_startup(
             EventSelector::Exact(EventName::SESSION_SHUTDOWN),
             EventSelector::Exact(EventName::SESSION_AGENT_UNLOADED),
             EventSelector::Exact(EventName::TOOL_CANCELLED),
+            EventSelector::Exact(EventName::TOOL_CANCEL_REQUEST),
         ],
     )?;
     for registration in tool_registrations(papercut_enabled, papercut_history_enabled) {
@@ -1672,6 +1673,11 @@ fn handle_delivery(
         Event::ToolCancelled(cancelled) => {
             if let Some(images) = runtime.state_mut().artifact_images.as_mut() {
                 images.cancel(cancelled);
+            }
+        }
+        Event::ToolCancelRequest(request) => {
+            if let Some(images) = runtime.state_mut().artifact_images.as_mut() {
+                images.cancel_request(request);
             }
         }
         Event::AgentReplayComplete(event) => runtime.state_mut().complete_agent_replay(event)?,

@@ -310,6 +310,23 @@ impl ArtifactImageManager {
         }
     }
 
+    /// Handles the actual harness cancellation request while retaining the
+    /// original routed identity for the terminal report.
+    pub(crate) fn cancel_request(&mut self, request: &tau_proto::ToolCancelRequest) {
+        let Some(call) = self.calls.get(&request.target_call_id) else {
+            return;
+        };
+        let invoke = call.invoke();
+        let cancelled = ToolCancelled {
+            presentation: Default::default(),
+            call_id: invoke.call_id.clone(),
+            tool_name: invoke.tool_name.clone(),
+            tool_type: ToolType::Function,
+            display: None,
+        };
+        self.cancel(&cancelled);
+    }
+
     /// Retires correlation while retaining late Open/Begin cleanup authority.
     fn retire_requests(&mut self, call: &ActiveCall) {
         let allocation = call.pending_allocation();
