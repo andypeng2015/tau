@@ -1,3 +1,4 @@
+use std::cell::Cell;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 use std::sync::Arc;
@@ -8,6 +9,8 @@ use fs2::FileExt as _;
 use tau_core::{AgentEventParent, AgentStore, SessionStore};
 use tau_proto::{AgentId, Event, SessionAgentLoaded, SessionAgentUnloaded, SessionId, UnixMicros};
 use tempfile::TempDir;
+
+use crate::artifact_store::ArtifactStore;
 
 /// Future timestamps remain conservatively ineligible.
 #[test]
@@ -29,6 +32,119 @@ fn exact_timestamp_cutoff_is_expired() {
         timestamp,
         Duration::from_secs(5)
     ));
+}
+
+/// Seeds internal retention without introducing reference-bearing journal
+/// events.
+fn root_artifact(state: &std::path::Path, id: &AgentId) -> std::path::PathBuf {
+    let mut store = ArtifactStore::new(state);
+    let (_, descriptor) =
+        crate::artifact_store::put_fixture(&mut store, "fixture", "connection", b"prepared", 1);
+    store
+        .retain_transcript_artifact(id, &descriptor)
+        .expect("retain");
+    state.join("artifacts/transcript-roots").join(id.as_str())
+}
+
+/// Only successful whole-history deletion releases the owning transcript roots.
+#[test]
+fn durable_history_deletion_releases_artifact_roots() {
+    let temp = TempDir::new().expect("state");
+    let id = write_old_agent(temp.path(), "rooted-agent");
+    let roots = root_artifact(temp.path(), &id);
+    let summary = super::cleanup_agents(
+        &temp.path().join("agents"),
+        &temp.path().join("sessions"),
+        Duration::from_secs(1),
+        SystemTime::now() + Duration::from_secs(60),
+    );
+    assert_eq!(summary.removed, 1);
+    assert_eq!(summary.failures, 0);
+    assert!(!roots.exists());
+    // Unpinning does not itself erase shared original bytes.
+    assert_eq!(
+        path_std_fs::read_dir(temp.path().join("artifacts/transcript-objects"))
+            .expect("protected objects")
+            .count(),
+        1
+    );
+}
+
+/// A failed staged removal retains roots until a successful restart
+/// finalization.
+#[test]
+fn failed_history_removal_keeps_roots_until_restart_finalizes() {
+    let temp = TempDir::new().expect("state");
+    let id = write_old_agent(temp.path(), "rooted-agent");
+    let roots = root_artifact(temp.path(), &id);
+    let agents = temp.path().join("agents");
+    let mut before = |_: &AgentId| {};
+    let mut tombstone = |path: &std::path::Path, id: &AgentId| super::create_tombstone(path, id);
+    let mut rename = |from: &std::path::Path, to: &std::path::Path| path_std_fs::rename(from, to);
+    let mut remove =
+        |_: &std::path::Path| Err(path_std_io::Error::other("injected removal failure"));
+    let mut sync = |path: &std::path::Path| crate::retention_fs::sync_directory(path);
+    let summary = super::cleanup_agents_with_hooks(
+        &agents,
+        &temp.path().join("sessions"),
+        Duration::from_secs(1),
+        SystemTime::now() + Duration::from_secs(60),
+        super::AgentCleanupHooks {
+            before_rescan: &mut before,
+            create_tombstone: &mut tombstone,
+            rename: &mut rename,
+            remove_dir: &mut remove,
+            sync_directory: &mut sync,
+        },
+    );
+    assert_eq!(summary.failures, 1);
+    assert!(roots.exists());
+    let finalized = super::finalize_detached_agents(&agents);
+    assert_eq!(finalized.removed, 1);
+    assert_eq!(finalized.failures, 0);
+    assert!(!roots.exists());
+}
+
+/// Ambiguous final directory sync leaks roots rather than risking lost replay.
+#[test]
+fn history_removal_sync_failure_leaves_conservative_orphan_roots() {
+    let temp = TempDir::new().expect("state");
+    let id = write_old_agent(temp.path(), "rooted-agent");
+    let roots = root_artifact(temp.path(), &id);
+    let removed = Cell::new(false);
+    let mut before = |_: &AgentId| {};
+    let mut tombstone = |path: &std::path::Path, id: &AgentId| super::create_tombstone(path, id);
+    let mut rename = |from: &std::path::Path, to: &std::path::Path| path_std_fs::rename(from, to);
+    let mut remove = |path: &std::path::Path| {
+        path_std_fs::remove_dir_all(path)?;
+        removed.set(true);
+        Ok(())
+    };
+    let mut sync = |path: &std::path::Path| {
+        if removed.get() {
+            Err(path_std_io::Error::other("injected removal sync failure"))
+        } else {
+            crate::retention_fs::sync_directory(path)
+        }
+    };
+    let summary = super::cleanup_agents_with_hooks(
+        &temp.path().join("agents"),
+        &temp.path().join("sessions"),
+        Duration::from_secs(1),
+        SystemTime::now() + Duration::from_secs(60),
+        super::AgentCleanupHooks {
+            before_rescan: &mut before,
+            create_tombstone: &mut tombstone,
+            rename: &mut rename,
+            remove_dir: &mut remove,
+            sync_directory: &mut sync,
+        },
+    );
+    assert_eq!(summary.failures, 1);
+    assert!(roots.exists());
+    let finalized = super::finalize_detached_agents(&temp.path().join("agents"));
+    assert_eq!(finalized.removed, 0);
+    assert!(roots.exists());
 }
 
 fn write_old_agent(state: &std::path::Path, name: &str) -> AgentId {

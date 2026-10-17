@@ -25,6 +25,10 @@ mod reader;
 mod receipt;
 #[cfg(test)]
 mod tests;
+mod transcript_objects;
+mod transcript_roots;
+#[cfg(test)]
+pub(crate) use tests::put as put_fixture;
 mod upload;
 
 use filesystem::*;
@@ -277,19 +281,33 @@ impl ArtifactStore {
                 .map_err(io_error)?;
             fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
                 .map_err(io_error)?;
-            write_synced(&staging.path().join("data"), &data)?;
+            let protected = self.root.join("transcript-objects").join(hex);
+            let last_put_at = if transcript_roots::path_present(&protected)? {
+                transcript_roots::require_directory(&protected)?;
+                verify(
+                    &receipt.descriptor,
+                    &transcript_roots::read_regular(&protected.join("data"), ARTIFACT_MAX_BYTES)?,
+                )?;
+                fs::hard_link(protected.join("data"), staging.path().join("data"))
+                    .map_err(io_error)?;
+                self.metadata(key)?.last_put_at.max(receipt.put_at)
+            } else {
+                write_synced(&staging.path().join("data"), &data)?;
+                receipt.put_at
+            };
             write_json(
                 &staging.path().join("meta.json"),
                 &Metadata {
                     version: 1,
                     size: receipt.descriptor.size.get(),
-                    last_put_at: receipt.put_at,
+                    last_put_at,
                 },
             )?;
             sync_dir(staging.path())?;
             fs::rename(staging.path(), &object).map_err(io_error)?;
             sync_dir(&objects)?;
         }
+        self.renew_transcript_object(&receipt.descriptor, receipt.put_at)?;
         // Also repairs an earlier object rename whose parent sync failed before
         // this retry took the existing-object branch.
         sync_dir(&objects)
@@ -297,7 +315,7 @@ impl ArtifactStore {
 
     fn metadata(&self, key: &ArtifactKey) -> Result<Metadata, ArtifactError> {
         let hex = artifact_digest(key).ok_or(ArtifactError::Invalid)?;
-        let metadata: Metadata = read_json(&self.root.join("blake3").join(hex).join("meta.json"))?;
+        let metadata: Metadata = read_json(&self.object_directory(hex)?.join("meta.json"))?;
         if metadata.version != 1 || metadata.size > ARTIFACT_MAX_BYTES {
             return Err(ArtifactError::Integrity);
         }
@@ -315,7 +333,7 @@ impl ArtifactStore {
         let lock = self.lock(false)?;
         let descriptor = self.descriptor(&key)?;
         let hex = artifact_digest(&key).ok_or(ArtifactError::Invalid)?;
-        let data = File::open(self.root.join("blake3").join(hex).join("data")).map_err(io_error)?;
+        let data = File::open(self.object_directory(hex)?.join("data")).map_err(io_error)?;
         if data.metadata().map_err(io_error)?.len() != descriptor.size.get() {
             return Err(ArtifactError::Integrity);
         }

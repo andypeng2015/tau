@@ -87,7 +87,7 @@ fn discovery_cancellation_and_header_inference_are_bounded() {
     assert!(entries.is_empty());
 }
 
-fn put(
+pub(crate) fn put(
     store: &mut ArtifactStore,
     owner: &str,
     connection: &str,

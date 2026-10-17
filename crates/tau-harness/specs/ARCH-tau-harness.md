@@ -17,6 +17,14 @@ metadata survive session deletion; independent startup retention skips active
 cross-process-coordinated reads. Memory-only admission and cleanup never access
 the domain. See [SPEC-shared-artifacts](../../../specs/SPEC-shared-artifacts.md).
 
+The artifact store also has an internal, currently inactive transcript-root
+foundation for prepared-image references. Root creation verifies bytes and
+publishes a durable private hardlink alias before protecting a transcript;
+root-aware cleanup shares its cross-process lock. Known-key reads can resolve
+protected-only bytes without adding a UI catalog entry. Durable agent cleanup
+releases roots only after its staged history deletion is synchronized.
+No canonical image representation or protocol version changes in this foundation.
+
 The attached-socket operator path can unload one saved agent without deleting
 history. The harness classifies only committed in-memory membership, rejects
 targets with accepted work, reserves the exact runtime by marking it

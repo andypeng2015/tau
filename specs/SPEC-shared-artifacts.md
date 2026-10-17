@@ -1,5 +1,12 @@
 # SPEC-shared-artifacts: Shared original-byte artifacts
 
+## Status
+
+The store has an internal transcript-root foundation, but no producer or
+canonical event currently uses it. Typed image results remain inline. Durable
+prepared-image references will use this foundation only after producer admission,
+provider resolution, and the coordinated protocol update are complete.
+
 ## Record justification
 
 Protocol DTOs, client transfer state, harness admission and filesystem workers,
@@ -11,7 +18,7 @@ Artifacts are immutable original bytes addressed directly by their BLAKE3
 digest. The selected persistent state root defines a shared cross-session
 namespace. Identical bytes share one original and age; filenames and media
 claims are per-use hints, not canonical identity or first-writer metadata.
-There is no overwrite, delete, reference-pin, or implicit remote-fetch API.
+There is no public overwrite, delete, reference-pin, or implicit remote-fetch API.
 Whole-store discovery is restricted to authenticated UIs; configured extensions
 retain known-key read authority without enumeration.
 Model-facing text names an artifact with the canonical Markdown autolink
@@ -115,15 +122,64 @@ grammar and last successful new explicit put/export metadata. Reads, imports,
 sharing, replay, and recognized retries do not renew age. Clock rollback cannot
 decrease a duplicate's age timestamp; future timestamps and malformed metadata
 are retained rather than replaced by file mtime or epoch zero. Session and agent
-deletion have no artifact effect.
+deletion do not delete shared objects.
 
 Startup cleanup is opportunistic, not a hard TTL. It revalidates age under the
 same stable cross-process coordination as finalization, durably detaches before
-recursive removal, and recovers prior detached staging. References do not pin
+recursive removal, and recovers prior detached staging. Ordinary textual references do not pin
 originals; a later read may be unavailable even while a transcript preserves
 its digest. A later new put of identical bytes can restore that same key.
 Processes sharing a root should use consistent retention settings: any enabled
 cleaner may apply its own configured policy.
+
+### Internal transcript retention
+
+Harness-owned roots conservatively retain the union of a durable agent's entire
+history, including inactive branches and replaced compaction windows. Root
+establishment verifies exact bytes, size, and digest under the same exclusive
+cross-process lock as cleanup and synchronizes protection before a referencing
+record may be admitted. Media validation and tool authority remain separate
+admission requirements; a root is not permission to append. Failed publication,
+cancellation, or a failed journal append may leak protection, never acknowledge
+unprotected history. No extension can pin or release roots.
+
+Protected bytes have a private hardlink alias within the same CAS and key
+namespace. The audited older cleaners only traverse ordinary objects, transfer
+operations, and cleanup staging; their canonical detach/unlink cannot remove
+the protected inode. Published data is immutable: writers must never truncate or
+mutate it in place. Older duplicate uploads replace only ordinary age metadata;
+an older upload after ordinary deletion may create another inode for the same
+digest. No object-format promotion breaks existing old readers.
+
+Known-key reads can fall back to a protected alias when the ordinary object is
+absent. Corrupt ordinary metadata does not authorize silent repair or replacement.
+Consumers still verify the complete bytes. Private aliases are not extra UI
+catalog entries: an ordinary entry expired by an older cleaner can disappear
+from discovery while its exact bytes remain available for retained history.
+Reads and rooting do not renew age. New explicit puts renew existing aliases;
+older writers know only ordinary metadata, so a protected-only alias retains
+its last known explicit-put timestamp, not a reconstructed later put time.
+
+Cleanup must finish a bounded, complete root scan before deleting any candidate
+object or alias. Detectably missing expected metadata, malformed authority, read failures, and scan-budget
+exhaustion preserve candidates rather than interpreting a partial scan as an
+empty set. Root-set overflow rejects establishment, never drops older roots.
+Filesystem calls themselves do not acquire a hard deadline from the scan budget.
+Whole-transcript deletion releases roots only after staged history removal and
+its directory sync succeed. Compaction, unload, and cache eviction do not release
+roots. Ambiguous deletion or failed release may leave conservative orphan roots.
+Unpinning returns bytes to ordinary age policy, not immediate erasure; retention
+disabled means unrooted objects may remain indefinitely.
+
+Backups that use this foundation must preserve the selected CAS, its protected
+objects and root registry alongside agent history. Restore protection before
+allowing cleanup or referenced-history use; a journal-only backup cannot retain
+the bytes of future reference-bearing records. This is cooperative filesystem
+crash consistency, not tamper detection: arbitrary loss of a whole owner directory
+(or both the registry and its marker) cannot be distinguished from absent roots.
+Partial backups or independently deleted metadata subtrees are not safe cleanup
+inputs; restore the complete registry, rather than treating absent owners as an
+authoritative empty set.
 
 The shell `export` consumer reads one bounded local regular file using its
 ordinary remembered-workdir filesystem authority and performs a new explicit

@@ -50,7 +50,7 @@ impl ArtifactStore {
             }
         }
         // Intents and receipts have their own finite recovery lifetime;
-        // object references never pin original bytes.
+        // ordinary textual references never pin original bytes.
         for entry in fs::read_dir(self.root.join("operations"))
             .map_err(io_error)?
             .take(CLEANUP_LIMIT)
@@ -79,11 +79,31 @@ impl ArtifactStore {
                 }
             }
         }
-        for entry in fs::read_dir(self.root.join("blake3"))
+        let mut entries = fs::read_dir(self.root.join("blake3"))
             .map_err(io_error)?
             .take(CLEANUP_LIMIT)
-        {
-            let entry = entry.map_err(io_error)?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io_error)?;
+        match fs::read_dir(self.root.join("transcript-objects")) {
+            Ok(protected) => entries.extend(
+                protected
+                    .take(CLEANUP_LIMIT)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io_error)?,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+        let candidates = entries
+            .iter()
+            .filter_map(|entry| {
+                ArtifactKey::parse(format!("blake3:{}", entry.file_name().to_string_lossy())).ok()
+            })
+            .collect();
+        // Never detach from a partial root scan. This includes malformed or
+        // missing manifests and exhausted scan budgets.
+        let retained = self.retained_transcript_artifacts(&candidates, &mut report_corrupt)?;
+        for entry in entries {
             if !entry.file_type().map_err(io_error)?.is_dir() {
                 continue;
             }
@@ -96,6 +116,9 @@ impl ArtifactStore {
             let Ok(key) = ArtifactKey::parse(format!("blake3:{name}")) else {
                 continue;
             };
+            if retained.contains(&key) {
+                continue;
+            }
             let metadata_path = entry.path().join("meta.json");
             let metadata = match self.metadata(&key) {
                 Ok(metadata) => metadata,
@@ -122,7 +145,7 @@ impl ArtifactStore {
         }
     }
 
-    fn detach(&self, path: &Path) -> Result<(), ArtifactError> {
+    pub(super) fn detach(&self, path: &Path) -> Result<(), ArtifactError> {
         let cleanup = self.root.join(".cleanup");
         let detached = cleanup.join(new_id());
         fs::rename(path, &detached).map_err(io_error)?;

@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime};
 use fs2::FileExt as _;
 use tau_proto::AgentId;
 
+use crate::artifact_store::ArtifactStore;
+
 static CLEANUP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Aggregate content-free counters from one agent cleanup pass.
@@ -117,7 +119,14 @@ fn finalize_detached_agents_with(
             &mut remove_dir,
             &mut sync_directory,
         ) {
-            Ok(()) => summary.removed += 1,
+            Ok(()) => {
+                summary.removed += 1;
+                // The generated suffix locates an owner; the permanent
+                // tombstone and absent live tree remain required authority.
+                if let Some(agent_id) = detached_agent_id(&path) {
+                    release_artifact_roots(agents_dir, &agent_id, &mut summary);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
                 summary.failures += 1;
@@ -372,7 +381,10 @@ fn consider_agent(
         hooks.remove_dir,
         hooks.sync_directory,
     ) {
-        Ok(()) => summary.removed += 1,
+        Ok(()) => {
+            summary.removed += 1;
+            release_artifact_roots(context.agents_dir, agent_id, summary);
+        }
         Err(error) => {
             summary.failures += 1;
             tracing::warn!(target: "tau_harness::retention_cleanup", path = %detached.display(), %error, "failed to remove detached agent");
@@ -559,4 +571,63 @@ fn detached_agents_dir(agents_dir: &Path) -> PathBuf {
     );
     name.push(".cleanup");
     agents_dir.with_file_name(name)
+}
+
+/// Recovers an owner only from the exact generated `<agent>-<pid>-<counter>`
+/// name.
+fn detached_agent_id(path: &Path) -> Option<AgentId> {
+    let mut parts = path.file_name()?.to_str()?.rsplitn(3, '-');
+    parts.next()?.parse::<u64>().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    AgentId::parse(parts.next()?).ok()
+}
+
+/// Releases CAS protection after successful durable staged-history deletion.
+///
+/// Failures leave conservative orphan roots, including a crash between deletion
+/// and this call. No later inference from an absent history alone releases
+/// roots.
+fn release_artifact_roots(
+    agents_dir: &Path,
+    agent_id: &AgentId,
+    summary: &mut AgentCleanupSummary,
+) {
+    let result = (|| {
+        let state = agents_dir
+            .parent()
+            .ok_or_else(|| io::Error::other("missing agent store parent"))?;
+        // Legacy histories have no roots. An absent directory only skips
+        // reclamation; it never authorizes deleting another owner's roots.
+        match fs::symlink_metadata(
+            state
+                .join("artifacts/transcript-roots")
+                .join(agent_id.as_str()),
+        ) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(error),
+        }
+        match fs::symlink_metadata(agents_dir.join(agent_id.as_str())) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(io::Error::other("agent history still exists")),
+            Err(error) => return Err(error),
+        }
+        let tombstone =
+            open_existing_tombstone(&tau_core::retired_agent_tombstone(agents_dir, agent_id))?;
+        if tombstone.metadata()?.len() != 0 {
+            return Err(io::Error::other("retired agent tombstone is not empty"));
+        }
+        ArtifactStore::new(state)
+            .release_deleted_transcript(agent_id)
+            .map_err(io::Error::other)
+    })();
+    if let Err(error) = result {
+        summary.failures += 1;
+        tracing::warn!(
+            target: "tau_harness::retention_cleanup",
+            %agent_id,
+            %error,
+            "retaining artifact roots after agent deletion"
+        );
+    }
 }
