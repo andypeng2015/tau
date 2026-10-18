@@ -374,6 +374,16 @@ fn standalone_rejections_do_not_mutate_context_or_compaction_authority() {
         })
         .unwrap_or_else(|error| panic!("{label}: {error}"));
 
+        if h.prompt_coordination
+            .compaction_runtime
+            .images
+            .contains(&compact.agent_prompt_id)
+        {
+            let completed = super::compaction_images::next_completion(&mut h);
+            h.handle_harness_command(HarnessCommand::ImageVerificationCompleted(completed))
+                .expect("reference rejection");
+        }
+
         if label == "provider error" {
             assert!(event_log_contains_any_source(&h, |event| matches!(
                 event, Event::HarnessNotice(notice)

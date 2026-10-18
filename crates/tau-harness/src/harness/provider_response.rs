@@ -134,7 +134,28 @@ impl Harness {
     pub(super) fn handle_provider_response_finished_from(
         &mut self,
         source: Option<&tau_proto::ConnectionId>,
+        response: ProviderResponseFinished,
+    ) -> Result<(), HarnessError> {
+        self.prompt_coordination
+            .compaction_runtime
+            .images
+            .remove(&response.agent_prompt_id);
+        self.handle_provider_response_finished_inner(source, response, false)
+    }
+
+    /// Only the private worker completion may bypass reference verification.
+    pub(super) fn handle_provider_response_finished_with_verified_images(
+        &mut self,
+        response: ProviderResponseFinished,
+    ) -> Result<(), HarnessError> {
+        self.handle_provider_response_finished_inner(Some(harness_connection_id()), response, true)
+    }
+
+    fn handle_provider_response_finished_inner(
+        &mut self,
+        source: Option<&tau_proto::ConnectionId>,
         mut response: ProviderResponseFinished,
+        images_verified: bool,
     ) -> Result<(), HarnessError> {
         // Recovery authorization belongs exclusively to the harness. Provider
         // extensions share this wire type for transport, so discard any value
@@ -228,15 +249,20 @@ impl Harness {
             self.discard_finished_response_if_stale(&cid, &response, source);
             return Ok(());
         }
-        if tau_proto::context_items_have_image_references(&response.output_items) {
-            // No provider output can introduce unverified canonical references.
-            // Referenced-image admission is a subsequent integration stage.
-            // Preserve cancellation/stale ownership precedence above.
-            response.output_items.clear();
-            response.stop_reason = tau_proto::ProviderStopReason::Error;
-            response.failure_kind = Some(tau_proto::ProviderFailureKind::RequestRejected);
-            response.error =
-                Some("unverified prepared image references are not enabled".to_owned());
+        if !images_verified
+            && tau_proto::context_items_have_image_references(&response.output_items)
+        {
+            // Ordinary terminals still cannot inject input-side tool results.
+            // Generic standalone windows may contain closed rounds, but only
+            // actual-byte verification and durable roots permit their boundary.
+            if active_compaction_response
+                && self
+                    .begin_compaction_image_admission(&cid, &response)
+                    .is_ok()
+            {
+                return Ok(());
+            }
+            compaction_image_admission::reject_compaction_images(&mut response);
         }
         // Cancellation, duplicate, and stale ownership checks deliberately run
         // before this aggregate pass so discarded provider output is never
@@ -1062,7 +1088,7 @@ impl Harness {
 
     /// Normalize and publish billing for a dispatched terminal rejected before
     /// the ordinary standalone terminal reducer.
-    fn account_early_standalone_terminal(
+    pub(super) fn account_early_standalone_terminal(
         &mut self,
         cid: &AgentId,
         response: &mut ProviderResponseFinished,
@@ -2540,6 +2566,10 @@ impl Harness {
         &mut self,
         agent_prompt_id: &AgentPromptId,
     ) {
+        self.prompt_coordination
+            .compaction_runtime
+            .images
+            .remove(agent_prompt_id);
         self.provider_runtime
             .cache_residency
             .drop_prompt(agent_prompt_id);

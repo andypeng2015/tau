@@ -1621,6 +1621,14 @@ impl Harness {
         source_id: &tau_proto::ConnectionId,
         mut updated: tau_proto::ProviderResponseUpdated,
     ) {
+        if self
+            .prompt_coordination
+            .compaction_runtime
+            .images
+            .contains(&updated.agent_prompt_id)
+        {
+            return;
+        }
         if !self.provider_prompt_owner_matches(
             source_id,
             &updated.agent_prompt_id,
@@ -1733,6 +1741,14 @@ impl Harness {
         response: tau_proto::ProviderResponseFinished,
         admitted_terminal_owner: Option<tau_proto::AgentId>,
     ) {
+        if self
+            .prompt_coordination
+            .compaction_runtime
+            .images
+            .contains(&response.agent_prompt_id)
+        {
+            return;
+        }
         let live_owner = self.provider_prompt_owner_matches(
             source_id,
             &response.agent_prompt_id,

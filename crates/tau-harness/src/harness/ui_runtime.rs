@@ -1170,6 +1170,10 @@ impl Harness {
     /// Records a durable terminal outcome when cancellation targets an active
     /// standalone compaction prompt.
     pub(super) fn cancel_running_compaction(&mut self, cid: &AgentId, prompt_id: &AgentPromptId) {
+        self.prompt_coordination
+            .compaction_runtime
+            .images
+            .cancel(prompt_id);
         let transaction = self
             .agent_runtime
             .agent_registry

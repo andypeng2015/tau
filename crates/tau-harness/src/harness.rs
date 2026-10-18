@@ -1593,6 +1593,7 @@ mod agent_watch_provider_deliveries;
 mod artifact_requests;
 mod bridge_receiver;
 mod cli_messaging;
+mod compaction_image_admission;
 mod compaction_runtime;
 mod compaction_runtime_state;
 #[cfg(test)]
@@ -2740,6 +2741,7 @@ impl Harness {
         in_process_cleanup_grace: Duration,
     ) -> Result<(), HarnessError> {
         self.tool_routing.tool_runtime.images.revoke_all();
+        self.retire_compaction_image_admissions(None);
         self.cancel_ui_interactions_for_shutdown();
         self.peer_messaging.cli_replies.clear();
         self.peer_messaging.cli_connections.clear();

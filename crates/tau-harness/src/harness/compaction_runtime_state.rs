@@ -104,6 +104,8 @@ pub(super) enum ManualCompactionStartOwner {
 /// Runtime-only ownership for manual, reactive, and UI compaction work.
 #[derive(Default)]
 pub(crate) struct CompactionRuntimeState {
+    /// Generic replacement terminals awaiting actual-byte verification.
+    pub(super) images: super::compaction_image_admission::CompactionImageAdmissions,
     /// Exclusive runtime reasons that committed starts must not dispatch.
     suppressed_starts: HashMap<CompactionTransaction, SuppressedStart>,
     /// Failures that clean runtime state without provider-watch projection.

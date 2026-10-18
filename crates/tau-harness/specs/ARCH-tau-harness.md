@@ -30,9 +30,15 @@ CAS coordination. Completion revalidates exact call, source, session, runtime
 incarnation and persistence lease before normal immutable terminal publication.
 Committed cancellation settles this harness-owned phase without relying on a
 producer that has already finished. Canonical backpressure retains the verified
-terminal without repeating I/O. Production policy remains Inline until provider
-resolution is ready; generic provider replacement references still await their
-own admission path. Cleanup notices omit digest-bearing paths.
+terminal without repeating I/O. Generic standalone replacement windows share
+this worker after closed-round, boundary and logical-quota validation. Each
+typed image occurrence is checked against actual bytes before rooting; references
+need not match prior source images. Completion rechecks the captured transaction,
+attempt and source/lease ownership before ordinary cancellation, branch and
+canonical-boundary handling. Ordinary provider terminals still cannot inject tool
+results, and opaque provider payloads are not scanned for references. Production
+policy remains Inline until provider resolution is ready. Cleanup notices omit
+digest-bearing paths.
 
 The attached-socket operator path can unload one saved agent without deleting
 history. The harness classifies only committed in-memory membership, rejects

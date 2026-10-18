@@ -93,6 +93,7 @@ impl Harness {
         now: Instant,
     ) {
         self.cancel_connection_history(connection_id);
+        self.retire_compaction_image_admissions(Some(connection_id));
         self.tool_routing
             .tool_runtime
             .images

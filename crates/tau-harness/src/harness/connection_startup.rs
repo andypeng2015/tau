@@ -579,7 +579,7 @@ impl Harness {
                 self.send_artifact_result(&command.connection, command.result);
             }
             HarnessCommand::ImageVerificationCompleted(completed) => {
-                self.complete_tool_image_admission(*completed);
+                self.complete_image_admission(*completed);
             }
             HarnessCommand::ArtifactCleanupCorruption(paths) => {
                 for path in paths {

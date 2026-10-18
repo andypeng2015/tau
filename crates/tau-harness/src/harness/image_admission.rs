@@ -9,6 +9,7 @@ use super::*;
 use crate::artifact_worker::ArtifactWorker;
 use crate::image_verification::{
     ImageVerificationCompleted, ImageVerificationOwner, ImageVerificationRequest,
+    ImageVerificationTerminal,
 };
 
 /// Logical ownership is separate from the worker's queued/physical/completion
@@ -90,7 +91,7 @@ impl Drop for ImageAdmissionRuntime {
 impl Harness {
     /// Captures metadata-only authority before worker admission, without CAS
     /// I/O.
-    fn image_verification_owner(
+    pub(super) fn image_verification_owner(
         &self,
         cid: &AgentId,
         source: &tau_proto::ConnectionId,
@@ -198,7 +199,7 @@ impl Harness {
         let live = Arc::new(AtomicBool::new(true));
         let request = ImageVerificationRequest {
             owner: owner.clone(),
-            terminal: result,
+            terminal: ImageVerificationTerminal::Tool(Box::new(result)),
             live: Arc::clone(&live),
         };
         let admitted = (|| {
@@ -239,13 +240,23 @@ impl Harness {
 
     /// Physical custody ended before this completion entered the main-loop
     /// queue.
-    pub(super) fn complete_tool_image_admission(&mut self, completed: ImageVerificationCompleted) {
+    pub(super) fn complete_image_admission(&mut self, completed: ImageVerificationCompleted) {
+        if matches!(
+            completed.request.terminal,
+            ImageVerificationTerminal::Standalone { .. }
+        ) {
+            self.complete_compaction_image_admission(completed);
+            return;
+        }
         let ImageVerificationCompleted {
             request,
             outcome,
             _permit,
         } = completed;
-        let call_id = request.terminal.call_id.clone();
+        let ImageVerificationTerminal::Tool(terminal) = request.terminal else {
+            unreachable!("standalone completion routed above");
+        };
+        let call_id = terminal.call_id.clone();
         let matches = self
             .tool_routing
             .tool_runtime
@@ -273,10 +284,10 @@ impl Harness {
             return;
         }
         let cid = pending.owner.cid;
-        let validation = self.validate_owned_tool_result(&cid, &request.terminal);
+        let validation = self.validate_owned_tool_result(&cid, &terminal);
         match (outcome, validation) {
             (Ok(()), Ok(())) => {
-                let mut result = request.terminal;
+                let mut result = *terminal;
                 self.dedup_tool_result(&cid, &mut result);
                 self.publish_terminal_tool_result(
                     Some(&cid),
@@ -285,15 +296,13 @@ impl Harness {
                 );
             }
             (Err(error), _) => {
-                let error = image_admission_error(
-                    &request.terminal,
-                    image_admission_failure_message(error),
-                );
+                let error =
+                    image_admission_error(&terminal, image_admission_failure_message(error));
                 self.publish_terminal_tool_error(Some(&cid), Some(harness_connection_id()), error);
             }
             (_, Err(_)) => {
                 let error = image_admission_error(
-                    &request.terminal,
+                    &terminal,
                     "image result rejected by transcript safety validation",
                 );
                 self.publish_terminal_tool_error(Some(&cid), Some(harness_connection_id()), error);

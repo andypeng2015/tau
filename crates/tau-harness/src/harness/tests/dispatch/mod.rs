@@ -2877,6 +2877,7 @@ mod compaction_agent_scope;
 mod compaction_failure_recovery;
 mod compaction_fresh_usage;
 mod compaction_generation_negative;
+mod compaction_images;
 mod compaction_provider_watch;
 mod compaction_reactive_rolling;
 mod compaction_runtime_state;
