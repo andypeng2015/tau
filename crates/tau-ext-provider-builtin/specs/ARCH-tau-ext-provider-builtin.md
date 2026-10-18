@@ -5,12 +5,30 @@ immutable credential-free settings snapshot and runtime Secret RPC credentials, 
 model-visible prompt and tool context from the harness, invokes external model
 services, and reports provider execution through Tau protocol events.
 
-The inactive prepared-image-reference schema fails closed at the shared prompt
-backend dispatch and the separate cache-prewarm entry. Unresolved references
-produce a correlated non-retryable request failure (or prewarm failure), with
-cancellation precedence, before backend work. No artifact fetch or model-token
-cache is implemented by this checkpoint. Ordinary, native compact, and local
-summary requests share the prompt guard; prewarm cannot bypass it.
+Typed prepared-image references resolve before shared prompt backend dispatch
+and the separate cache-prewarm entry. The normal input loop demultiplexes exact
+Artifact request IDs alongside image-tool uploads; workers use the established
+bounded downloader and validate actual media before adapter lowering. A shared
+process-local LRU retains at most 64 MiB and 64 entries of digest-verified encoded
+bytes, not pixels, tokens or embeddings. Eight distinct downloads and eight
+pending RPCs have independent bounds; concurrent same-key consumers share a
+fetch. Each consuming request has a non-renewable 30-second local resolution
+budget and retains its existing cancellation source. Internal cache/RPC waits
+use coalesced completion and cancellation notifications with absolute deadlines.
+Local RPC admission overload fails immediately. Only external Artifact Busy uses
+25-millisecond retry backoff: the service exposes no capacity notification, and
+cancellation interrupts that backoff under the original deadline.
+Pending canceled allocations remain bounded until late cleanup or
+transport closure; unconsumed Open replies own best-effort Close.
+
+Ordinary, native compact, local-summary and warm-prefix requests share resolution.
+Only a private attempt copy becomes inline; retained retries keep their original
+references. Every occurrence checks its own size, MIME and dimensions. Existing
+adapter capability checks and raw/data-URL request budgets still apply unchanged.
+Missing or corrupt content produces one correlated non-retryable request failure
+(or prewarm failure), with cancellation precedence, before backend work. Cache
+hits are not durable-store health checks. Opaque JSON is not scanned. Production
+harness emission remains Inline pending final integration and enablement.
 
 The dedicated inspection branch validates supplied credential-free profile files
 and constructs candidate model metadata before operational runtime construction.

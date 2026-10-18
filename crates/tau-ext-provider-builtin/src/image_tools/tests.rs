@@ -28,22 +28,23 @@ fn with_transport(
     f: impl FnOnce(&ClientHandle, tau_client::ManualRuntimeWaker),
 ) -> Vec<HarnessInputMessage> {
     let mut input = Vec::new();
-    let mut writer = tau_proto::HarnessOutputWriter::new(&mut input);
-    writer
-        .write_message(&HarnessOutputMessage::Configure(tau_proto::Configure {
-            purpose: Default::default(),
-            harness_protocol_version: None,
-            config: CborValue::Map(Vec::new()),
-            instance_name: "image-test".parse().expect("instance"),
-            tool_prefix: None,
-            state_dir: None,
-            secrets: Default::default(),
-            absent_optional_secrets: Default::default(),
-            settings_files: Default::default(),
-        }))
-        .expect("configure");
-    writer.flush().expect("flush");
-    drop(writer);
+    {
+        let mut writer = tau_proto::HarnessOutputWriter::new(&mut input);
+        writer
+            .write_message(&HarnessOutputMessage::Configure(tau_proto::Configure {
+                purpose: Default::default(),
+                harness_protocol_version: None,
+                config: CborValue::Map(Vec::new()),
+                instance_name: "image-test".parse().expect("instance"),
+                tool_prefix: None,
+                state_dir: None,
+                secrets: Default::default(),
+                absent_optional_secrets: Default::default(),
+                settings_files: Default::default(),
+            }))
+            .expect("configure");
+        writer.flush().expect("flush");
+    }
     let output = SharedTraceWriter::default();
     let runtime = TauExtensionRunner::new(TestExtension)
         .start_manual_loop(Cursor::new(input), output.clone(), ())
@@ -65,7 +66,7 @@ fn with_transport(
 fn image_available_starts_exactly_one_selected_account_worker() {
     let frames = with_transport(|handle, waker| {
         let mut runtime = crate::tests::observation_test_runtime();
-        runtime.images = images();
+        runtime.images.tools = images();
         runtime.worker_waker = Some(waker);
         runtime.load_prompt_profiles = |selected| {
             assert_eq!(selected, Some(&ProviderName::new("selected")));
@@ -79,7 +80,7 @@ fn image_available_starts_exactly_one_selected_account_worker() {
             );
             profiles
         };
-        runtime.images.executor = |_, prompt, id, _, cancelled| {
+        runtime.images.tools.executor = |_, prompt, id, _, cancelled| {
             assert_eq!(prompt, "a transparent leaf");
             assert_eq!(id, "image-call");
             assert!(!cancelled.is_cancelled());
@@ -89,6 +90,7 @@ fn image_available_starts_exactly_one_selected_account_worker() {
         assert!(runtime.worker_rx.try_recv().is_err());
         let request_id = runtime
             .images
+            .tools
             .requests
             .keys()
             .next()
@@ -114,9 +116,10 @@ fn image_available_starts_exactly_one_selected_account_worker() {
         assert_eq!(result, Err(GenerationError::Quota));
         runtime
             .images
+            .tools
             .generated(call_id, result, handle)
             .expect("terminal");
-        assert!(runtime.images.calls.is_empty());
+        assert!(runtime.images.tools.calls.is_empty());
         assert!(runtime.worker_rx.try_recv().is_err());
     });
     assert_eq!(
@@ -232,14 +235,26 @@ fn image_declarations_default_on_but_remain_role_authorized() {
 fn image_availability_failure_does_not_generate() {
     let frames = with_handle(|handle| {
         let mut runtime = crate::tests::observation_test_runtime();
-        runtime.images = images();
-        runtime.images.start(started(), handle).expect("start");
+        runtime.images.tools = images();
+        runtime
+            .images
+            .tools
+            .start(started(), handle)
+            .expect("start");
         assert!(matches!(
-            runtime.images.calls.values().next().expect("call").phase,
+            runtime
+                .images
+                .tools
+                .calls
+                .values()
+                .next()
+                .expect("call")
+                .phase,
             Phase::Availability
         ));
         let request_id = runtime
             .images
+            .tools
             .requests
             .keys()
             .next()
@@ -254,7 +269,7 @@ fn image_availability_failure_does_not_generate() {
                 handle,
             )
             .expect("denial");
-        assert!(runtime.images.calls.is_empty());
+        assert!(runtime.images.tools.calls.is_empty());
         assert!(runtime.worker_rx.try_recv().is_err());
     });
     assert_eq!(frames.iter().filter(|frame| matches!(frame, HarnessInputMessage::ArtifactRequest(request) if request.op == ArtifactOp::Available)).count(), 1);
@@ -277,14 +292,17 @@ fn image_original_upload_returns_reference_without_path_or_inline_bytes() {
         let mut runtime = crate::tests::observation_test_runtime();
         runtime
             .images
+            .tools
             .calls
             .insert(started().call_id, call(Phase::Generating));
         runtime
             .images
+            .tools
             .generated(started().call_id, Ok(original.clone()), handle)
             .expect("generated");
         runtime
             .images
+            .tools
             .generated(started().call_id, Err(GenerationError::Transport), handle)
             .expect("duplicate worker ignored without losing upload");
         for value in [
@@ -301,6 +319,7 @@ fn image_original_upload_returns_reference_without_path_or_inline_bytes() {
         ] {
             let request_id = runtime
                 .images
+                .tools
                 .requests
                 .keys()
                 .next()
@@ -316,7 +335,7 @@ fn image_original_upload_returns_reference_without_path_or_inline_bytes() {
                 )
                 .expect("advance");
         }
-        assert!(runtime.images.calls.is_empty());
+        assert!(runtime.images.tools.calls.is_empty());
     });
     let written: Vec<u8> = frames
         .iter()
@@ -382,26 +401,30 @@ fn image_cancellation_and_timeout_invalidate_late_publication() {
                 let mut runtime = crate::tests::observation_test_runtime();
                 let call = call(phase);
                 let flag = Arc::clone(&call.cancel);
-                runtime.images.calls.insert(started().call_id, call);
+                runtime.images.tools.calls.insert(started().call_id, call);
                 let request_id: ArtifactRequestId = "pending".parse().expect("request");
                 runtime
                     .images
+                    .tools
                     .requests
                     .insert(request_id.clone(), started().call_id);
                 if timeout {
                     runtime
                         .images
+                        .tools
                         .timeout(&started().call_id, handle)
                         .expect("timeout");
                 } else {
                     runtime
                         .images
+                        .tools
                         .cancel(&started().call_id, handle)
                         .expect("cancel");
                 }
                 assert!(flag.is_cancelled());
                 runtime
                     .images
+                    .tools
                     .generated(started().call_id, Ok(b"late original".to_vec()), handle)
                     .expect("late worker");
                 runtime
@@ -413,7 +436,7 @@ fn image_cancellation_and_timeout_invalidate_late_publication() {
                         handle,
                     )
                     .expect("late RPC");
-                assert!(runtime.images.calls.is_empty());
+                assert!(runtime.images.tools.calls.is_empty());
             });
             assert_eq!(frames.iter().filter(|frame| matches!(frame, HarnessInputMessage::Emit(emit) if matches!(*emit.event, tau_proto::Event::ToolErrorReported(_) | tau_proto::Event::ToolCancelledReported(_)))).count(), 1);
             assert!(!frames.iter().any(|frame| matches!(frame, HarnessInputMessage::Emit(emit) if matches!(*emit.event, tau_proto::Event::ToolResultReported(_)))));
@@ -428,10 +451,12 @@ fn image_upload_failure_aborts_without_regeneration() {
         let mut runtime = crate::tests::observation_test_runtime();
         runtime
             .images
+            .tools
             .calls
             .insert(started().call_id, call(Phase::Generating));
         runtime
             .images
+            .tools
             .generated(started().call_id, Ok(b"original".to_vec()), handle)
             .expect("generated");
         for value in [
@@ -442,6 +467,7 @@ fn image_upload_failure_aborts_without_regeneration() {
         ] {
             let request_id = runtime
                 .images
+                .tools
                 .requests
                 .keys()
                 .next()
@@ -457,8 +483,8 @@ fn image_upload_failure_aborts_without_regeneration() {
                 )
                 .expect("reply");
         }
-        assert!(runtime.images.calls.is_empty());
-        assert!(runtime.images.requests.is_empty());
+        assert!(runtime.images.tools.calls.is_empty());
+        assert!(runtime.images.tools.requests.is_empty());
         assert!(runtime.worker_rx.try_recv().is_err());
     });
     assert_eq!(frames.iter().filter(|frame| matches!(frame, HarnessInputMessage::ArtifactRequest(request) if matches!(request.op, ArtifactOp::Abort { .. }))).count(), 1);

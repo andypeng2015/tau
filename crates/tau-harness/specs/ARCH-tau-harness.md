@@ -37,7 +37,7 @@ need not match prior source images. Completion rechecks the captured transaction
 attempt and source/lease ownership before ordinary cancellation, branch and
 canonical-boundary handling. Ordinary provider terminals still cannot inject tool
 results, and opaque provider payloads are not scanned for references. Production
-policy remains Inline until provider resolution is ready. Cleanup notices omit
+policy remains Inline pending final reference integration and enablement. Cleanup notices omit
 digest-bearing paths.
 
 The attached-socket operator path can unload one saved agent without deleting

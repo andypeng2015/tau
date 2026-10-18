@@ -6,7 +6,9 @@ The store has an internal transcript-root foundation and the protocol can
 represent prepared-image references. The utility producer can upload prepared
 bytes under captured Artifact policy. Tool admission and lawful generic standalone
 replacement admission verify and retain typed references off-loop before canonical
-publication. Production still selects Inline until provider resolution is complete.
+publication. The built-in provider resolves references through Artifact RPC with
+bounded verified-byte caching. Production still selects Inline pending final
+integration and enablement.
 
 ## Record justification
 

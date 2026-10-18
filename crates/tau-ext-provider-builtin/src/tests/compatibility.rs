@@ -343,6 +343,7 @@ fn chat_completions_event_snapshot(
             &mut writer,
             &mut abort,
             ChatGptPromptExecutionContext {
+                image_resolution: None,
                 debug_provider_requests: false,
                 runtime: &runtime,
                 prior_backend: None,

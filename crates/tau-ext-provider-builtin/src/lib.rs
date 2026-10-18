@@ -22,6 +22,7 @@ mod grok_runtime;
 pub use grok::{GrokModel, GrokProfile};
 use tau_provider_chatgpt::credential::Credential as ChatGptPlanCredential;
 use tau_provider_grok::credential::Credential as GrokCredential;
+mod image_resolution;
 mod image_tools;
 mod local_summary_validation_error;
 mod oauth_refresh_rejection;
@@ -29,7 +30,10 @@ mod openai_auth;
 mod openai_prompt_cache;
 mod output_cost_observation;
 mod prewarm;
+mod prompt_backend;
 mod prompt_oauth;
+mod provider_images;
+use prompt_backend::handle_prompt_backend;
 mod provider_catalog;
 mod provider_settings_validation;
 use provider_catalog::{
@@ -2859,6 +2863,7 @@ where
                 cx.state.configuration.state_dir = cx.configure.state_dir.clone();
                 cx.state
                     .images
+                    .tools
                     .configure(&profiles, cx.configure, &cx.handle)?;
                 if !publish_models_after_configure {
                     let model_count = models_for_profiles(&profiles).len();
@@ -3008,9 +3013,16 @@ where
                                 Some(ReceiptObservation::new(observation));
                         }
                         if let tau_proto::HarnessOutputMessage::ArtifactResult(result) = frame {
-                            runtime
+                            if let Some(result) = runtime
                                 .state_mut()
-                                .handle_image_artifact_result(*result, &handle)?;
+                                .images
+                                .resolution
+                                .result(*result, &handle)
+                            {
+                                runtime
+                                    .state_mut()
+                                    .handle_image_artifact_result(result, &handle)?;
+                            }
                             continue;
                         }
                         if let tau_proto::HarnessOutputMessage::ExtensionDataResult(result) = frame
@@ -3024,7 +3036,8 @@ where
                         match runtime.dispatch_one(frame)? {
                             DispatchOutcome::Continue => {}
                             DispatchOutcome::Disconnect(_) => {
-                                runtime.state_mut().images.abandon_all();
+                                runtime.state_mut().images.tools.abandon_all();
+                                runtime.state_mut().images.resolution.shutdown();
                                 runtime.state_mut().cancellation.shutdown();
                                 runtime.state_mut().cancel_all_prewarms();
                                 let _state = runtime.finish_detached();
@@ -3140,7 +3153,7 @@ struct ProviderConfigurationState {
 /// Live provider event loop state after the Tau extension handshake completes.
 struct ProviderRuntime<F> {
     /// Ordinary image tool calls and correlated artifact publication.
-    images: image_tools::ImageTools,
+    images: provider_images::ProviderImages,
     /// Configure-owned runtime identity and startup-stable response modes.
     configuration: ProviderConfigurationState,
     /// Clones either the complete validated settings snapshot or one indexed
@@ -3645,7 +3658,8 @@ where
 
     fn begin_input_shutdown(&mut self) {
         self.input_closed = true;
-        self.images.abandon_all();
+        self.images.tools.abandon_all();
+        self.images.resolution.shutdown();
         self.cancel_all_prewarms();
         self.cancellation.shutdown();
         // No late Secret reply may resurrect an admission after input shutdown.
@@ -3667,7 +3681,7 @@ where
         match event {
             Event::ToolStarted(started) => self.start_image_call(started, handle)?,
             Event::ToolCancelRequest(cancel) => {
-                self.images.cancel(&cancel.target_call_id, handle)?
+                self.images.tools.cancel(&cancel.target_call_id, handle)?
             }
             Event::HarnessSessionDir(session_dir) => self.record_session_debug_policy(session_dir),
             Event::AgentPromptPrewarmRequested(prewarm) => self.prewarm_backend(prewarm, handle)?,
@@ -3688,7 +3702,7 @@ where
     }
 
     fn record_session_debug_policy(&mut self, session_dir: tau_proto::HarnessSessionDir) {
-        self.images.session = Some(session_dir.session_id.clone());
+        self.images.tools.session = Some(session_dir.session_id.clone());
         self.diagnostics.session_debug_allowed.insert(
             session_dir.session_id,
             !matches!(session_dir.status, tau_proto::SessionDirStatus::Ephemeral),
@@ -3756,6 +3770,7 @@ where
         );
         let executor = self.prewarm_executor.clone();
         let runtime = self.codex_runtime.clone();
+        let image_resolution = self.image_resolution_client();
         let tx = self.worker_tx.clone();
         let waker = self
             .worker_waker
@@ -3765,6 +3780,7 @@ where
         thread::spawn(move || {
             let _ = executor(PrewarmExecution {
                 runtime,
+                image_resolution: Some(image_resolution),
                 config,
                 request: prewarm,
                 refresh_id: None,
@@ -4989,7 +5005,8 @@ where
 
     /// Cancels every session-owned job during final daemon shutdown.
     fn handle_session_shutdown(&mut self, handle: &ClientHandle) -> ClientResult<()> {
-        self.images.cancel_all(handle)?;
+        self.images.tools.cancel_all(handle)?;
+        self.images.resolution.shutdown();
         self.handle_cancel_prompt(
             tau_proto::UiCancelPrompt {
                 session_id: tau_proto::SessionId::parse("shutdown")
@@ -5018,6 +5035,9 @@ where
                 observation.message(matches!(message, WorkerMessage::Output { .. }));
             }
             match received {
+                Ok(WorkerMessage::ImageResolveRpc(rpc)) => {
+                    self.images.resolution.request(rpc, handle)
+                }
                 Ok(WorkerMessage::ChatGptPlanSecret(rpc)) => self.start_chatgpt_plan_secret(rpc),
                 Ok(WorkerMessage::GrokSecretRequest(rpc)) => {
                     self.start_grok_secret_request(rpc);
@@ -5043,10 +5063,10 @@ where
                     );
                 }
                 Ok(WorkerMessage::ImageGenerated { call_id, result }) => {
-                    self.images.generated(call_id, result, handle)?;
+                    self.images.tools.generated(call_id, result, handle)?;
                 }
                 Ok(WorkerMessage::ImageTimedOut { call_id }) => {
-                    self.images.timeout(&call_id, handle)?;
+                    self.images.tools.timeout(&call_id, handle)?;
                 }
                 Ok(WorkerMessage::PromptOAuthRefreshFinished { key, owner, result }) => {
                     self.handle_prompt_oauth_refresh_finished(key, owner, result)?;
@@ -5565,7 +5585,19 @@ where
             prompt_executor: self.prompt_executor.clone(),
             cancellation: self.cancellation.clone(),
             codex_runtime: self.codex_runtime.clone(),
+            image_resolution: self.image_resolution_client(),
         }
+    }
+
+    /// Captures a worker endpoint using the runtime's existing response loop.
+    fn image_resolution_client(&self) -> image_resolution::Client {
+        self.images.resolution.client(
+            self.worker_tx.clone(),
+            self.worker_waker
+                .as_ref()
+                .expect("worker waker installed")
+                .clone(),
+        )
     }
 }
 
@@ -5911,6 +5943,8 @@ type PromptExecutor = Arc<dyn Fn(PromptExecution) + Send + Sync + 'static>;
 struct PrewarmExecution {
     /// Shared ChatGPT runtime and connection pool.
     runtime: Arc<CodexRuntime>,
+    /// Shared verified image bytes and bounded Artifact RPC.
+    image_resolution: Option<image_resolution::Client>,
     /// Resolved immutable backend configuration.
     config: ResolvedConfig,
     /// Owned prefix request received from the harness.
@@ -7363,6 +7397,8 @@ struct PromptExecution {
     worker_output_depth: Option<Arc<WorkerQueueState>>,
     cancellation: Arc<CancellationState>,
     codex_runtime: Arc<CodexRuntime>,
+    /// Shared verified image bytes and bounded Artifact RPC.
+    image_resolution: image_resolution::Client,
 }
 
 struct PromptWorkerContext {
@@ -7373,6 +7409,8 @@ struct PromptWorkerContext {
     prompt_executor: PromptExecutor,
     cancellation: Arc<CancellationState>,
     codex_runtime: Arc<CodexRuntime>,
+    /// Shared verified image bytes and bounded Artifact RPC.
+    image_resolution: image_resolution::Client,
 }
 
 impl PromptExecution {
@@ -7389,6 +7427,8 @@ impl PromptExecution {
 }
 
 enum WorkerMessage {
+    /// Prompt or prewarm worker requesting one bounded Artifact operation.
+    ImageResolveRpc(image_resolution::Rpc),
     /// Public ChatGPT worker requesting an exact Secret operation.
     ChatGptPlanSecret(chatgpt_plan::runtime::Rpc),
     /// Worker observed a different same-account generation before exchange.
@@ -7772,6 +7812,7 @@ fn production_prompt_executor() -> PromptExecutor {
                 cancel_generation: execution.job.cancel_generation,
             };
             let prompt_context = ChatGptPromptExecutionContext {
+                image_resolution: Some(&execution.image_resolution),
                 debug_provider_requests: execution.job.debug_provider_requests,
                 runtime: &execution.codex_runtime,
                 prior_backend: execution.job.observed_backend.as_ref(),
@@ -7830,6 +7871,7 @@ fn production_prewarm_executor() -> PrewarmExecutor {
             execution.refresh_id.as_ref(),
             execution.debug_provider_requests,
             &mut execution.abort,
+            execution.image_resolution.as_ref(),
         )
     })
 }
@@ -7848,6 +7890,7 @@ fn start_prompt_job(mut job: PromptJob, active_prompts: &mut usize, context: &Pr
         worker_output_depth: context.worker_output_depth.clone(),
         cancellation: context.cancellation.clone(),
         codex_runtime: context.codex_runtime.clone(),
+        image_resolution: context.image_resolution.clone(),
     };
     let executor = context.prompt_executor.clone();
     let done_tx = context.worker_tx.clone();
@@ -8749,140 +8792,6 @@ fn resolve_prewarm_backend(
     Some((model.clone(), config))
 }
 
-fn handle_prompt_backend<R, S: ProviderReportSink>(
-    agent_prompt_id: &tau_proto::AgentPromptId,
-    backend: &PromptBackend,
-    prompt: &tau_proto::AgentPromptCreated,
-    writer: &mut S,
-    retry_ctx: &mut R,
-    context: ChatGptPromptExecutionContext<'_>,
-    on_quota: &mut impl FnMut(&tau_provider_codex::RollingQuotaObservation),
-) -> Result<Option<PromptAttemptRetry>, Box<dyn Error>>
-where
-    R: TurnAbort,
-{
-    if prompt.has_image_references() {
-        if retry_ctx.is_aborted() {
-            return finish_canceled_attempt(
-                agent_prompt_id,
-                prompt,
-                writer,
-                false,
-                None,
-                context.logical_attempt.provider_attempt(),
-            );
-        }
-        let mut finished = simple_finished(
-            agent_prompt_id.clone(),
-            prompt.agent_id.clone(),
-            prompt.originator.clone(),
-            "prepared image references must be resolved before provider submission",
-        );
-        finished.failure_kind = Some(tau_proto::ProviderFailureKind::RequestRejected);
-        finished.provider_attempt = context.logical_attempt.provider_attempt();
-        return finish_terminal_attempt(agent_prompt_id, prompt, writer, finished, false);
-    }
-    match backend {
-        PromptBackend::ChatGptPlan {
-            profile,
-            model_index,
-        } => {
-            let selected = profile
-                .credential
-                .as_ref()
-                .ok_or("ChatGPT registration is missing")?;
-            let session = profile
-                .session
-                .as_ref()
-                .ok_or("ChatGPT credential owner unavailable")?;
-            let credential = session.credential(selected, context.runtime.network(), &mut || {
-                TurnAbort::is_aborted(retry_ctx)
-            });
-            let mut provider = profile.responses();
-            match credential {
-                Ok(credential) => provider.api_key = credential.access_token()?.to_owned(),
-                Err(reason) => {
-                    return public_backends::finish_chatgpt_credential_failure(
-                        agent_prompt_id,
-                        prompt,
-                        &provider,
-                        reason,
-                        writer,
-                        retry_ctx,
-                        context,
-                    );
-                }
-            }
-            handle_public_responses_backend(
-                agent_prompt_id,
-                prompt,
-                &provider,
-                &provider.models[*model_index],
-                responses::Route::ChatGptPlan,
-                writer,
-                retry_ctx,
-                context,
-            )
-        }
-        PromptBackend::Grok {
-            profile,
-            model_index,
-        } => {
-            let provider = profile.responses();
-            handle_public_responses_backend(
-                agent_prompt_id,
-                prompt,
-                &provider,
-                &provider.models[*model_index],
-                responses::Route::Grok(&profile.models[*model_index]),
-                writer,
-                retry_ctx,
-                context,
-            )
-        }
-        PromptBackend::Unavailable { .. } => Ok(Some(PromptAttemptRetry {
-            decision: RetryDecision::new(RetryClass::Auth),
-            live_detail: None,
-            canonical_unauthorized: false,
-            terminal_backend: None,
-        })),
-        PromptBackend::Responses(config) => handle_prompt(
-            agent_prompt_id,
-            config,
-            prompt,
-            writer,
-            retry_ctx,
-            context,
-            on_quota,
-        ),
-        PromptBackend::ChatCompletions {
-            provider,
-            model_index,
-        } => handle_chat_completions_backend(
-            agent_prompt_id,
-            prompt,
-            provider,
-            &provider.models[*model_index],
-            writer,
-            retry_ctx,
-            context,
-        ),
-        PromptBackend::PublicResponses {
-            provider,
-            model_index,
-        } => handle_public_responses_backend(
-            agent_prompt_id,
-            prompt,
-            provider,
-            &provider.models[*model_index],
-            responses::Route::Generic,
-            writer,
-            retry_ctx,
-            context,
-        ),
-    }
-}
-
 /// Emits a successful final response unless a concurrent cancellation won.
 struct CancellationFinishPolicy {
     /// Transient detail emitted when tentative output must be cleared.
@@ -9066,6 +8975,8 @@ fn emit_chat_completions_partial_clear<S: ProviderReportSink>(
 /// Shared immutable inputs for one ChatGPT provider prompt attempt.
 #[derive(Clone, Copy)]
 struct ChatGptPromptExecutionContext<'a> {
+    /// Shared resolver; absent only for direct adapter/guard tests.
+    image_resolution: Option<&'a image_resolution::Client>,
     /// Whether durable-session policy permits provider debug captures.
     debug_provider_requests: bool,
     /// Shared ChatGPT transport runtime and WebSocket pool.

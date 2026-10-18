@@ -143,6 +143,7 @@ where
         );
         let executor = self.prewarm_executor.clone();
         let runtime = self.codex_runtime.clone();
+        let image_resolution = self.image_resolution_client();
         let tx = self.worker_tx.clone();
         let waker = self
             .worker_waker
@@ -152,6 +153,7 @@ where
         thread::spawn(move || {
             let status = PrewarmExecution {
                 runtime,
+                image_resolution: Some(image_resolution),
                 config,
                 request: refresh.prompt,
                 refresh_id: Some(refresh_id.clone()),

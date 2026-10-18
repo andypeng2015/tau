@@ -1,4 +1,5 @@
 use super::*;
+use crate::image_resolution::{State, tests as resolver_fixture};
 
 /// Supplies reference-bearing history without any upload or actual image bytes.
 fn referenced_context() -> tau_proto::PromptContext {
@@ -73,6 +74,7 @@ fn unresolved_image_reference_terminalizes_before_backend_dispatch() {
             &mut tau_proto::PeerOutputWriter::new(&mut bytes),
             &mut RecordingRetrySleeper,
             ChatGptPromptExecutionContext {
+                image_resolution: None,
                 debug_provider_requests: false,
                 runtime: &runtime,
                 prior_backend: None,
@@ -127,6 +129,7 @@ fn unresolved_image_reference_preserves_cancellation_precedence() {
         &mut tau_proto::PeerOutputWriter::new(&mut bytes),
         &mut Aborted,
         ChatGptPromptExecutionContext {
+            image_resolution: None,
             debug_provider_requests: false,
             runtime: &runtime,
             prior_backend: None,
@@ -180,12 +183,87 @@ fn unresolved_image_reference_fails_prewarm_without_runtime_work() {
             &runtime,
             None,
             false,
-            &mut RecordingRetrySleeper
+            &mut RecordingRetrySleeper,
+            None,
         ),
         tau_proto::ProviderCacheRefreshStatus::Failed
     );
     assert_eq!(
-        handle_resolved_prewarm(&prewarm, &config, &runtime, None, false, &mut Aborted),
+        handle_resolved_prewarm(&prewarm, &config, &runtime, None, false, &mut Aborted, None),
         tau_proto::ProviderCacheRefreshStatus::Cancelled
     );
+}
+
+/// A failed real artifact lookup is one non-retryable consuming-request
+/// terminal, not a backend attempt or a provider-process failure.
+#[test]
+fn missing_referenced_image_terminalizes_without_backend_retry_or_key_disclosure() {
+    for operation in [
+        tau_proto::PromptOperation::Inference,
+        tau_proto::PromptOperation::StandaloneCompaction,
+    ] {
+        resolver_fixture::with_transport(|handle, waker| {
+            let mut state = State::default();
+            let (tx, rx) = mpsc::channel();
+            let resolver = state.client(tx, waker);
+            let worker = thread::spawn(move || {
+                let mut prompt = minimal_prompt();
+                prompt.operation = operation;
+                prompt.context = resolver_fixture::context();
+                let original = prompt.clone();
+                let runtime = CodexRuntime::new(Arc::new(test_network_policy()));
+                let mut bytes = Vec::new();
+                let retry = handle_prompt_backend(
+                    &prompt.agent_prompt_id,
+                    &PromptBackend::Unavailable {
+                        login_required: None,
+                    },
+                    &prompt,
+                    &mut tau_proto::PeerOutputWriter::new(&mut bytes),
+                    &mut RecordingRetrySleeper,
+                    ChatGptPromptExecutionContext {
+                        image_resolution: Some(&resolver),
+                        debug_provider_requests: false,
+                        runtime: &runtime,
+                        prior_backend: None,
+                        logical_attempt: tau_provider_codex::LogicalAttempt::new(3),
+                        compact_route_unavailable: &|_| panic!("no model request"),
+                    },
+                    &mut |_| panic!("no quota request"),
+                )
+                .expect("terminal");
+                assert!(
+                    retry.is_none(),
+                    "resolution failure cannot reach unavailable-backend retry"
+                );
+                assert_eq!(
+                    prompt, original,
+                    "retained retry input remains reference-backed"
+                );
+                let frames = decode_frames(&bytes);
+                assert_eq!(frames.len(), 1);
+                let HarnessInputMessage::Emit(emit) = &frames[0] else {
+                    panic!("terminal")
+                };
+                let Event::ProviderResponseFinishedReported(finished) = emit.event.as_ref() else {
+                    panic!("terminal")
+                };
+                assert_eq!(
+                    finished.failure_kind,
+                    Some(tau_proto::ProviderFailureKind::RequestRejected)
+                );
+                assert_eq!(finished.provider_attempt.get(), 3);
+                assert!(
+                    !format!("{finished:?}").contains(
+                        resolver_fixture::descriptor(&resolver_fixture::png())
+                            .key
+                            .as_str()
+                    )
+                );
+            });
+            resolver_fixture::serve(&mut state, &rx, worker, handle, |_| {
+                Err(tau_proto::ArtifactError::Unavailable)
+            });
+        });
+    }
 }

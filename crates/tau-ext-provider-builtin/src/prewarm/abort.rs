@@ -36,10 +36,11 @@ impl PrewarmAbort {
     pub(crate) fn cancel(&self) {
         if let Ok(wakers) = self.inner.wakers.lock() {
             self.inner.canceled.store(true, Ordering::Release);
-            // These callbacks only enqueue transport wakes or invalidate a pool
-            // key; none re-enters this registry. Keeping the registry locked
-            // makes guard drop a join point for an already-started callback,
-            // which linearizes cancellation against staged socket release.
+            // These callbacks only enqueue worker/transport wakes or invalidate
+            // a pool key; none re-enters this registry. Keeping the
+            // registry locked makes guard drop a join point for an
+            // already-started callback, which linearizes
+            // cancellation against staged socket release.
             for waker in wakers.entries.values() {
                 waker();
             }

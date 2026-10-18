@@ -19,6 +19,7 @@ use crate::tests::SharedTraceWriter;
 
 mod cache_refresh_admission_tests;
 mod compaction_transport_retry_tests;
+mod image_resolution_tests;
 
 /// Shared byte sink used by tests that run tau-client's writer thread.
 #[derive(Clone, Default)]
@@ -3650,6 +3651,7 @@ fn later_pre_egress_attempt_cancellation_retains_prior_backend() {
             &mut writer,
             &mut retry_ctx,
             ChatGptPromptExecutionContext {
+                image_resolution: None,
                 debug_provider_requests: false,
                 runtime: &runtime,
                 prior_backend: Some(&prior_backend),

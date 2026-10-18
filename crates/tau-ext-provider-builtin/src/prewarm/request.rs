@@ -27,8 +27,7 @@ pub(crate) fn prewarm_prompt(
     }
 }
 
-/// Reject unresolved payloads, then execute the finite selected prewarm
-/// operation.
+/// Resolve typed image payloads before the finite selected prewarm operation.
 pub(crate) fn handle_resolved_prewarm(
     prewarm: &tau_proto::AgentPromptPrewarmRequested,
     config: &ResolvedConfig,
@@ -36,7 +35,21 @@ pub(crate) fn handle_resolved_prewarm(
     refresh_id: Option<&tau_proto::ProviderCacheRefreshId>,
     debug_provider_requests: bool,
     abort: &mut impl TurnAbort,
+    images: Option<&crate::image_resolution::Client>,
 ) -> tau_proto::ProviderCacheRefreshStatus {
+    let mut resolved = None;
+    if prewarm.context.has_image_references()
+        && let Some(images) = images
+    {
+        let mut owned = prewarm.clone();
+        if images
+            .resolve(&mut owned.context, &owned.session_id, abort)
+            .is_ok()
+        {
+            resolved = Some(owned);
+        }
+    }
+    let prewarm = resolved.as_ref().unwrap_or(prewarm);
     if prewarm.context.has_image_references() {
         return if abort.is_aborted() {
             tau_proto::ProviderCacheRefreshStatus::Cancelled

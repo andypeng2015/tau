@@ -650,6 +650,7 @@ fn delayed_worker_start_and_completion_keep_receipt_budget() {
             abort.cancel();
         }
         let execution = PrewarmExecution {
+            image_resolution: None,
             runtime: Arc::new(CodexRuntime::new(Arc::new(test_network_policy()))),
             config,
             request: prewarm(),

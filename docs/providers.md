@@ -1415,6 +1415,13 @@ are `low`, `medium`, `high`, `xhigh`, `max`—not `none` or `minimal`.
 The private route stays Standard even if the profile requests Lite. Native
 and inline compaction, phase, and verbosity controls remain unadvertised for
 this exact model pending private-route evidence.
+The built-in provider can resolve typed prepared-image references through the
+existing Artifact channel for inference, compaction and cache prewarm. Its bounded
+process-local cache holds verified encoded bytes, not model tokens or embeddings;
+missing or corrupt content fails the consuming request before model submission.
+Upstream image limits remain unchanged. Harness emission remains Inline pending
+final integration and enablement, so normal image traffic has not switched yet.
+
 All currently published ChatGPT/Codex models support `read_image` through native
 image tool-result blocks, including Sol 6.1 and account aliases such as
 `chatgpt-fedi/gpt-6-luna`. Tau's source audit checks upstream model modalities

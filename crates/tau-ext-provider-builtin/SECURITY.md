@@ -1,5 +1,26 @@
 # tau-ext-provider-builtin security boundaries
 
+## Referenced image inputs
+
+The provider receives typed image descriptors over configured local-extension
+IPC and fetches them only through the existing known-key Artifact API. Its
+process-local cache holds private digest-verified encoded bytes, never tokens or
+decoded rasters. Each use independently validates exact size, MIME and decoded
+dimensions before model submission; a cache hit does not establish durable-store
+health. Failure reports contain fixed text, never keys, image bytes or storage
+paths. Opaque provider JSON is not searched for references.
+
+Cache residency, active transfers, RPC correlation and consuming-request
+materialization have independent finite bounds described in
+[ARCH-tau-ext-provider-builtin](specs/ARCH-tau-ext-provider-builtin.md).
+Internal waits use completion/cancellation notifications and real deadlines;
+only external Artifact Busy uses bounded backoff because that API provides no
+capacity notification. Canceled Open replies retain best-effort Close authority
+even after a successful channel send; the server's fixed read expiry covers
+lost responses or failed cleanup. Shutdown revokes worker endpoints and evicts
+cache residency. Preserve these cancellation, metadata-validation, privacy and
+late-allocation oracles when changing the resolver.
+
 ## Declaration inspection
 
 The opt-in inspection branch parses only supplied credential-free profiles and
@@ -218,7 +239,7 @@ stale reserved sockets from returning after profile/session boundaries.
 Terminal harness disconnect drops loop-side completion tracking only after
 cancellation; detached work retains its abort source and finite bounds.
 Prewarm cancellation callbacks run under their private registry lock and may
-only enqueue a transport wake or invalidate a pool generation. Guard
+only enqueue a worker/transport wake or invalidate a pool generation. Guard
 unregistration joins an already-started callback and is the socket-publication
 boundary; callback code must never re-enter that registry.
 Provider execution output crosses the trusted local extension boundary as explicit

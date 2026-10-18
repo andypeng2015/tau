@@ -7,7 +7,7 @@ use std::{io as path_std_io, time as path_std_time};
 use tau_proto::ProviderBackendKind;
 use tau_provider_codex::oauth as path_tau_provider_codex_oauth;
 
-use crate::image_tools::ImageTools;
+use crate::provider_images::ProviderImages;
 
 mod compatibility;
 pub(crate) mod grok;
@@ -4247,7 +4247,7 @@ pub(super) fn observation_test_runtime()
 -> ProviderRuntime<fn(Option<&ProviderName>) -> BuiltinProviderProfiles> {
     let (worker_tx, worker_rx) = mpsc::channel();
     ProviderRuntime {
-        images: ImageTools::default(),
+        images: ProviderImages::default(),
         configuration: ProviderConfigurationState::default(),
         load_prompt_profiles: |_: Option<&ProviderName>| BuiltinProviderProfiles::default(),
         prompt_concurrency_limit: 0,

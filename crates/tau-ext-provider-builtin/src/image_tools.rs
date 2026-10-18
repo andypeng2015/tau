@@ -298,11 +298,11 @@ where
         handle: &ClientHandle,
     ) -> ClientResult<()> {
         let id = started.call_id.clone();
-        if self.images.calls.contains_key(&id) {
+        if self.images.tools.calls.contains_key(&id) {
             return Ok(());
         }
-        self.images.start(started, handle)?;
-        if let Some(call) = self.images.calls.get_mut(&id)
+        self.images.tools.start(started, handle)?;
+        if let Some(call) = self.images.tools.calls.get_mut(&id)
             && let Some(waker) = self.worker_waker.clone()
         {
             let (finished, completion) = mpsc::channel();
@@ -328,10 +328,10 @@ where
         result: ArtifactResult,
         handle: &ClientHandle,
     ) -> ClientResult<()> {
-        let Some(id) = self.images.requests.remove(&result.request_id) else {
+        let Some(id) = self.images.tools.requests.remove(&result.request_id) else {
             return Ok(());
         };
-        let Some(mut call) = self.images.calls.remove(&id) else {
+        let Some(mut call) = self.images.tools.calls.remove(&id) else {
             return Ok(());
         };
         let frame = tau_proto::HarnessOutputMessage::ArtifactResult(Box::new(result.clone()));
@@ -364,7 +364,7 @@ where
                         handle,
                     );
                 }
-                self.images.submit_upload(call, handle)
+                self.images.tools.submit_upload(call, handle)
             }
             _ => report_error(&call.started, "unexpected image artifact response", handle),
         }
@@ -405,10 +405,10 @@ where
         let network = self.codex_runtime.network_arc();
         let cancel = Arc::clone(&call.cancel);
         let prompt = std::mem::take(&mut call.prompt);
-        let executor = self.images.executor;
+        let executor = self.images.tools.executor;
         let id = call.started.call_id.clone();
         call.phase = Phase::Generating;
-        self.images.calls.insert(id.clone(), call);
+        self.images.tools.calls.insert(id.clone(), call);
         std::thread::spawn(move || {
             let result = executor(credentials, &prompt, id.as_str(), &network, &cancel);
             let _ = crate::send_worker_message(

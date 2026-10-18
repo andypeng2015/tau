@@ -2,6 +2,9 @@ Before changing this crate, discover and read the applicable Linked Specs in `sp
 
 # tau-ext-provider-builtin
 
+Read this crate's `SECURITY.md` before changing referenced-image resolution,
+worker waits/cancellation, caching, or Artifact response correlation.
+
 Read the applicable Linked Specs under `specs/` and the applicable trust-boundary records under `specs/` before changing provider profile ownership/model publication, prompt worker/cancellation/retry behavior, diagnostics/persistence boundaries, event-driven worker wakeups, or this crate's testing boundary.
 Read `SECURITY.md` before changing settings validation, startup model
 publication, prompt-time profile loading, quota credentials, epochs, refresh

@@ -32,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 tau-client.workspace = true
 tau-config.workspace = true
+tau-core.workspace = true
 tau-proto.workspace = true
 tau-provider.workspace = true
 tau-provider-chat-completions.workspace = true
@@ -47,7 +48,6 @@ url.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tau-core.workspace = true
 tau-provider-codex = { workspace = true, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tungstenite.workspace = true

@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 use tau_client::TauExtensionRunner;
 use tau_proto::{ClientKind, ProviderName};
 
-use crate::image_tools::ImageTools;
+use crate::provider_images::ProviderImages;
 use crate::{
     BuiltinProviderProfiles, CancellationState, CodexRuntime, EXTENSION_NAME,
     OAuthRefreshRejectionCache, PrewarmSupervisor, PromptCredentialAdmissionState,
@@ -104,7 +104,7 @@ where
         codex_runtime.initialize_cache_diagnostics(startup.profiles.startup_cache_diagnostics());
     }
     let runtime = ProviderRuntime {
-        images: ImageTools::default(),
+        images: ProviderImages::default(),
         configuration: ProviderConfigurationState {
             state_dir: None,
             extension_instance: None,
