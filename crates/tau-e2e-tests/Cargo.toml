@@ -18,6 +18,7 @@ name = "tau_e2e_tests"
 workspace = true
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 fs2.workspace = true
 image.workspace = true
@@ -38,6 +39,7 @@ tau-client.workspace = true
 tau-config.workspace = true
 tau-core = { workspace = true, features = ["test-persistence"] }
 tau-ext-test-dummy.workspace = true
+tau-ext-utils.workspace = true
 tau-harness = { workspace = true, features = ["output-length-test-barrier"] }
 tau-harness-tools.workspace = true
 tau-proto.workspace = true

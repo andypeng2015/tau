@@ -89,6 +89,24 @@ impl Drop for ImageAdmissionRuntime {
 }
 
 impl Harness {
+    /// Captures prepared-image storage before interception. Only a persistent
+    /// session/agent with live scoped I/O authority may require durable refs.
+    pub(super) fn prepared_image_storage_for_tool(
+        &self,
+        cid: &AgentId,
+        target: &ToolRouteTarget,
+        allows_provider_image: bool,
+    ) -> tau_proto::PreparedImageStorage {
+        if allows_provider_image
+            && let ToolRouteTarget::Extension(source) = target
+            && self.image_verification_owner(cid, source).is_some()
+        {
+            tau_proto::PreparedImageStorage::Artifact
+        } else {
+            tau_proto::PreparedImageStorage::Inline
+        }
+    }
+
     /// Captures metadata-only authority before worker admission, without CAS
     /// I/O.
     pub(super) fn image_verification_owner(

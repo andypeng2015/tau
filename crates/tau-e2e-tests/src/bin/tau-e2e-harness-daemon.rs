@@ -64,6 +64,8 @@ struct DaemonArgs {
     provider_mode: ProviderMode,
     /// Whether the exact test-dummy extension is allowed.
     test_dummy: bool,
+    /// Whether the exact production utility image fixture is allowed.
+    image_utils: bool,
     /// Optional fixture-only output-length persistence cut.
     output_length_cut: Option<(OutputLengthCommitCut, PathBuf)>,
     /// Optional exact session identity selected by a focused CLI acceptance
@@ -80,6 +82,12 @@ struct DaemonArgs {
 fn parse_daemon_args() -> Result<DaemonArgs, Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let output_length_cut = parse_output_length_cut(&mut args)?;
+    let image_utils = args
+        .last()
+        .is_some_and(|arg| arg == path_std_ffi::OsStr::new("--image-utils"));
+    if image_utils {
+        args.pop();
+    }
     let test_dummy = args
         .last()
         .is_some_and(|arg| arg == path_std_ffi::OsStr::new("--test-dummy"));
@@ -111,7 +119,7 @@ fn parse_daemon_args() -> Result<DaemonArgs, Box<dyn std::error::Error>> {
             _ => {
                 return Err(
                     "expected SOCKET HARNESS_STATE CONFIG_DIR STATE_DIR {new|resumed} \
-                     [CORE_SHELL_CWD] [--provider-builtin] [--test-dummy] \
+                     [CORE_SHELL_CWD] [--provider-builtin] [--test-dummy] [--image-utils] \
                      [--output-length-cut {planned-response|continuation-steer} REACHED_PATH]"
                         .into(),
                 );
@@ -126,6 +134,9 @@ fn parse_daemon_args() -> Result<DaemonArgs, Box<dyn std::error::Error>> {
     if output_length_cut.is_some() && provider_mode != ProviderMode::Fake {
         return Err("output-length cut requires the fake provider".into());
     }
+    if image_utils && (provider_mode != ProviderMode::Builtin || test_dummy) {
+        return Err("image utility fixture requires only the built-in provider".into());
+    }
     Ok(DaemonArgs {
         socket: socket.to_owned(),
         harness_state: harness_state.to_owned(),
@@ -135,6 +146,7 @@ fn parse_daemon_args() -> Result<DaemonArgs, Box<dyn std::error::Error>> {
         core_shell_cwd: core_shell_cwd.cloned(),
         provider_mode,
         test_dummy,
+        image_utils,
         output_length_cut,
         session_id: std::env::var("TAU_E2E_SESSION_ID")
             .unwrap_or_else(|_| provider_mode.session_id().to_owned()),
@@ -207,6 +219,7 @@ fn launch_daemon(args: DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
         core_shell_cwd,
         provider_mode,
         test_dummy,
+        image_utils,
         output_length_cut: _,
         session_id,
         max_clients,
@@ -222,6 +235,9 @@ fn launch_daemon(args: DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     )?]);
     if test_dummy {
         allowed_extensions.insert(tau_proto::ExtensionName::parse("e2e-test-dummy")?);
+    }
+    if image_utils {
+        allowed_extensions.insert(tau_proto::ExtensionName::parse("std-utils")?);
     }
     if let Some(cwd) = core_shell_cwd {
         std::env::set_current_dir(&cwd)?;

@@ -37,6 +37,16 @@ retained only on failure or explicit opt-in.
 The case is Linux-only because its readiness and process-group cleanup oracles
 depend on Linux notification and lifecycle behavior.
 
+The prepared-image case additionally permits only an exact Cargo-built wrapper
+of the production utility entrypoint. It uploads one compiled original through
+normal UI Artifact RPC, then exercises real preparation, durable admission,
+provider resolution and cold replay. Its offline old-GC simulation unlinks only
+the known canonical object subtree below the private fixture after clean daemon
+teardown; it is not an old-binary run or a live-state operation. The companion
+ephemeral-agent case checks inline output without prepared CAS objects or roots.
+Generic event observations exclude directed Artifact replies when checking
+prepared-key/byte privacy.
+
 `DeterministicFixture` starts same-UID local subprocesses, which are trusted
 configured extensions rather than a sandbox boundary. It ignores ambient Tau
 startup override variables, checks the exact resolved extension allowlist

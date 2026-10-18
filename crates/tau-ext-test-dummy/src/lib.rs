@@ -7,6 +7,7 @@
 //! See `ARCH-tau-ext-test-dummy` for the fixture boundary and invariants.
 
 mod release_hold;
+mod typed_image_upload;
 
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -105,6 +106,8 @@ struct ExtConfig {
 
 /// Runtime state for the dummy extension.
 struct DummyState<T> {
+    /// One fixed prepared image upload under captured harness policy.
+    image_upload: typed_image_upload::TypedImageUpload,
     /// Client used by the Configure-time User-scope persistence probe.
     extension_data: tau_client::ExtensionDataClient,
     /// Random source used by the historical restart fixture mode.
@@ -395,9 +398,25 @@ where
                 }
                 Ok(())
             })
-            .on_output_message(|message, state, _| {
+            .on_raw_restore(EventSelector::Exact(tau_proto::EventName::HARNESS_SESSION_DIR), |cx| {
+                if let Event::HarnessSessionDir(session) = cx.delivery.event() {
+                    cx.state.image_upload.session = Some(session.session_id.clone());
+                }
+                Ok(())
+            })
+            .on_raw_live(EventSelector::Exact(tau_proto::EventName::HARNESS_SESSION_DIR), |cx| {
+                if let Event::HarnessSessionDir(session) = cx.delivery.event() {
+                    cx.state.image_upload.session = Some(session.session_id.clone());
+                }
+                Ok(())
+            })
+            .on_output_message(|message, state, handle| {
+                if let tau_proto::HarnessOutputMessage::ArtifactResult(result) = message {
+                    state.image_upload.result((**result).clone(), handle)?;
+                }
                 if matches!(message, tau_proto::HarnessOutputMessage::Disconnect(_)) {
                     state.shutdown_pending_hold();
+                    state.image_upload.shutdown(handle);
                 }
                 Ok(())
             })
@@ -408,6 +427,7 @@ where
                         return Ok(());
                     };
                     let handle = cx.handle();
+                    cx.state.image_upload.cancel(&cancel.target_call_id, &handle)?;
                     cx.state
                         .cancel_pending_hold(&cancel.target_call_id, &handle)
                 },
@@ -543,6 +563,7 @@ where
     let mut runtime = match TauExtensionRunner::new(DummyExtension::<&mut T>::default())
         .start_manual_loop_with_extension_data_state(reader, writer, |_, extension_data| {
             DummyState {
+                image_upload: Default::default(),
                 extension_data,
                 rng,
                 restart_mode: RestartMode::Random,
@@ -568,6 +589,8 @@ where
     });
     tracing::info!(target: "tau_ext_test_dummy", "test dummy configured");
     let loop_result = run_dummy_loop(&mut runtime);
+    let handle = runtime.handle();
+    runtime.state_mut().image_upload.shutdown(&handle);
     runtime.state_mut().shutdown_pending_hold();
     match loop_result {
         Ok(DummyLoopExit::Disconnect) => {
@@ -880,7 +903,7 @@ where
 
 /// Dispatches the separate closed fixed-image fixture tool.
 fn handle_typed_image_invocation<T>(
-    state: &DummyState<T>,
+    state: &mut DummyState<T>,
     invoke: &tau_proto::ToolStarted,
     handle: &tau_client::ClientHandle,
 ) -> ClientResult<()>
@@ -891,7 +914,7 @@ where
         .tool_name_scope()?
         .wire_tool_name(&tau_proto::ToolName::new(TYPED_IMAGE_TEST_DUMMY_TOOL_NAME))?;
     if state.typed_image && invoke.tool_name == expected_tool_name {
-        handle.report_tool_result(typed_image_success(invoke.clone()))
+        state.image_upload.start(invoke.clone(), handle)
     } else {
         Ok(())
     }

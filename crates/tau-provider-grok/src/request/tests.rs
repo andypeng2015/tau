@@ -168,8 +168,8 @@ pub(super) fn image_result() -> ToolResultItem {
     }
 }
 
-/// Direct Grok inference and compaction cannot send or silently omit unresolved
-/// image references, independently of built-in runtime admission.
+/// Native Grok image routes reject unresolved references; text-only routes
+/// retain explicit omission and never expose a fetchable key.
 #[test]
 fn unresolved_image_reference_rejects_grok_request_admission() {
     let mut result = image_result();
@@ -191,9 +191,10 @@ fn unresolved_image_reference_rejects_grok_request_admission() {
         .push(ContextBlock::ToolResults(ToolResultsBlock {
             items: vec![result],
         }));
-    for supported in [false, true] {
-        assert!(Request::lower(&prompt, &model(), 0, &[], supported).is_err());
-    }
+    assert!(Request::lower(&prompt, &model(), 0, &[], true).is_err());
+    let omitted = json_request(&prompt, false).to_string();
+    assert!(omitted.contains("image omitted"));
+    assert!(!omitted.contains("blake3:"));
     prompt.operation = PromptOperation::StandaloneCompaction;
     prompt
         .context
@@ -202,6 +203,8 @@ fn unresolved_image_reference_rejects_grok_request_admission() {
             items: vec![ContextItem::CompactionTrigger],
         }));
     assert!(Request::lower_compact(&prompt, &model(), &[], true).is_err());
+    let omitted = Request::lower_compact(&prompt, &model(), &[], false).expect("compact omission");
+    assert!(!omitted.get().contains("blake3:"));
 }
 
 /// Typed images stay in their tool result while exact opaque JSON survives.

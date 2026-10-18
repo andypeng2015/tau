@@ -1,8 +1,9 @@
 # ARCH-tau-proto: tau-proto architecture
 
 Protocol 14.0 introduces typed prepared-image references and captured image-storage
-policy. Inline remains the default, and production reference output is not yet
-enabled. References identify the exact prepared bytes, not original image recipes;
+policy. Inline remains the DTO default; the harness selects Artifact only for
+durable persistent image invocations with scoped authority. References identify
+the exact prepared bytes, not original image recipes;
 generic projections strip fetchable keys as well as inline bytes. See
 [SPEC-typed-image-tool-results](../../../specs/SPEC-typed-image-tool-results.md).
 

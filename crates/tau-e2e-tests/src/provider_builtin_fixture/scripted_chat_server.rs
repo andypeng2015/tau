@@ -41,13 +41,15 @@ pub(super) enum Script {
     Compaction,
     /// Two length hits, continuation overflow, then a completed split summary.
     CompactionContinuation,
+    /// Fixed production image tool call, continuation and cold replay.
+    Images,
 }
 
 impl Script {
     /// Return the exact number of accepted requests in this closed script.
     fn request_count(self) -> usize {
         match self {
-            Self::Retry | Self::Qwen => 3,
+            Self::Retry | Self::Qwen | Self::Images => 3,
             Self::Compaction => 6,
             Self::CompactionContinuation => 9,
         }
@@ -76,6 +78,12 @@ pub(super) struct ScriptedChatServer {
 /// One immutable response in the closed three-request fixture script.
 #[derive(Clone, Copy)]
 enum ScriptStep {
+    /// Request the known original through production read_image.
+    ImageTool,
+    /// Confirm the first prepared image continuation.
+    ImageAccepted,
+    /// Confirm the same image after a fresh provider/harness process.
+    ImageReplayed,
     /// Initial one-day throttling response.
     Throttle,
     /// Successful completion of the manually retried first prompt.
@@ -154,6 +162,11 @@ impl ScriptedChatServer {
                     ScriptStep::SummaryLengthFresh,
                     ScriptStep::SummaryTail,
                     ScriptStep::CompactionResumed,
+                ],
+                Script::Images => vec![
+                    ScriptStep::ImageTool,
+                    ScriptStep::ImageAccepted,
+                    ScriptStep::ImageReplayed,
                 ],
             };
             for step in steps {
@@ -371,6 +384,28 @@ fn scripted_response_parts(
     Option<&'static str>,
 ) {
     match step {
+        ScriptStep::ImageTool => (
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"prepared-image-call\",\"type\":\"function\",\"function\":{\"name\":\"read_image\",\"arguments\":\"{\\\"key\\\":\\\"blake3:1c22ad7f40a18bbcb1c50dc8a78ac6a1a36b9a0a3c7f9833c965b2ef8100a734\\\"}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+             data: [DONE]\n\n",
+            None,
+        ),
+        ScriptStep::ImageAccepted => (
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"image accepted\"},\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+            None,
+        ),
+        ScriptStep::ImageReplayed => (
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"image replay accepted\"},\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+            None,
+        ),
         ScriptStep::Throttle => (
             "429 Too Many Requests",
             "application/json",

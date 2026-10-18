@@ -1,6 +1,20 @@
 use super::*;
 use crate::image_resolution::{State, tests as resolver_fixture};
 
+/// Selects an audited image route with an inert loopback endpoint; failures
+/// must happen before it can try to submit a model request.
+fn image_backend() -> PromptBackend {
+    PromptBackend::Responses(
+        tau_provider_codex::resolved_config_for_provider_model(
+            &ProviderName::new("chatgpt"),
+            &ModelName::new("gpt-5.4"),
+            tau_provider_codex::ResolvedCredentials::new("unused".into(), None),
+            CodexMode::Standard,
+        )
+        .with_test_base_url("http://127.0.0.1:1".into()),
+    )
+}
+
 /// Supplies reference-bearing history without any upload or actual image bytes.
 fn referenced_context() -> tau_proto::PromptContext {
     tau_proto::PromptContext {
@@ -63,9 +77,7 @@ fn unresolved_image_reference_terminalizes_before_backend_dispatch() {
         prompt.operation = operation;
         prompt.context = referenced_context();
         let runtime = CodexRuntime::new(Arc::new(test_network_policy()));
-        let backend = PromptBackend::Unavailable {
-            login_required: None,
-        };
+        let backend = image_backend();
         let mut bytes = Vec::new();
         let retry = handle_prompt_backend(
             &prompt.agent_prompt_id,
@@ -122,9 +134,7 @@ fn unresolved_image_reference_preserves_cancellation_precedence() {
     let mut bytes = Vec::new();
     let retry = handle_prompt_backend(
         &prompt.agent_prompt_id,
-        &PromptBackend::Unavailable {
-            login_required: None,
-        },
+        &image_backend(),
         &prompt,
         &mut tau_proto::PeerOutputWriter::new(&mut bytes),
         &mut Aborted,
@@ -215,9 +225,7 @@ fn missing_referenced_image_terminalizes_without_backend_retry_or_key_disclosure
                 let mut bytes = Vec::new();
                 let retry = handle_prompt_backend(
                     &prompt.agent_prompt_id,
-                    &PromptBackend::Unavailable {
-                        login_required: None,
-                    },
+                    &image_backend(),
                     &prompt,
                     &mut tau_proto::PeerOutputWriter::new(&mut bytes),
                     &mut RecordingRetrySleeper,
@@ -234,7 +242,7 @@ fn missing_referenced_image_terminalizes_without_backend_retry_or_key_disclosure
                 .expect("terminal");
                 assert!(
                     retry.is_none(),
-                    "resolution failure cannot reach unavailable-backend retry"
+                    "resolution failure cannot reach provider retry"
                 );
                 assert_eq!(
                     prompt, original,
@@ -266,4 +274,94 @@ fn missing_referenced_image_terminalizes_without_backend_retry_or_key_disclosure
             });
         });
     }
+}
+
+/// A text-only route preserves the existing explicit omission without reading
+/// prepared bytes or disclosing their fetchable descriptor upstream.
+#[test]
+fn text_only_route_omits_references_without_artifact_fetch() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+
+    resolver_fixture::with_transport(|_, waker| {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("deadline");
+            let mut reader = BufReader::new(&mut stream);
+            let mut length = None;
+            let mut header_bytes = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                header_bytes += line.len();
+                assert!(header_bytes < 16_384);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = Some(value.trim().parse::<usize>().expect("length"));
+                }
+            }
+            let length = length.expect("body length");
+            assert!(length < 65_536);
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).expect("body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+            let wire = body.to_string();
+            assert!(wire.contains("image omitted"));
+            assert!(!wire.contains("blake3:"));
+            assert!(!wire.contains("data:image/"));
+            let response = "data: {\"choices\":[{\"delta\":{\"content\":\"text-only success\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}", response.len()).expect("response");
+        });
+        let state = State::default();
+        let (tx, rx) = mpsc::channel();
+        let resolver = state.client(tx, waker);
+        let provider = ChatCompletionsProvider {
+            base_url: format!("http://{address}"),
+            models: vec![
+                serde_json::from_value(serde_json::json!({"id": "text-only"})).expect("model"),
+            ],
+            ..Default::default()
+        };
+        let backend = PromptBackend::ChatCompletions {
+            provider: Arc::new(provider),
+            model_index: 0,
+        };
+        let mut prompt = minimal_prompt();
+        prompt.context = resolver_fixture::context();
+        let runtime = CodexRuntime::new(Arc::new(test_network_policy()));
+        let mut bytes = Vec::new();
+        let retry = handle_prompt_backend(
+            &prompt.agent_prompt_id,
+            &backend,
+            &prompt,
+            &mut tau_proto::PeerOutputWriter::new(&mut bytes),
+            &mut RecordingRetrySleeper,
+            ChatGptPromptExecutionContext {
+                image_resolution: Some(&resolver),
+                debug_provider_requests: false,
+                runtime: &runtime,
+                prior_backend: None,
+                logical_attempt: tau_provider_codex::LogicalAttempt::new(1),
+                compact_route_unavailable: &|_| {},
+            },
+            &mut |_| {},
+        )
+        .expect("text-only request");
+        assert!(retry.is_none());
+        assert!(
+            rx.try_recv().is_err(),
+            "unsupported route must not fetch artifacts"
+        );
+        assert!(decode_frames(&bytes).iter().any(|frame| matches!(frame,
+            HarnessInputMessage::Emit(emit) if matches!(emit.event.as_ref(),
+                Event::ProviderResponseFinishedReported(finished)
+                    if finished.stop_reason == tau_proto::ProviderStopReason::EndTurn))));
+        server.join().expect("server");
+    });
 }

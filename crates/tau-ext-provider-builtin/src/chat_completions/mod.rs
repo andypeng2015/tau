@@ -155,6 +155,16 @@ impl LocalSummaryCompactionConfig {
 }
 
 impl ChatCompletionsModel {
+    /// Uses the exact configured input/output modalities for both resolver
+    /// admission and adapter lowering, never a model-name approximation.
+    pub(crate) fn supports_image_tool_results(&self) -> bool {
+        self.input_modalities
+            .contains(&tau_proto::InputModality::Image)
+            && self
+                .tool_result_modalities
+                .contains(&tau_proto::InputModality::Image)
+    }
+
     /// Apply the model capability to the provider-wide output policy.
     pub(crate) fn requested_output_tokens(&self, policy_cap: u32) -> u32 {
         if policy_cap == 0 {

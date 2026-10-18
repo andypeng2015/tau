@@ -542,7 +542,7 @@ fn build_compact_request(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<serde_json::Value, LlmError> {
-    require_resolved_images(request.context)?;
+    require_resolved_images(config, request.context)?;
     let cached_response_anchor = CachedResponseAnchor::latest_from_context(request.context);
     let ordinary = build_request(config, request, cached_response_anchor.as_ref());
     let mut input = serde_json::to_value(ordinary.input)
@@ -2810,10 +2810,13 @@ impl path_std_io::Write for ByteCountWriter<'_> {
     }
 }
 
-/// Rejects unresolved typed payloads before any request, replay, or warm
-/// lowering.
-fn require_resolved_images(context: &tau_proto::PromptContext) -> Result<(), LlmError> {
-    if context.has_image_references() {
+/// Rejects unresolved typed payloads before image-consuming request, replay or
+/// warm lowering. Text-only routes retain explicit omission without fetching.
+fn require_resolved_images(
+    config: &ResponsesConfig,
+    context: &tau_proto::PromptContext,
+) -> Result<(), LlmError> {
+    if crate::supports_image_tool_results(&config.model_id) && context.has_image_references() {
         return Err(LlmError::ProviderFailure(
             tau_proto::ProviderFailureKind::RequestRejected,
             "prepared image references must be resolved before provider submission".to_owned(),
@@ -3117,7 +3120,7 @@ pub(crate) fn full_ws_request_bytes(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<u64, LlmError> {
-    require_resolved_images(request.context)?;
+    require_resolved_images(config, request.context)?;
     let envelope = build_ws_envelope(config, request, None, Some(true));
     serde_json::to_vec(&envelope)
         .map_err(LlmError::Json)
@@ -3137,7 +3140,7 @@ pub(crate) fn compact_ws_request_bytes(
     config: &ResponsesConfig,
     request: &PromptPayload<'_>,
 ) -> Result<u64, LlmError> {
-    require_resolved_images(request.context)?;
+    require_resolved_images(config, request.context)?;
     let envelope = build_ws_envelope(config, request, None, None);
     serde_json::to_vec(&envelope)
         .map_err(LlmError::Json)

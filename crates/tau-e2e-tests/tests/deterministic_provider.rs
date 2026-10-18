@@ -1324,8 +1324,8 @@ fn deterministic_clean_resume_restores_fake_cursor_without_replay_consumption()
 }
 
 /// Proves a dummy's typed image crosses a complete live tool round, survives a
-/// clean restart as exact durable bytes, and reaches the later provider prompt
-/// once without leaking into generic fixture metadata.
+/// clean restart as an exact durable descriptor, and reaches the later provider
+/// prompt once without leaking into generic fixture metadata.
 #[test]
 fn deterministic_typed_image_tool_result_replays_after_clean_restart()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1422,7 +1422,7 @@ fn deterministic_typed_image_tool_result_replays_after_clean_restart()
 }
 
 /// Requires one complete durable call/result round with the fixed canonical
-/// image, retaining its exact bytes and structural image properties.
+/// image, retaining its exact prepared descriptor and structural properties.
 fn assert_typed_image_round(
     snapshot: &DurableSnapshot,
     call_id: &tau_proto::ToolCallId,
@@ -1493,8 +1493,8 @@ fn assert_typed_image_round(
             .all(|event| !matches!(event, Event::ProviderResponseFinished(_))),
         "no later provider response may interrupt the typed image round"
     );
-    let [ToolResultContentPart::Image(image)] = result.provider_content.as_slice() else {
-        panic!("typed image result must retain exactly one typed image");
+    let [ToolResultContentPart::ImageReference(image)] = result.provider_content.as_slice() else {
+        panic!("durable image invocation must retain exactly one image reference");
     };
     assert_eq!(
         result.tool_name.as_str(),
@@ -1509,10 +1509,13 @@ fn assert_typed_image_round(
     assert_eq!(image.media_type, ImageMediaType::Png);
     assert_eq!((image.width, image.height), (1, 1));
     assert_eq!(image.detail, ImageDetail::High);
-    assert!(
-        image.data.len() == tau_ext_test_dummy::TYPED_IMAGE_PNG.len()
-            && image.data.as_ref() == tau_ext_test_dummy::TYPED_IMAGE_PNG,
-        "typed image bytes differ from the fixed canonical fixture"
+    assert_eq!(
+        image.blob.size.get(),
+        tau_ext_test_dummy::TYPED_IMAGE_PNG.len() as u64
+    );
+    assert_eq!(
+        tau_proto::artifact_digest(&image.blob.key),
+        Some(expected_digest)
     );
     Ok(())
 }

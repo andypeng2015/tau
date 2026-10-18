@@ -11,6 +11,13 @@ reporter. It also supplies artifact-backed `read_image`; load
 `tau-self-knowledge-ext-shell` for shell artifact transfer and
 `docs/artifacts.md` for image/reference details.
 
+`read_image` preserves tool causality and prepares exact encoded pixels locally.
+The harness chooses durable Artifact references only for persistent invocations
+with scoped storage authority; ephemeral/memory-only invocations remain inline.
+The tool does not infer persistence from a key or silently fall back after an
+Artifact upload failure. Back up the complete Artifact store and roots together
+with reference-bearing journals.
+
 Use `timer` for real-time external waits, not to poll for tool completion
 (use `wait` for that). Timers belong to the session; they can wake a running
 agent, but they do not keep a session open. The tool supports one-shot relative

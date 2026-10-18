@@ -57,6 +57,13 @@ fn write_fixture_profile(
                 "single_initial_system_message": true
             }
         }]);
+    } else if matches!(script, Script::Images) {
+        profile["models"] = serde_json::json!([{
+            "id": "image-model",
+            "context_window": 8192,
+            "input_modalities": ["text", "image"],
+            "tool_result_modalities": ["text", "image"]
+        }]);
     } else if matches!(script, Script::Compaction | Script::CompactionContinuation) {
         profile["models"] = serde_json::json!([{
             "id": "llama-compaction-model",
@@ -84,6 +91,11 @@ enum FixtureScript<'a> {
     Compaction,
     /// Summary output limits followed by continuation capacity retreat.
     CompactionContinuation,
+    /// Production read_image utility with one fixed original and cold replay.
+    Images {
+        /// Exact Cargo-built wrapper for the production utility entrypoint.
+        utils_bin: &'a Path,
+    },
 }
 
 /// Durable session used only by provider-builtin subprocess fixtures.
@@ -111,9 +123,31 @@ pub struct ProviderBuiltinFixture {
     failed: Cell<bool>,
     /// Whether this script also runs the exact deterministic tool extension.
     test_dummy: bool,
+    /// Whether the closed allowlist includes the production read_image utility.
+    image_utils: bool,
 }
 
 impl ProviderBuiltinFixture {
+    /// Creates the fixed image tool/replay script using exact provider and
+    /// production utility executables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when binaries or private fixture state are unavailable.
+    pub fn new_images(
+        name: &str,
+        provider_bin: impl AsRef<Path>,
+        utils_bin: impl AsRef<Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_script(
+            name,
+            provider_bin.as_ref(),
+            FixtureScript::Images {
+                utils_bin: utils_bin.as_ref(),
+            },
+        )
+    }
+
     /// Creates private configuration for one keyless local Chat Completions
     /// provider.
     ///
@@ -187,11 +221,12 @@ impl ProviderBuiltinFixture {
         script: FixtureScript<'_>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let provider_bin = exact_binary(provider_bin)?;
-        let (server_script, dummy_bin) = match script {
+        let (server_script, tool_bin) = match script {
             FixtureScript::Retry => (Script::Retry, None),
             FixtureScript::Qwen { dummy_bin } => (Script::Qwen, Some(exact_binary(dummy_bin)?)),
             FixtureScript::Compaction => (Script::Compaction, None),
             FixtureScript::CompactionContinuation => (Script::CompactionContinuation, None),
+            FixtureScript::Images { utils_bin } => (Script::Images, Some(exact_binary(utils_bin)?)),
         };
         let tempdir = TempDir::new()?;
         let root = tempdir.path().join(sanitize_name(name));
@@ -210,7 +245,7 @@ impl ProviderBuiltinFixture {
         write_fixture_profile(&profile_dir, &server.base_url(), server_script)?;
         std::fs::write(
             config_dir.join("harness.yaml"),
-            Self::render_harness_config(server_script, &provider_bin, dummy_bin.as_deref())?,
+            Self::render_harness_config(server_script, &provider_bin, tool_bin.as_deref())?,
         )?;
         Ok(Self {
             tempdir: Some(tempdir),
@@ -222,6 +257,7 @@ impl ProviderBuiltinFixture {
             server,
             failed: Cell::new(false),
             test_dummy: qwen,
+            image_utils: matches!(server_script, Script::Images),
         })
     }
 
@@ -230,12 +266,15 @@ impl ProviderBuiltinFixture {
     fn render_harness_config(
         script: Script,
         provider_bin: &Path,
-        dummy_bin: Option<&Path>,
+        tool_bin: Option<&Path>,
     ) -> Result<String, serde_json::Error> {
         let qwen = matches!(script, Script::Qwen);
+        let images = matches!(script, Script::Images);
         let compaction = matches!(script, Script::Compaction | Script::CompactionContinuation);
         let (role, model) = if qwen {
             ("provider-builtin-qwen", "local/Qwen/Qwen3.8-27B")
+        } else if images {
+            ("provider-builtin-images", "local/image-model")
         } else if compaction {
             (
                 "provider-builtin-compaction",
@@ -244,9 +283,15 @@ impl ProviderBuiltinFixture {
         } else {
             ("provider-builtin-retry", "local/retry-model")
         };
-        let tools = if qwen { "[restart_test_dummy]" } else { "[]" };
+        let tools = if qwen {
+            "[restart_test_dummy]"
+        } else if images {
+            "[read_image]"
+        } else {
+            "[]"
+        };
         let effort = if qwen { "          effort: 1.0\n" } else { "" };
-        let dummy_extension = if let Some(dummy_bin) = dummy_bin {
+        let dummy_extension = if let Some(dummy_bin) = tool_bin.filter(|_| qwen) {
             format!(
                 concat!(
                     "  e2e-test-dummy:\n",
@@ -260,6 +305,14 @@ impl ProviderBuiltinFixture {
             )
         } else {
             String::new()
+        };
+        let utils_extension = if let Some(utils_bin) = tool_bin.filter(|_| images) {
+            format!(
+                "  std-utils:\n    command: [{}]\n    role: tool\n    require: true\n",
+                serde_json::to_string(&utils_bin.display().to_string())?
+            )
+        } else {
+            "  std-utils:\n    enable: false\n".to_owned()
         };
         Ok(format!(
             concat!(
@@ -297,8 +350,7 @@ impl ProviderBuiltinFixture {
                 "    enable: false\n",
                 "  std-xmpp:\n",
                 "    enable: false\n",
-                "  std-utils:\n",
-                "    enable: false\n",
+                "{utils_extension}",
                 "  std-websearch:\n",
                 "    enable: false\n",
                 "  std-pim:\n",
@@ -310,6 +362,7 @@ impl ProviderBuiltinFixture {
             tools = tools,
             effort = effort,
             dummy_extension = dummy_extension,
+            utils_extension = utils_extension,
         ))
     }
 
@@ -350,6 +403,12 @@ impl ProviderBuiltinFixture {
     #[must_use]
     pub fn uses_test_dummy(&self) -> bool {
         self.test_dummy
+    }
+
+    /// Reports the closed image fixture's exact utility extension allowance.
+    #[must_use]
+    pub fn uses_image_utils(&self) -> bool {
+        self.image_utils
     }
 
     /// Returns a short private daemon socket path.

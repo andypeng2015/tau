@@ -22,9 +22,9 @@ late allocation responses under their captured session. Cancellation or lost
 acknowledgment may leave shared committed bytes; errors never retry preparation
 or silently fall back to inline output.
 
-Production still requests Inline until asynchronous harness verification/root
-admission and provider resolution are integrated. This producer support alone
-does not activate reference-bearing history or change ordinary invocation policy.
+Production persistent invocations use Artifact when the harness captures durable
+scoped authority. Ephemeral/memory-only invocations retain Inline; the utility
+does not promote them because shared Artifact storage happens to be available.
 See [SPEC-typed-image-tool-results](../../../specs/SPEC-typed-image-tool-results.md).
 
 The reporter is declared unless its configured instance sets

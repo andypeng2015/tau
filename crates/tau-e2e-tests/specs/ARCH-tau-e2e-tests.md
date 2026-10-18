@@ -8,6 +8,12 @@ code is replaced or configured specially. The closed mechanics are governed by
 
 `tau-e2e-tests` contains three deliberately separate fixture families.
 
+The production-provider family also exercises prepared-image storage with the
+real utility entrypoint and Artifact channel. Its three-request loopback script
+covers live tool continuation and a fresh provider after clean harness restart;
+an ephemeral-agent companion retains inline output. Only offline fixture-owned
+canonical objects are removed for the reduced old-GC fallback oracle.
+
 `DeterministicFixture` is always-on and hermetic. It starts an exact
 Cargo-built, test-only provider subprocess through normal extension supervision,
 publishes and routes `fake/test`, and normally starts only the no-side-effect

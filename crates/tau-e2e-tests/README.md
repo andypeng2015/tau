@@ -25,6 +25,13 @@ SSE responses. It covers literal effort and profile fields, reasoning and
 visible output, single and parallel tool calls, byte-exact raw argument replay,
 continuation, and terminal usage without downloading or serving a model.
 
+The prepared-image case adds the exact Cargo-built production utility wrapper.
+It compares actual prepared bytes at the model endpoint, verifies durable roots
+and cold replay after a reduced old-GC catalog unlink, and checks ephemeral inline
+fallback and generic-event privacy. It uses the same required
+`TAU_E2E_PROVIDER_BUILTIN_BIN` pin and private loopback fixture; no user data,
+credentials, real model endpoint or old released binary participates.
+
 The llama.cpp compaction case drives the exact production adapter and harness
 through an HTTP overflow, an SSE overflow on the full no-byte-cap compact
 prefix, provider-order retreat, and immediate summary-only ordinary resume

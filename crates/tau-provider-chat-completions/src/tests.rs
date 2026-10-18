@@ -2360,8 +2360,9 @@ fn image_tool_results_block(call_id: &str, data: impl Into<Arc<[u8]>>) -> tau_pr
     })
 }
 
-/// Ordinary and local-summary request builders cannot silently omit unresolved
-/// references, even for a route that would not support inline images.
+/// Image-consuming ordinary/local-summary builders reject unresolved
+/// references; text-only routes preserve their explicit omission without
+/// needing the bytes.
 #[test]
 fn unresolved_image_reference_rejects_chat_request_admission() {
     let mut created = prompt();
@@ -2384,7 +2385,8 @@ fn unresolved_image_reference_rejects_chat_request_admission() {
     )];
     created.context.blocks.push(block);
     let config = resolved_provider(&provider());
-    let model = provider().models[0].clone();
+    let mut model = provider().models[0].clone();
+    model.supports_image_tool_results = true;
     for operation in [
         tau_proto::PromptOperation::Inference,
         tau_proto::PromptOperation::StandaloneCompaction,
@@ -2400,6 +2402,12 @@ fn unresolved_image_reference_rejects_chat_request_admission() {
             Some(tau_proto::ProviderFailureKind::RequestRejected)
         );
     }
+    created.operation = tau_proto::PromptOperation::Inference;
+    model.supports_image_tool_results = false;
+    let request = try_build_request(&config, &model, &created).expect("text-only omission");
+    let json = serde_json::to_string(&request).expect("request");
+    assert!(json.contains("image omitted"));
+    assert!(!json.contains("blake3:"));
 }
 
 /// An explicitly audited llama.cpp route must receive exact multimodal tool

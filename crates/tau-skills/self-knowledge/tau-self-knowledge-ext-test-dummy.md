@@ -21,8 +21,9 @@ advertise: false
   accepts no configurable path or content.
 - `typed_image: true` enables `typed_image_test_dummy`, which returns a fixed
   in-memory 1×1 PNG as typed provider content for
-  the hermetic durable-replay test. It accepts no arguments and does not read or
-  write image files.
+  the hermetic durable-replay test. It honors captured Inline/Artifact policy
+  using the SDK uploader for a single fixed prepared payload. It accepts no
+  arguments and does not directly read or write image files.
 - `provider_context_raw_message: true` enables one test-only tool that publishes
   an existing message-bridge delivered report to its exact `agent_id` and `text`
   arguments. Gated provider-context placement E2Es are its only intended caller.

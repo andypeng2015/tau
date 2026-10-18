@@ -1,15 +1,5 @@
 # SPEC-shared-artifacts: Shared original-byte artifacts
 
-## Status
-
-The store has an internal transcript-root foundation and the protocol can
-represent prepared-image references. The utility producer can upload prepared
-bytes under captured Artifact policy. Tool admission and lawful generic standalone
-replacement admission verify and retain typed references off-loop before canonical
-publication. The built-in provider resolves references through Artifact RPC with
-bounded verified-byte caching. Production still selects Inline pending final
-integration and enablement.
-
 ## Record justification
 
 Protocol DTOs, client transfer state, harness admission and filesystem workers,
@@ -182,7 +172,7 @@ disabled means unrooted objects may remain indefinitely.
 Backups that use this foundation must preserve the selected CAS, its protected
 objects and root registry alongside agent history. Restore protection before
 allowing cleanup or referenced-history use; a journal-only backup cannot retain
-the bytes of future reference-bearing records. This is cooperative filesystem
+the bytes of reference-bearing records. This is cooperative filesystem
 crash consistency, not tamper detection: arbitrary loss of a whole owner directory
 (or both the registry and its marker) cannot be distinguished from absent roots.
 Partial backups or independently deleted metadata subtrees are not safe cleanup

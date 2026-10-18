@@ -3,6 +3,8 @@
 
 #[path = "provider_builtin_retry/daemon_guard.rs"]
 mod daemon_guard;
+#[path = "provider_builtin_retry/images.rs"]
+mod images;
 #[path = "provider_builtin_retry/lifecycle.rs"]
 mod lifecycle;
 

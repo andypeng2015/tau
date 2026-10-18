@@ -25,10 +25,13 @@ Ordinary, native compact, local-summary and warm-prefix requests share resolutio
 Only a private attempt copy becomes inline; retained retries keep their original
 references. Every occurrence checks its own size, MIME and dimensions. Existing
 adapter capability checks and raw/data-URL request budgets still apply unchanged.
+The exact selected route's existing image capability gates resolution; text-only
+routes retain explicit omission without fetching or exposing references.
 Missing or corrupt content produces one correlated non-retryable request failure
 (or prewarm failure), with cancellation precedence, before backend work. Cache
-hits are not durable-store health checks. Opaque JSON is not scanned. Production
-harness emission remains Inline pending final integration and enablement.
+hits are not durable-store health checks. Opaque JSON is not scanned. Durable
+persistent harness invocations can emit references; ephemeral/memory-only
+invocations retain their inline representation.
 
 The dedicated inspection branch validates supplied credential-free profile files
 and constructs candidate model metadata before operational runtime construction.

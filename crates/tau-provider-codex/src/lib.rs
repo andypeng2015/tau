@@ -244,6 +244,13 @@ impl InferenceProfileIdentity {
 }
 
 impl ResolvedConfig {
+    /// Returns the same audited native-image capability used by model
+    /// publication and request lowering, including unknown-model omission.
+    #[must_use]
+    pub fn supports_image_tool_results(&self) -> bool {
+        supports_image_tool_results(&self.inner.model_id)
+    }
+
     /// Redirect a resolved configuration to a deterministic loopback provider.
     /// Available only to cross-crate tests, never production configuration.
     #[cfg(feature = "test-support")]

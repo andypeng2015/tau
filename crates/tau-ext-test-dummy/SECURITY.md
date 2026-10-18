@@ -21,8 +21,11 @@ Replay-marked starts cannot execute tool behavior. Prompt interception may
 replace only text and must preserve identity, routing, class, originator,
 display metadata, and context identity.
 `typed_image` returns only a compiled fixed 1×1 PNG as native typed result
-content. It accepts no arguments or runtime control and adds no image decoding,
-filesystem, network, environment, secret, or child-process authority.
+content. It honors captured Inline/Artifact policy; Artifact uses the existing
+directed SDK uploader for one bounded invocation and verifies the finalized
+descriptor. Cancellation retains late-allocation cleanup and cannot publish
+success. It accepts no arguments or runtime control and adds no image decoding,
+direct filesystem, network, environment, secret, or child-process authority.
 `provider_context_raw_message` is disabled by default. The deterministic
 provider-context fixture enables it to publish one existing message-bridge
 delivered report to the exact `agent_id` and `text` arguments. It adds no

@@ -937,12 +937,14 @@ dependencies = [
 name = "dpc-tau-e2e-tests"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "dpc-tau-cli",
  "dpc-tau-client",
  "dpc-tau-config",
  "dpc-tau-core",
  "dpc-tau-ext-test-dummy",
+ "dpc-tau-ext-utils",
  "dpc-tau-harness",
  "dpc-tau-harness-tools",
  "dpc-tau-proto",

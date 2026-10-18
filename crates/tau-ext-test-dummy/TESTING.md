@@ -23,6 +23,8 @@ Regression coverage should include:
   declaration; the owning
    `deterministic_typed_image_tool_result_replays_after_clean_restart` E2E
    proves its durable live/replay continuation;
+- captured Artifact mode using the SDK upload flow, including cancellation
+  before Begin acknowledges and best-effort cleanup of its late allocation;
 - `provider_context_raw_message: true` enabling the exact message-bridge report
   used by gated provider-context placement E2Es;
 - `hold_no_side_effect` readiness followed by exact correlated cancellation;

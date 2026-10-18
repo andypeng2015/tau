@@ -403,9 +403,10 @@ fn unresolved_image_reference_rejects_codex_request_admission() {
         )],
     })];
     let request = request_for_items(&items);
-    let config = chain_test_config();
+    let mut config = chain_test_config();
+    config.model_id = "gpt-5.6-sol".into();
     for result in [
-        require_resolved_images(request.context),
+        require_resolved_images(&config, request.context),
         full_ws_request_bytes(&config, &request).map(|_| ()),
         compact_ws_request_bytes(&config, &request).map(|_| ()),
         build_compact_request(&config, &request).map(|_| ()),
@@ -418,6 +419,12 @@ fn unresolved_image_reference_rejects_codex_request_admission() {
             ))
         ));
     }
+    let mut text_only = config;
+    text_only.model_id = "unknown-image-route".into();
+    require_resolved_images(&text_only, request.context).expect("text-only projection");
+    let json = serde_json::to_string(&build_request(&text_only, &request, None)).expect("request");
+    assert!(json.contains("image omitted"));
+    assert!(!json.contains("blake3:"));
 }
 
 /// Ensures aggregate raw-image and expanded data-URL budgets both omit an image

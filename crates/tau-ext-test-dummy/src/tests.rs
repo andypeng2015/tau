@@ -753,6 +753,112 @@ fn typed_image_mode_registers_and_returns_the_fixed_image() {
     );
 }
 
+/// Artifact cancellation before Begin acknowledges must close the late upload
+/// and emit exactly one cancellation, never a successful fixed-image result.
+#[test]
+fn typed_image_artifact_cancellation_retires_late_allocation() {
+    use std::io::BufReader;
+    use std::net::Shutdown;
+    let (worker, harness) = UnixStream::pair().expect("transport");
+    harness
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("deadline");
+    let input = worker.try_clone().expect("worker input");
+    let running = std::thread::spawn(move || {
+        let mut rng = StdRng::seed_from_u64(1);
+        run_with_rng(input, worker, &mut rng).expect("dummy");
+    });
+    let control = harness.try_clone().expect("control");
+    let mut writer = HarnessOutputWriter::new(harness.try_clone().expect("writer"));
+    let mut reader = HarnessInputReader::new(BufReader::new(harness));
+    writer
+        .write_message(&typed_image_config())
+        .expect("configure");
+    writer
+        .write_message(&HarnessOutputMessage::deliver(Event::HarnessSessionDir(
+            tau_proto::HarnessSessionDir {
+                session_id: "image-session".parse().expect("session"),
+                path: PathBuf::from("/unused-fixture-session"),
+                status: tau_proto::SessionDirStatus::New,
+            },
+        )))
+        .expect("session");
+    writer
+        .write_message(&HarnessOutputMessage::deliver(Event::ToolStarted(
+            ToolStarted {
+                call_id: "typed-image-call".into(),
+                tool_name: tau_proto::ToolName::new(TYPED_IMAGE_TEST_DUMMY_TOOL_NAME),
+                arguments: CborValue::Map(Vec::new()),
+                agent_id: "agent-1".parse().expect("agent"),
+                originator: PromptOriginator::User,
+                invocation_policy: tau_proto::ToolInvocationPolicy {
+                    prepared_image_storage: tau_proto::PreparedImageStorage::Artifact,
+                    ..Default::default()
+                },
+            },
+        )))
+        .expect("invoke");
+    writer.flush().expect("flush");
+    let begin = loop {
+        let frame = reader.read_message().expect("frame").expect("connected");
+        if let HarnessInputMessage::ArtifactRequest(request) = frame {
+            assert!(matches!(request.op, tau_proto::ArtifactOp::Begin { .. }));
+            break request;
+        }
+    };
+    writer
+        .write_message(&cancel_restart("typed-image-call"))
+        .expect("cancel");
+    writer.flush().expect("flush cancel");
+    let mut observed = Vec::new();
+    loop {
+        let frame = reader.read_message().expect("frame").expect("connected");
+        let canceled = matches!(emitted_event(&frame), Some(Event::ToolCancelledReported(_)));
+        observed.push(frame);
+        if canceled {
+            break;
+        }
+    }
+    writer
+        .write_message(&HarnessOutputMessage::ArtifactResult(Box::new(
+            tau_proto::ArtifactResult {
+                request_id: begin.request_id,
+                result: Ok(tau_proto::ArtifactValue::Upload {
+                    upload: "late-image-upload".parse().expect("upload"),
+                }),
+            },
+        )))
+        .expect("late allocation");
+    writer.flush().expect("flush allocation");
+    loop {
+        let frame = reader.read_message().expect("frame").expect("connected");
+        let aborted = matches!(&frame, HarnessInputMessage::ArtifactRequest(request)
+            if matches!(&request.op, tau_proto::ArtifactOp::Abort { upload } if upload.as_str() == "late-image-upload"));
+        observed.push(frame);
+        if aborted {
+            break;
+        }
+    }
+    writer.write_message(&disconnect()).expect("disconnect");
+    writer.flush().expect("flush disconnect");
+    control.shutdown(Shutdown::Write).expect("input EOF");
+    running.join().expect("dummy finished");
+    while let Some(frame) = reader.read_message().expect("tail") {
+        observed.push(frame);
+    }
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|frame| matches!(emitted_event(frame), Some(Event::ToolCancelledReported(_))))
+            .count(),
+        1
+    );
+    assert!(observed.iter().all(|frame| !matches!(
+        emitted_event(frame),
+        Some(Event::ToolResultReported(_)) | Some(Event::ToolErrorReported(_))
+    )));
+}
+
 /// Verifies the enabled raw-message fixture declares its closed tool, reports
 /// one exact fact before its terminal, and remains inert when disabled.
 #[test]

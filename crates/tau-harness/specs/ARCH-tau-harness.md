@@ -37,8 +37,9 @@ need not match prior source images. Completion rechecks the captured transaction
 attempt and source/lease ownership before ordinary cancellation, branch and
 canonical-boundary handling. Ordinary provider terminals still cannot inject tool
 results, and opaque provider payloads are not scanned for references. Production
-policy remains Inline pending final reference integration and enablement. Cleanup notices omit
-digest-bearing paths.
+dispatch selects Artifact only for authorized image calls with a durable session,
+persistent agent and current scoped persistence authority. Other invocations stay
+Inline. Cleanup notices omit digest-bearing paths.
 
 The attached-socket operator path can unload one saved agent without deleting
 history. The harness classifies only committed in-memory membership, rejects

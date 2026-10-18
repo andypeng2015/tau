@@ -1419,8 +1419,11 @@ The built-in provider can resolve typed prepared-image references through the
 existing Artifact channel for inference, compaction and cache prewarm. Its bounded
 process-local cache holds verified encoded bytes, not model tokens or embeddings;
 missing or corrupt content fails the consuming request before model submission.
-Upstream image limits remain unchanged. Harness emission remains Inline pending
-final integration and enablement, so normal image traffic has not switched yet.
+Upstream image limits remain unchanged. Durable persistent invocations use
+references when scoped storage authority is ready; ephemeral/memory-only or
+not-yet-ready invocations stay inline. Text-only routes omit
+historical images without fetching them. See [artifact backup and compatibility
+requirements](artifacts.md#prepared-image-history-and-backups).
 
 All currently published ChatGPT/Codex models support `read_image` through native
 image tool-result blocks, including Sol 6.1 and account aliases such as

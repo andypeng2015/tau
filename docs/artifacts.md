@@ -224,12 +224,45 @@ roots do not fetch from one another automatically.
 
 `artifact_retention: null` is the default. A value such as `30d` enables
 opportunistic startup cleanup by explicit last-new-put metadata; reads and
-sharing never refresh it. No exact deadline, reference pins, or periodic sweep
+sharing never refresh it. No exact deadline, textual-reference pins, or periodic sweep
 is promised. Shared-root operators should select consistent policies.
+
+## Prepared-image history and backups
+
+Durable persistent image invocations with ready scoped storage authority upload
+the **prepared, re-encoded bytes**,
+not the original artifact or a transformation recipe. Their canonical tool result
+stores the exact key, size and per-use image metadata. The harness verifies actual
+media and synchronizes transcript protection before admitting the reference.
+Ephemeral agents, session-ephemeral and memory-only invocations retain inline
+prepared output; they are not silently promoted because a shared store exists.
+
+Roots cover an agent's complete retained history, including inactive branches and
+replaced compaction windows. Compaction, unload and provider-cache eviction do not
+unpin images. Whole-history deletion releases roots only after history removal is
+synchronized; orphan protection is safe. Released objects return to ordinary
+shared retention rather than immediate erasure. Prepared copies can appear in
+authorized artifact discovery and can outlive their originating session.
+Ordinary textual artifact links still do not pin objects.
+
+Back up and restore the complete selected persistent state, including agent/session
+journals **and the entire `artifacts` directory**, its protected objects, root
+registry and marker. Restore these together before cleanup or referenced-history
+use. A journal-only backup is no longer sufficient for reference-bearing images.
+Missing/corrupt bytes fail the consuming provider request before model submission;
+Tau does not regenerate guessed pixels or reinterpret the original as a repair
+recipe. A provider's verified memory-cache hit is not a backing-store health check.
+
+New readers retain old inline history without rewriting it. Old binaries cannot
+decode new reference-bearing journals, even though ordinary CAS metadata remains
+version 1. Preserve a complete pre-upgrade backup for rollback; do not point an old
+harness at new journals. The [source rollout checklist](prepared-image-rollout.md)
+separates tested source behavior from publication and external rebuild work.
 
 ## Compatibility
 
-This interface uses protocol **6.0**. The versioning specification requires a
+Artifact RPC was introduced in protocol **6.0**. Prepared-image references require
+protocol **14.0** and source SDK **0.14.0**. The versioning specification requires a
 major bump unless best-effort skew continuation is deliberately supported.
 Artifact helpers assume an actual correlated RPC rather than silently ignoring
 new messages, so configured extensions with an older major are rejected before
@@ -268,7 +301,7 @@ transfer may require discarding and pasting again. A paste above 16 MiB cannot
 upload, but remains retained until discarded. Closing the UI discards local
 pending source. Cancellation or a lost result may leave a shared original.
 Artifacts persist independently of session transcripts, including ephemeral
-ones, and references do not pin retention.
+ones, and these textual references do not pin retention.
 
 Uploads reuse the existing interactive UI transport; there is no extra UI
 connection or lifecycle participant. They require harness protocol 8.1 or newer

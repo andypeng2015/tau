@@ -1,19 +1,5 @@
 # SPEC-typed-image-tool-results: Typed local image tool results
 
-## Status
-
-Protocol 14.0 / source SDK 0.14.0 can represent exact prepared-image references.
-Core shape validation and logical quotas understand both inline and referenced
-forms, and generic projections remove bytes and fetchable keys. The utility
-producer uploads exact prepared bytes when captured policy selects Artifact;
-tool-result admission now verifies actual media and durable protection off-loop.
-Production invocation policy remains Inline in every persistence mode until
-provider resolution is ready. Generic standalone replacement-reference admission
-also remains pending: provider terminal references are still rejected. The
-built-in provider rejects unresolved ordinary/compaction input and prewarm without
-fetching or submitting to a model. Reference-backed production history is not
-activated by these prerequisites.
-
 ## Record justification
 
 Extension preparation, protocol/harness persistence and byte-free projections,
@@ -28,15 +14,21 @@ its end-to-end typed-content, retention, and disclosure rules.
 Local image inspection is a native tool-result capability, not text containing
 base64 and not a synthesized user message. A successful image-producing
 function call retains its call id and normalized text result while carrying
-ordered typed image content as canonical encoded bytes, closed MIME type,
-dimensions, and high provider detail. Provider adapters lower that semantic
+ordered typed image content as inline encoded bytes or a reference to their
+retained prepared bytes, closed MIME type, dimensions, and high provider detail.
+Provider adapters lower that semantic
 content only on explicitly audited routes.
 
 The distinct `ImageReference` form carries the BLAKE3 key and exact encoded size
 of the prepared canonical bytes with the same closed media/detail and dimensions.
 It is not an original-image key or transformation recipe, and cannot also carry
-inline bytes. Harness-authored captured invocation policy defaults to Inline;
-producers must not guess durable authority from artifact availability or a session
+inline bytes. The DTO policy defaults to Inline. Before dispatch, the harness
+captures Artifact for authorized image-producing calls in durable sessions with
+persistent agents and current scoped persistence authority; session-ephemeral,
+memory-only, ephemeral-agent and unavailable-authority cases retain Inline.
+A newly accepted persistent agent may still be awaiting physical creation; it
+does not receive Artifact authority until its persistence lease is Prepared.
+Producers must not guess durable authority from artifact availability or a session
 name. Interception preserves the harness-selected storage field while retaining
 existing argument and web-policy edit behavior. A changed call or agent identity
 forces that field to Inline; subsequent interception cannot restore a discarded
@@ -77,6 +69,22 @@ verified output enters ordinary publication, existing interception, backpressure
 retained-terminal retry and post-commit settlement rules apply without repeating
 storage verification.
 
+Generic standalone replacement windows may contain structurally closed tool
+rounds with new references; prior-source image equality is not required. Their
+actual bytes and roots are verified before the canonical boundary under the
+captured transaction, attempt, cut, source and persistence authority. Ordinary
+provider terminals still cannot inject ToolResult. Opaque provider JSON is not
+interpreted as typed references.
+
+The built-in provider resolves references through bounded Artifact RPC before
+image-consuming ordinary, native compact, local-summary and prewarm submission.
+It caches digest-verified encoded bytes, validates every occurrence's media
+metadata, and keeps retry snapshots reference-backed. Unsupported routes preserve
+their explicit omission without fetching images. Missing or corrupt content
+fails the consuming request before model submission; a valid cache hit is not a
+durable-store health check. Cache eviction never releases transcript roots and
+does not imply model-token or embedding caching.
+
 The provider-independent surface is `tau-ext-utils`'s one-image
 `read_image(key)` tool. The argument accepts the canonical
 `<tau-artifact:FULL_KEY>` model-facing reference (and a bare internal key for
@@ -91,7 +99,7 @@ patches. Explicit experimental `overview` calls use 1024-side/600-patch bounds
 for coarse inspection. An optional half-open region selects pixels from the
 EXIF-oriented source before profile resizing. Both profiles remain provider
 high detail: overview is a local raster transform, not provider low detail.
-Original detail, equality suppression, GIF, caches, thumbnails, attachments,
+Original detail, equality suppression, GIF, decoded-raster caches, thumbnails, attachments,
 multiple images, and provider uploads are outside this version. Artifact reads
 do not renew original retention age.
 
@@ -117,14 +125,16 @@ parts with high-detail data URLs, the multimodal tool-result shape accepted by
 llama.cpp. Unsupported projections contain a bounded omission marker and never
 send image bytes.
 
-Canonical image bytes are durable transcript data under the same retention and
-access rules as other session data. Generic UI completion events, wait results,
+Canonical image content is durable transcript authority. Legacy inline records
+retain their bytes; references require the associated rooted shared artifacts.
+Prepared copies use shared Artifact lifetime and may outlive transcript deletion.
+Generic UI completion events, wait results,
 debug logs, and provider diagnostics retain safe metadata but omit image bytes
 and data URLs. They also omit fetchable prepared-image keys, including keys with
 invalid or zero claimed sizes. Generic projections use the existing empty inline
 image shape for safe metadata, never a fake content address.
 The durable agent transcript and the selected provider's directed
-prompt retain typed bytes as the replay and inference authority; generic live
+prompt retain typed bytes or protected references as replay and inference authority; generic live
 broadcasts and subscriber replay receive byte-free projections regardless of
 client kind. Image buffers use shared immutable
 ownership within a process so diagnostic and prompt projections do not deep-copy

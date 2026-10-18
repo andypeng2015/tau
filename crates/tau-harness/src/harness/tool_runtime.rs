@@ -2225,6 +2225,8 @@ impl Harness {
                 }) {
                     route.invoke.invocation_policy = policy.clone();
                 }
+                route.invoke.invocation_policy.prepared_image_storage =
+                    self.prepared_image_storage_for_tool(cid, &route.target, allows_provider_image);
                 if let Some(pending) = self
                     .tool_routing
                     .tool_runtime

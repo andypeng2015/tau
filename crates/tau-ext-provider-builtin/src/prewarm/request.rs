@@ -38,7 +38,8 @@ pub(crate) fn handle_resolved_prewarm(
     images: Option<&crate::image_resolution::Client>,
 ) -> tau_proto::ProviderCacheRefreshStatus {
     let mut resolved = None;
-    if prewarm.context.has_image_references()
+    if config.supports_image_tool_results()
+        && prewarm.context.has_image_references()
         && let Some(images) = images
     {
         let mut owned = prewarm.clone();
@@ -50,7 +51,7 @@ pub(crate) fn handle_resolved_prewarm(
         }
     }
     let prewarm = resolved.as_ref().unwrap_or(prewarm);
-    if prewarm.context.has_image_references() {
+    if config.supports_image_tool_results() && prewarm.context.has_image_references() {
         return if abort.is_aborted() {
             tau_proto::ProviderCacheRefreshStatus::Cancelled
         } else {

@@ -40,6 +40,24 @@ impl DaemonGuard {
         fixture: &ProviderBuiltinFixture,
         socket: &Path,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::spawn_with_status(fixture, socket, "new")
+    }
+
+    /// Resumes only the same fixture-owned durable session after clean
+    /// teardown.
+    pub(super) fn resume(
+        fixture: &ProviderBuiltinFixture,
+        socket: &Path,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::spawn_with_status(fixture, socket, "resumed")
+    }
+
+    /// Shares the closed executable allowlist between new and resumed boots.
+    fn spawn_with_status(
+        fixture: &ProviderBuiltinFixture,
+        socket: &Path,
+        status: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let stderr_path = fixture.root().join("daemon.stderr");
         let mut command = Command::new(HARNESS_DAEMON);
         command
@@ -57,13 +75,16 @@ impl DaemonGuard {
             .arg(fixture.harness_state_dir())
             .arg(fixture.config_dir())
             .arg(fixture.state_dir())
-            .arg("new")
+            .arg(status)
             .arg("--provider-builtin")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         if fixture.uses_test_dummy() {
             command.arg("--test-dummy");
+        }
+        if fixture.uses_image_utils() {
+            command.arg("--image-utils");
         }
         if let Some(ca_bundle) = std::env::var_os("TAU_E2E_PROVIDER_CA_BUNDLE") {
             command.env("TAU_PROVIDER_CA_BUNDLE", ca_bundle);

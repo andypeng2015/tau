@@ -44,7 +44,7 @@ impl Request {
         native_images: bool,
     ) -> Result<Self, PrepareSseRequestError> {
         if !prompt.operation.is_inference()
-            || prompt.has_image_references()
+            || (native_images && prompt.has_image_references())
             || prompt.compaction.is_some()
             || !prompt.hosted_tools.is_empty()
             || prompt.tools_ref.is_some()

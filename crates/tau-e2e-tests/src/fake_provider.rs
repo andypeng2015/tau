@@ -4038,17 +4038,32 @@ fn require_typed_image_tool_result(
     if result.output.body != "typed image succeeded" {
         return Err("typed image result text mismatch");
     }
-    let [tau_proto::ToolResultContentPart::Image(image)] = result.provider_content.as_slice()
-    else {
-        return Err("typed image result content shape mismatch");
+    let metadata;
+    let image = match result.provider_content.as_slice() {
+        [tau_proto::ToolResultContentPart::Image(image)] => {
+            if image.data.as_ref() != tau_ext_test_dummy::TYPED_IMAGE_PNG {
+                return Err("typed image canonical bytes mismatch");
+            }
+            image
+        }
+        [tau_proto::ToolResultContentPart::ImageReference(reference)] => {
+            // This strict fake checks descriptor continuity, not storage. The
+            // production-provider acceptance separately verifies actual fetch.
+            if reference.blob.size.get() != tau_ext_test_dummy::TYPED_IMAGE_PNG.len() as u64
+                || tau_proto::artifact_digest(&reference.blob.key)
+                    != Some("1c22ad7f40a18bbcb1c50dc8a78ac6a1a36b9a0a3c7f9833c965b2ef8100a734")
+            {
+                return Err("typed image descriptor mismatch");
+            }
+            metadata = reference.metadata_only_image();
+            &metadata
+        }
+        _ => return Err("typed image result content shape mismatch"),
     };
     if image.media_type != tau_proto::ImageMediaType::Png
         || image.width != 1
         || image.height != 1
         || image.detail != tau_proto::ImageDetail::High
-        || image.data.as_ref() != tau_ext_test_dummy::TYPED_IMAGE_PNG
-        || blake3::hash(&image.data).to_hex().as_str()
-            != "1c22ad7f40a18bbcb1c50dc8a78ac6a1a36b9a0a3c7f9833c965b2ef8100a734"
     {
         return Err("typed image canonical content mismatch");
     }

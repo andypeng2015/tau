@@ -206,6 +206,12 @@ configuration. The declaration remains role-disabled until
 `enable_tools: [generate_image]` enables that public surface.
 Generation never retries or falls back to another account after failure.
 
+`read_image` keeps inspected pixels in their native tool-result round. Durable
+prepared images use rooted shared artifacts and bounded provider byte caching;
+ephemeral/memory-only invocations remain inline. Back up
+[the complete image history and Artifact store](docs/artifacts.md#prepared-image-history-and-backups),
+not journals alone.
+
 Roles package a model, its parameters, prompt fragments, skills, and tool policy
 into a reusable agent profile. Controls can be changed for the current process;
 model-aware values are filtered or clamped to the model's supported surface. The

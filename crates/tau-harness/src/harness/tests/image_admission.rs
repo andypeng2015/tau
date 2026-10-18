@@ -3,6 +3,7 @@
 
 use std::sync::Condvar;
 
+use tau_core::ToolRouteTarget;
 use tau_proto::{ArtifactDescriptor, ArtifactError, ArtifactOp, ToolResultContentPart};
 
 use super::*;
@@ -21,6 +22,95 @@ struct ImageFixture {
     cid: AgentId,
     /// Private temporary storage.
     temp: TempDir,
+}
+
+/// Production policy requires durable session/agent authority and a live
+/// configured source; fallback selection itself must never start artifact I/O.
+#[test]
+fn prepared_image_policy_requires_durable_scoped_authority() {
+    for mode in [
+        crate::HarnessStorageMode::Durable,
+        crate::HarnessStorageMode::SessionEphemeral,
+        crate::HarnessStorageMode::MemoryOnly,
+    ] {
+        let temp = TempDir::new().expect("state");
+        let mut h =
+            echo_harness_with_storage_mode(temp.path().join("state"), mode).expect("harness");
+        connect_ready_configured_extension(
+            &mut h,
+            "shell",
+            "policy-shell",
+            tau_proto::ClientKind::Tool,
+        );
+        let cid = ensure_test_user_agent(&mut h);
+        // The unit helper advances logical context readiness, not asynchronous
+        // physical creation. Artifact requires Prepared, not CreationQueued.
+        if let Some(owner) = &h.session_runtime.persistence_owner {
+            assert_eq!(
+                owner.wait_for_latest_durability_for_test(Duration::from_secs(3)),
+                tau_core::DurabilityBarrierOutcome::Durable,
+            );
+        }
+        let target = ToolRouteTarget::Extension(crate::test_connection_id("shell"));
+        assert_eq!(
+            h.prepared_image_storage_for_tool(&cid, &target, true),
+            if mode.is_durable() {
+                tau_proto::PreparedImageStorage::Artifact
+            } else {
+                tau_proto::PreparedImageStorage::Inline
+            },
+        );
+        assert_eq!(
+            h.prepared_image_storage_for_tool(&cid, &target, false),
+            tau_proto::PreparedImageStorage::Inline
+        );
+        let (ephemeral, _) = ephemeral_agent(&mut h);
+        assert_eq!(
+            h.prepared_image_storage_for_tool(&ephemeral, &target, true),
+            tau_proto::PreparedImageStorage::Inline
+        );
+        h.session_runtime
+            .agent_store
+            .release_managed_agents(Duration::from_secs(3))
+            .expect("release");
+        assert_eq!(
+            h.prepared_image_storage_for_tool(&cid, &target, true),
+            tau_proto::PreparedImageStorage::Inline
+        );
+        assert!(
+            h.runtime_io.artifacts.is_none(),
+            "policy selection is metadata-only"
+        );
+    }
+}
+
+/// Legacy canonical inline history remains byte-exact and cold-readable. This
+/// seeds the pre-reference event form directly, not a current Artifact
+/// invocation.
+#[test]
+fn legacy_inline_image_history_remains_cold_readable_without_artifacts() {
+    let mut f = ImageFixture::new();
+    dedup::track_image_call(&mut f.h, &f.cid, "legacy-image", true);
+    let bytes = dedup::encoded_test_png();
+    f.h.publish_for_agent(
+        &f.cid,
+        Event::ProviderToolResult(dedup::image_result("legacy-image", bytes.clone())),
+    );
+    let agent_id = f.h.agent_runtime.agent_registry.agents[&f.cid]
+        .identity
+        .agent_id
+        .clone()
+        .expect("agent");
+    f.h.session_runtime
+        .agent_store
+        .release_managed_agents(Duration::from_secs(3))
+        .expect("flush");
+    let cold = AgentStore::open_lazy(f.h.session_runtime.state_dir.join("agents")).expect("cold");
+    assert!(cold.agent_events(agent_id.as_str()).expect("history").iter().any(|record| matches!(
+        &record.event, Event::ProviderToolResult(result)
+            if matches!(result.provider_content.as_slice(), [ToolResultContentPart::Image(image)] if image.data.as_ref() == bytes)
+    )));
+    assert!(!f.h.session_runtime.state_dir.join("artifacts").exists());
 }
 
 impl ImageFixture {

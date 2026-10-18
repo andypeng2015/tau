@@ -116,8 +116,9 @@ drain or returning a completion. Callers bound scopes with their worker admissio
 permits and revalidate exact lease/runtime ownership before canonical publication.
 Guarded work must not wait for the semantic worker, main-loop callbacks, extension
 RPC or completion consumption. Agent exclusion precedes the Artifact store lock.
-Referenced tool-image admission uses this scope on the artifact worker; the
-production storage-policy selector remains Inline until provider resolution is ready.
+Referenced tool-image and generic standalone replacement admission use this
+scope on the artifact worker before canonical publication. Production policy
+requires this authority before selecting durable references.
 
 Managed agent projections separate authoritative trees and exact live-query facts
 from accepted-record cache residency. The core cache API can evict only a

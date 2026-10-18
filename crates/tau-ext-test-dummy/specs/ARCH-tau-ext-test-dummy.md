@@ -23,8 +23,10 @@ The `restart_mode` config exists to make harness tests deterministic:
 `success`, `error`, and `exit` force the corresponding outcome.
 `typed_image: true` enables `typed_image_test_dummy`, which returns one fixed
 in-memory 1×1 PNG as native typed provider content plus a
-bounded text result; it exists only for the deterministic durable-replay
-acceptance and does not read, decode, or write image files.
+bounded text result. Captured Artifact policy uses the existing verified SDK
+upload flow; Inline preserves the fixed bytes. One active upload retains its
+call/session and cancellation cleanup. It exists only for deterministic replay
+acceptance and does not directly read, decode, or write image files.
 `provider_context_raw_message: true` enables a closed message-bridge fixture
 tool. Its exact `agent_id` and `text` arguments publish one
 `message.delivered_reported` fact and return one fixed success. Only the

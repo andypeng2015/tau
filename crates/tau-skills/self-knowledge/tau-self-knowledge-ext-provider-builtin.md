@@ -605,8 +605,10 @@ existing Artifact RPC, including compaction and cache prewarm. It caches verifie
 encoded bytes with 64 MiB/64-entry bounds and shares concurrent same-key fetches;
 this is not a token or embedding cache. Missing/corrupt content fails only the
 consuming request before model submission. Existing image/data-URL budgets still
-apply. Harness emission remains Inline pending final integration and enablement,
-so this staged capability does not yet change normal image traffic.
+apply. Durable persistent invocations with ready scoped authority use references;
+ephemeral/memory-only or not-yet-ready invocations stay inline. Text-only routes omit historical images without fetching
+their bytes. Reference-bearing history requires the full Artifact store and root
+registry alongside journals when backing up or restoring.
 
 ChatGPT GPT-5.6 Sol, Terra, and Luna publish a 353,400-token effective context
 window and include `max` among their published reasoning choices. They use

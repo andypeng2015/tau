@@ -194,12 +194,7 @@ pub fn run_prompt_attempt<S: ProviderReportSink>(
     };
     let wire_model = tau_provider_chat_completions::AttemptModel {
         id: model.id.clone(),
-        supports_image_tool_results: model
-            .input_modalities
-            .contains(&tau_proto::InputModality::Image)
-            && model
-                .tool_result_modalities
-                .contains(&tau_proto::InputModality::Image),
+        supports_image_tool_results: model.supports_image_tool_results(),
     };
     let mut sampler = ResponseSampler::new();
     let outcome = tau_provider_chat_completions::run_attempt_with_diagnostics(

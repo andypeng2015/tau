@@ -1087,7 +1087,7 @@ same trusted local boundary. Reports commit before exact live-generation and
 prompt/retry correlation; only harness-sourced successors assert canonical execution
 facts or directed retry outcomes. Reports are excluded from semantic journals for
 either supplied `persist` value. Raw terminal report delivery/debug projections clear
-provider-image bytes. This boundary validates routing and lifecycle ownership; it does
+provider-image bytes and fetchable prepared-image keys. This boundary validates routing and lifecycle ownership; it does
 not treat configured provider payloads as hostile extension input or add spoofing
 hardening. Standalone-attempt accounting is a separate harness-sourced durable
 fact: it carries required session correlation and normalized usage/rates/cost but
@@ -1099,13 +1099,16 @@ observation. Only the same live provider generation can publish its one durable
 terminal correction; restart preserves the observation but restores no
 correction authority. Provider disconnect, graceful shutdown, and agent unload
 instead close still-dispatched owners as Final Unknown before discarding their
-routes. See
+routes. Already-reported terminals awaiting image verification retain their known
+billing before that lifecycle closure. See
 [SPEC-provider-execution-reports-and-canonical-facts](specs/SPEC-provider-execution-reports-and-canonical-facts.md).
 Committed terminal result reports may carry typed provider images for downstream
-validation, but every debug JSONL projection clears image bytes under
+validation, but every debug JSONL projection clears image bytes and fetchable keys under
 [`SPEC-typed-image-tool-results`](specs/SPEC-typed-image-tool-results.md); only
 validated provider transcript storage and directed provider prompts retain
-canonical bytes.
+inline bytes or protected typed references. Referenced bytes use the shared
+Artifact known-key API; generic key disclosure would therefore grant read access
+to configured extensions and must remain stripped.
 Generic configured-extension spawn diagnostics treat the configured instance
 name, resolved executable, and explicitly configured cwd as non-secret metadata;
 do not place credentials or tokens in those fields. Diagnostics bound and escape

@@ -15,8 +15,23 @@ pub(super) fn handle_prompt_backend<R, S: ProviderReportSink>(
 where
     R: TurnAbort,
 {
+    let consumes_images = match backend {
+        PromptBackend::Responses(config) => config.supports_image_tool_results(),
+        PromptBackend::ChatCompletions {
+            provider,
+            model_index,
+        } => provider.models[*model_index].supports_image_tool_results(),
+        PromptBackend::Grok {
+            profile,
+            model_index,
+        } => profile.models[*model_index].native_tool_images,
+        PromptBackend::ChatGptPlan { .. }
+        | PromptBackend::PublicResponses { .. }
+        | PromptBackend::Unavailable { .. } => false,
+    };
     let mut resolved_prompt = None;
-    if prompt.has_image_references()
+    if consumes_images
+        && prompt.has_image_references()
         && let Some(resolver) = context.image_resolution
     {
         let mut resolved = prompt.clone();
@@ -28,7 +43,7 @@ where
         }
     }
     let prompt = resolved_prompt.as_ref().unwrap_or(prompt);
-    if prompt.has_image_references() {
+    if consumes_images && prompt.has_image_references() {
         if retry_ctx.is_aborted() {
             return finish_canceled_attempt(
                 agent_prompt_id,

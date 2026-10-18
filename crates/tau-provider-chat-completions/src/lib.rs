@@ -2217,7 +2217,7 @@ fn try_build_request(
     model: &AttemptModel,
     prompt: &tau_proto::AgentPromptCreated,
 ) -> Result<ChatRequest, LlmError> {
-    if prompt.has_image_references() {
+    if model.supports_image_tool_results && prompt.has_image_references() {
         return Err(LlmError::UnresolvedImageReference);
     }
     validate_extra_body(&provider.extra_body)?;

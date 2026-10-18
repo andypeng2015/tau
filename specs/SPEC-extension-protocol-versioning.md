@@ -13,9 +13,11 @@ harness-authored per-invocation image-storage policy. Configured extensions must
 rebuild together with proto/client SDK 0.14.0; changing only an advertised version
 does not handle the new enum or policy field. New readers retain old inline image
 history, while old readers cannot decode reference-bearing records. Journal
-framing is unchanged. This unpublished schema checkpoint still selects Inline
-for all production invocations and rejects unresolved references at live
-admission and provider submission; it does not enable the full image side channel.
+framing is unchanged. Durable persistent image invocations select Artifact under
+captured scoped authority; ephemeral/memory-only invocations retain Inline.
+Canonical admission verifies and roots actual prepared bytes, and consuming
+providers resolve references before submission. Package publication, compatible
+external rebuilds and deployment remain separately coordinated operations.
 See [SPEC-typed-image-tool-results](SPEC-typed-image-tool-results.md).
 
 Protocol 13.1 adds UI-only bounded artifact discovery and permits authenticated

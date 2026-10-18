@@ -174,9 +174,11 @@ exists only for the real supervised test-dummy respawn acceptance; every other
 V2 shape retains the sole adjacent pair limit. A separate sole
 typed-image lane permits one fixed empty-argument dummy call, its one native 1×1
 PNG result, and one clean-resume continuation. The fake accepts that result only
-when its call identity, type, dimensions, detail, canonical bytes, and BLAKE3
-digest are exact and it accepts the resumed prompt only when that image remains
-once. Its durable snapshot independently checks the same digest and balanced
+when its call identity, type, dimensions, detail, and inline bytes or prepared
+descriptor are exact, and it accepts the resumed prompt only when that image
+remains once. Reference checks prove descriptor continuity, not external storage;
+the separate production-provider image acceptance verifies actual fetched bytes.
+Its durable snapshot independently checks the same digest and balanced
 call/result round; trace and terminal metadata remain byte-free. The one closed
 image fixture refines the root
 [SPEC-typed-image-tool-results](../../../specs/SPEC-typed-image-tool-results.md).
