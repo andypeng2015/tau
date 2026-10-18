@@ -1,6 +1,6 @@
 ---
 name: tau-self-knowledge-ext-slack
-description: Use when configuring, operating, or troubleshooting Tau std-slack, including conversation policies, Slack Socket Mode scopes/events, tools, routing, security, edits, reactions, or dynamic DMs.
+description: Use this extension skill for Tau std-slack setup, conversation policies, Slack Socket Mode scopes/events, tools, routing, security, edits, reactions, dynamic DMs, or troubleshooting.
 advertise: false
 ---
 
@@ -9,9 +9,11 @@ advertise: false
 `std-slack` is Tau's disabled-by-default Slack Socket Mode bridge. It exposes
 `slack_register`, `slack_conversations`, `slack_send`, and default-off `slack_react`; `tool_prefix` scopes
 all four tools and their group for multiple accounts. Slack text is always
-untrusted external content. For Tau protocol 13.1, rebuild with exact registry
-SDK `dpc-tau-client`/`dpc-tau-proto` 0.13.0 and update the extension together
-with the harness. Protocol-10 binaries are rejected before configuration.
+untrusted external content. The current executable speaks Tau protocol 14.0
+and requires a protocol-14-compatible harness.
+
+For development, `just policy` keeps intended package-root files root-anchored
+and rejects Cargo package membership beneath `.direnv`.
 
 Configuration requires app/bot token secrets, nonempty exact U/W
 `allowed_user_ids`, and an active `conversations` and/or

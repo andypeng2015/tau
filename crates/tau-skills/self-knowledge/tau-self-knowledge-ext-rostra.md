@@ -14,10 +14,11 @@ starts it through the normal supervised stdio extension route. The
 [standalone project](https://radicle.network/nodes/radicle.dpc.pw/rad%3Az4LrrRivcgNjJii5wzbjTvA8ttt6o)
 owns its source and detailed operational documentation.
 
-For Tau protocol 13.1, rebuild with exact registry SDK
-`dpc-tau-client`/`dpc-tau-proto` 0.13.0 and update the extension together with the
-harness. Protocol-10 binaries are rejected before configuration.
-Declaration inspection returns the complete 11-tool inventory before Tau
+For Tau protocol 14.0, rebuild with exact registry SDK
+`dpc-tau-client`/`dpc-tau-proto` 0.14.0 and update the extension together with the
+harness before separately authorized activation. Protocol-13 binaries are
+rejected before configuration.
+Declaration inspection returns the complete 12-tool inventory before Tau
 supplies a state directory or secrets. That path parses only public
 configuration and does not open `rostra.redb`, load or derive the identity,
 construct the asynchronous runtime, or start Rostra network work.

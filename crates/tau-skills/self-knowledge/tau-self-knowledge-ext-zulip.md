@@ -17,13 +17,15 @@ email/API-key HTTP Basic authentication, `POST /api/v1/register`, and long-poll
 revision used Tau protocol 9 and registry SDK 0.7.0, with the receiver-admission
 fix first published in Tau commit
 `30c8b43410a84294f31f74451f9f7f09a94df473`. That historical requirement is not a
-compatibility guarantee for newer harnesses. For Tau protocol 13.1, use a
-compatible extension binary built with exact registry
-`dpc-tau-client`/`dpc-tau-proto` SDK 0.13.0; a binary built with
-SDK 0.8.0 speaks protocol 10.0 and is rejected before configuration or receiver
-registration. Update the installed harness and all configured extension binaries
-compatibly before activating them; changing Zulip routes or registration settings
-does not repair a wire-version mismatch. This SDK migration does not add Zulip
+compatibility guarantee for newer harnesses. The standalone Zulip bridge uses
+exact registry `dpc-tau-client` and `dpc-tau-proto` 0.14.0 (protocol 14.0).
+Rebuild it with the compatible harness and configured peers before separately
+authorized activation. Protocol-13 binaries are rejected before configuration or
+receiver registration; changing Zulip routes or registration settings does not
+repair a wire-version mismatch. Zulip remains an original-byte attachment bridge,
+not a prepared-image producer or model provider: attachment downloads return
+original Artifact keys, and observed typed image references do not grant fetch,
+send, or route authority. This SDK migration does not add Zulip
 capabilities or change its snake_case keys, secret bindings, or catch-up checkpoint
 format, grants, routes, or artifact enumeration authority.
 
