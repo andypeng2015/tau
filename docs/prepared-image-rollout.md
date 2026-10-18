@@ -5,6 +5,10 @@ persistent invocations and resolves them before image-consuming provider work.
 This checklist does **not** authorize publication, deployment, activation, or
 opening existing live state with a new binary.
 
+The protocol 14.0 / SDK 0.14.0 source and registry publication is now
+[verified and recorded](sdk-releases.md#protocol-140-release-acceptance).
+External rebuilds and activation are not implied by that acceptance.
+
 ## Compatibility boundary
 
 | Surface | Required treatment |
@@ -74,9 +78,10 @@ Release order remains:
 5. Obtain separate activation approval. Do not restart or repoint an old binary
    at new reference-bearing journals as a rollback shortcut.
 
-External rebuild confirmations, registry publication, downstream closure
-verification and activation approval are remaining rollout gates, not results
-of local source CI.
+External rebuild confirmations, downstream closure verification and activation
+approval remain rollout gates. Registry publication and registry-only SDK
+consumer acceptance are complete for this SDK line; they are recorded separately
+from local source CI.
 
 ## Verification entry points
 

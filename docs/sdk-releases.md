@@ -20,12 +20,13 @@ When a release changes the complete closure, publish `dpc-tau-actions` and
 
 ## Package and protocol versions
 
-### Unpublished source: protocol 14.0 / SDK 0.14.0
+### Published SDK 0.14.0
 
-The current source requires `dpc-tau-proto` and `dpc-tau-client` **0.14.0**, with
-an exact client-to-proto pin of `=0.14.0`. This checkpoint does **not** publish
-packages or install/restart any extension. All configured peers must rebuild
-together before activation; a protocol-13 peer is rejected before configuration.
+Protocol **14.0** uses published `dpc-tau-proto` and `dpc-tau-client` **0.14.0**,
+with an exact client-to-proto pin of `=0.14.0` and unchanged leaf dependencies at
+0.1.0. All configured peers must rebuild together before activation; a
+protocol-13 peer is rejected before configuration. SDK publication does not
+install or restart any extension.
 
 Source migration:
 
@@ -40,11 +41,14 @@ Source migration:
   reference-bearing records; no downgrade migration or journal-only backup
   guarantee is provided. Physical journal framing is unchanged.
 
-Production still requests inline images in all persistence modes. Reference
-tool results and unresolved provider requests fail closed until producer upload,
-verified admission, and provider fetch/cache are integrated. Source/archive
-consumer checks are distinct from registry-only release acceptance, which must
-wait for coordinated publication. No registry-only 0.14.0 acceptance is claimed.
+The source endpoint captures Artifact for authorized persistent image invocations
+in durable sessions once scoped persistence authority is Prepared. Ephemeral,
+memory-only and not-yet-prepared invocations stay Inline. Producer upload,
+verified/rooted admission and provider fetch/cache are integrated; unsupported
+provider routes omit historical images without fetching them. Registry-only
+acceptance has passed for 0.14.0. External rebuild, downstream closure and
+activation gates remain separate; see the
+[prepared-image rollout checklist](prepared-image-rollout.md).
 
 ### Published SDK 0.13.0
 
@@ -71,6 +75,43 @@ a new wire version. The 0.13.0 archive consumer check verified protocol 13.1 and
 typed failure variants under Rust 1.91; registry-only acceptance must follow
 publication before source-identifying package tags are created; this acceptance
 has passed for 0.13.0.
+
+## Protocol 14.0 release acceptance
+
+Both packages were published on October 18, 2026 from clean source revision
+`fbdf287f452db63fc387509535f5c33777f4f04e`. The approved eight-commit source stack
+passed the corrected normal merge queue, and the public Radicle canonical master
+was verified at that exact revision before the uploads.
+
+Locked verified Cargo publish dry-runs passed in dependency order: proto first,
+then client after proto was available from the registry. Both official sparse
+index entries are unyanked. Their checksums match both the downloaded registry
+archives and the preserved verified dry-run archives. Cargo VCS metadata identifies
+the same clean source revision and the respective `crates/tau-proto` and
+`crates/tau-client` subdirectories.
+
+| Package | Registry archive SHA-256 |
+| --- | --- |
+| `dpc-tau-proto 0.14.0` | `78980b230431a9d33f4cc58c0627dca5a28d7da0045ecc664374e4c943f68872` |
+| `dpc-tau-client 0.14.0` | `5359cf5c7eb3d87a14ccdbefc792d43c6d7fa44b8d7da04caf740fec944f1499` |
+
+The unchanged 0.1.0 leaves were checked against their official index checksums
+and clean provenance at `2243c6857446bd253a505ce1ba20671a445d899c`; their Rust source
+files remain unchanged. The registry-only acceptance command
+`./.config/selfci/check-sdk-packages.sh --registry` passed all six consumer tests
+on Rust 1.91 from a fresh isolated Cargo home, with no local SDK patches. This
+includes protocol 14.0 and the actual prepared-reference/invocation-policy API,
+not merely advertised version numbers.
+
+Only after registry acceptance, the Radicle tags `dpc-tau-proto-v0.14.0` and
+`dpc-tau-client-v0.14.0` were created and published at the exact package source
+revision. The public seed's owner-namespaced refs were verified. The documentation
+acceptance follow-up does not move those immutable package tags or change archive
+provenance.
+
+This is SDK and source publication, not an application registry/native/GitHub
+release or deployment. No external extension repository, installed binary or
+live state was migrated by this publication.
 
 ## Protocol 13.1 release acceptance
 
