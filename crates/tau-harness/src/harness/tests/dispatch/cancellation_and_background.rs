@@ -7,6 +7,123 @@ use super::*;
 use crate::agent::PendingPromptSource;
 use crate::background_completion_preview::{BackgroundErrorOutcome, BackgroundPreviewBudget};
 
+/// Consuming background output through waits or direct control delivery
+/// releases the idle blocker in either wait/completion order. Running and
+/// unread work remains busy; after consumption the real event loop can expire a
+/// fresh window.
+#[test]
+fn consumed_background_wait_allows_idle_shutdown() {
+    for (mode, failed) in [
+        ("bare", false),
+        ("exact", false),
+        ("direct", false),
+        ("bare", true),
+        ("exact", true),
+        ("direct", true),
+    ] {
+        for complete_first in [false, true] {
+            if mode == "direct" && !complete_first {
+                continue;
+            }
+            let td = TempDir::new().expect("tempdir");
+            let mut h = echo_harness(td.path().join("state")).expect("start");
+            h.config.selected_model = Some("test/model".into());
+            connect_ready_configured_extension(
+                &mut h,
+                "idle-worker",
+                "idle-worker",
+                tau_proto::ClientKind::Tool,
+            );
+            let connection = crate::test_connection_id("idle-worker");
+            h.tool_routing
+                .registry
+                .register(&connection, instant_background_test_tool_spec("idle_work"));
+            let cid = ensure_test_user_agent(&mut h);
+            let agent_id = durable_agent_id_for_conversation(&h, &cid);
+            start_background_tool_and_finish_placeholder_turn(
+                &mut h,
+                &cid,
+                "idle-source",
+                "idle_work",
+            );
+            assert!(h.agent_has_accepted_work(&cid, &agent_id));
+            h.config.accepted_harness_settings.session_idle_shutdown =
+                Some("1s".parse().expect("duration"));
+            h.runtime_io.idle_session = IdleSession::new(Some(Duration::from_secs(1)));
+            h.checkpoint_idle_session(Instant::now(), false);
+            assert_eq!(h.runtime_io.idle_session.deadline(), None);
+            let complete = |h: &mut Harness| {
+                let event = if failed {
+                    Event::ToolErrorReported(tool_error("idle-source", "idle_work", "failed"))
+                } else {
+                    Event::ToolResultReported(final_tool_result("idle-source", "idle_work", "done"))
+                };
+                h.handle_extension_event_inner(&connection, event)
+                    .expect("complete source");
+            };
+            if complete_first {
+                complete(&mut h);
+                assert!(h.agent_has_accepted_work(&cid, &agent_id));
+            }
+            let mut wait = wait_no_args_call("idle-wait");
+            if mode == "exact" {
+                wait.arguments = CborValue::Map(vec![(
+                    CborValue::Text("tool_call_id".to_owned()),
+                    CborValue::Text("idle-source".to_owned()),
+                )]);
+            }
+            if mode == "direct" {
+                h.consume_wait_background_completion(&ToolCallId::from("idle-source"));
+            } else {
+                h.handle_wait_tool_call(&cid, &wait, ToolName::new("wait"))
+                    .expect("wait");
+            }
+            if !complete_first {
+                complete(&mut h);
+            }
+            assert!(
+                mode == "direct"
+                    || event_log_contains_any_source(&h, |event| match event {
+                        Event::ToolResult(result) => !failed && result.call_id == wait.id,
+                        Event::ToolError(error) => failed && error.call_id == wait.id,
+                        _ => false,
+                    })
+            );
+            if matches!(
+                h.agent_runtime.agent_registry.agents[&cid].turn.turn_state,
+                AgentTurnState::AgentThinking { .. }
+            ) {
+                let prompt = active_prompt_for(&h, &cid);
+                h.handle_provider_response_finished(provider_text_response(
+                    &prompt,
+                    agent_id.clone(),
+                    "done",
+                ))
+                .expect("finish followup");
+            }
+            assert!(
+                !h.agent_has_accepted_work(&cid, &agent_id),
+                "consumed output blocks idle: mode={mode}, complete_first={complete_first}, failed={failed}"
+            );
+            let now = Instant::now();
+            h.checkpoint_idle_session(now, false);
+            assert_eq!(
+                h.runtime_io.idle_session.deadline(),
+                Some(now + Duration::from_secs(1))
+            );
+            // Move the monotonic test clock back, without sleeping or extending
+            // the production timeout, then exercise the actual shutdown
+            // decision.
+            h.runtime_io
+                .idle_session
+                .checkpoint(now - Duration::from_secs(2), false, true);
+            h.run_event_loop(None).expect("idle loop exits");
+            h.shutdown().expect("shutdown");
+            assert!(h.session_runtime.shutdown_published);
+        }
+    }
+}
+
 /// Background terminal events are harness-derived records. Extensions must not
 /// be able to inject them directly into an agent log.
 #[test]

@@ -776,6 +776,9 @@ impl Harness {
             BackgroundCompletionPromptMode::DoNotQueue => {}
         }
         self.clear_tool_call_tracking(call_id.as_str());
+        // Recording the terminal can synchronously satisfy a wait before this
+        // function installs its routing entry. Do not resurrect consumed work.
+        self.retire_consumed_background_completion_targets();
     }
 
     pub(super) fn queue_background_completion_prompt(

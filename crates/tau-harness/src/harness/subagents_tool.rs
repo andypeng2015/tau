@@ -693,7 +693,30 @@ impl Harness {
             .subagents
             .wait_tracker
             .consume_completed_call(call_id);
+        self.retire_consumed_background_completion_targets();
         self.synchronize_work_waits();
+    }
+
+    /// Routing ownership must not outlive the retained output it protects.
+    /// Pending wait terminals have their own publication and tool-work owners.
+    pub(super) fn retire_consumed_background_completion_targets(&mut self) {
+        if self
+            .tool_routing
+            .tool_runtime
+            .background_completion_targets
+            .is_empty()
+        {
+            return;
+        }
+        let retained = self
+            .agent_runtime
+            .subagents
+            .wait_tracker
+            .retained_completion_call_ids();
+        self.tool_routing
+            .tool_runtime
+            .background_completion_targets
+            .retain(|call_id, _| retained.contains(call_id));
     }
 
     /// Commit plural wait consumption after its canonical wait terminal
@@ -709,11 +732,8 @@ impl Harness {
                 .tool_runtime
                 .suppressed_background_completion_prompts
                 .remove(&call_id);
-            self.tool_routing
-                .tool_runtime
-                .background_completion_targets
-                .remove(&call_id);
         }
+        self.retire_consumed_background_completion_targets();
         self.synchronize_work_waits();
         self.publish_wait_replies(replies);
     }
@@ -3607,6 +3627,9 @@ impl Harness {
     }
 
     fn publish_wait_replies(&mut self, replies: Vec<WaitReply>) {
+        if replies.is_empty() {
+            return;
+        }
         for mut reply in replies {
             if reply.settlement.as_ref().is_some_and(|settlement| {
                 settlement.outcome == tau_proto::ToolWaitOutcome::TimedOut
@@ -3727,6 +3750,7 @@ impl Harness {
                 ),
             }
         }
+        self.retire_consumed_background_completion_targets();
     }
 }
 

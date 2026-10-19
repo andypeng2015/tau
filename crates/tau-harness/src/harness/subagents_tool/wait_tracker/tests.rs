@@ -3840,6 +3840,7 @@ fn multiple_released_notice_generations_keep_exact_fifo_correlation() {
         tracker.released_completions.insert(
             generation,
             ReleasedCompletion {
+                call_id: call_id.clone(),
                 call_ref,
                 tool_name: slow_tool_name(),
                 completion: ExactAllCompletion::Result {

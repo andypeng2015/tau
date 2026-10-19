@@ -56,6 +56,8 @@ struct CompletionNode {
 /// reused while a plural wait owned the old generation.
 #[derive(Clone, Debug)]
 struct ReleasedCompletion {
+    /// Display call ID whose routing ownership protects this retained output.
+    call_id: ToolCallId,
     /// Stable declaration occurrence for durable settlement.
     call_ref: ToolCallRef,
     /// Source tool name retained for wait display.
@@ -956,6 +958,7 @@ impl WaitTracker {
                     self.released_completions.insert(
                         generation,
                         ReleasedCompletion {
+                            call_id: member.call_id.clone(),
                             call_ref: member.call_ref,
                             tool_name: member.tool_name.clone(),
                             completion,
@@ -1716,6 +1719,26 @@ impl WaitTracker {
     /// Return whether an owned call has one unconsumed completion.
     pub(super) fn completed_call_is_owned_by(&self, call_id: &ToolCallId, owner: &AgentId) -> bool {
         self.call_is_owned_by(call_id, owner) && self.is_completed(call_id)
+    }
+
+    /// Collect display IDs with retained output, including older generations
+    /// reserved by plural waits or released back into the completion FIFO.
+    pub(super) fn retained_completion_call_ids(&self) -> HashSet<ToolCallId> {
+        let mut retained: HashSet<_> = self.completed_membership.keys().cloned().collect();
+        retained.extend(
+            self.released_completions
+                .values()
+                .map(|released| released.call_id.clone()),
+        );
+        retained.extend(
+            self.exact_all_waits
+                .values()
+                .chain(self.pending_exact_all_commits.values())
+                .flat_map(|wait| &wait.members)
+                .filter(|member| member.completion.is_some())
+                .map(|member| member.call_id.clone()),
+        );
+        retained
     }
 
     /// Return the exact current-generation completion identity when it is

@@ -576,7 +576,7 @@ impl Harness {
     }
 
     /// Reuse the unload no-discard check so in-flight agent work cannot expire.
-    fn checkpoint_idle_session(&mut self, now: Instant, activity: bool) {
+    pub(super) fn checkpoint_idle_session(&mut self, now: Instant, activity: bool) {
         if self
             .config
             .accepted_harness_settings
