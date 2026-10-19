@@ -2461,6 +2461,7 @@ impl Harness {
     /// provider request.
     fn agent_can_start_deferred_inference_dispatch(&self, cid: &AgentId) -> bool {
         self.agent_context_ready_for(cid)
+            && self.inference_compaction_failure(cid, None).is_none()
             && !self
                 .agent_runtime
                 .agent_registry

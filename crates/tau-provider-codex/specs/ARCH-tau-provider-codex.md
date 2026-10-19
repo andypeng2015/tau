@@ -80,7 +80,7 @@ native absence selects Tau's local-summary lowerer; definitive native absence
 before semantic output permits one local request in the same transaction.
 Local summary replaces the exact trailing trigger with the shared summary
 instruction and uses ordinary fresh-chain lowering with tool choice disabled.
-It keeps semantic output private, rejects tool/unknown output, discards
+It keeps semantic output private, rejects recognized tool/forbidden output, discards
 reasoning, and accepts one bounded narrative. The private Codex wire has no
 supported output-token cap; acceptance byte bounds do not cap remote generation.
 Existing WebSocket receive/retained-state bounds and cancellation still apply.
@@ -91,6 +91,12 @@ A clean completed local response with only bounded reasoning or empty narrative
 reports typed unusable-summary failure to the harness. It does not retry within
 the adapter; the harness owns bounded smaller-prefix successors. Native opaque
 output and partial-stream errors never gain that authority.
+Unknown events, item/part kinds, and extra fields are ignored with bounded,
+sanitized compatibility logs. Standalone summaries skip unknown item projection;
+ordinary inference retains its existing opaque unknown-item replay fidelity.
+Native compaction selects exactly one recognized compaction item at its original
+wire index, so ignored items may precede it. Known identity/lifecycle constraints
+and required completion remain unchanged in both live parsing and raw replay.
 
 The model publishes no inferred historical-prefix byte budget. Tau initially
 sends the exact normalized provider-closed target with the same mode, system

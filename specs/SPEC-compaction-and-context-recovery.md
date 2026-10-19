@@ -47,6 +47,10 @@ policy with exactly the one validated provider compaction item while leaving
 the harness-owned post-cut suffix unchanged. The user also approved reporting
 actual context reduction only from the transaction-owned first continuation's
 provider input usage. These exact semantics satisfy the same gate.
+The user approved ignore-and-log backend compatibility and durable-derived
+inference pauses after final compaction failure for `e7xd`, including manual
+failure and cancellation below threshold. This supersedes fresh-terminal
+rearming in current scheduling; previously valid journals remain replayable.
 
 Typed image tool results are indivisible members of their existing closed
 call/result round. Durable canonical bytes replay through normal inference and
@@ -88,7 +92,7 @@ The ordinary prefix is not canonicalized, stripped, or rewritten, so a provider
 may reuse the prefix warmed by ordinary inference. Cache reuse remains a
 provider behavior, not a Tau guarantee.
 
-Any returned tool call or other semantic output rejects the compaction and is
+Any recognized tool call or other known forbidden output rejects the compaction and is
 never executed, including when assistant text is also present. Exactly one
 nonempty bounded final assistant text is accepted, assembled from provisional
 fragments under the local-summary continuation contract below. Provider reasoning may be
@@ -256,9 +260,9 @@ ordinary inference. Its durable terminal produces one compact-specific internal
 continuation containing bounded status and request, call, and transaction
 correlation; this consumes the background terminal, suppresses generic completion
 delivery, and makes the original call unavailable to `wait`. Success continues
-from the replacement window. Failure or cancellation attempts the same
-error-bearing continuation and otherwise leaves the transaction durably blocked
-and visible. Replay delivers a committed but undelivered terminal once and never
+from the replacement window. Failure or cancellation delivers the error-bearing
+terminal without dispatching ordinary inference, and leaves the matching
+model/lineage visibly paused. Replay delivers a committed but undelivered terminal once and never
 resends ambiguous compactor work or repeats committed delivery. An explicit
 recovery creates a successor outcome and delivery rather than rewriting history.
 Cross-agent `agent_compact` remains asynchronous and waitable.
@@ -305,11 +309,14 @@ owed branch. Navigating away refuses supersession of that failure but permits a
 fresh independent explicit transaction on the selected branch. The failed
 durable start's provider-qualified model and selected-branch ancestry are the
 authority after warm continuation and cold replay.
-Ordinary activating input remains usable but does not clear or implicitly retry
-the failure. The matching failed model and branch suppress automatic threshold,
-policy, continuation, and reactive recovery so queued ingress cannot create a
-hidden repeat loop. Explicit UI, self, and cross-agent requests remain recovery
-authorities. Model or branch drift permits a fresh independent transaction
+Ordinary activating input retains its existing delivery/queue durability but
+cannot dispatch inference or implicitly retry a final failed episode. The
+matching failed model and branch pause all ordinary dispatch, including tool,
+output-length, and restored continuations, and suppress automatic threshold,
+policy, and reactive recovery. Already accepted terminal/tool/background
+completion obligations still settle once. Explicit UI and authorized cross-agent
+requests remain recovery authorities; the paused model is not invoked to request
+its own recovery. Model or branch drift permits a fresh independent transaction
 without rewriting the failed history; returning to the failed model and branch
 restores suppression. Only a successful authorized successor clears the matching
 durable failure chain.
@@ -322,23 +329,20 @@ Live admission and cold replay use the same logical-boundary rule. The journal
 schema is unchanged, but older validators cannot replay these newly legal
 successors; this correction is part of the unreleased protocol 12 contract,
 including relative to intermediate local protocol 12 builds.
-A typed exhausted-transient standalone failure records that every failed
-attempt accepted no semantic output. It does not immediately dispatch another
-transaction. A fresh canonical ordinary inference terminal on the matching
-model and selected lineage may authorize one new automatic transaction through
-ordinary threshold/policy evidence or canonical no-output context rejection.
-Ingress, queue polling, and restart alone do not rearm it. The terminal commits
-before any reactive successor start; replay claims that successor at most once.
-The same fresh-terminal rearming applies to a typed unusable-local-summary
-failure with no pending successor. A failed episode never resumes its owed
-inference merely to manufacture another overflow.
-The automatic successor supersedes the typed failure and may advance its cut
-within the same selected lineage to the current provider-closed prefix.
-It preserves the owed resume ancestry and post-cut suffix. Only successful
-publication clears the failure chain; unknown/post-progress stream failures never
-gain this advancing-cut authority.
-Apart from the clean local-summary exception, post-progress, deterministic, canceled, interrupted, and historical unclassified
-failures retain explicit-only recovery. Grok's unary compactor retries only
+Typed exhausted-transient and unusable-local-summary failures retain their
+within-episode retry/retreat bounds. Once no durable successor remains, they
+pause ordinary inference like deterministic, post-progress, canceled,
+interrupted, and historical unclassified failures. Fresh ordinary terminals,
+ingress, timers, queue polling, and restart cannot reset the episode. A failed
+episode never resumes its owed inference merely to manufacture another overflow.
+Explicit recovery starts a new episode; only a successful authorized successor
+clears the matching failure chain. Existing valid historical fresh-terminal
+successors remain accepted during replay, but current scheduling creates none.
+The pause is derived from existing failure/model/lineage facts rather than an
+independent persisted flag. UI and late/cold watcher projection expose
+`blocked/compaction` with an explicit recovery action, without injecting another
+prompt into the paused agent.
+Grok's unary compactor retries only
 proven request/body transport or absolute-deadline failures before accepting its
 one complete opaque item. Unknown status/body/shape failures remain terminal.
 When a failed transaction carries `resume_through`, that watermark must be an
@@ -419,17 +423,15 @@ cannot rewrite a committed start. If the captured model route disappears, the
 transaction durably fails before any provider request is delivered. Success installs a
 cut/suffix-bearing boundary so facts
 committed during compaction survive after the replacement window. Terminal
-failure records a safe durable category, suppresses immediate automatic retry, and leaves
-the agent addressable for ordinary prompts and explicit `:compact` or authorized
-`agent_compact` recovery. A transaction remains runtime-blocked only while it
-owes a durable continuation or background completion. Self/manual, cross-agent,
-side-agent, and reactive-overflow failure handling removes that block only after
-the owed completion is staged or delivered at its owning durable boundary.
-Terminal failures with no remaining continuation obligation become usable
-immediately; replay reconstructs the same result and never redispatches the
-terminal provider request.
-Typed exhausted-transient failures follow the fresh-terminal rearming exception
-above; they never repeat the same terminal provider request.
+failure records a safe durable category, pauses ordinary inference, and leaves
+the agent addressable for queued input and explicit `:compact` or authorized
+`agent_compact` recovery. Self/manual, cross-agent, side-agent, and reactive-overflow
+failure handling settles owed completion at its owning durable boundary before
+retiring runtime transaction ownership. The durable failure still pauses
+ordinary inference; replay reconstructs the same result without redispatching
+the terminal request. Manual failures and cancellation have the same stop policy
+even below an automatic threshold. Pre-start request rejection does not invent
+a failed standalone transaction.
 Inference resumes only after a durable dispatch watermark commits.
 While that checkpoint is interceptable or waiting to persist, an explicit
 `AwaitingCheckpoint` runtime state blocks every ordinary dispatch path.
@@ -659,8 +661,8 @@ reset it. Capacity rejections do not consume the allowance; existing transport
 and length limits remain independent, not a five-paid-call total.
 Exhaustion or an irreducible prefix produces one final failure without losing the
 suffix, request ownership, captured model/branch, or owed resume watermark.
-Fresh-terminal or explicit recovery starts a new episode; polling and ingress
-alone do not. Historical generic failures are not reclassified.
+Only explicit recovery starts a new episode after final exhaustion; polling,
+ordinary terminals, and ingress do not. Historical generic failures are not reclassified.
 A deterministic automatic byte-budget preflight failure records its reason in
 the start, so live execution and restart commit the same terminal without
 provider work.

@@ -329,7 +329,7 @@ fn websocket_preparser_decodes_event_once() {
         decode_websocket_event(r#"{"type":"response.heartbeat"}"#),
         Ok(DecodedWebSocketEvent::Apply(_))
     ));
-    assert_eq!(test_counts(), (1, 1));
+    assert_eq!(test_counts(), (1, 0));
 }
 
 /// The WebSocket pre-parser must bypass only the exact nested max-output

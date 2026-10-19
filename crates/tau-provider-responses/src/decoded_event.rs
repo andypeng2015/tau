@@ -39,12 +39,39 @@ impl<'a> DecodedEvent<'a> {
 
     /// Index exact sidecars around one semantic value decoded from `raw`.
     pub(super) fn from_value(raw: &'a str, value: Value) -> Result<Self, serde_json::Error> {
+        let item_event = matches!(
+            value["type"].as_str(),
+            Some("response.output_item.added" | "response.output_item.done")
+        );
+        let terminal = matches!(
+            value["type"].as_str(),
+            Some("response.completed" | "response.done" | "response.incomplete")
+        );
+        if !item_event && !terminal {
+            return Ok(Self {
+                value,
+                raw,
+                item: None,
+                output: None,
+            });
+        }
         #[cfg(test)]
         RAW_INDEX_SCANS.set(RAW_INDEX_SCANS.get() + 1);
-        let mut top = object_members(raw, &["item", "response", "output"])
+        if item_event {
+            let item = object_members(raw, &["item"])
+                .map_err(raw_index_error)?
+                .pop()
+                .flatten();
+            return Ok(Self {
+                value,
+                raw,
+                item,
+                output: None,
+            });
+        }
+        let mut top = object_members(raw, &["response", "output"])
             .map_err(raw_index_error)?
             .into_iter();
-        let item = top.next().flatten();
         let response = top.next().flatten();
         let top_output = top.next().flatten();
         let nested_output = response
@@ -61,7 +88,7 @@ impl<'a> DecodedEvent<'a> {
         Ok(Self {
             value,
             raw,
-            item,
+            item: None,
             output: nested_output.or(top_output),
         })
     }

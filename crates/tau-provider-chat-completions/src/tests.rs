@@ -2745,6 +2745,42 @@ fn compact_stream_accepts_only_final_narrative_and_reasoning() {
     );
 }
 
+/// The real SSE path accepts optional space after data: and ignores additions
+/// at all envelope levels without losing the known summary or completion.
+#[test]
+fn summary_sse_ignores_unknown_fields_and_accepts_optional_space() {
+    for separator in ["", " "] {
+        let mut state = StreamState::new_for_attempt(
+            CacheUsageCompat::None,
+            Some(tau_proto::ByteCount::new(1024)),
+        );
+        let mut pending = Vec::new();
+        let mut capture = DebugEventCapture::new(false);
+        let data = format!(
+            "data:{separator}{}\n\n",
+            serde_json::json!({
+                "future_telemetry": {"private":"canary"},
+                "choices": [{"index":0, "future_score":42, "token_ids":[1,2],
+                    "delta":{"content":"summary", "future_delta":{"anything":true}},
+                    "finish_reason":"stop"}]
+            })
+        );
+        process_stream_chunk(
+            data.as_bytes(),
+            &mut pending,
+            &mut state,
+            &mut capture,
+            &prompt().agent_prompt_id,
+            &mut |_| {},
+        )
+        .expect("SSE event");
+        assert_eq!(
+            state.validate_compaction().expect("summary").text,
+            "summary"
+        );
+    }
+}
+
 /// The complete vLLM terminal stream shape pinned at upstream revision
 /// `1f778486fc313f3599a6b59e67f65b1c186477fd` must remain valid without
 /// admitting token tracing or weakening the required `stop` terminal.
@@ -2822,8 +2858,7 @@ fn compact_stream_accepts_pinned_vllm_terminal_metadata_fixture() {
     assert_eq!(usage.response_received_tokens, 3);
 }
 
-/// vLLM's documented null, string, and integer stop metadata is content-free,
-/// while any other type and non-null token trace remains fail-closed.
+/// Provider stop metadata and token traces never supply terminal authority.
 #[test]
 fn compact_stream_validates_vllm_terminal_metadata_narrowly() {
     for stop_reason in [
@@ -2857,7 +2892,7 @@ fn compact_stream_validates_vllm_terminal_metadata_narrowly() {
 
     let mut pre_terminal =
         StreamState::new_for_attempt(CacheUsageCompat::None, Some(tau_proto::ByteCount::new(64)));
-    let error = apply_event(
+    apply_event(
         &mut pre_terminal,
         &serde_json::json!({
             "choices": [{
@@ -2870,12 +2905,11 @@ fn compact_stream_validates_vllm_terminal_metadata_narrowly() {
         }),
         &mut |_| {},
     )
-    .expect_err("non-null stop metadata before the terminal must reject");
-    assert!(matches!(
-        error,
-        LlmError::InvalidCompaction(message)
-            if message == "summary compactor returned invalid stop metadata"
-    ));
+    .expect("auxiliary stop metadata before the terminal is ignored");
+    assert!(
+        pre_terminal.validate_compaction().is_err(),
+        "metadata is not a terminal"
+    );
 
     for (field, value) in [
         ("stop_reason", serde_json::json!(1.5)),
@@ -2896,13 +2930,10 @@ fn compact_stream_validates_vllm_terminal_metadata_narrowly() {
             }],
         });
         event["choices"][0][field] = value;
-        assert!(
-            matches!(
-                apply_event(&mut state, &event, &mut |_| {}),
-                Err(LlmError::InvalidCompaction(_))
-            ),
-            "{field} must remain narrowly validated"
-        );
+        apply_event(&mut state, &event, &mut |_| {}).expect("auxiliary metadata");
+        state
+            .validate_compaction()
+            .expect("known stop and narrative remain valid");
     }
 }
 
@@ -2975,14 +3006,13 @@ fn compact_stream_accepts_llama_cpp_final_usage_timings_metadata() {
     assert_eq!(usage.response_received_tokens, 7);
 }
 
-/// Timings remain strict compact-only metadata: they must be the one
-/// post-`stop`, empty-choices usage event, while unrelated fields continue to
-/// reject with the established provider-output diagnostic.
+/// Metadata can precede or follow completion and repeat without extending
+/// semantic activity or changing the accepted narrative.
 #[test]
-fn compact_stream_rejects_timings_outside_llama_cpp_final_usage_shape() {
+fn compact_stream_ignores_additive_timing_metadata() {
     let mut before_stop =
         StreamState::new_for_attempt(CacheUsageCompat::None, Some(tau_proto::ByteCount::new(64)));
-    let error = apply_event(
+    apply_event(
         &mut before_stop,
         &serde_json::json!({
             "choices": [],
@@ -2991,23 +3021,10 @@ fn compact_stream_rejects_timings_outside_llama_cpp_final_usage_shape() {
         }),
         &mut |_| {},
     )
-    .expect_err("pre-stop timings event must reject");
-    assert!(matches!(
-        error,
-        LlmError::InvalidCompaction(message)
-            if message == "summary compactor returned unsupported provider output"
-    ));
+    .expect("pre-stop metadata");
+    assert_eq!(before_stop.semantic_progress, SemanticProgress::None);
 
     for event in [
-        serde_json::json!({
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }],
-            "usage": {},
-            "timings": {},
-        }),
         serde_json::json!({
             "choices": [],
             "usage": {},
@@ -3036,13 +3053,15 @@ fn compact_stream_rejects_timings_outside_llama_cpp_final_usage_shape() {
             &mut |_| {},
         )
         .expect("required compact stop");
-        let error = apply_event(&mut state, &event, &mut |_| {})
-            .expect_err("invalid timings shape must reject");
-        assert!(matches!(
-            error,
-            LlmError::InvalidCompaction(message)
-                if message == "summary compactor returned unsupported provider output"
-        ));
+        let progress = state.semantic_progress_generation;
+        for _ in 0..3 {
+            apply_event(&mut state, &event, &mut |_| {}).expect("metadata");
+            assert_eq!(state.semantic_progress_generation, progress);
+        }
+        assert_eq!(
+            state.validate_compaction().expect("summary").text,
+            "summary"
+        );
     }
 }
 
@@ -3205,7 +3224,7 @@ fn ordinary_stream_does_not_deduplicate_reasoning_across_events() {
     assert_eq!(state.thinking, "againagain");
 }
 
-/// Tool calls and provider-specific opaque or mixed semantic events must fail
+/// Known tool calls, errors, and mixed semantic events must fail
 /// before ordinary compatibility parsing can discard or normalize them.
 #[test]
 fn compact_stream_rejects_tool_opaque_and_mixed_output() {
@@ -3216,7 +3235,6 @@ fn compact_stream_rejects_tool_opaque_and_mixed_output() {
                 "delta": {"tool_calls": [{"index": 0, "function": {"name": "shell"}}]}
             }]
         }),
-        serde_json::json!({"provider_item": {"opaque": true}}),
         serde_json::json!({
             "choices": [
                 {"index": 0, "delta": {"content": "one"}},
@@ -3224,22 +3242,11 @@ fn compact_stream_rejects_tool_opaque_and_mixed_output() {
             ]
         }),
         serde_json::json!({
-            "choices": [{
-                "index": 0,
-                "delta": {"content": "summary"},
-                "logprobs": {"content": []}
-            }]
-        }),
-        serde_json::json!({
             "choices": [{"index": 1, "delta": {"content": "wrong choice"}}]
         }),
         serde_json::json!({
             "error": {"code": "server_error"},
             "choices": [{"index": 0, "delta": {"content": "partial"}}]
-        }),
-        serde_json::json!({
-            "error": {"code": "server_error"},
-            "provider_item": {"opaque": true}
         }),
         serde_json::json!({
             "error": {"code": "server_error"},
@@ -3255,14 +3262,6 @@ fn compact_stream_rejects_tool_opaque_and_mixed_output() {
                 "error": ["bad"]
             }]
         }),
-        serde_json::json!({
-            "choices": [{
-                "index": 0,
-                "delta": {"content": "summary"},
-                "finish_reason": "stop",
-                "native_finish_reason": 7
-            }]
-        }),
     ] {
         let mut state = StreamState::new_for_attempt(
             CacheUsageCompat::None,
@@ -3275,8 +3274,7 @@ fn compact_stream_rejects_tool_opaque_and_mixed_output() {
     }
 }
 
-/// Unknown provider fields remain ordinary-inference compatibility metadata,
-/// while the compact-only language rejects the same opaque event.
+/// Unknown metadata has no semantic authority in either inference or summary.
 #[test]
 fn compact_only_opaque_rejection_preserves_ordinary_compatibility() {
     let event = serde_json::json!({"provider_item": {"opaque": true}});
@@ -3287,10 +3285,13 @@ fn compact_only_opaque_rejection_preserves_ordinary_compatibility() {
 
     let mut compact =
         StreamState::new_for_attempt(CacheUsageCompat::None, Some(tau_proto::ByteCount::new(64)));
-    assert!(matches!(
-        apply_event(&mut compact, &event, &mut |_| {}),
-        Err(LlmError::InvalidCompaction(_))
-    ));
+    apply_event(&mut compact, &event, &mut |_| {}).expect("summary ignores unknown");
+    assert!(compact.output_items().is_empty());
+    assert_eq!(compact.semantic_progress, SemanticProgress::None);
+    assert!(
+        compact.validate_compaction().is_err(),
+        "unknown output is not a summary"
+    );
 }
 
 /// Compact rejection must not suppress the existing transient progress

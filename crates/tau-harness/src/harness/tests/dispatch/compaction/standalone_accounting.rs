@@ -115,9 +115,8 @@ fn standalone_failure_terminalizes_warm_provider_watch_status() {
         .expect("record terminal failure");
         assert!(matches!(
             h.agent_runtime.agent_watch.provider_status[&watched_id].state,
-            tau_proto::AgentWatchProviderState::TerminalError {
-                failure_kind: tau_proto::ProviderFailureKind::Unknown,
-                attempt: 2,
+            tau_proto::AgentWatchProviderState::Blocked {
+                category: tau_proto::AgentWatchProviderCategory::Compaction,
             }
         ));
         let watcher_statuses = session_agent_message_received_events(&h)
@@ -127,16 +126,15 @@ fn standalone_failure_terminalizes_warm_provider_watch_status() {
                     && message.recipient_id.as_str() == watcher_id
             })
             .collect::<Vec<_>>();
-        assert_eq!(watcher_statuses.len(), 2);
+        assert_eq!(watcher_statuses.len(), 3);
         assert!(matches!(
-            watcher_statuses[1]
+            watcher_statuses[2]
                 .watch_provider_status
                 .as_ref()
                 .expect("terminal status")
                 .state,
-            tau_proto::AgentWatchProviderState::TerminalError {
-                failure_kind: tau_proto::ProviderFailureKind::Unknown,
-                attempt: 2,
+            tau_proto::AgentWatchProviderState::Blocked {
+                category: tau_proto::AgentWatchProviderCategory::Compaction,
             }
         ));
 
@@ -160,9 +158,8 @@ fn standalone_failure_terminalizes_warm_provider_watch_status() {
         assert!(late_status.initial);
         assert!(matches!(
             late_status.state,
-            tau_proto::AgentWatchProviderState::TerminalError {
-                failure_kind: tau_proto::ProviderFailureKind::Unknown,
-                attempt: 2,
+            tau_proto::AgentWatchProviderState::Blocked {
+                category: tau_proto::AgentWatchProviderCategory::Compaction,
             }
         ));
         h.shutdown().expect("shutdown");
@@ -173,12 +170,12 @@ fn standalone_failure_terminalizes_warm_provider_watch_status() {
         quiet_provider_harness_with_start_reason(&state, tau_proto::SessionStartReason::Resume)
             .expect("resume");
     assert!(
-        !resumed
+        resumed
             .agent_runtime
             .agent_watch
             .provider_status
             .contains_key(&watched_id),
-        "provider-watch state remains runtime-only after restart"
+        "durable failure reconstructs the pause after restart"
     );
     let cold_late_cid = resumed.create_durable_user_agent(
         resumed.session_runtime.current_session_id.clone(),
@@ -203,8 +200,8 @@ fn standalone_failure_terminalizes_warm_provider_watch_status() {
     );
     assert_eq!(
         provider_status_count(&resumed),
-        before,
-        "cold late watch must not replay a runtime-only provider terminal"
+        before + 1,
+        "cold late watch receives the reconstructed pause"
     );
 }
 
@@ -272,16 +269,16 @@ fn standalone_cancellation_retires_warm_provider_watch_status() {
     );
 
     assert!(
-        !h.agent_runtime
+        h.agent_runtime
             .agent_watch
             .provider_status
             .contains_key(&watched_id),
-        "cancelled standalone prompt must not remain retrying"
+        "cancelled standalone prompt is paused instead of retrying"
     );
     assert_eq!(
         watcher_provider_status_count(&h),
-        1,
-        "cancellation is not a provider terminal error"
+        2,
+        "cancellation publishes one blocked transition"
     );
     h.set_agent_watch(
         &late_id,
@@ -292,11 +289,11 @@ fn standalone_cancellation_retires_warm_provider_watch_status() {
     assert!(
         session_agent_message_received_events(&h)
             .into_iter()
-            .all(|message| {
-                message.kind != tau_proto::AgentMessageKind::WatchProviderStatus
-                    || message.recipient_id.as_str() != late_id
+            .any(|message| {
+                message.kind == tau_proto::AgentMessageKind::WatchProviderStatus
+                    && message.recipient_id.as_str() == late_id
             }),
-        "warm late watcher must not receive the retired retry snapshot"
+        "warm late watcher receives the pause, not the retired retry snapshot"
     );
 }
 
@@ -1171,11 +1168,11 @@ fn reactive_context_overflow_ui_cancel_is_terminal_once() {
             .agent_watch
             .provider_status
             .get(agent_id.as_str())
-            .is_none_or(|status| !matches!(
+            .is_some_and(|status| matches!(
                 status.state,
                 tau_proto::AgentWatchProviderState::Blocked { .. }
             )),
-        "a durable cancelled terminal must replay as usable"
+        "a durable cancelled terminal must replay as paused"
     );
     assert_eq!(
         resumed

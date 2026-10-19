@@ -749,10 +749,21 @@ fn spawn_loopback_server(mode: LoopbackResponseMode) -> WsLoopbackServer {
                 }
                 if matches!(mode, LoopbackResponseMode::LocalSummarySuccess) {
                     for event in [
+                        serde_json::json!({"type":"response.output_text.delta",
+                            "output_index":0,"delta":"Keep the "}),
+                        serde_json::json!({"type":"response.metadata",
+                            "metadata":{"future_counter":17,"private":"not summary"}}),
+                        serde_json::json!({"type":"response.reasoning_summary_part.added",
+                            "output_index":0,"part":{"type":"future_reasoning_part"}}),
+                        serde_json::json!({"type":"response.output_item.done",
+                            "output_index":0,"item":{"type":"future_metadata","payload":"ignored"}}),
+                        serde_json::json!({"type":"response.output_text.delta",
+                            "output_index":0,"delta":"invariant."}),
                         serde_json::json!({
                             "type": "response.output_item.done", "output_index": 0,
                             "item": {"type": "message", "role": "assistant",
-                                "content": [{"type": "output_text", "text": "Keep the invariant."}]}
+                                "content": [{"type": "future_part","payload":"ignored"},
+                                    {"type": "output_text", "text": "Keep the invariant."}]}
                         }),
                         serde_json::json!({
                             "type": "response.completed", "response": {
@@ -878,10 +889,17 @@ fn spawn_loopback_server(mode: LoopbackResponseMode) -> WsLoopbackServer {
                         | LoopbackResponseMode::CompactRepairThenSuccess
                         | LoopbackResponseMode::CompactItemThenCloseThenSuccess
                 ) {
+                    for event in [
+                        serde_json::json!({"type":"response.metadata","extra":{"counter":17}}),
+                        serde_json::json!({"type":"response.output_item.done","output_index":0,
+                            "item":{"type":"future_metadata","payload":"ignored"}}),
+                    ] {
+                        let _ = socket.send(tungstenite::Message::Text(event.to_string().into()));
+                    }
                     let _ = socket.send(tungstenite::Message::Text(
                         serde_json::json!({
                             "type": "response.output_item.done",
-                            "output_index": 0,
+                            "output_index": 1,
                             "item": {
                                 "type": "compaction",
                                 "id": "cmp_committed",

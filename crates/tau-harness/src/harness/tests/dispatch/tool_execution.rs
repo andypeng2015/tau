@@ -2133,7 +2133,7 @@ fn standalone_tool_response_with_telemetry_is_rejected_before_persistence() {
         context_before
     );
     assert!(
-        !h.agent_runtime
+        h.agent_runtime
             .agent_watch
             .provider_status
             .get(agent_id.as_str())
@@ -2150,7 +2150,7 @@ fn standalone_tool_response_with_telemetry_is_rejected_before_persistence() {
         .collect();
     assert_eq!(
         watcher_receives_after.len(),
-        watcher_receives_before,
+        watcher_receives_before + 1,
         "{watcher_receives_after:#?}"
     );
     assert_eq!(

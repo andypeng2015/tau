@@ -6,6 +6,21 @@ Provider backends, extension samplers, the shared protocol, harness correlation,
 and UI consumers jointly implement this streaming contract, so no single local
 artifact can own it coherently.
 
+## Backend compatibility
+
+External backend events, item/part kinds, and extra fields that Tau does not
+understand are ignored and logged rather than rejected solely for being unknown.
+Diagnostics contain bounded sanitized kind/key labels, deduplicate within an
+attempt, and never expose payload values. Unknown elements do not authorize
+progress, completion, retry, tool execution, or compaction success.
+Known errors, malformed recognized structures, contradictory known lifecycle
+facts, and required usable-output checks retain their validation. Unknown
+finish-reason values are logged but cannot alone authorize completion or tools.
+Opaque replay fidelity already supported by an adapter remains intact; ignoring
+semantic interpretation does not require discarding admitted exact replay bytes.
+
+## Streaming projection
+
 Providers submit `provider.response_updated_reported` as transient, prompt-local
 progress. After generic report commit and prompt-owner validation, the harness publishes
 canonical `provider.response_updated`. Assistant text and reasoning use append-only

@@ -5,6 +5,7 @@ use std::io::Write;
 
 use super::super::lifecycle::seed_restored_compaction_checkpoint;
 use super::*;
+use crate::agent::{ActivationDispatchState, InferenceCheckpointOwner};
 
 /// Ensures provider-owned response stats survive harness validation and are
 /// broadcast on `provider.response_updated` without a harness stats projection.
@@ -1969,9 +1970,44 @@ fn blocked_compaction_history_does_not_mask_uncertain_inference_replay() {
             Some(tau_core::StandaloneCompactionRecovery::Blocked { .. })
         ));
 
+        // Historical journals can contain ordinary dispatch after a failure.
+        // Current scheduling cannot create one, but replay must settle it.
         first
-            .dispatch_prompt_for_agent(&cid, PendingPrompt::user("old uncertain owner".to_owned()))
-            .expect("dispatch old owner");
+            .agent_runtime
+            .agent_registry
+            .agents
+            .get_mut(&cid)
+            .expect("agent")
+            .dispatch
+            .activation_dispatch = ActivationDispatchState::AwaitingCheckpoint {
+            owner: InferenceCheckpointOwner::Inference,
+            agent_prompt_id: test_agent_prompt_id("ap-historical-after-failure"),
+            through: compact_cut,
+            dispatch: crate::agent::InferenceDispatchOwnership {
+                model: "test/model".into(),
+                operation: tau_proto::PromptOperation::Inference,
+                activation_cut: compact_cut,
+            },
+        };
+        let historical_checkpoint =
+            Event::AgentInferenceDispatchStarted(tau_proto::AgentInferenceDispatchStarted {
+                agent_id: durable_agent_id.clone(),
+                transaction_id: None,
+                agent_prompt_id: test_agent_prompt_id("ap-historical-after-failure"),
+                through: compact_cut,
+                model: "test/model".into(),
+                operation: tau_proto::PromptOperation::Inference,
+                activation_cut: compact_cut,
+                output_length_continuation: None,
+            });
+        first
+            .session_runtime
+            .agent_store
+            .agent(durable_agent_id.as_str())
+            .expect("tree")
+            .validate_event(&historical_checkpoint)
+            .expect("historical checkpoint remains valid");
+        first.publish_for_agent(&cid, historical_checkpoint);
         let old_prompt_id = match first
             .session_runtime
             .agent_store
@@ -2066,8 +2102,8 @@ fn blocked_compaction_history_does_not_mask_uncertain_inference_replay() {
             .iter()
             .filter(|record| matches!(&record.event, Event::AgentInferenceDispatchStarted(_)))
             .count(),
-        1,
-        "deferred activations must dispatch exactly one successor"
+        0,
+        "deferred activations remain paused behind the durable failure"
     );
     assert!(matches!(
         restored

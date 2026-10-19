@@ -1,4 +1,99 @@
 use super::*;
+use crate::agent::PendingPromptSource;
+
+/// Reproduce the Rostra failure chain: a threshold-triggered summary fails,
+/// then repeated timer wakes must pause instead of dispatching growing ordinary
+/// prompts. Cold restart preserves both the failure and queued activation.
+#[test]
+fn automatic_compaction_failure_stops_timer_growth_across_restart() {
+    let td = TempDir::new().expect("tempdir");
+    let state = td.path().join("state");
+    let agent_id;
+    {
+        let mut h = quiet_provider_harness(&state).expect("start");
+        enable_remote_compaction_for_test_model(&mut h);
+        let cid = ensure_test_user_agent(&mut h);
+        agent_id = durable_agent_id_for_conversation(&h, &cid);
+        let info = h
+            .provider_runtime
+            .model_info
+            .get_mut(&"test/model".into())
+            .expect("model");
+        info.supports_compaction = false;
+        info.supports_standalone_compaction = true;
+        info.standalone_compaction_threshold = Some(tau_proto::TokenCount::new(u64::MAX));
+        establish_exact_provider_usage(&mut h, &cid, 147_526);
+        h.provider_runtime
+            .model_info
+            .get_mut(&"test/model".into())
+            .expect("model")
+            .standalone_compaction_threshold = Some(tau_proto::TokenCount::new(75_000));
+        assert!(h.schedule_standalone_auto_compaction_for_activation(&cid, true));
+        let compact = read_nth_prompt_created(&h, 1);
+        let mut error = context_overflow_response(&compact);
+        error.failure_kind = Some(tau_proto::ProviderFailureKind::Unknown);
+        error.error = Some("unsupported known summary output".to_owned());
+        h.handle_provider_response_finished(error)
+            .expect("terminal failure");
+        for index in 0..9 {
+            let mut wake = PendingPrompt::internal(format!("timer wake {index}"));
+            wake.source = PendingPromptSource::Timer;
+            h.dispatch_prompt_for_agent(&cid, wake)
+                .expect("accept timer");
+            h.drain_publish_idle_dispatches();
+            h.try_advance_queue();
+        }
+        assert_eq!(
+            event_log_count(&h, |event| matches!(event, Event::AgentPromptCreated(_))),
+            2
+        );
+        assert_eq!(
+            event_log_count(&h, |event| matches!(
+                event,
+                Event::AgentStandaloneCompactionFailed(_)
+            )),
+            1
+        );
+        assert!(h.inference_compaction_failure(&cid, None).is_some());
+        h.shutdown().expect("shutdown");
+    }
+    wait_for_session_unlock(&state, "s1");
+    let mut h =
+        quiet_provider_harness_with_start_reason(&state, tau_proto::SessionStartReason::Resume)
+            .expect("restore");
+    let cid = h
+        .runtime_agent_id_for_target_agent(Some(agent_id.as_str()))
+        .expect("restored agent");
+    h.drain_publish_idle_dispatches();
+    h.try_advance_queue();
+    assert!(h.dispatch_blocked_for(&cid));
+    assert!(matches!(
+        h.agent_runtime.agent_watch.provider_status[agent_id.as_str()].state,
+        tau_proto::AgentWatchProviderState::Blocked {
+            category: tau_proto::AgentWatchProviderCategory::Compaction
+        }
+    ));
+    let records = h
+        .session_runtime
+        .agent_store
+        .snapshot_agent_events_for_test(agent_id.as_str())
+        .expect("records");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.event, Event::AgentInferenceDispatchStarted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.event, Event::AgentStandaloneCompactionStarted(_)))
+            .count(),
+        1
+    );
+    h.shutdown().expect("shutdown restored");
+}
 
 /// A legacy open-cut failure remains explicit-only after another model replaces
 /// its closed prefix. Recovery must compact that replacement and retain the
@@ -186,12 +281,11 @@ fn transient_exhaustion_response(
     response
 }
 
-/// Exhausted pre-output transient work rearms only on a fresh ordinary
-/// terminal, including an output-free overflow without usage. Queue polling
-/// cannot repeat paid work; success clears the preserved failure chain and
-/// cold replay cannot dispatch another compactor.
+/// Exhausted pre-output work pauses inference until explicit recovery. Repeated
+/// ingress cannot manufacture fresh overflow evidence; success clears the
+/// failure chain and releases the preserved queue.
 #[test]
-fn transient_exhaustion_rearms_on_fresh_overflow_and_not_queue_polling() {
+fn transient_exhaustion_pauses_until_explicit_recovery() {
     let td = TempDir::new().expect("tempdir");
     let state = td.path().join("state");
     let agent_id;
@@ -232,53 +326,23 @@ fn transient_exhaustion_rearms_on_fresh_overflow_and_not_queue_polling() {
             tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
         );
         h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("new overflow".to_owned()))
-            .expect("fresh inference");
-        let inference = event_log_events(&h)
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::AgentPromptCreated(prompt)
-                    if prompt.operation == tau_proto::PromptOperation::Inference =>
-                {
-                    Some(prompt)
-                }
-                _ => None,
-            })
-            .last()
-            .expect("ordinary prompt");
-        let overflow = context_overflow_response(&inference);
-        assert!(overflow.usage.is_none());
-        h.handle_provider_response_finished(overflow.clone())
-            .expect("overflow");
-        h.handle_provider_response_finished(overflow)
-            .expect("duplicate terminal");
+            .expect("queue ordinary input");
         for _ in 0..3 {
             h.drain_publish_idle_dispatches();
+            h.try_advance_queue();
         }
+        assert_eq!(
+            event_log_count(&h, |event| matches!(event,
+            Event::AgentPromptCreated(prompt) if prompt.operation == tau_proto::PromptOperation::Inference)),
+            0
+        );
+        assert!(h.dispatch_blocked_for(&cid));
+        h.handle_compact_request(
+            crate::harness::harness_connection_id(),
+            test_session_id("s1"),
+            Some(agent_id.as_str()),
+        );
         let events = event_log_events(&h);
-        let terminal = events
-            .iter()
-            .find_map(|event| match event {
-                Event::ProviderResponseFinished(response)
-                    if response.agent_prompt_id == inference.agent_prompt_id =>
-                {
-                    Some(response)
-                }
-                _ => None,
-            })
-            .expect("canonical overflow");
-        assert_eq!(
-            terminal.recovery_disposition,
-            tau_proto::ContextRecoveryDisposition::ReactiveCompactionPlanned
-        );
-        let telemetry = terminal
-            .context_limit_telemetry
-            .as_ref()
-            .expect("telemetry");
-        assert!(telemetry.recovery_eligible);
-        assert_eq!(
-            telemetry.observation,
-            tau_proto::ContextLimitObservation::InsufficientEvidence
-        );
         let starts: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -321,21 +385,13 @@ fn transient_exhaustion_rearms_on_fresh_overflow_and_not_queue_polling() {
             2
         );
         h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("later fresh overflow".to_owned()))
-            .expect("later fresh inference");
-        let later = event_log_events(&h)
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::AgentPromptCreated(prompt)
-                    if prompt.operation == tau_proto::PromptOperation::Inference =>
-                {
-                    Some(prompt)
-                }
-                _ => None,
-            })
-            .last()
-            .expect("later prompt");
-        h.handle_provider_response_finished(context_overflow_response(&later))
-            .expect("later overflow");
+            .expect("queue later input");
+        assert!(h.dispatch_blocked_for(&cid));
+        h.handle_compact_request(
+            crate::harness::harness_connection_id(),
+            test_session_id("s1"),
+            Some(agent_id.as_str()),
+        );
         assert_eq!(
             event_log_count(&h, |event| matches!(
                 event,
@@ -361,6 +417,8 @@ fn transient_exhaustion_rearms_on_fresh_overflow_and_not_queue_polling() {
             "small summary",
         ))
         .expect("success");
+        h.drain_publish_idle_dispatches();
+        h.try_advance_queue();
         let continued = event_log_events(&h)
             .into_iter()
             .filter_map(|event| match event {
@@ -679,6 +737,15 @@ fn reactive_recovery_respects_durable_failure_model_and_branch() {
 
         h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("overflow".to_owned()))
             .expect("dispatch inference");
+        if matches!(case, Case::Matching) {
+            assert!(h.dispatch_blocked_for(&cid));
+            assert_eq!(
+                event_log_count(&h, |event| matches!(event, Event::AgentPromptCreated(_))),
+                1
+            );
+            h.shutdown().expect("shutdown paused target");
+            continue;
+        }
         let inference = read_nth_prompt_created(&h, 1);
         h.handle_provider_response_finished(context_overflow_response(&inference))
             .expect("handle overflow");

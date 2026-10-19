@@ -97,8 +97,8 @@ fn accepts_websocket_timing_telemetry_without_changing_compact_state() {
                 "type": "responsesapi.websocket_timing.extra",
                 "timing_metrics": {}
             }))
-            .is_err(),
-        "near-match telemetry kinds must remain fail-closed"
+            .is_ok(),
+        "new telemetry kinds have no semantic authority"
     );
     assert_eq!(shape.item, CompactItemPhase::Done);
     assert_eq!(shape.progress_updates, 0);
@@ -153,13 +153,17 @@ fn rejects_missing_slot() {
     assert_rejected(&[r#"{"type":"response.completed"}"#]);
 }
 
-/// A second output index is extra compact output even if projection would
-/// later discard or collapse it.
+/// Unknown wire items can precede the sole recognized compact item.
 #[test]
-fn rejects_extra_slot() {
-    assert_rejected(&[
+fn unknown_items_preserve_selected_compact_index() {
+    validate(&[
+        r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"future_metadata"}}"#,
         r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"compaction"}}"#,
         r#"{"type":"response.completed"}"#,
+    ]).expect("only recognized compact items count");
+    assert_rejected(&[
+        r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"compaction"}}"#,
+        r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"compaction"}}"#,
     ]);
 }
 
@@ -210,8 +214,8 @@ fn assert_rejected(events: &[&str]) {
     ));
 }
 
-/// Only identity/ordering-only notices in informational namespaces may be
-/// ignored; they never count as compacting or alter the output lifecycle.
+/// Unknown additions are ignored regardless of namespace or payload; known
+/// errors and output still retain their existing interpretation.
 #[test]
 fn unknown_informational_notifications_preserve_compact_state() {
     let mut shape = CompactStreamShape::default();
@@ -245,15 +249,19 @@ fn unknown_informational_notifications_preserve_compact_state() {
         serde_json::json!({"type":"response.compaction.future_notice","output_index":0}),
         serde_json::json!({"type":"response.compaction.future_notice","sequence_number":-1}),
         serde_json::json!({"type":"response.compaction.delta"}),
-        serde_json::json!({"type":"response.output_text.delta"}),
         serde_json::json!({"type":"response.future_tool.added"}),
         serde_json::json!({"type":"response.output_item.done","output_index":0,"item":{"type":"unknown"}}),
     ] {
-        assert!(!shape.is_ignored_notification(&event));
-        assert!(shape.validate(&event).is_err());
+        assert!(shape.is_ignored_notification(&event));
+        assert!(shape.validate(&event).is_ok());
         assert_eq!(shape.item, CompactItemPhase::Added);
         assert_eq!(shape.progress_updates, 0);
     }
+    assert!(
+        shape
+            .validate(&serde_json::json!({"type":"response.output_text.delta"}))
+            .is_err()
+    );
     for kind in ["error", "response.failed", "response.incomplete"] {
         // The real parser, not notification tolerance, still owns these errors.
         let event = serde_json::json!({"type":kind});
@@ -277,7 +285,7 @@ fn unknown_informational_notifications_preserve_compact_state() {
         "cancelled",
     ] {
         let event = serde_json::json!({"type":format!("response.compaction.{suffix}")});
-        assert!(!shape.is_ignored_notification(&event));
-        assert!(shape.validate(&event).is_err());
+        assert!(shape.is_ignored_notification(&event));
+        assert!(shape.validate(&event).is_ok());
     }
 }

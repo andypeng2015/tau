@@ -15,6 +15,7 @@ pub mod private_attempt_trace;
 pub mod provider_attempt_timing;
 pub mod repetition_guard;
 pub mod retry_policy;
+pub mod unknown_diagnostics;
 
 pub use outbound_network::{
     OutboundError, OutboundErrorKind, OutboundNetworkPolicy, OutboundPhase, OutboundRouteKind,

@@ -1412,6 +1412,18 @@ impl AgentTree {
             .next()
     }
 
+    /// Return the durable start that owns a standalone transaction's routing
+    /// and provider-prompt identity, including after cold replay.
+    #[must_use]
+    pub fn standalone_compaction_start(
+        &self,
+        id: &tau_proto::CompactionTransactionId,
+    ) -> Option<&tau_proto::AgentStandaloneCompactionStarted> {
+        self.compaction_transactions
+            .get(id)
+            .map(|transaction| &transaction.started)
+    }
+
     /// Whether another unusable-summary-authorized strict-prefix successor fits
     /// this episode's allowance. Derive the count from committed predecessor
     /// links so capacity/length successors and cold replay cannot reset it.
@@ -1453,11 +1465,13 @@ impl AgentTree {
         }
     }
 
-    /// Whether a typed exhausted-transient or unusable-summary failure has a
-    /// fresh ordinary inference terminal on the selected lineage. The
-    /// optional prompt is the exact terminal currently being prepared; it
-    /// must own a newer dispatch. Ingress, queue polling, and cold replay
-    /// alone cannot create eligibility.
+    /// Historical journal validation: whether a typed exhausted-transient or
+    /// unusable-summary failure has a fresh ordinary inference terminal on
+    /// the selected lineage. The optional prompt is the exact terminal
+    /// currently being prepared; it must own a newer dispatch. Ingress,
+    /// queue polling, and cold replay alone cannot create eligibility.
+    /// Current scheduling pauses at final failure; this authority remains
+    /// only to accept previously legal journals.
     #[must_use]
     pub fn automatic_compaction_retry_is_ready(
         &self,

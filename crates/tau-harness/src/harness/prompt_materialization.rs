@@ -586,6 +586,13 @@ impl Harness {
                     agent.identity.originator.clone(),
                 ))
             })?;
+        if owned_operation == tau_proto::PromptOperation::Inference
+            && self
+                .inference_compaction_failure(cid, owned_model.as_ref())
+                .is_some()
+        {
+            return None;
+        }
         if self
             .prompt_coordination
             .prompt_runtime

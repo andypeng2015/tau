@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use tau_proto::{ContextItem, OpaqueProviderItem, ProviderTokenUsage, ValidatedCompactionWindow};
 use tau_provider::retry_policy::{RetryClass, RetryDecision};
+use tau_provider::unknown_diagnostics::UnknownDiagnostics;
 use tokio::runtime::Builder;
 use tokio::time::Instant;
 
@@ -194,7 +195,7 @@ async fn wait<T>(
     }
 }
 
-/// Reject all output shapes except one complete xAI opaque compaction item.
+/// Select one complete xAI compact item, ignoring unknown auxiliary elements.
 fn parse(bytes: &[u8]) -> Result<Success, ()> {
     #[derive(Deserialize)]
     /// The documented xAI finite compact envelope.
@@ -207,15 +208,36 @@ fn parse(bytes: &[u8]) -> Result<Success, ()> {
         output: Vec<Box<RawValue>>,
         /// Optional provider-reported charged tokens.
         usage: Option<serde_json::Value>,
+        /// Additive envelope metadata, ignored without interpreting its values.
+        #[serde(flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
     }
     let response: Response = serde_json::from_slice(bytes).map_err(|_| ())?;
-    if response.object != "response.compaction"
-        || response.id.is_empty()
-        || response.output.len() != 1
-    {
+    if response.object != "response.compaction" || response.id.is_empty() {
         return Err(());
     }
-    let raw = response.output.into_iter().next().ok_or(())?;
+    let mut unknown = UnknownDiagnostics::default();
+    for key in response.extra.keys() {
+        unknown.observe("grok.compact_field", Some(key));
+    }
+    let mut selected = None;
+    for raw in response.output {
+        let item: serde_json::Value = serde_json::from_str(raw.get()).map_err(|_| ())?;
+        unknown.fields(
+            "grok.compact_item_field",
+            &item,
+            &["type", "id", "encrypted_content"],
+        );
+        match item["type"].as_str() {
+            Some("compaction") if selected.is_none() => selected = Some(raw),
+            Some(
+                "compaction" | "message" | "reasoning" | "function_call" | "custom_tool_call"
+                | "web_search_call",
+            ) => return Err(()),
+            kind => unknown.observe("grok.compact_item", kind),
+        }
+    }
+    let raw = selected.ok_or(())?;
     let fields: serde_json::Value = serde_json::from_str(raw.get()).map_err(|_| ())?;
     if fields["type"] != "compaction"
         || fields["id"].as_str() != Some(response.id.as_str())

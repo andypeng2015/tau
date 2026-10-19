@@ -1706,7 +1706,7 @@ impl Harness {
                 failed_agent_prompt_id: checkpoint.agent_prompt_id.clone(),
             },
         );
-        let supersedes = self.automatic_compaction_supersedes(&agent_id, &model, active_head);
+        let supersedes = None;
         self.publish_event_for_agent_with_completion(
             cid,
             source,

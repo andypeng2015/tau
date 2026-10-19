@@ -4726,6 +4726,12 @@ impl Harness {
         cid: &AgentId,
         selection: InferenceDispatchSelection,
     ) -> Option<InferenceCheckpointInput> {
+        if self
+            .inference_compaction_failure(cid, Some(&selection.model))
+            .is_some()
+        {
+            return None;
+        }
         let startup_owned = self
             .agent_runtime
             .agent_registry

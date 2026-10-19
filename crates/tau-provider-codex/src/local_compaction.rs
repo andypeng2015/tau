@@ -331,7 +331,7 @@ pub(crate) fn validate_event(event: &serde_json::Value) -> Result<(), LlmError> 
             valid_summary_item(&event["item"])
         }
         "response.content_part.added" | "response.content_part.done" => {
-            event["part"]["type"].as_str() == Some("output_text")
+            valid_summary_part(&event["part"])
         }
         "response.completed" | "response.done" => {
             event["response"].get("output").is_none_or(|items| {
@@ -352,7 +352,16 @@ pub(crate) fn validate_event(event: &serde_json::Value) -> Result<(), LlmError> 
         {
             true
         }
-        kind => !kind.starts_with("response."),
+        "response.function_call_arguments.delta"
+        | "response.function_call_arguments.done"
+        | "response.custom_tool_call_input.delta"
+        | "response.custom_tool_call_input.done"
+        | "response.web_search_call.in_progress"
+        | "response.web_search_call.searching"
+        | "response.web_search_call.completed"
+        | "response.refusal.delta"
+        | "response.refusal.done" => false,
+        _ => true,
     };
     if valid {
         Ok(())
@@ -364,23 +373,76 @@ pub(crate) fn validate_event(event: &serde_json::Value) -> Result<(), LlmError> 
 }
 
 /// Only ordinary assistant text and discarded provider reasoning may enter a
-/// summary stream; tool calls, refusals, and unknown output are terminal.
+/// summary stream; known tool calls and refusals are terminal. Unknown elements
+/// are ignored rather than interpreted as summary output.
 fn valid_summary_item(item: &serde_json::Value) -> bool {
     match item["type"].as_str() {
         Some("reasoning") => {
             reasoning_item_bytes(item) <= tau_proto::LOCAL_COMPACTION_NARRATIVE_MAX_BYTES
         }
-        Some("message") if item["role"].as_str() == Some("assistant") => {
-            item.get("content").is_none_or(|content| {
-                content.as_array().is_some_and(|parts| {
-                    parts
-                        .iter()
-                        .all(|part| part["type"].as_str() == Some("output_text"))
+        Some("message") => {
+            item["role"].as_str() == Some("assistant")
+                && item.get("content").is_none_or(|content| {
+                    content
+                        .as_array()
+                        .is_some_and(|parts| parts.iter().all(valid_summary_part))
                 })
-            })
         }
-        _ => false,
+        Some("function_call" | "custom_tool_call" | "web_search_call" | "compaction") => false,
+        _ => true,
     }
+}
+
+/// Validate recognized content without assigning meaning to future part kinds.
+fn valid_summary_part(part: &serde_json::Value) -> bool {
+    match part["type"].as_str() {
+        Some("output_text") => part["text"].is_string(),
+        Some("refusal") => false,
+        _ => true,
+    }
+}
+
+/// Skip unknown output items before ordinary opaque replay projection can
+/// replace a recognized summary slot. Ordinary inference keeps its opaque
+/// fidelity; standalone summaries accept only their known narrative.
+pub(crate) fn ignore_event(event: &serde_json::Value, state: &mut StreamState) -> bool {
+    if matches!(
+        event["type"].as_str(),
+        Some(
+            "response.content_part.added"
+                | "response.content_part.done"
+                | "response.reasoning_summary_part.added"
+                | "response.reasoning_summary_part.done"
+        )
+    ) && !matches!(
+        event["part"]["type"].as_str(),
+        Some("output_text" | "text" | "refusal" | "reasoning_text" | "summary_text")
+    ) {
+        state
+            .unknown
+            .observe("codex.summary_part", event["part"]["type"].as_str());
+        return true;
+    }
+    if matches!(
+        event["type"].as_str(),
+        Some("response.output_item.added" | "response.output_item.done")
+    ) && !matches!(
+        event["item"]["type"].as_str(),
+        Some(
+            "message"
+                | "reasoning"
+                | "function_call"
+                | "custom_tool_call"
+                | "web_search_call"
+                | "compaction"
+        )
+    ) {
+        state
+            .unknown
+            .observe("codex.summary_item", event["item"]["type"].as_str());
+        return true;
+    }
+    false
 }
 
 /// Count the whole discarded reasoning item, including opaque/encrypted fields,

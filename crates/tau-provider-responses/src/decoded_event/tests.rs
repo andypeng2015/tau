@@ -20,9 +20,9 @@ fn raw_item_index_matches_raw_value_oracle() {
     ];
     for (index, item) in items.into_iter().enumerate() {
         for raw in [
-            format!(r#"{{"item":{item},"type":"event","n":{index}}}"#),
-            format!("{{ \n \"type\":\"event\", \"item\" : {item} \t}}"),
-            format!(r#"{{"n":{index},"\u0069tem":{item},"type":"event"}}"#),
+            format!(r#"{{"item":{item},"type":"response.output_item.done","n":{index}}}"#),
+            format!("{{ \n \"type\":\"response.output_item.done\", \"item\" : {item} \t}}"),
+            format!(r#"{{"n":{index},"\u0069tem":{item},"type":"response.output_item.done"}}"#),
         ] {
             let decoded = DecodedEvent::decode(&raw).expect("valid event");
             let oracle: Oracle<'_> = serde_json::from_str(&raw).expect("oracle");
@@ -59,28 +59,45 @@ fn malformed_inputs_do_not_reach_raw_index() {
 /// behavior instead of selecting or synthesizing one spelling.
 #[test]
 fn duplicate_raw_members_are_rejected() {
-    assert!(DecodedEvent::decode(r#"{"item":1,"item":2}"#).is_err());
     assert!(
-        DecodedEvent::decode(r#"{"response":{"output":[]},"response":{"output":[]}}"#).is_err()
+        DecodedEvent::decode(r#"{"type":"response.output_item.done","item":1,"item":2}"#).is_err()
     );
     assert!(
-        DecodedEvent::decode(r#"{"response":{"output":[],"\u006futput":[]},"output":[]}"#).is_err()
+        DecodedEvent::decode(
+            r#"{"type":"response.completed","response":{"output":[]},"response":{"output":[]}}"#
+        )
+        .is_err()
     );
-    assert!(DecodedEvent::decode(r#"{"output":[],"\u006futput":[]}"#).is_err());
+    assert!(
+        DecodedEvent::decode(
+            r#"{"type":"response.completed","response":{"output":[],"\u006futput":[]},"output":[]}"#
+        )
+        .is_err()
+    );
+    assert!(
+        DecodedEvent::decode(r#"{"type":"response.completed","output":[],"\u006futput":[]}"#)
+            .is_err()
+    );
 }
 
-/// Root and nested response shapes retain the former derived-struct
-/// validation rather than becoming silently unknown events.
+/// Unknown events need no sidecar schema, while known terminal envelopes still
+/// require the exact object/array structures their semantic parser uses.
 #[test]
 fn raw_projection_shape_validation_matches_legacy_structs() {
     for raw in ["null", "[]", r#""event""#, "1", "true"] {
-        assert!(DecodedEvent::decode(raw).is_err(), "{raw}");
+        assert!(DecodedEvent::decode(raw).is_ok(), "{raw}");
     }
     for response in ["[]", r#""response""#, "1", "true"] {
         let raw = format!(r#"{{"type":"unknown","response":{response}}}"#);
-        assert!(DecodedEvent::decode(&raw).is_err(), "{raw}");
+        assert!(DecodedEvent::decode(&raw).is_ok(), "{raw}");
+        let known = format!(r#"{{"type":"response.completed","response":{response}}}"#);
+        assert!(DecodedEvent::decode(&known).is_err(), "{known}");
     }
     assert!(DecodedEvent::decode(r#"{"type":"unknown","response":null}"#).is_ok());
+    assert!(
+        DecodedEvent::decode(r#"{"type":"unknown","item":1,"item":2,"response":"metadata"}"#)
+            .is_ok()
+    );
 }
 
 /// Nested terminal output takes the same precedence over top-level output
@@ -88,27 +105,28 @@ fn raw_projection_shape_validation_matches_legacy_structs() {
 #[test]
 fn nested_terminal_output_precedes_top_level_fallback() {
     let nested = DecodedEvent::decode(
-        r#"{"response":{"output":[{"source":"nested"}]},"output":[{"source":"top"}]}"#,
+        r#"{"type":"response.completed","response":{"output":[{"source":"nested"}]},"output":[{"source":"top"}]}"#,
     )
     .expect("event");
     assert_eq!(
         nested.raw_output_items().expect("array"),
         Some(vec![r#"{"source":"nested"}"#])
     );
-    let top = DecodedEvent::decode(r#"{"output":[ {"source":"top"} ]}"#).expect("event");
+    let top =
+        DecodedEvent::decode(r#"{"type":"response.completed","output":[ {"source":"top"} ]}"#)
+            .expect("event");
     assert_eq!(
         top.raw_output_items().expect("array"),
         Some(vec![r#"{"source":"top"}"#])
     );
 }
 
-/// One envelope construction performs exactly one semantic decode and one
-/// bounded lexical indexing operation.
+/// Unknown events decode once without interpreting unrelated sidecar fields.
 #[test]
 fn decode_and_scan_counters_advance_once() {
     let decodes = SEMANTIC_DECODES.get();
     let scans = RAW_INDEX_SCANS.get();
     DecodedEvent::decode(r#"{"type":"response.heartbeat"}"#).expect("event");
     assert_eq!(SEMANTIC_DECODES.get(), decodes + 1);
-    assert_eq!(RAW_INDEX_SCANS.get(), scans + 1);
+    assert_eq!(RAW_INDEX_SCANS.get(), scans);
 }

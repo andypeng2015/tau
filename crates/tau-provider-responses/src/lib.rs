@@ -1603,7 +1603,10 @@ impl Slot {
                     .as_ref()
                     .is_some_and(|reasoning| !reasoning.text.is_empty())
             }
-            _ => return Err(Error::UnsupportedOutput),
+            "message" | "custom_tool_call" | "web_search_call" | "compaction" => {
+                return Err(Error::UnsupportedOutput);
+            }
+            _ => false,
         };
         Ok(qualifying_progress)
     }
@@ -1650,6 +1653,8 @@ fn slot_repetition_text(slot: &Slot) -> (StreamRepetitionKey, String) {
 
 #[derive(Debug, Default)]
 struct State {
+    /// Per-attempt bounded diagnostics for ignored provider additions.
+    unknown: tau_provider::unknown_diagnostics::UnknownDiagnostics,
     /// Selected adapters require canonical completion rather than the legacy
     /// done alias; generic Responses preserves its existing acceptance.
     require_response_completed: bool,
@@ -1879,7 +1884,55 @@ impl State {
         phase: OutputItemPhase,
         raw_json: Option<&str>,
     ) -> Result<bool, Error> {
+        self.observe_item(item);
         self.update_slot(index, |slot| slot.apply_item(item, phase, raw_json))
+    }
+
+    /// Observe only item/part kinds and extra keys; never payload values.
+    fn observe_item(&mut self, item: &Value) {
+        if !known_output_item(item) {
+            self.unknown
+                .observe("responses.output_item", item["type"].as_str());
+            return;
+        }
+        self.unknown.fields(
+            "responses.item",
+            item,
+            &[
+                "type",
+                "id",
+                "status",
+                "role",
+                "content",
+                "phase",
+                "call_id",
+                "name",
+                "arguments",
+                "input",
+                "summary",
+                "encrypted_content",
+            ],
+        );
+        for field in ["content", "summary"] {
+            if let Some(parts) = item[field].as_array() {
+                for part in parts {
+                    if !matches!(
+                        part["type"].as_str(),
+                        Some(
+                            "output_text" | "text" | "refusal" | "reasoning_text" | "summary_text"
+                        )
+                    ) {
+                        self.unknown
+                            .observe("responses.content_part", part["type"].as_str());
+                    }
+                    self.unknown.fields(
+                        "responses.part",
+                        part,
+                        &["type", "text", "annotations", "logprobs", "refusal"],
+                    );
+                }
+            }
+        }
     }
 
     /// Reject a candidate before it replaces any semantic slot state.
@@ -2080,6 +2133,62 @@ impl State {
         data: &str,
     ) -> Result<bool, Error> {
         let event = decoded.value();
+        self.unknown.fields(
+            "responses.event",
+            event,
+            &[
+                "type",
+                "sequence_number",
+                "response",
+                "output",
+                "item",
+                "output_index",
+                "item_id",
+                "content_index",
+                "summary_index",
+                "delta",
+                "text",
+                "arguments",
+                "part",
+                "error",
+                "code",
+                "message",
+                "status",
+            ],
+        );
+        self.unknown.fields(
+            "responses.response",
+            &event["response"],
+            &[
+                "id",
+                "object",
+                "created_at",
+                "status",
+                "error",
+                "incomplete_details",
+                "instructions",
+                "max_output_tokens",
+                "model",
+                "output",
+                "parallel_tool_calls",
+                "previous_response_id",
+                "reasoning",
+                "store",
+                "temperature",
+                "text",
+                "tool_choice",
+                "tools",
+                "top_p",
+                "truncation",
+                "usage",
+                "user",
+                "metadata",
+                "service_tier",
+                "background",
+                "max_tool_calls",
+                "prompt_cache_key",
+            ],
+        );
         self.debug_capture.record_event(event, data);
         if self.require_response_completed && event["type"].as_str() == Some("response.done") {
             return Err(Error::UnsupportedOutput);
@@ -2205,9 +2314,18 @@ impl State {
                     let raw_output = decoded.raw_output_items().map_err(|()| Error::Json)?;
                     let mut terminal_items = Vec::with_capacity(output.len());
                     for (position, item) in output.iter().enumerate() {
+                        self.observe_item(item);
                         let index =
                             u32::try_from(position).map_err(|_| Error::UnsupportedOutput)?;
-                        let mut slot = Slot::new(index);
+                        let mut slot = if known_output_item(item) {
+                            Slot::new(index)
+                        } else {
+                            self.items
+                                .iter()
+                                .find(|slot| slot.index == index)
+                                .cloned()
+                                .unwrap_or_else(|| Slot::new(index))
+                        };
                         let phase = if terminal != TerminalKind::Completed {
                             OutputItemPhase::IncompleteFallback
                         } else {
@@ -2260,7 +2378,12 @@ impl State {
             "response.failed" | "response.incomplete" | "error" => {
                 return Err(Error::StreamFailure);
             }
-            _ => false,
+            "response.created" | "response.in_progress" | "response.queued" => false,
+            _ => {
+                self.unknown
+                    .observe("responses.event_type", event["type"].as_str());
+                false
+            }
         };
         let previous_revision = self.semantic_progress_revision;
         if qualifying_progress {
@@ -2692,7 +2815,7 @@ fn validated_reasoning(item: &Value, phase: OutputItemPhase) -> Result<PlainReas
     if let Some(summary) = item.get("summary") {
         let parts = summary.as_array().ok_or(Error::UnsupportedOutput)?;
         for part in parts {
-            if part["type"].as_str() != Some("summary_text") || !part["text"].is_string() {
+            if part["type"].as_str() == Some("summary_text") && !part["text"].is_string() {
                 return Err(Error::UnsupportedOutput);
             }
         }
@@ -2720,7 +2843,7 @@ fn validated_reasoning(item: &Value, phase: OutputItemPhase) -> Result<PlainReas
     let mut reasoning_parts = BTreeMap::new();
     for (index, part) in parts.iter().enumerate() {
         if part["type"].as_str() != Some("reasoning_text") {
-            return Err(Error::UnsupportedOutput);
+            continue;
         }
         reasoning_parts.insert(
             ReasoningContentIndex(u32::try_from(index).map_err(|_| Error::UnsupportedOutput)?),
@@ -3194,13 +3317,30 @@ fn mark_first_input_text(input: &mut [ResponsesInputItem]) -> bool {
     false
 }
 
+/// Recognized output families retain their validation, even when unsupported
+/// by this adapter; other kinds have no semantic projection.
+fn known_output_item(value: &Value) -> bool {
+    matches!(
+        value["type"].as_str(),
+        Some(
+            "message"
+                | "reasoning"
+                | "function_call"
+                | "custom_tool_call"
+                | "web_search_call"
+                | "compaction"
+        )
+    )
+}
+
 fn is_text_assistant_message(value: &Value) -> bool {
     value["type"] == "message"
         && value["role"] == "assistant"
         && value["content"].as_array().is_some_and(|parts| {
-            parts.iter().all(|part| {
-                matches!(part["type"].as_str(), Some("output_text") | Some("text"))
-                    && part["text"].is_string()
+            parts.iter().all(|part| match part["type"].as_str() {
+                Some("output_text" | "text") => part["text"].is_string(),
+                Some("refusal") => false,
+                _ => true,
             })
         })
 }
@@ -3217,6 +3357,16 @@ fn rebase_assistant_message(value: &mut Value, message: &MessageItem) {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let original_text = value["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| matches!(part["type"].as_str(), Some("output_text" | "text")))
+        .filter_map(|part| part["text"].as_str())
+        .collect::<String>();
+    if original_text == text {
+        return;
+    }
     value["content"] = Value::Array(vec![
         serde_json::json!({"type": "output_text", "text": text, "annotations": []}),
     ]);

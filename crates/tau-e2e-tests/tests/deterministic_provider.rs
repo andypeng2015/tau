@@ -1325,7 +1325,9 @@ fn deterministic_clean_resume_restores_fake_cursor_without_replay_consumption()
 
 /// Proves a dummy's typed image crosses a complete live tool round, survives a
 /// clean restart as an exact durable descriptor, and reaches the later provider
-/// prompt once without leaking into generic fixture metadata.
+/// prompt once without leaking into generic fixture metadata. Prepare the idle
+/// agent through clean shutdown/restore first: logical creation alone does not
+/// grant the physical persistence authority required for Artifact invocation.
 #[test]
 fn deterministic_typed_image_tool_result_replays_after_clean_restart()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1358,12 +1360,62 @@ fn deterministic_typed_image_tool_result_replays_after_clean_restart()
         DUMMY_TOOL,
     )?;
     let call_id = CALL_ID.into();
-    let agent_id = {
-        let socket = fixture.socket_path("typed-image-boot-a");
+    let prepared_agent_id = {
+        let socket = fixture.socket_path("typed-image-prepare");
         let server = spawn_daemon(&fixture, &socket, tau_harness::SessionLaunchStatus::New);
         let mut peer = connect_ui(&socket)?;
-        create_agent(
+        peer.send(&HarnessInputMessage::emit(Event::UiCreateAgent(
+            tau_proto::UiCreateAgent {
+                request_id: "typed-image-prepare".to_owned(),
+                literal: false,
+                session_id: "deterministic-e2e-session".parse()?,
+                role: "deterministic-e2e".to_owned(),
+                model_override: None,
+                effort_override: None,
+                metadata: Vec::new(),
+                initial_prompt: None,
+                message_class: tau_proto::PromptMessageClass::User,
+                originator: tau_proto::PromptOriginator::User,
+                ctx_id: None,
+                parent_agent: None,
+                ephemeral: false,
+            },
+        )))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let agent_id = loop {
+            let observed = recv_observed_before(&mut peer, deadline)?;
+            if observed.replay {
+                continue;
+            }
+            match observed.event {
+                Event::SessionAgentLoaded(loaded) if !loaded.ephemeral => break loaded.agent_id,
+                Event::AgentPromptCreated(_) => panic!("preparation must not dispatch inference"),
+                _ => {}
+            }
+        };
+        disconnect_ui(&mut peer)?;
+        server.finish()?;
+        let prepared = DurableSnapshot::load(
+            fixture.harness_state_dir(),
+            &"deterministic-e2e-session".parse()?,
+        )?;
+        assert_eq!(prepared.agent_id, agent_id);
+        assert!(
+            !prepared
+                .agent_events
+                .iter()
+                .any(|record| matches!(record.event, Event::AgentInferenceDispatchStarted(_)))
+        );
+        agent_id
+    };
+    let agent_id = {
+        let socket = fixture.socket_path("typed-image-boot-a");
+        let server = spawn_daemon(&fixture, &socket, tau_harness::SessionLaunchStatus::Resumed);
+        let mut peer = connect_ui(&socket)?;
+        recv_until_session_replay_complete(&mut peer)?;
+        submit_prompt(
             &mut peer,
+            &prepared_agent_id,
             "typed-image-lane",
             "inspect the deterministic image",
         )?;
@@ -1415,7 +1467,7 @@ fn deterministic_typed_image_tool_result_replays_after_clean_restart()
     snapshot_b.require_prefix(&snapshot_a)?;
     assert_typed_image_round(&snapshot_b, &call_id, IMAGE_DIGEST)?;
     assert_durable_assistant(&snapshot_b, "replayed typed image accepted");
-    assert_eq!(fixture.trace()?.matches(" configured").count(), 2);
+    assert_eq!(fixture.trace()?.matches(" configured").count(), 3);
     assert_eq!(fixture.trace()?.matches(" matched ").count(), 3);
     fixture.assert_consumed()?;
     Ok(())

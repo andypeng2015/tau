@@ -1195,6 +1195,8 @@ fn finish_attempt_with_facts(
 }
 
 struct StreamState {
+    /// Bounded compatibility observations for this finite attempt.
+    unknown: tau_provider::unknown_diagnostics::UnknownDiagnostics,
     /// Attempt-owned raw usage observer, independent of retained exact events.
     cache: Option<Arc<cache_diagnostic::CacheAttempt>>,
     text: String,
@@ -1240,6 +1242,7 @@ impl StreamState {
         compact_output_bytes: Option<tau_proto::ByteCount>,
     ) -> Self {
         Self {
+            unknown: Default::default(),
             cache: None,
             text: String::new(),
             thinking: String::new(),
@@ -1700,7 +1703,8 @@ fn take_complete_sse_lines(pending: &mut Vec<u8>) -> Result<Vec<u8>, LlmError> {
 fn sse_line_data(line: &[u8]) -> Option<&[u8]> {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
-    line.strip_prefix(b"data: ")
+    let data = line.strip_prefix(b"data:")?;
+    Some(data.strip_prefix(b" ").unwrap_or(data))
 }
 
 fn apply_pending_sse_line(
@@ -3061,6 +3065,46 @@ fn apply_event(
     event: &serde_json::Value,
     on_update: &mut impl FnMut(&StreamState),
 ) -> Result<(), LlmError> {
+    state.unknown.fields(
+        "chat_completions.event",
+        event,
+        &[
+            "choices",
+            "created",
+            "error",
+            "id",
+            "model",
+            "object",
+            "obfuscation",
+            "provider",
+            "service_tier",
+            "system_fingerprint",
+            "usage",
+        ],
+    );
+    if let Some(choices) = event["choices"].as_array() {
+        for choice in choices {
+            state.unknown.fields(
+                "chat_completions.choice",
+                choice,
+                &["delta", "finish_reason", "index"],
+            );
+            state.unknown.fields(
+                "chat_completions.delta",
+                &choice["delta"],
+                &[
+                    "content",
+                    "reasoning",
+                    "reasoning_content",
+                    "role",
+                    "thinking",
+                    "tool_calls",
+                    "function_call",
+                    "refusal",
+                ],
+            );
+        }
+    }
     // Observe compact shape separately, but still run the ordinary parser and
     // callbacks. The extension's transient sampling seam is intentionally
     // unchanged until its separately approved boundary change.
@@ -3260,9 +3304,19 @@ fn apply_finish_reason(
                 state.stop_reason = ProviderStopReason::Length;
                 Ok(())
             }
-            _ => Err(LlmError::UnknownFinishReason),
+            _ => {
+                state
+                    .unknown
+                    .observe("chat_completions.finish_reason", Some(reason));
+                Err(LlmError::UnknownFinishReason)
+            }
         },
-        Some(_) => Err(LlmError::UnknownFinishReason),
+        Some(_) => {
+            state
+                .unknown
+                .observe("chat_completions.finish_reason", None);
+            Err(LlmError::UnknownFinishReason)
+        }
     }
 }
 

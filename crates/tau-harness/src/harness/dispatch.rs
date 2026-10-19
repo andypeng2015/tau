@@ -386,6 +386,7 @@ impl Harness {
     }
 
     fn try_advance_queue_for(&mut self, allowed: Option<&HashSet<AgentId>>) {
+        self.refresh_compaction_failure_pauses();
         if !self.session_runtime.turn_state.is_idle()
             || !self.extensions_all_ready()
             || self.extensions.pending_connects != 0
@@ -891,6 +892,7 @@ impl Harness {
                 })
                 .is_some_and(|operation| operation.phase != StartPhase::AwaitDispatchCommit);
             if startup_blocks_other_activation
+                || self.inference_compaction_failure(agent_id, None).is_some()
                 || excluded.contains(agent_id)
                 || allowed.is_some_and(|allowed| !allowed.contains(agent_id))
                 || (allowed.is_none()
@@ -1092,6 +1094,7 @@ impl Harness {
     ///   tool results, or has a latent dispatch parked behind interception.
     pub(crate) fn dispatch_blocked_for(&self, agent_id: &AgentId) -> bool {
         if self.config.selected_model.is_none()
+            || self.inference_compaction_failure(agent_id, None).is_some()
             || !self.session_runtime.turn_state.is_idle()
             || self.extensions.resolving_initial_collisions
             || !self.extensions_all_ready()

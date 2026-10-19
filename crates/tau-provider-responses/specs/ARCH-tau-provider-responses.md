@@ -31,7 +31,7 @@ Opaque, summary-only, and encrypted reasoning produces only the opaque durable
 item and is not projected as reasoning text. Documented combinations of summary,
 encrypted content, and plain reasoning content retain the same rule: only
 `reasoning_text` content is displayable, while an admitted raw item is replayed exactly.
-Malformed identities, encrypted content, summaries, or content remain unsupported. The backend
+Malformed recognized identities, encrypted content, summaries, or content remain unsupported. The backend
 also preserves admitted Responses assistant and function-call replay sidecars and never
 sends `previous_response_id` or provider-side compaction controls. The
 extension owns profile storage, model publication, retry scheduling,
@@ -82,6 +82,13 @@ replaces streamed slots in array/index order while retaining exact raw item
 sidecars; a terminal without that array accepts only a contiguous accumulated
 sequence. Invalid indices, gaps, and non-array terminal output fail the finite
 attempt rather than inventing an order.
+Unknown items occupy nonsemantic placeholders at their original wire indices;
+they do not overwrite a recognized slot. Unknown parts are omitted from semantic
+projection without renumbering recognized reasoning parts. Unknown events need
+no semantic sidecar schema, while recognized item/terminal events retain exact
+raw-index validation. Assistant and reasoning sidecars preserve unknown parts
+and exact bytes on unchanged next-turn replay. All ignored additions produce
+bounded, sanitized, per-attempt compatibility diagnostics.
 
 Canonical `response.incomplete` with exact reason `max_output_tokens` completes
 the finite attempt as `ProviderStopReason::Length`. Both transports reconcile

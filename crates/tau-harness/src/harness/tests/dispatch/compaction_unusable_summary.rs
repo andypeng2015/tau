@@ -55,9 +55,9 @@ fn starts(h: &Harness) -> Vec<tau_proto::AgentStandaloneCompactionStarted> {
 
 /// A reasoning-only summary now reaches the smaller-prefix path. Capacity and
 /// length successors cannot reset its four-successor allowance; exhaustion
-/// blocks polling but a genuinely fresh inference terminal rearms exactly once.
+/// blocks polling and ordinary inference until explicit recovery.
 #[test]
-fn unusable_summary_budget_survives_mixed_chain_and_rearms_only_on_fresh_terminal() {
+fn unusable_summary_budget_survives_mixed_chain_and_requires_explicit_recovery() {
     let td = TempDir::new().expect("tempdir");
     let mut h = quiet_provider_harness(td.path()).expect("start");
     enable_summary(&mut h);
@@ -183,11 +183,13 @@ fn unusable_summary_budget_survives_mixed_chain_and_rearms_only_on_fresh_termina
     assert_eq!(starts(&h).len(), count);
     h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("fresh activation".to_owned()))
         .expect("inference");
-    let inference = latest_prompt(&h);
-    assert_eq!(inference.operation, tau_proto::PromptOperation::Inference);
+    assert!(h.dispatch_blocked_for(&cid));
     assert_eq!(starts(&h).len(), count, "ingress alone cannot rearm");
-    h.handle_provider_response_finished(context_overflow_response(&inference))
-        .expect("fresh overflow");
+    h.handle_compact_request(
+        crate::harness::harness_connection_id(),
+        test_session_id("s1"),
+        Some(agent_id.as_str()),
+    );
     assert_eq!(starts(&h).len(), count + 1);
     let new = starts(&h).last().expect("new episode").clone();
     assert!(
@@ -204,6 +206,8 @@ fn unusable_summary_budget_survives_mixed_chain_and_rearms_only_on_fresh_termina
         "valid summary",
     ))
     .expect("success");
+    h.drain_publish_idle_dispatches();
+    h.try_advance_queue();
     assert_eq!(
         event_log_count(&h, |e| matches!(e, Event::AgentCompacted(_))),
         1

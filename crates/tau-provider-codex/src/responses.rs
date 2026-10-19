@@ -1218,6 +1218,62 @@ pub(super) fn apply_parsed_json_event_observed(
     on_update: &mut impl FnMut(&StreamState),
 ) -> Result<ParsedEventApplication, LlmError> {
     let event_type = event["type"].as_str().unwrap_or("");
+    state.unknown.fields(
+        "codex.event",
+        event,
+        &[
+            "type",
+            "sequence_number",
+            "response",
+            "item",
+            "output_index",
+            "item_id",
+            "content_index",
+            "summary_index",
+            "delta",
+            "text",
+            "arguments",
+            "input",
+            "part",
+            "error",
+            "code",
+            "message",
+            "param",
+        ],
+    );
+    state.unknown.fields(
+        "codex.response",
+        &event["response"],
+        &[
+            "id",
+            "object",
+            "created_at",
+            "status",
+            "error",
+            "incomplete_details",
+            "instructions",
+            "max_output_tokens",
+            "model",
+            "output",
+            "parallel_tool_calls",
+            "previous_response_id",
+            "reasoning",
+            "store",
+            "temperature",
+            "text",
+            "tool_choice",
+            "tools",
+            "top_p",
+            "truncation",
+            "usage",
+            "user",
+            "metadata",
+            "service_tier",
+            "background",
+            "max_tool_calls",
+            "prompt_cache_key",
+        ],
+    );
 
     let stream_update_applied =
         apply_stream_update_event(state, event, raw_item_json, event_type, on_update)?;
@@ -1246,10 +1302,13 @@ pub(super) fn apply_parsed_json_event_observed(
             terminal: false,
             disposition: ParsedEventDisposition::Recognized,
         }),
-        _ => Ok(ParsedEventApplication {
-            terminal: false,
-            disposition: ParsedEventDisposition::Unknown,
-        }),
+        _ => {
+            state.unknown.observe("codex.event_type", Some(event_type));
+            Ok(ParsedEventApplication {
+                terminal: false,
+                disposition: ParsedEventDisposition::Unknown,
+            })
+        }
     }
 }
 
@@ -1860,6 +1919,34 @@ fn apply_output_item_event(
     let Some(item) = event.get("item") else {
         return Ok(());
     };
+    state.unknown.fields(
+        "codex.item",
+        item,
+        &[
+            "type",
+            "id",
+            "status",
+            "role",
+            "content",
+            "phase",
+            "call_id",
+            "name",
+            "arguments",
+            "input",
+            "summary",
+            "encrypted_content",
+            "action",
+        ],
+    );
+    if let Some(parts) = item["content"].as_array() {
+        for part in parts {
+            if !matches!(part["type"].as_str(), Some("output_text" | "refusal")) {
+                state
+                    .unknown
+                    .observe("codex.content_part", part["type"].as_str());
+            }
+        }
+    }
     validate_completed_opaque_raw_json(item, kind.is_done(), raw_item_json)?;
     let mut changed = apply_output_item_tool(state, item, output_index, kind)?;
     changed |= apply_output_item_message(state, item, raw_item_json, output_index, kind)?;
@@ -2138,6 +2225,7 @@ fn apply_output_item_unknown(
     if is_known_output_item_type(item_type) {
         return false;
     }
+    state.unknown.observe("codex.output_item", Some(item_type));
     let hosted_web_search = item_type == "web_search_call";
     // Only project known action names. The raw item stays in opaque provider
     // replay; never expose a query, URL, pattern, or arbitrary provider string.

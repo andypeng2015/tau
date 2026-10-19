@@ -1291,6 +1291,9 @@ impl WsConn {
                     }
                     if execution.response_mode == ResponseMode::LocalSummary {
                         crate::local_compaction::validate_event(decoded.value())?;
+                        if crate::local_compaction::ignore_event(decoded.value(), &mut state) {
+                            continue;
+                        }
                     }
                     observe_associated_timing_milestone(private_trace, decoded.value(), read_at);
                     let mut observed_update = |state: &StreamState| {
@@ -1741,6 +1744,9 @@ pub(super) fn run_replay(
         }
         if response_mode == ResponseMode::LocalSummary {
             crate::local_compaction::validate_event(decoded.value())?;
+            if crate::local_compaction::ignore_event(decoded.value(), &mut state) {
+                continue;
+            }
         }
         let terminal = apply_ws_replay_decoded_event(&mut state, &decoded, on_update)?;
         if terminal {

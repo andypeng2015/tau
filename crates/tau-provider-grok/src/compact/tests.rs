@@ -5,7 +5,7 @@ use super::*;
 /// Exactly one opaque item retains provider JSON syntax and usage.
 #[test]
 fn compact_response_preserves_one_opaque_item_and_usage() {
-    let raw = r#"{"object":"response.compaction","id":"cmp_1","output":[{"type":"compaction","id":"cmp_1","encrypted_content":"sealed","extra\u005fkey":1.2300}],"usage":{"input_tokens":12000,"input_tokens_details":{"cached_tokens":300},"output_tokens":800}}"#;
+    let raw = r#"{"object":"response.compaction","id":"cmp_1","future":true,"output":[{"type":"future_metadata","payload":"ignored"},{"type":"compaction","id":"cmp_1","encrypted_content":"sealed","extra\u005fkey":1.2300},{"type":"future_notice"}],"usage":{"input_tokens":12000,"input_tokens_details":{"cached_tokens":300},"output_tokens":800}}"#;
     let success = parse(raw.as_bytes()).expect("valid compact response");
     let ContextItem::Compaction(item) = success.output else {
         panic!("opaque compaction item");

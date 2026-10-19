@@ -173,7 +173,12 @@ call must retain exactly that repair plus its own normal success. This exception
 exists only for the real supervised test-dummy respawn acceptance; every other
 V2 shape retains the sole adjacent pair limit. A separate sole
 typed-image lane permits one fixed empty-argument dummy call, its one native 1×1
-PNG result, and one clean-resume continuation. The fake accepts that result only
+PNG result, and one clean-resume continuation. Before this lane starts, the
+fixture creates a promptless persistent agent and cleanly stops/restores the
+daemon, establishing physical persistence preparation without a sleep or model
+work. This fixture barrier is necessary for its exact Artifact descriptor
+assertion; production may legitimately select Inline before preparation.
+The fake accepts that result only
 when its call identity, type, dimensions, detail, and inline bytes or prepared
 descriptor are exact, and it accepts the resumed prompt only when that image
 remains once. Reference checks prove descriptor continuity, not external storage;

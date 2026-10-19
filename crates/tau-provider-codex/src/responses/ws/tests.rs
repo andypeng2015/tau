@@ -16,6 +16,73 @@ mod scripted_tcp_server;
 mod test_ca;
 mod test_server;
 
+/// The replay parser must skip unknown events/items exactly like live native
+/// compaction, including when the recognized compact item is not slot zero.
+#[test]
+fn native_compaction_replay_ignores_additive_items_and_metadata() {
+    let mut stream = super::ProviderRawEventStream::default();
+    for raw in [
+        r#"{"type":"future.telemetry","response":"private metadata"}"#,
+        r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"future_item"}}"#,
+        r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"compaction","id":"cmp_1"}}"#,
+        r#"{"type":"response.content_part.added","output_index":1,"part":{"type":"future_part","payload":"ignored"}}"#,
+        r#"{"type":"response.content_part.done","output_index":1,"part":{"type":"future_part","payload":"ignored"}}"#,
+        r#"{"type":"response.reasoning_summary_part.added","output_index":1,"part":{"type":"future_reasoning_part"}}"#,
+        r#"{"type":"response.reasoning_summary_part.done","output_index":1,"part":{"type":"future_reasoning_part"}}"#,
+        r#"{"type":"response.notification.done","payload":{"private":"ignored"}}"#,
+        r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"compaction","id":"cmp_1","encrypted_content":"sealed"}}"#,
+        r#"{"type":"response.metadata","metrics":{"latency":1}}"#,
+        r#"{"type":"response.completed"}"#,
+    ] {
+        super::record_provider_raw_event_after(&mut stream, Duration::ZERO, raw)
+            .expect("bounded fixture");
+    }
+    let state = super::run_replay(&stream, crate::ResponseMode::Compact, &mut |_| {})
+        .expect("native replay");
+    assert_eq!(state.compact_progress_updates, 0);
+    assert!(state.single_compaction_item().is_some());
+    assert_eq!(state.into_output_items().len(), 1);
+}
+
+/// Compatibility tolerance cannot conceal recognized hosted-tool lifecycle or
+/// incompatible text/reasoning parts in an otherwise valid native summary.
+#[test]
+fn native_compaction_replay_rejects_known_tools_and_parts() {
+    let mut invalid = ["in_progress", "searching", "completed"]
+        .map(|phase| {
+            serde_json::json!({"type":format!("response.web_search_call.{phase}"),
+            "output_index":0, "item_id":"search_1"})
+        })
+        .to_vec();
+    for event_type in [
+        "response.content_part.added",
+        "response.content_part.done",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_part.done",
+    ] {
+        for part in ["output_text", "refusal", "reasoning_text", "summary_text"] {
+            invalid.push(serde_json::json!({"type":event_type, "output_index":0,
+                "part":{"type":part,"text":"forbidden"}}));
+        }
+    }
+    for event in invalid {
+        let mut stream = super::ProviderRawEventStream::default();
+        for raw in [
+            event.to_string(),
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"compaction","id":"cmp_1","encrypted_content":"sealed"}}"#.to_owned(),
+            r#"{"type":"response.completed"}"#.to_owned(),
+        ] {
+            super::record_provider_raw_event_after(&mut stream, Duration::ZERO, raw)
+                .expect("fixture");
+        }
+        assert!(
+            super::run_replay(&stream, crate::ResponseMode::Compact, &mut |_| {}).is_err(),
+            "recognized incompatible event must reject: {}",
+            event["type"]
+        );
+    }
+}
+
 /// Task completion is a non-consuming negative admission signal. Neither live
 /// nor finished observations may drain prior-owner semantic or terminal tails.
 #[test]

@@ -948,7 +948,7 @@ fn terminal_output_fallback_qualifies_supported_semantics_once() {
 fn rejected_terminal_fallback_does_not_establish_semantic_progress() {
     let cases = [
         (
-            r#"{"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"candidate"}]},{"type":"unsupported"}]}}"#.to_owned(),
+            r#"{"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"candidate"}]},{"type":"message","role":"user"}]}}"#.to_owned(),
             false,
         ),
         (
@@ -1447,7 +1447,7 @@ fn sse_assembler_entry_decodes_event_once() {
     state
         .apply_event(r#"{"type":"response.heartbeat"}"#)
         .expect("heartbeat");
-    assert_eq!(super::decoded_event::test_counts(), (1, 1));
+    assert_eq!(super::decoded_event::test_counts(), (1, 0));
 }
 
 /// A terminal response may not turn a sparse stream into a silently reordered
@@ -1509,10 +1509,8 @@ fn malformed_reasoning_or_unsupported_output_is_rejected() {
         r#"{"type":"reasoning"}"#,
         r#"{"type":"reasoning","id":"rs_empty","content":[]}"#,
         r#"{"type":"reasoning","summary":[],"content":"thought"}"#,
-        r#"{"type":"reasoning","summary":[],"content":[{"type":"summary_text","text":"summary"}]}"#,
         r#"{"type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":1}]}"#,
         r#"{"type":"reasoning","summary":"summary"}"#,
-        r#"{"type":"reasoning","summary":[{"type":"reasoning_text","text":"summary"}]}"#,
         r#"{"type":"reasoning","summary":[{"type":"summary_text","text":1}]}"#,
         r#"{"type":"reasoning","encrypted_content":17}"#,
         r#"{"type":"reasoning","id":17,"summary":[]}"#,
@@ -1545,7 +1543,6 @@ fn malformed_reasoning_or_unsupported_output_is_rejected() {
     let unsupported = [
         r#"{"type":"custom_tool_call","call_id":"call_1","name":"shell","input":"pwd"}"#,
         r#"{"type":"web_search_call","id":"search_1"}"#,
-        r#"{"type":"future_output","value":"unknown"}"#,
     ];
 
     for item in unsupported {
@@ -1557,6 +1554,84 @@ fn malformed_reasoning_or_unsupported_output_is_rejected() {
             "unexpectedly accepted {item}"
         );
     }
+}
+
+/// Additive output occupies its original wire index without becoming semantic
+/// progress, hiding a recognized slot, or losing the exact replay sidecar.
+#[test]
+fn additive_output_preserves_indices_and_exact_next_turn_replay() {
+    let message = r#"{ "type":"message", "role":"assistant", "content":[{"type":"future_part","number":1.2300},{"type":"output_text","text":"answer"}] }"#;
+    for terminal_snapshot in [false, true] {
+        let mut state = State::default();
+        for metadata in [
+            r#"{"type":"future.telemetry","response":"opaque","item":1,"item":2}"#,
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"future_item","private":"canary"}}"#,
+        ] {
+            assert!(!state.apply_event(metadata).expect("ignored metadata"));
+        }
+        assert_eq!(state.semantic_progress_revision, 0);
+        state
+            .apply_event(&format!(
+                r#"{{"type":"response.output_item.done","output_index":1,"item":{message}}}"#
+            ))
+            .expect("answer at original index");
+        assert!(!state.apply_event(
+            r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"future_item"}}"#
+        ).expect("unknown overwrite is ignored"));
+        let terminal = if terminal_snapshot {
+            format!(
+                r#"{{"type":"response.completed","response":{{"output":[{{"type":"future_item"}},{message}]}}}}"#
+            )
+        } else {
+            r#"{"type":"response.completed"}"#.to_owned()
+        };
+        state.apply_event(&terminal).expect("completed answer");
+        let items = state.output_items();
+        assert_eq!(items.len(), 1);
+        let lowered = lower_item(&items[0]).expect("replay").expect("message");
+        assert_eq!(
+            serde_json::to_string(&lowered).expect("raw request"),
+            message
+        );
+    }
+}
+
+/// Unknown reasoning parts retain provider indices and exact opaque replay
+/// while only recognized reasoning text becomes displayable.
+#[test]
+fn reasoning_unknown_parts_preserve_known_content_indices() {
+    let raw = r#"{"type":"reasoning","id":"rs_1","summary":[{"type":"future_summary","n":1.2300}],"content":[{"type":"reasoning_text","text":"first"},{"type":"future_reasoning"},{"type":"reasoning_text","text":"last"}]}"#;
+    let mut state = State::default();
+    state
+        .apply_event(&format!(
+            r#"{{"type":"response.output_item.added","output_index":0,"item":{raw}}}"#
+        ))
+        .expect("reasoning lifecycle start");
+    state
+        .apply_event(&format!(
+            r#"{{"type":"response.output_item.done","output_index":0,"item":{raw}}}"#
+        ))
+        .expect("reasoning");
+    state
+        .apply_event(r#"{"type":"response.completed"}"#)
+        .expect("terminal");
+    assert!(
+        state.items[0]
+            .reasoning_parts
+            .contains_key(&ReasoningContentIndex(2))
+    );
+    assert!(
+        !state.items[0]
+            .reasoning_parts
+            .contains_key(&ReasoningContentIndex(1))
+    );
+    let items = state.output_items();
+    let opaque = items
+        .iter()
+        .find(|item| matches!(item, ContextItem::Reasoning(_)))
+        .expect("opaque");
+    let replay = lower_item(opaque).expect("replay").expect("item");
+    assert_eq!(serde_json::to_string(&replay).expect("raw"), raw);
 }
 
 /// Reasoning deltas require an added plain-reasoning slot, and a stream cannot
@@ -2262,10 +2337,10 @@ fn item_metadata_completion_does_not_renew_semantic_idle() {
     );
 }
 
-/// The text-only assistant contract must reject image- and file-bearing items
-/// at parse time, before a forbidden raw sidecar can reach replay.
+/// Uninterpreted assistant parts remain opaque replay metadata, not displayed
+/// text or executable output.
 #[test]
-fn image_or_file_assistant_item_is_rejected_at_parse_time() {
+fn image_or_file_assistant_parts_are_not_semantic_progress() {
     for part in [
         r#"{"type":"output_image","image_url":"https://example.test/image"}"#,
         r#"{"type":"output_file","file_id":"file_1"}"#,
@@ -2274,11 +2349,8 @@ fn image_or_file_assistant_item_is_rejected_at_parse_time() {
         let event = format!(
             r#"{{"type":"response.output_item.done","output_index":0,"item":{{"type":"message","role":"assistant","content":[{part}]}}}}"#
         );
-        let error = state
-            .apply_event(&event)
-            .expect_err("non-text content must be rejected");
-        assert!(matches!(error, Error::UnsupportedOutput));
-        assert!(state.items.is_empty());
+        assert!(!state.apply_event(&event).expect("unknown part"));
+        assert_eq!(state.semantic_progress_revision, 0);
     }
 }
 

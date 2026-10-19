@@ -1282,46 +1282,112 @@ impl Harness {
         self.durable_recovery_blocks_automatic_for_terminal(agent_id, model, current_head, None)
     }
 
-    /// Include the exact fresh ordinary terminal being prepared without
-    /// granting authority to unrelated ingress or another provider prompt.
+    /// Final failures require explicit recovery even when another terminal was
+    /// already in flight. A terminal cannot reset an exhausted episode.
     pub(super) fn durable_recovery_blocks_automatic_for_terminal(
         &self,
         agent_id: &str,
         model: &tau_proto::ModelId,
         current_head: tau_proto::AgentHead,
-        preparing_terminal: Option<&tau_proto::AgentPromptId>,
+        _preparing_terminal: Option<&tau_proto::AgentPromptId>,
     ) -> bool {
         self.matching_durable_failed_recovery(agent_id, model, current_head)
-            .is_some_and(|failed| {
-                !self
-                    .session_runtime
-                    .agent_store
-                    .agent(agent_id)
-                    .is_some_and(|tree| {
-                        tree.automatic_compaction_retry_is_ready(
-                            &failed,
-                            current_head,
-                            preparing_terminal,
-                        )
-                    })
-            })
+            .is_some()
     }
 
-    /// Claim the latest typed retryable failure only after a fresh ordinary
-    /// terminal commits. The successor may select current closed history while
-    /// retaining the old outcome and owed resume lineage.
-    pub(super) fn automatic_compaction_supersedes(
+    /// A final failed episode pauses ordinary work on its exact model/lineage.
+    /// Reserved retreat/continuation successors remain owned by their existing
+    /// state machines; ingress cannot create a fresh recovery episode.
+    pub(super) fn inference_compaction_failure(
         &self,
-        agent_id: &str,
-        model: &tau_proto::ModelId,
-        current_head: tau_proto::AgentHead,
-    ) -> Option<tau_proto::CompactionTransactionId> {
-        let failed = self.matching_durable_failed_recovery(agent_id, model, current_head)?;
-        self.session_runtime
-            .agent_store
-            .agent(agent_id)?
-            .automatic_compaction_retry_is_ready(&failed, current_head, None)
-            .then_some(failed.transaction_id)
+        cid: &AgentId,
+        model: Option<&tau_proto::ModelId>,
+    ) -> Option<(tau_proto::AgentStandaloneCompactionFailed, AgentPromptId)> {
+        let agent = self.agent_runtime.agent_registry.agents.get(cid)?;
+        let agent_id = agent.identity.agent_id.as_ref()?;
+        let selected_model = self.model_for_agent_role(agent);
+        let continuation_model = match &agent.turn.output_length_continuation {
+            path_crate_agent::OutputLengthContinuationState::OwnerReady(continuation) => {
+                Some(&continuation.plan.dispatch.model)
+            }
+            _ => None,
+        };
+        let model = model.or(continuation_model).or(selected_model.as_ref())?;
+        let head = agent
+            .identity
+            .head
+            .map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node);
+        let failed = self.matching_durable_failed_recovery(agent_id.as_str(), model, head)?;
+        if failed.context_retreat.is_some() || failed.output_length_continuation.is_some() {
+            return None;
+        }
+        let tree = self.session_runtime.agent_store.agent(agent_id.as_str())?;
+        let prompt = tree
+            .standalone_compaction_start(&failed.transaction_id)?
+            .compact_prompt_id
+            .clone();
+        Some((failed, prompt))
+    }
+
+    /// Reconstruct the visible pause from durable authority, including after
+    /// restart or model/branch navigation. Watch delivery deduplicates
+    /// snapshots.
+    pub(super) fn refresh_compaction_failure_pauses(&mut self) {
+        let agents = self
+            .agent_runtime
+            .agent_registry
+            .agents
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for cid in agents {
+            let Some(agent) = self.agent_runtime.agent_registry.agents.get(&cid) else {
+                continue;
+            };
+            if matches!(
+                agent.dispatch.activation_dispatch,
+                path_crate_agent::ActivationDispatchState::Running { .. }
+            ) {
+                continue;
+            }
+            let Some(public_id) = agent.identity.agent_id.clone() else {
+                continue;
+            };
+            let previous = self
+                .agent_runtime
+                .agent_watch
+                .provider_status
+                .get(public_id.as_str());
+            let was_paused = previous.is_some_and(|status| {
+                matches!(
+                    status.state,
+                    tau_proto::AgentWatchProviderState::Blocked {
+                        category: tau_proto::AgentWatchProviderCategory::Compaction
+                    }
+                )
+            });
+            if let Some((failure, prompt)) = self.inference_compaction_failure(&cid, None) {
+                if was_paused && previous.is_some_and(|status| status.agent_prompt_id == prompt) {
+                    continue;
+                }
+                self.project_agent_watch_provider_state(
+                    &cid,
+                    prompt,
+                    tau_proto::AgentWatchProviderState::Blocked {
+                        category: tau_proto::AgentWatchProviderCategory::Compaction,
+                    },
+                );
+                self.emit_info_important(&format!(
+                    "agent `{public_id}` inference paused: compaction failed ({}); run :compact or authorized agent_compact recovery",
+                    failure.reason.description(),
+                ));
+            } else if was_paused {
+                self.agent_runtime
+                    .agent_watch
+                    .provider_status
+                    .remove(public_id.as_str());
+            }
+        }
     }
 
     /// Inserts one automatic standalone compaction boundary before inference
@@ -1696,7 +1762,7 @@ impl Harness {
                 decision_id: decision.transaction_id.clone(),
             },
         );
-        let supersedes = self.automatic_compaction_supersedes(&agent_id, &decision.model, selected);
+        let supersedes = None;
         self.publish_for_agent(
             cid,
             Event::AgentStandaloneCompactionStarted(tau_proto::AgentStandaloneCompactionStarted {
@@ -1886,7 +1952,7 @@ impl Harness {
                 },
             },
         );
-        let supersedes = self.automatic_compaction_supersedes(&agent_id, &model, selected_head);
+        let supersedes = None;
         self.publish_for_agent(
             cid,
             Event::AgentStandaloneCompactionStarted(tau_proto::AgentStandaloneCompactionStarted {

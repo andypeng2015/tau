@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::{LlmError, OutputItemAccumulator, StreamState};
 
@@ -14,9 +14,6 @@ pub(super) struct CompactStreamValidator {
     max_output_bytes: tau_proto::ByteCount,
     /// Whether the one required `stop` terminal has been observed.
     completed: bool,
-    /// Whether the one allowed llama.cpp final usage metadata event was
-    /// observed.
-    llama_cpp_final_usage_timings_seen: bool,
 }
 
 impl CompactStreamValidator {
@@ -25,7 +22,6 @@ impl CompactStreamValidator {
         Self {
             max_output_bytes,
             completed: false,
-            llama_cpp_final_usage_timings_seen: false,
         }
     }
 
@@ -50,31 +46,6 @@ impl CompactStreamValidator {
         let Some(object) = event.as_object() else {
             return Err(invalid("summary compactor returned a non-object event"));
         };
-        const TOP_LEVEL_FIELDS: &[&str] = &[
-            "choices",
-            "created",
-            "error",
-            "id",
-            "model",
-            "object",
-            "obfuscation",
-            "provider",
-            "service_tier",
-            "system_fingerprint",
-            "usage",
-        ];
-        let llama_cpp_final_usage_timings = self.is_llama_cpp_final_usage_timings_event(object);
-        if object.keys().any(|key| {
-            !TOP_LEVEL_FIELDS.contains(&key.as_str())
-                && !(key == "timings" && llama_cpp_final_usage_timings)
-        }) {
-            return Err(invalid(
-                "summary compactor returned unsupported provider output",
-            ));
-        }
-        if llama_cpp_final_usage_timings {
-            self.llama_cpp_final_usage_timings_seen = true;
-        }
         if object.get("error").is_some_and(|error| !error.is_null()) {
             if !error_choices_are_content_free(object.get("choices")) {
                 return Err(invalid(
@@ -100,67 +71,18 @@ impl CompactStreamValidator {
         let Some(choice) = choices[0].as_object() else {
             return Err(invalid("summary compactor returned an invalid choice"));
         };
-        const CHOICE_FIELDS: &[&str] = &[
-            "delta",
-            "finish_reason",
-            "index",
-            "logprobs",
-            "native_finish_reason",
-            "stop_reason",
-            "token_ids",
-        ];
-        if choice
-            .keys()
-            .any(|key| !CHOICE_FIELDS.contains(&key.as_str()))
-        {
-            return Err(invalid(
-                "summary compactor returned unsupported semantic output",
-            ));
-        }
         if choice.get("index").and_then(Value::as_u64) != Some(0) {
             return Err(invalid(
                 "summary compactor returned an invalid choice index",
             ));
         }
-        if choice.get("logprobs").is_some_and(|value| !value.is_null()) {
-            return Err(invalid(
-                "summary compactor returned unsupported semantic output",
-            ));
-        }
         let finish_reason = choice.get("finish_reason");
-        if let Some(stop_reason) = choice.get("stop_reason")
-            && !stop_reason.is_null()
-            && ((!stop_reason.is_string()
-                && stop_reason.as_i64().is_none()
-                && stop_reason.as_u64().is_none())
-                || !matches!(
-                    finish_reason.and_then(Value::as_str),
-                    Some("stop" | "length")
-                ))
-        {
-            return Err(invalid("summary compactor returned invalid stop metadata"));
-        }
-        if choice
-            .get("token_ids")
-            .is_some_and(|value| !value.is_null())
-        {
-            return Err(invalid(
-                "summary compactor returned unsupported semantic output",
-            ));
-        }
         let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
             return Err(invalid("summary compactor returned an invalid delta"));
         };
-        const DELTA_FIELDS: &[&str] = &[
-            "content",
-            "reasoning",
-            "reasoning_content",
-            "role",
-            "thinking",
-        ];
-        if delta
-            .keys()
-            .any(|key| !DELTA_FIELDS.contains(&key.as_str()))
+        if ["tool_calls", "function_call", "refusal"]
+            .iter()
+            .any(|key| delta.get(*key).is_some_and(|value| !value.is_null()))
         {
             return Err(invalid(
                 "summary compactor returned unsupported semantic output",
@@ -182,14 +104,6 @@ impl CompactStreamValidator {
                 ));
             }
         }
-        if choice
-            .get("native_finish_reason")
-            .is_some_and(|native| !native.is_null() && !native.is_string())
-        {
-            return Err(invalid(
-                "summary compactor returned invalid native terminal metadata",
-            ));
-        }
         match finish_reason {
             None | Some(Value::Null) => {}
             Some(Value::String(reason)) if reason == "stop" || reason == "length" => {
@@ -202,18 +116,6 @@ impl CompactStreamValidator {
             }
         }
         Ok(())
-    }
-
-    /// Identifies llama.cpp's one content-free final usage event with timings.
-    fn is_llama_cpp_final_usage_timings_event(&self, event: &Map<String, Value>) -> bool {
-        self.completed
-            && !self.llama_cpp_final_usage_timings_seen
-            && event.get("error").is_none_or(Value::is_null)
-            && event.get("choices").is_some_and(
-                |choices| matches!(choices.as_array(), Some(choices) if choices.is_empty()),
-            )
-            && event.get("usage").is_some_and(Value::is_object)
-            && event.get("timings").is_some_and(Value::is_object)
     }
 
     /// Validate the complete parsed projection and release it to the attempt

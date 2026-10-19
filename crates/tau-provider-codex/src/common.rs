@@ -507,6 +507,8 @@ pub struct MessageAccumulator {
 
 /// Accumulated streaming state shared by both backends.
 pub struct StreamState {
+    /// Per-attempt ignored-element diagnostics, never semantic output.
+    pub(crate) unknown: tau_provider::unknown_diagnostics::UnknownDiagnostics,
     /// Validated native standalone activity; never semantic or replay output.
     pub(crate) compact_progress_updates: u64,
     /// Provider-indexed semantic accumulators.
@@ -919,6 +921,7 @@ impl StreamState {
     /// Construct an empty provider response accumulator.
     pub(crate) fn new() -> Self {
         Self {
+            unknown: Default::default(),
             compact_progress_updates: 0,
             output_items: Vec::new(),
             active_web_searches: BTreeMap::new(),

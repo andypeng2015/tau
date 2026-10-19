@@ -1222,13 +1222,7 @@ fn compact_repairs_warm_historical_open_prefix_failure() {
         1,
         "new input must not implicitly retry or clear suppression"
     );
-    let queued = read_nth_prompt_created(&h, 1);
-    h.handle_provider_response_finished(provider_text_response(
-        &queued.agent_prompt_id,
-        queued.agent_id,
-        "queued input remains usable",
-    ))
-    .expect("finish queued input before explicit compaction");
+    assert!(h.dispatch_blocked_for(&cid));
     h.drain_publish_idle_dispatches();
     h.try_advance_queue();
     h.handle_compact_request(
@@ -1253,7 +1247,7 @@ fn compact_repairs_warm_historical_open_prefix_failure() {
     );
     assert!(starts[1].resume_through.is_some());
 
-    let retry = read_nth_prompt_created(&h, 2);
+    let retry = read_nth_prompt_created(&h, 1);
     assert!(
         retry
             .context
@@ -1266,7 +1260,7 @@ fn compact_repairs_warm_historical_open_prefix_failure() {
         "recovered summary",
     ))
     .expect("accept corrected retry");
-    let inference = read_nth_prompt_created(&h, 3);
+    let inference = read_nth_prompt_created(&h, 2);
     let rendered = serde_json::to_string(&inference.context).expect("context");
     assert_eq!(rendered.matches("call-historical").count(), 2);
     assert_eq!(rendered.matches("queued while blocked").count(), 1);
@@ -1279,7 +1273,7 @@ fn compact_repairs_warm_historical_open_prefix_failure() {
                     if prompt.operation == tau_proto::PromptOperation::Inference
             ))
             .count(),
-        2
+        1
     );
     h.shutdown().expect("shutdown");
 }
@@ -2582,11 +2576,8 @@ fn manual_self_compaction_failure_delivers_error_once() {
         }] if tool_call_id == &call_id && delivered_transaction == &transaction_id
     ));
     assert!(!h.wait_completion_is_retained_for_test(&cid, &call_id));
-    assert!(matches!(
-        h.runtime_io.publication.pending_intercept.as_ref().map(|pending| &pending.event),
-        Some(Event::AgentInferenceDispatchStarted(started))
-            if started.transaction_id.is_none()
-    ));
+    assert!(h.runtime_io.publication.pending_intercept.is_none());
+    assert!(h.inference_compaction_failure(&cid, None).is_some());
     let public_id = h.agent_runtime.agent_registry.agents[&cid]
         .identity
         .agent_id
@@ -8085,16 +8076,16 @@ fn reactive_context_overflow_extension_preemption_cancels_once() {
     h.submit_user_prompt(test_session_id("s1"), "preempt side work".to_owned())
         .expect("submit user prompt");
     assert!(
-        !h.agent_runtime
+        h.agent_runtime
             .agent_watch
             .provider_status
             .contains_key(&side_id),
-        "reactive cancellation must retire its source-prompt recovery snapshot"
+        "reactive cancellation must replace recovery with a durable-derived pause"
     );
     assert_eq!(
         watcher_provider_status_count(&h),
-        1,
-        "cancellation is not a provider terminal error"
+        2,
+        "cancellation publishes one blocked transition"
     );
     h.set_agent_watch(
         &late_id,
@@ -8105,11 +8096,11 @@ fn reactive_context_overflow_extension_preemption_cancels_once() {
     assert!(
         session_agent_message_received_events(&h)
             .into_iter()
-            .all(|message| {
-                message.kind != tau_proto::AgentMessageKind::WatchProviderStatus
-                    || message.recipient_id.as_str() != late_id
+            .any(|message| {
+                message.kind == tau_proto::AgentMessageKind::WatchProviderStatus
+                    && message.recipient_id.as_str() == late_id
             }),
-        "warm late watcher must not receive retired recovery state"
+        "warm late watcher receives the current pause"
     );
     h.handle_provider_response_finished(context_overflow_response(&compact))
         .expect("ignore late compact response");
@@ -8347,7 +8338,7 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
             .activation_dispatch
     );
     assert!(
-        !h.agent_runtime
+        h.agent_runtime
             .agent_watch
             .provider_status
             .get(agent_id.as_str())
@@ -8404,8 +8395,11 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
     );
     h.drain_publish_idle_dispatches();
     h.try_advance_queue();
-    let inference = read_nth_prompt_created(&h, 1);
-    assert_eq!(inference.operation, tau_proto::PromptOperation::Inference);
+    assert!(h.dispatch_blocked_for(&cid));
+    assert_eq!(
+        event_log_count(&h, |event| matches!(event, Event::AgentPromptCreated(_))),
+        1
+    );
     assert_eq!(
         event_log_events(&h)
             .into_iter()
@@ -8414,12 +8408,6 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
         1,
         "same-model/branch threshold scheduling must use durable suppression"
     );
-    h.handle_provider_response_finished(provider_text_response(
-        &inference.agent_prompt_id,
-        inference.agent_id,
-        "ordinary inference remains usable",
-    ))
-    .expect("finish ordinary inference");
     h.handle_compact_request(
         crate::harness::harness_connection_id(),
         test_session_id("s1"),
@@ -8438,7 +8426,7 @@ fn standalone_compaction_failure_does_not_retry_automatically() {
         Some(&starts[0].transaction_id)
     );
     assert_ne!(starts[1].transaction_id, starts[0].transaction_id);
-    let successor = read_nth_prompt_created(&h, 2);
+    let successor = read_nth_prompt_created(&h, 1);
     h.handle_provider_response_finished(ProviderResponseFinished {
         error_category: None,
         automatic_compaction_decision: None,
@@ -8541,10 +8529,9 @@ fn standalone_compaction_accepts_canonical_opaque_provider_item() {
     h.shutdown().expect("shutdown");
 }
 
-/// Cold replay restores nonblocking suppression without projecting the failed
-/// UI operation as active provider work.
+/// Cold replay reconstructs an explicit pause without inventing active work.
 #[test]
-fn failed_ui_compaction_replay_restores_nonblocking_suppression() {
+fn failed_ui_compaction_replay_restores_inference_pause() {
     let td = TempDir::new().expect("tempdir");
     let state = td.path().join("state");
     let agent_id;
@@ -8604,7 +8591,7 @@ fn failed_ui_compaction_replay_restores_nonblocking_suppression() {
         quiet_provider_harness_with_start_reason(&state, tau_proto::SessionStartReason::Resume)
             .expect("resume");
     assert!(
-        !resumed
+        resumed
             .agent_runtime
             .agent_watch
             .provider_status
