@@ -837,7 +837,13 @@ fn parse_markdown_with_state(text: &str, in_fence: &mut Option<FenceKind>) -> Ve
             continue;
         }
         if is_heading(body) {
-            push_run(&mut runs, body, MarkdownStyle::Heading);
+            parse_inline_with_style(
+                body,
+                &mut runs,
+                MarkdownStyle::Heading,
+                true,
+                &mut InlineWork::default(),
+            );
             push_run(&mut runs, newline, MarkdownStyle::Base);
             index += 1;
             continue;
@@ -1336,24 +1342,14 @@ fn parse_inline_range(
         if ch == '\\'
             && let Some(len) = escaped_len(rest)
         {
-            let style = if inherited_style == MarkdownStyle::Base {
-                MarkdownStyle::Escape
-            } else {
-                inherited_style
-            };
-            push_run(runs, &rest[..len], style);
+            push_run(runs, &rest[..len], MarkdownStyle::Escape);
             index += len;
             continue;
         }
         if ch == '`'
             && let Some(len) = scanner.code_len(index, end)
         {
-            let style = if inherited_style == MarkdownStyle::Base {
-                MarkdownStyle::Code
-            } else {
-                inherited_style
-            };
-            push_run(runs, &rest[..len], style);
+            push_run(runs, &rest[..len], MarkdownStyle::Code);
             index += len;
             continue;
         }

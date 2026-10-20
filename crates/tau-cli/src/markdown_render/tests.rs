@@ -369,22 +369,159 @@ fn markdown_links_compose_with_surrounding_inline_styles() {
     assert_eq!(strike_link.style.fg, Some(tau_cli_term::Color::Red));
 }
 
-/// Inline code nested in emphasis remains non-clickable even when it contains a
-/// URL, preventing the nested-link scan from weakening code suppression.
+/// Opaque code and escapes retain their independent semantic styles inside
+/// headings and emphasis, without exposing their contents as links.
 #[test]
-fn markdown_nested_code_still_suppresses_links() {
+fn markdown_nested_code_and_escapes_keep_semantic_styles() {
     let theme = markdown_test_theme();
-    let source = "**`https://not-a-link.test`**";
-    let block = markdown_block(&theme, names::AGENT_RESPONSE, source);
+    for (open, close) in [
+        ("### ", ""),
+        ("**", "**"),
+        ("_", "_"),
+        ("***", "***"),
+        ("~~", "~~"),
+    ] {
+        let source = format!("{open}`https://not-a-link.test` \\*{close}\n");
+        let block = markdown_block(&theme, names::AGENT_RESPONSE, &source);
+        assert_eq!(rendered_text(&block), source);
+        let spans = block.content.spans();
+        assert!(spans.iter().all(|span| span.hyperlink.is_none()));
+        for (text, background) in [
+            (
+                "`https://not-a-link.test`",
+                tau_cli_term::Color::Rgb {
+                    r: 17,
+                    g: 17,
+                    b: 17,
+                },
+            ),
+            (
+                "\\*",
+                tau_cli_term::Color::Rgb {
+                    r: 34,
+                    g: 34,
+                    b: 34,
+                },
+            ),
+        ] {
+            let span = spans
+                .iter()
+                .find(|span| span.text == text)
+                .expect("opaque span");
+            assert_eq!(span.style.bg, Some(background));
+        }
+        assert_markdown_rendering_property(&theme, &source).expect("streaming matches final");
+    }
+}
 
-    assert_eq!(rendered_text(&block), source);
-    assert!(
-        block
-            .content
-            .spans()
-            .iter()
-            .all(|span| span.hyperlink.is_none())
-    );
+/// Heading links use the same visible labels, URL fallback, and OSC 8 metadata
+/// as prose while retaining heading styling, including the originally reported
+/// label.
+#[test]
+fn markdown_heading_links_render_with_and_without_osc8() {
+    let theme = markdown_test_theme();
+    let target = "https://github.com/blader/humanizer/blob/main/SKILL.md";
+    let label = "blader/humanizer — SKILL.md";
+    for level in 1..=6 {
+        let prefix = "#".repeat(level);
+        let source =
+            format!("{prefix} 1. [{label}]({target}) <https://auto.test> https://bare.test");
+        for osc8 in [true, false] {
+            let block = markdown_block_with_osc8(&theme, names::AGENT_RESPONSE, &source, osc8);
+            let visible_label = if osc8 {
+                label.to_owned()
+            } else {
+                format!("{label} ({target})")
+            };
+            assert_eq!(
+                rendered_text(&block),
+                format!("{prefix} 1. {visible_label} https://auto.test https://bare.test")
+            );
+            for text in [&visible_label, "https://auto.test", "https://bare.test"] {
+                let span = block
+                    .content
+                    .spans()
+                    .iter()
+                    .find(|span| span.text == text)
+                    .expect("heading link");
+                assert!(span.style.bold && span.style.underline);
+            }
+            let targets: Vec<_> = block
+                .content
+                .spans()
+                .iter()
+                .filter_map(|span| span.hyperlink.as_deref())
+                .collect();
+            assert_eq!(
+                targets,
+                if osc8 {
+                    vec![target, "https://auto.test", "https://bare.test"]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+}
+
+/// Completing a streamed heading activates inline parsing; incomplete chunks
+/// stay literal and subsequent cached renders agree with final rendering.
+#[test]
+fn live_stream_heading_inline_syntax_matches_final_rendering() {
+    let theme = markdown_test_theme();
+    let source = "### 1. [blader/humanizer — SKILL.md](https://github.com/blader/humanizer/blob/main/SKILL.md) _emphasis_ ~~strike~~ `https://code.test` \\*\n";
+    for osc8 in [true, false] {
+        let mut cache = MarkdownStreamCache::default();
+        for end in source
+            .char_indices()
+            .map(|(index, ch)| index + ch.len_utf8())
+        {
+            let block = markdown_streaming_block_with_osc8(
+                &theme,
+                names::AGENT_RESPONSE,
+                &source[..end],
+                &mut cache,
+                MarkdownStreamUpdate::Append,
+                osc8,
+            );
+            let (_, body) = block.content.spans().split_last().expect("progress");
+            if end < source.len() {
+                assert!(body.iter().all(|span| span.hyperlink.is_none()));
+                let incomplete = body.first().expect("literal incomplete heading");
+                assert_eq!(incomplete.text, source[..end]);
+                assert!(!incomplete.style.bold && !incomplete.style.italic);
+            } else {
+                let finalized =
+                    markdown_block_with_osc8(&theme, names::AGENT_RESPONSE, source, osc8);
+                assert_eq!(
+                    normalized_spans(body),
+                    normalized_spans(finalized.content.spans())
+                );
+                assert!(
+                    body.iter()
+                        .any(|span| span.text == "_emphasis_" && span.style.italic)
+                );
+                assert!(
+                    body.iter()
+                        .any(|span| span.text == "~~strike~~" && span.style.strikethrough)
+                );
+            }
+        }
+        let cached = markdown_streaming_block_with_osc8(
+            &theme,
+            names::AGENT_RESPONSE,
+            source,
+            &mut cache,
+            MarkdownStreamUpdate::Append,
+            osc8,
+        );
+        let (_, body) = cached.content.spans().split_last().expect("progress");
+        let finalized = markdown_block_with_osc8(&theme, names::AGENT_RESPONSE, source, osc8);
+        assert_eq!(
+            normalized_spans(body),
+            normalized_spans(finalized.content.spans())
+        );
+    }
 }
 
 /// Style delimiters inside a code span stay opaque to the outer delimiter
