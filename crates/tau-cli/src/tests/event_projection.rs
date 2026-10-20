@@ -818,8 +818,8 @@ fn compact_mode_reprojects_retained_notices_without_hiding_critical_errors() {
     }
 }
 
-/// Locally synthesized manual-compaction acceptance notices follow the same
-/// compact projection even when their target agent is currently hidden.
+/// Manual requests never leave acceptance notices or correlation IDs behind,
+/// including after changing verbosity and selecting a hidden target.
 #[test]
 fn compact_mode_reprojects_hidden_target_manual_compaction_notice() {
     let (_term, handle, vt) = setup(100, 24);
@@ -840,7 +840,8 @@ fn compact_mode_reprojects_hidden_target_manual_compaction_notice() {
     renderer.toggle_verbose_mode();
     renderer.switch_agent(agent_id("main"));
     sync(&handle);
-    assert!(vt.screen_contains(100, "Agent main accepted compaction request"));
+    assert!(!vt.screen_contains(100, "accepted compaction request"));
+    assert!(!vt.screen_contains(100, "cr-hidden-notice"));
 }
 
 #[test]
@@ -1459,7 +1460,7 @@ fn mismatched_self_compaction_correlation_fails_open_to_distinct_rows() {
 
     let text = vt.screen_text(100).join("\n");
     assert_eq!(text.matches("Compacting…").count(), 1, "{text}");
-    assert!(text.contains("compact 0s pending"), "{text}");
+    assert!(text.contains("compact 0s (queued)"), "{text}");
 }
 
 /// Ensures cold catch-up can fold the durable standalone start and replacement

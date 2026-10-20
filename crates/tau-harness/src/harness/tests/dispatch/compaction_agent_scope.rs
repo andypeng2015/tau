@@ -241,8 +241,8 @@ fn equal_local_model_request_ids_teardown_preserves_other_retained_publication()
     );
 }
 
-/// Equal target-local UI ids must keep separate requester ACK ownership through
-/// each target's durable acceptance commit.
+/// Equal target-local UI ids retire their separate admission-error recipients
+/// only after each acceptance commits, without redundant success notices.
 #[test]
 fn equal_local_ui_request_ids_ack_each_target_requester() {
     let (_td, mut h, _caller_cid, _target_a_cid, _unused_call, target_a_id) =
@@ -295,7 +295,7 @@ fn equal_local_ui_request_ids_ack_each_target_requester() {
         })),
     )
     .expect("commit target A UI acceptance");
-    assert!(frames_a.lock().expect("UI A frames").iter().any(|routed| {
+    assert!(!frames_a.lock().expect("UI A frames").iter().any(|routed| {
         matches!(
             peel_inner_event(&routed.frame),
             Some(Event::HarnessNotice(notice)) if notice.message == "compaction queued"
@@ -322,7 +322,7 @@ fn equal_local_ui_request_ids_ack_each_target_requester() {
         })),
     )
     .expect("commit target B UI acceptance");
-    assert!(frames_b.lock().expect("UI B frames").iter().any(|routed| {
+    assert!(!frames_b.lock().expect("UI B frames").iter().any(|routed| {
         matches!(
             peel_inner_event(&routed.frame),
             Some(Event::HarnessNotice(notice)) if notice.message == "compaction queued"

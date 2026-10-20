@@ -31,6 +31,8 @@ UI. Configured extensions cannot assign notice purpose: routine extension notice
 requests always become diagnostics, while the harness owns alert paths such as
 extension configuration errors.
 
-Successful manual-compaction acceptance and start are routine `info` lifecycle
-notices and use ordinary status styling. Pre-start and transaction failures
-remain terminal tool errors and retain error presentation.
+Manual-compaction acceptance renders a transient `(queued)` marker, not a
+notice or correlation identifier. Start, pre-start failure, or satisfaction by
+automatic compaction removes that marker in the owning target transcript,
+including hidden-agent and attach reconstruction. Pre-start and transaction
+failures retain error presentation.

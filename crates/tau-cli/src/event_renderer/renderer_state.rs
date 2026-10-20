@@ -192,6 +192,8 @@ pub(super) struct TranscriptRuntimeState {
         HashMap<tau_proto::AgentPromptId, tau_proto::CompactionTransactionId>,
     /// Self-compaction tool correlations.
     pub(super) self_compaction_tools: HashMap<tau_proto::ToolCallId, SelfCompactionTool>,
+    /// Transient manual-compaction queue rows owned by this target transcript.
+    pub(super) queued_compactions: HashMap<tau_proto::CompactionRequestId, tau_cli_term::BlockId>,
     /// Last unclassified local user echo.
     pub(super) last_user_block: Option<(tau_cli_term::BlockId, String)>,
     /// Queued user prompt blocks.

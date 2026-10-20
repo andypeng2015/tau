@@ -3001,22 +3001,10 @@ impl Harness {
                     .accepted_manual_tools
                     .insert(ManualCompactionRequestKey::for_request(requested), accepted);
             }
-            let requesters = self
-                .prompt_coordination
+            self.prompt_coordination
                 .compaction_runtime
                 .pending_ui_acknowledgements
-                .remove(&ManualCompactionRequestKey::for_request(requested))
-                .unwrap_or_default();
-            for (index, requester) in requesters.iter().enumerate() {
-                self.send_ui_response(
-                    requester,
-                    if index == 0 {
-                        "compaction queued"
-                    } else {
-                        "compaction already queued"
-                    },
-                );
-            }
+                .remove(&ManualCompactionRequestKey::for_request(requested));
             self.continue_committed_ui_compaction(&cid, requested.target_agent_id.clone());
         }
         if let Event::ProviderResponseFinished(response) = event

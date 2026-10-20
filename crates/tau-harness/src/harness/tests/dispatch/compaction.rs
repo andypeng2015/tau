@@ -5364,7 +5364,7 @@ fn staged_model_acceptance_excludes_ui_and_preserves_call_correlation() {
             .is_empty(),
         "the rejected UI origin must not acquire ACK delivery"
     );
-    assert!(ui_frames.lock().expect("UI frames").iter().any(|routed| {
+    assert!(!ui_frames.lock().expect("UI frames").iter().any(|routed| {
         matches!(
             peel_inner_event(&routed.frame),
             Some(Event::HarnessNotice(notice))

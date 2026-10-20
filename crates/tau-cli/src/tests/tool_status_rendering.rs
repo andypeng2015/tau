@@ -355,10 +355,9 @@ fn manual_compaction_lifecycle_status_follows_target_agent_selection() {
 
     renderer.switch_agent(agent_id("reviewer-KH50"));
     sync(&handle);
-    assert!(vt.screen_contains(
-        100,
-        "Agent manager accepted compaction request for reviewer-KH50 (cr-48-0)"
-    ));
+    assert!(!vt.screen_contains(100, "accepted compaction request"));
+    assert!(!vt.screen_contains(100, "cr-48-0"));
+    assert!(!vt.screen_contains(100, "(queued)"));
     assert!(!vt.screen_contains(100, "Starting compaction request"));
 }
 

@@ -1,6 +1,6 @@
 //! Tests for prompt lifecycle behavior.
 
-use super::super::lifecycle::{assert_no_message, connect_socket_ui, read_notice};
+use super::super::lifecycle::{assert_no_message, connect_socket_ui};
 use super::*;
 use crate::agent::DeliveryDeadlineKind;
 use crate::harness::prompt_materialization_timing::{diagnostic_work, reset_diagnostic_work};
@@ -2477,7 +2477,7 @@ fn successful_wait_preemption_installs_replacement_before_queued_activation() {
         test_session_id("s1"),
         Some(agent_id.as_str()),
     );
-    assert_eq!(read_notice(&mut requesting_ui).message, "compaction queued");
+    assert_no_message(&mut requesting_ui);
     let compact_prompt = read_nth_prompt_created(&h, 0);
 
     assert_eq!(

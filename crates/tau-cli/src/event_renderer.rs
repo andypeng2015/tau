@@ -5924,6 +5924,9 @@ impl EventRenderer {
             Event::AgentManualCompactionRequestFailed(failed) => {
                 EventAgentIdResolution::Agent(failed.target_agent_id.clone())
             }
+            Event::AgentManualCompactionRequestSatisfied(satisfied) => {
+                EventAgentIdResolution::Agent(satisfied.target_agent_id.clone())
+            }
             Event::AgentStandaloneCompactionStarted(started) => {
                 EventAgentIdResolution::Agent(started.agent_id.clone())
             }
@@ -9502,22 +9505,11 @@ impl EventRenderer {
             }
             Event::AgentManualCompactionRequested(requested) => {
                 self.register_self_compaction_tool(requested);
-                let authority = requested.tool_source().map_or_else(
-                    || format!("UI for agent {}", requested.target_agent_id),
-                    |source| format!("Agent {}", source.caller_agent_id),
-                );
-                let notice = tau_proto::HarnessNotice::diagnostic(
-                    tau_proto::notice_kind::HARNESS_NOTICE,
-                    format!(
-                        "{authority} accepted compaction request for {} ({})",
-                        requested.target_agent_id, requested.request_id
-                    ),
-                    tau_proto::NoticeLevel::Info,
-                );
-                self.retain_harness_notice("manual-compaction-requested", notice);
+                self.show_queued_compaction(requested);
                 true
             }
             Event::AgentManualCompactionRequestFailed(failed) => {
+                self.remove_queued_compaction(&failed.request_id);
                 let call_id = self
                     .transcript
                     .runtime
@@ -9533,7 +9525,20 @@ impl EventRenderer {
                         CompactionStatus::Failure,
                         "rejected",
                     );
+                } else {
+                    self.resources.handle.print_output(
+                        "manual-compaction-failed",
+                        render_compaction_block(
+                            &self.resources.theme,
+                            compaction_presentation::request_failure_status(failed.reason),
+                            CompactionStatus::Failure,
+                        ),
+                    );
                 }
+                true
+            }
+            Event::AgentManualCompactionRequestSatisfied(satisfied) => {
+                self.remove_queued_compaction(&satisfied.request_id);
                 true
             }
             Event::AgentStandaloneCompactionStarted(started) => {
@@ -9541,6 +9546,14 @@ impl EventRenderer {
                     started.operation,
                     tau_proto::PromptOperation::StandaloneCompaction
                 ) {
+                    match &started.trigger {
+                        tau_proto::StandaloneCompactionTrigger::ManualUi { request_id }
+                        | tau_proto::StandaloneCompactionTrigger::ManualAgentTool {
+                            request_id,
+                            ..
+                        } => self.remove_queued_compaction(request_id),
+                        _ => {}
+                    }
                     self.transcript
                         .runtime
                         .standalone_compaction_transactions

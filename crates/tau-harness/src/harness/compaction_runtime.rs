@@ -93,7 +93,6 @@ impl Harness {
                     .or_default()
                     .push(client_id.clone());
             } else {
-                self.send_ui_response(client_id, "compaction already queued");
                 self.continue_committed_ui_compaction(&cid, agent_id.clone());
             }
             return;
@@ -103,7 +102,6 @@ impl Harness {
             .compaction_runtime
             .has_ui_start_for_agent(&agent_id)
         {
-            self.send_ui_response(client_id, "compaction already queued");
             return;
         }
         if let Some(request_key) = self
@@ -128,8 +126,6 @@ impl Harness {
                     .entry(request_key)
                     .or_default()
                     .push(client_id.clone());
-            } else {
-                self.send_ui_response(client_id, "compaction already queued");
             }
             return;
         }

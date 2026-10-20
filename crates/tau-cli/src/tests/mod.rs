@@ -835,6 +835,7 @@ fn apply_test_running_watch(renderer: &mut EventRenderer, agent: &str) {
     }));
 }
 mod cli_parsing;
+mod compaction_queue_rendering;
 mod event_projection;
 mod prompt_input;
 mod renderer_update_folding;

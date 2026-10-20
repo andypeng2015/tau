@@ -211,8 +211,9 @@ progress rank.
 
 ## Manual compaction
 
-UI `:compact` durably accepts one target-scoped manual intent before replying
-`compaction queued`. A second request coalesces without another durable fact.
+UI `:compact` durably accepts one target-scoped manual intent. Its typed lifecycle
+drives transient UI queue presentation rather than a separate success notice.
+A second request coalesces without another durable fact.
 The request pins the selected agent, branch ancestry, ordinary generation, and
 provider-qualified model. While an ordinary prompt or tool round is active, the
 harness claims the request at the first provider-closed boundary: a complete

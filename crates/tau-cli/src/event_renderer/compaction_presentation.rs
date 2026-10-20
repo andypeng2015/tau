@@ -42,6 +42,65 @@ pub(super) fn update_compaction_status(
 }
 
 impl EventRenderer {
+    /// Shows accepted intent as transient state, never as a durable notice or
+    /// an internal correlation identifier. Self-compaction keeps its tool row.
+    pub(super) fn show_queued_compaction(
+        &mut self,
+        requested: &tau_proto::AgentManualCompactionRequested,
+    ) {
+        if let Some(call_id) = self
+            .transcript
+            .runtime
+            .self_compaction_tools
+            .iter()
+            .find_map(|(call_id, tool)| {
+                (tool.request_id == requested.request_id).then(|| call_id.clone())
+            })
+        {
+            self.update_self_compaction_tool_status(
+                &call_id,
+                CompactionStatus::Progress,
+                "(queued)",
+            );
+            return;
+        }
+        if self
+            .transcript
+            .runtime
+            .queued_compactions
+            .contains_key(&requested.request_id)
+        {
+            return;
+        }
+        let block = super::render_compaction_block(
+            &self.resources.theme,
+            "(queued)",
+            CompactionStatus::Progress,
+        );
+        let id = self.resources.handle.new_block("compaction-queued", block);
+        self.resources
+            .handle
+            .push_above_active_before_any(id, self.watched_agent_anchor_ids());
+        self.transcript
+            .runtime
+            .queued_compactions
+            .insert(requested.request_id.clone(), id);
+        self.resources.handle.redraw();
+    }
+
+    /// Retires only the matching target-owned queue projection.
+    pub(super) fn remove_queued_compaction(&mut self, request_id: &tau_proto::CompactionRequestId) {
+        if let Some(id) = self
+            .transcript
+            .runtime
+            .queued_compactions
+            .remove(request_id)
+        {
+            self.resources.handle.remove_block(id);
+            self.resources.handle.redraw();
+        }
+    }
+
     /// Formats a compact token-count chip.
     fn compaction_token_chip(tokens: u64) -> String {
         format!("#{}", format_token_count(tokens))
@@ -128,5 +187,21 @@ impl EventRenderer {
         }
         transcript.history.turn_stats_predecessor = None;
         true
+    }
+}
+
+/// Keeps pre-start failures useful without exposing request identifiers.
+pub(super) fn request_failure_status(
+    reason: tau_proto::ManualCompactionRequestFailureReason,
+) -> &'static str {
+    use tau_proto::ManualCompactionRequestFailureReason as Reason;
+    match reason {
+        Reason::PrefixTooLarge => "compaction prefix too large",
+        Reason::Cancelled => "cancelled",
+        Reason::TargetUnloaded => "target unloaded",
+        Reason::ModelChanged => "model changed",
+        Reason::Unsupported => "compaction unsupported",
+        Reason::RouteFailed => "provider route unavailable",
+        Reason::StaleBranch => "transcript branch changed",
     }
 }
