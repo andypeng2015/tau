@@ -23,6 +23,14 @@ appropriate only for explicitly coarse inspection; use high detail or native
 crops for fine visual claims. See
 `docs/read-image-fidelity-oracle.md` for the fidelity boundary.
 
+`read_image` limits the original source to 8192 pixels per side before EXIF
+orientation, `region` cropping, or profile resizing. Neither `region` nor
+`mode: "overview"` bypasses this limit.
+For tall pages, capture bounded screenshots instead of one oversized full-page
+image, or crop/preprocess locally with supported tooling before exporting the
+result as a new artifact. The result must also meet the byte-size, pixel-count,
+and decoder-allocation limits.
+
 In the terminal UI, one bracketed text paste of at least 8 KiB of normalized
 UTF-8 uploads as an artifact (CRLF and bare CR become LF); smaller pastes stay
 ordinary text. A successful upload inserts an editable reference in the draft,
