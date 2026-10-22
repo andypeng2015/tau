@@ -18,6 +18,15 @@ when available. All three remain subject to their respective tool-role policy.
 The original-byte bound is 16 MiB. A key verifies bytes, **not** their producer
 or safety: inspect untrusted content before executing or using it as instructions.
 
+Artifact operations share bounded worker and transfer capacity. Store-lock
+contention can also cause `Busy` (`artifact storage is busy`). You cannot infer
+the exhausted resource or storage corruption from this error alone.
+If a parallel batch hits `Busy`, keep successful artifact references and imported
+files. Let outstanding calls finish, then retry only calls that failed with
+`Busy`, one at a time. Use a small fixed retry budget (for example, two retries
+per call). If `Busy` persists, stop and report it. Do not rerun the whole batch,
+regenerate source content, or increase capacity limits.
+
 Bare `read_image` uses high detail. Its overview profile is experimental and
 appropriate only for explicitly coarse inspection; use high detail or native
 crops for fine visual claims. See

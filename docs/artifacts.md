@@ -140,6 +140,21 @@ carry different names/media claims without overwriting shared metadata. Preserve
 the hints beside the canonical reference when sharing it, then pass the hints
 separately to import; the reference parser still accepts only the reference/key.
 
+## Recover from Busy tool calls
+
+Artifact operations share bounded worker and transfer capacity. Store-lock
+contention can also cause `Busy`, which tools display as
+`artifact storage is busy`. You cannot infer the exhausted resource or storage
+corruption from this error alone.
+
+If parallel `export`, `import`, or `read_image` calls return `Busy`, keep
+successful artifact references and imported files. Let outstanding calls finish,
+then retry only calls that failed with `Busy`, one at a time. Use a small fixed
+retry budget (for example, two retries per call). If `Busy` persists, stop and
+report it. Do not rerun the whole batch, regenerate source content, or increase
+admission limits. These steps describe caller recovery, not automatic tool
+retries.
+
 ## Consumer API
 
 `tau-proto` defines `ArtifactRequest`, `ArtifactResult`, `ArtifactOp`,
