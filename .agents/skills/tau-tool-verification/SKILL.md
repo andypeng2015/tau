@@ -48,6 +48,11 @@ Do not inspect harness State paths or treat the digest as provenance or safety.
 
 ## Goal
 
+For directory-lock contention, check that the one-time waiting message identifies
+a blocking agent, the lock kind (or earlier queued request), and the overlapping
+path. Use this best-effort snapshot as a contact hint; it may become stale and
+does not establish current lock ownership.
+
 Your goal is to verify if basic Tau harness tools still work as expected,
 and conform to our standards and guidelines.
 

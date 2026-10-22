@@ -86,6 +86,11 @@ model/user denial privacy. VCR coverage requires authorization before replay.
 
 ## Processes, locking, and scheduling
 
+Wait-diagnostic tests cover manual and automatic lock holders, parent/child
+overlap, earlier queued blockers, and cancellation in both lock backends.
+Full-dispatch tests check the bounded automatic-holder message with
+large command payloads.
+
 Process tests cover Linux/Android/macOS TTY-backed output descriptors, persistent
 stdin EOF/readiness, separated stdout/stderr capture, explicit termination
 classification for foreground exits, timeout, cancellation, signals, bounded

@@ -379,6 +379,34 @@ impl Drop for AutoDirLockGuard {
 }
 
 impl DirLockManager {
+    /// Add one best-effort blocker snapshot without changing lock admission.
+    pub(crate) fn annotate_wait_progress(&self, progress: &mut ToolProgress) {
+        let blocker = if let Some(backend) = self.fs_backend() {
+            backend.wait_blocker(&progress.call_id)
+        } else {
+            let state = self.inner.state.lock().expect("dir lock state poisoned");
+            state
+                .waiters
+                .iter()
+                .position(|waiter| waiter.call_id == progress.call_id)
+                .and_then(|pos| state.wait_blocker(pos))
+        };
+        if let Some(blocker) = blocker {
+            // Reserve space for the contactable owner before requested paths.
+            let message =
+                format!("waiting for directory lock; blocker snapshot: {blocker}; requested: ");
+            let remaining = 4096_usize.saturating_sub(message.len());
+            let requested = progress
+                .display
+                .as_ref()
+                .map_or("", |display| display.args.as_str());
+            let mut end = remaining.min(requested.len());
+            while !requested.is_char_boundary(end) {
+                end -= 1;
+            }
+            progress.message = Some(format!("{message}{}", &requested[..end]));
+        }
+    }
     /// Reconfigure the directory-lock storage backend.
     pub(crate) fn configure(&self, config: &DirLockConfig) -> Result<(), String> {
         if !config.enable {
@@ -1046,6 +1074,50 @@ fn pause_configure_after_active_check_for_test() {
 fn pause_configure_after_active_check_for_test() {}
 
 impl LockState {
+    /// Describe one actual admission blocker, preferring a current holder.
+    fn wait_blocker(&self, pos: usize) -> Option<String> {
+        let waiter = self.waiters.get(pos)?;
+        let owner = &waiter.owner;
+        let dirs = &waiter.dirs;
+        let kind = waiter.kind;
+        let reentry = kind == WaitKind::Automatic && self.manual_covers(owner, dirs);
+        for lock in &self.automatic {
+            if reentry && &lock.owner == owner && self.manual_covers(owner, &lock.dirs) {
+                continue;
+            }
+            if let Some(dir) = lock
+                .dirs
+                .iter()
+                .find(|active| dirs.iter().any(|dir| paths_overlap(active, dir)))
+            {
+                return Some(blocker_display(&lock.owner, "automatic lock", dir));
+            }
+        }
+        for lock in &self.manual {
+            if &lock.owner == owner && (kind == WaitKind::Manual || reentry) {
+                continue;
+            }
+            if dirs.iter().any(|dir| paths_overlap(&lock.dir, dir)) {
+                return Some(blocker_display(&lock.owner, "manual lock", &lock.dir));
+            }
+        }
+        if !reentry {
+            for earlier in self.waiters.iter().take(pos) {
+                if let Some(dir) = earlier
+                    .dirs
+                    .iter()
+                    .find(|active| dirs.iter().any(|dir| paths_overlap(active, dir)))
+                {
+                    return Some(blocker_display(
+                        &earlier.owner,
+                        "earlier queued request",
+                        dir,
+                    ));
+                }
+            }
+        }
+        None
+    }
     fn record_wake(&mut self) {
         self.wake_generation = self.wake_generation.saturating_next();
     }
@@ -1365,6 +1437,7 @@ fn dispatch_dir_lock_update(
     let wait_progress = waiting_progress(&invoke, std::slice::from_ref(&request.dir), None);
     let wait_tx = tx.clone();
     let wait_manager = manager.clone();
+    let diagnostic_manager = manager.clone();
     let wait_call_id = invoke.call_id.clone();
     let wait_lifecycle = lifecycle.clone();
     #[cfg(test)]
@@ -1374,6 +1447,8 @@ fn dispatch_dir_lock_update(
         invoke.agent_id.clone(),
         request.dir.clone(),
         move || {
+            let mut wait_progress = wait_progress;
+            diagnostic_manager.annotate_wait_progress(&mut wait_progress);
             let _ = wait_tx.report_tool_progress(wait_progress);
             if wait_lifecycle.effect_cancel_requested() {
                 wait_manager.cancel_waiting_call(&wait_call_id);
@@ -1617,6 +1692,14 @@ pub(crate) fn waiting_progress(
     #[cfg(test)]
     ownership_probe::record_wait_snapshot(&invoke.call_id, retained_wait_text_bytes(&progress));
     progress
+}
+
+/// Format one holder or queued blocker without retaining an unbounded path.
+fn blocker_display(owner: &AgentId, kind: &str, dir: &Path) -> String {
+    format!(
+        "agent {owner}, {kind}, directory {}",
+        bounded_dirs_display(std::slice::from_ref(&dir.to_path_buf()), 2048)
+    )
 }
 
 /// Format directory paths directly into one bounded UTF-8 wait label.

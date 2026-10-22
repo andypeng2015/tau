@@ -17,6 +17,212 @@ fn agent_id(value: &str) -> AgentId {
     AgentId::parse(value).expect("valid test agent id")
 }
 
+/// Wait diagnostics identify parent/child holders in both backends without
+/// changing cancellation or retaining command payloads in the snapshot.
+#[test]
+fn wait_diagnostics_identify_holders_and_preserve_cancellation() {
+    for filesystem in [false, true] {
+        for automatic in [false, true] {
+            let tempdir = tempfile::TempDir::new().expect("tempdir");
+            let manager = if filesystem {
+                filesystem_lock_manager(tempdir.path())
+            } else {
+                DirLockManager::default()
+            };
+            let holder = if filesystem {
+                filesystem_lock_manager(tempdir.path())
+            } else {
+                manager.clone()
+            };
+            let held = path("/diagnostic/parent");
+            let requested = held.join("child");
+            let owner = agent_id("holder");
+            let guard = if automatic {
+                Some(
+                    holder
+                        .acquire_auto(
+                            ToolCallId::new("holder"),
+                            owner.clone(),
+                            vec![held.clone()],
+                            || {},
+                        )
+                        .expect("hold automatic"),
+                )
+            } else {
+                holder
+                    .acquire_manual(
+                        ToolCallId::new("holder"),
+                        owner.clone(),
+                        held.clone(),
+                        || {},
+                    )
+                    .expect("hold manual");
+                None
+            };
+            for manual_request in [false, true] {
+                let invoke = ToolStarted {
+                    invocation_policy: Default::default(),
+                    call_id: ToolCallId::new("diagnostic-waiter"),
+                    tool_name: tau_proto::ToolName::new(DIR_LOCK_TOOL_NAME),
+                    arguments: CborValue::Null,
+                    agent_id: agent_id("waiter"),
+                    originator: tau_proto::PromptOriginator::User,
+                };
+                let mut progress =
+                    waiting_progress(&invoke, std::slice::from_ref(&requested), None);
+                let on_wait = || {
+                    manager.annotate_wait_progress(&mut progress);
+                    let message = progress.message.as_deref().expect("message");
+                    assert!(message.contains("agent holder"));
+                    assert!(message.contains(if automatic {
+                        "automatic lock"
+                    } else {
+                        "manual lock"
+                    }));
+                    assert!(message.contains("/diagnostic/parent"));
+                    assert!(message.contains("/diagnostic/parent/child"));
+                    assert!(message.len() <= 4096);
+                    assert!(manager.cancel_waiting_call(&invoke.call_id));
+                };
+                if manual_request {
+                    assert!(matches!(
+                        manager.acquire_manual(
+                            invoke.call_id.clone(),
+                            invoke.agent_id.clone(),
+                            requested.clone(),
+                            on_wait
+                        ),
+                        Err(ManualLockAcquireError::Cancelled)
+                    ));
+                } else {
+                    assert!(matches!(
+                        manager.acquire_auto(
+                            invoke.call_id.clone(),
+                            invoke.agent_id.clone(),
+                            vec![requested.clone()],
+                            on_wait
+                        ),
+                        Err(LockAcquireError::Cancelled)
+                    ));
+                }
+            }
+            drop(guard);
+            holder.release_agent(&owner);
+        }
+    }
+}
+
+/// A queued parent can block a child after the active holder leaves; report the
+/// queued owner rather than inventing a current lock holder.
+#[test]
+fn wait_diagnostics_identify_earlier_overlapping_request() {
+    for filesystem in [false, true] {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let manager = if filesystem {
+            filesystem_lock_manager(tempdir.path())
+        } else {
+            DirLockManager::default()
+        };
+        let guard = manager
+            .acquire_auto(
+                ToolCallId::new("holder"),
+                agent_id("holder"),
+                vec![path("/diagnostic/parent/child")],
+                || {},
+            )
+            .expect("holder");
+        let (ready_tx, ready_rx) = path_std_sync::mpsc::channel();
+        let (resume_tx, resume_rx) = path_std_sync::mpsc::channel();
+        let first = std::thread::spawn({
+            let manager = manager.clone();
+            move || {
+                manager.acquire_manual(
+                    ToolCallId::new("earlier"),
+                    agent_id("earlier"),
+                    path("/diagnostic/parent"),
+                    || {
+                        ready_tx.send(()).expect("ready");
+                        resume_rx.recv().expect("resume");
+                    },
+                )
+            }
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("queued");
+        drop(guard);
+        let invoke = ToolStarted {
+            invocation_policy: Default::default(),
+            call_id: ToolCallId::new("later"),
+            tool_name: tau_proto::ToolName::new(DIR_LOCK_TOOL_NAME),
+            arguments: CborValue::Null,
+            agent_id: agent_id("later"),
+            originator: tau_proto::PromptOriginator::User,
+        };
+        let requested = path("/diagnostic/parent/other");
+        let mut progress = waiting_progress(&invoke, std::slice::from_ref(&requested), None);
+        let result = manager.acquire_manual(
+            invoke.call_id.clone(),
+            invoke.agent_id.clone(),
+            requested,
+            || {
+                manager.annotate_wait_progress(&mut progress);
+                assert!(manager.cancel_waiting_call(&invoke.call_id));
+            },
+        );
+        // Always unblock the helper before asserting its diagnostic.
+        resume_tx.send(()).expect("resume");
+        first.join().expect("join").expect("first acquired");
+        assert!(matches!(result, Err(ManualLockAcquireError::Cancelled)));
+        let message = progress.message.expect("message");
+        assert!(message.contains("agent earlier, earlier queued request"));
+        assert!(message.contains("directory /diagnostic/parent"));
+        manager.release_agent(&agent_id("earlier"));
+    }
+}
+
+/// Large Unicode paths must not hide the contactable owner or exceed the wait
+/// message budget; a cancelled waiter must retain the ordinary fallback.
+#[test]
+fn wait_diagnostics_bound_unicode_and_tolerate_disappearing_waiter() {
+    let manager = DirLockManager::default();
+    let held = path(&format!("/{}", "界".repeat(10_000)));
+    let requested = held.join("child");
+    manager
+        .acquire_manual(ToolCallId::new("holder"), agent_id("holder"), held, || {})
+        .expect("hold");
+    let invoke = ToolStarted {
+        invocation_policy: Default::default(),
+        call_id: ToolCallId::new("waiter"),
+        tool_name: tau_proto::ToolName::new(DIR_LOCK_TOOL_NAME),
+        arguments: CborValue::Null,
+        agent_id: agent_id("waiter"),
+        originator: tau_proto::PromptOriginator::User,
+    };
+    let mut progress = waiting_progress(&invoke, std::slice::from_ref(&requested), None);
+    let mut fallback = progress.clone();
+    let result = manager.acquire_manual(
+        invoke.call_id.clone(),
+        invoke.agent_id.clone(),
+        requested,
+        || {
+            manager.annotate_wait_progress(&mut progress);
+            assert!(manager.cancel_waiting_call(&invoke.call_id));
+            manager.annotate_wait_progress(&mut fallback);
+        },
+    );
+    assert!(matches!(result, Err(ManualLockAcquireError::Cancelled)));
+    let message = progress.message.expect("message");
+    assert!(message.contains("agent holder, manual lock"));
+    assert!(message.len() <= 4096);
+    assert!(
+        !fallback
+            .message
+            .expect("fallback")
+            .contains("blocker snapshot")
+    );
+}
+
 /// Preserve exact command conversion and parser error precedence while making
 /// every successfully parsed directory-lock request hold a valid command.
 #[test]

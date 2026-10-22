@@ -87,7 +87,10 @@ Session cleanup also cancels queued waiters.
 The `:shell-dir-force-unlock DIRECTORY` UI action releases all overlapping
 manual locks regardless of owner. It neither cancels nor releases automatic
 locks held by running tools. Blocked calls publish bounded progress identifying
-the directories they await.
+the directories they await, plus a one-time, best-effort snapshot identifying
+one blocking agent, the lock kind (or earlier queued request), and the overlapping
+directory. Use this snapshot as a contact hint; it may become stale and does not
+establish current lock ownership.
 
 ## Security boundary
 

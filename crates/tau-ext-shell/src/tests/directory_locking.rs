@@ -2779,6 +2779,10 @@ fn large_prefixed_edit_lock_wait_moves_one_payload_and_bounds_progress() {
             }
         };
         assert_eq!(progress.tool_name.as_str(), "prefix_replace");
+        let message = progress.message.as_deref().expect("wait diagnostic");
+        assert!(message.contains("automatic lock"));
+        assert!(message.contains("blocker"));
+        assert!(message.len() <= 4096);
         let display = progress.display.expect("waiting display");
         assert!(display.args.len() <= 4096);
         if let Some(tau_proto::ToolUsePayload::Text { text }) = display.payload {

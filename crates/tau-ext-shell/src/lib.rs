@@ -2013,7 +2013,10 @@ fn dispatch_locked_tool_invoke(
     let lock_wait_started = Instant::now();
     let wait_progress = crate::dir_lock::waiting_progress(&invoke, &dirs, shell_command_mode);
     let wait_tx = tx.clone();
+    let diagnostic_manager = lock_manager.clone();
     let on_wait = move || {
+        let mut wait_progress = wait_progress;
+        diagnostic_manager.annotate_wait_progress(&mut wait_progress);
         let _ = wait_tx.report_tool_progress(wait_progress);
     };
     let guard = match if shell_command_mode.is_some() {

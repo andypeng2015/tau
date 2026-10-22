@@ -169,6 +169,21 @@ pub(super) struct FsManualAcquireRequest<'a> {
 }
 
 impl FsLockBackend {
+    /// Read one best-effort snapshot; diagnostic failure never fails
+    /// acquisition.
+    pub(super) fn wait_blocker(&self, call_id: &ToolCallId) -> Option<String> {
+        with_registry_lock(&self.state_dir, |registry| {
+            Ok(registry
+                .waiters
+                .iter()
+                .position(|waiter| {
+                    waiter.owner.instance_id == self.instance_id && &waiter.call_id == call_id
+                })
+                .and_then(|pos| registry.wait_blocker(pos)))
+        })
+        .ok()
+        .flatten()
+    }
     pub(super) fn initialize(state_dir: &Path, source: StateDirSource) -> Result<Self, String> {
         let state_dir = state_dir.to_path_buf();
         ensure_private_state_dir(&state_dir, source)?;
@@ -731,6 +746,59 @@ enum FsManualOutcome {
 }
 
 impl FsRegistry {
+    /// Describe one actual admission blocker using full instance-aware
+    /// ownership.
+    fn wait_blocker(&self, pos: usize) -> Option<String> {
+        let waiter = self.waiters.get(pos)?;
+        let owner = &waiter.owner;
+        let dirs = &waiter.dirs;
+        let kind = waiter.kind;
+        let reentry = kind == WaitKind::Automatic && self.manual_covers(owner, dirs);
+        for lock in &self.automatic {
+            if reentry && &lock.owner == owner && self.manual_covers(owner, &lock.dirs) {
+                continue;
+            }
+            if let Some(dir) = lock
+                .dirs
+                .iter()
+                .find(|active| dirs.iter().any(|dir| paths_overlap(active, dir)))
+            {
+                return Some(super::blocker_display(
+                    &lock.owner.agent_id,
+                    "automatic lock",
+                    dir,
+                ));
+            }
+        }
+        for lock in &self.manual {
+            if &lock.owner == owner && (kind == WaitKind::Manual || reentry) {
+                continue;
+            }
+            if dirs.iter().any(|dir| paths_overlap(&lock.dir, dir)) {
+                return Some(super::blocker_display(
+                    &lock.owner.agent_id,
+                    "manual lock",
+                    &lock.dir,
+                ));
+            }
+        }
+        if !reentry {
+            for earlier in self.waiters.iter().take(pos) {
+                if let Some(dir) = earlier
+                    .dirs
+                    .iter()
+                    .find(|active| dirs.iter().any(|dir| paths_overlap(active, dir)))
+                {
+                    return Some(super::blocker_display(
+                        &earlier.owner.agent_id,
+                        "earlier queued request",
+                        dir,
+                    ));
+                }
+            }
+        }
+        None
+    }
     fn bump(&mut self) {
         self.generation = self.generation.saturating_next();
     }
