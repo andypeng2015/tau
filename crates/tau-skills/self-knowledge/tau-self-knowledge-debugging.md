@@ -100,7 +100,6 @@ Examples:
 cargo r -- dev send <session_id> "normal user message"
 cargo r -- dev send <session_id> :cancel
 cargo r -- dev send <session_id> :model test/model
-cargo r -- dev send <session_id> :compact
 cargo r -- dev send <session_id> '!pwd'
 ```
 
@@ -110,6 +109,14 @@ daemon's immutable session; discovery never uses a PID as routing or liveness
 authority. It
 supports normal prompts, core commands, and `!` / `!!` shell-command
 submissions.
+
+To compact manually, attach to the session, select the intended agent, and
+enter `:compact` in that UI. The harness rejects `dev send <session_id> :compact`
+because it supplies no agent target. Attaching another UI does not give
+`dev send` that UI's selected agent. When the tools are enabled, model callers
+can use `compact {}` for themselves or `agent_compact {agent_id}` for another
+loaded agent. See the [manual compaction tools](tau-self-knowledge-harness.md#manual-compaction-tools)
+for policy and completion behavior.
 
 ## Quick inspection workflow
 
