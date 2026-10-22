@@ -2397,6 +2397,128 @@ fn plural_wait_publishes_ordered_aggregate_and_durable_correlation() {
     h.shutdown().expect("shutdown");
 }
 
+/// Completing the final member through canonical publication must not queue a
+/// stale notice after its synchronous plural-wait terminal consumes both
+/// outputs.
+#[test]
+fn plural_wait_final_background_member_does_not_recreate_completion_notice() {
+    let td = TempDir::new().expect("tempdir");
+    let mut h = echo_harness(td.path().join("state")).expect("start");
+    let cid = ensure_test_user_agent(&mut h);
+    let sources = [
+        ToolCallId::from("plural-final-first"),
+        ToolCallId::from("plural-final-last"),
+    ];
+    seed_assistant_tool_round(
+        &mut h,
+        &cid,
+        &[
+            (sources[0].as_str(), "slow"),
+            (sources[1].as_str(), "slow"),
+            ("plural-final-wait", "wait"),
+        ],
+    );
+    for call_id in &sources {
+        h.tool_routing
+            .tool_runtime
+            .tool_agents
+            .insert(call_id.clone(), cid.clone());
+        h.tool_routing.tool_runtime.pending_tools.insert(
+            call_id.clone(),
+            PendingTool {
+                name: ToolName::new("slow"),
+                internal_name: ToolName::new("slow"),
+                tool_type: tau_proto::ToolType::Function,
+                allows_provider_image: false,
+                image_storage: Default::default(),
+            },
+        );
+        let call_ref = h
+            .persisted_tool_call_ref(&cid, call_id)
+            .expect("source ref");
+        h.record_wait_tool_call_ref(call_id.clone(), call_ref);
+        h.record_wait_tool_request(call_id);
+    }
+    let mut wait = AgentToolCall {
+        call_ref: None,
+        id: "plural-final-wait".into(),
+        name: ToolName::new("wait"),
+        tool_type: tau_proto::ToolType::Function,
+        arguments: CborValue::Map(vec![(
+            CborValue::Text("tool_call_ids".to_owned()),
+            CborValue::Array(
+                sources
+                    .iter()
+                    .map(|id| CborValue::Text(id.to_string()))
+                    .collect(),
+            ),
+        )]),
+    };
+    seed_tools_running(&mut h, &cid, vec![wait.id.clone()]);
+    wait.call_ref = h.persisted_tool_call_ref(&cid, &wait.id);
+    assert!(
+        wait.call_ref.is_some(),
+        "wait declaration must be canonical"
+    );
+    h.handle_wait_tool_call(&cid, &wait, ToolName::new("wait"))
+        .expect("pending plural wait");
+    for call_id in &sources {
+        h.handle_background_tool_result(
+            &crate::test_connection_id("conn-slow"),
+            ToolResult {
+                presentation: Default::default(),
+                call_id: call_id.clone(),
+                tool_name: ToolName::new("slow"),
+                tool_type: tau_proto::ToolType::Function,
+                result: CborValue::Text(call_id.to_string()),
+                provider_content: Vec::new(),
+                kind: tau_proto::ToolResultKind::Final,
+                originator: tau_proto::PromptOriginator::User,
+                display: None,
+            },
+        );
+    }
+    assert!(event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::ProviderToolResult(result)
+            if result.call_id == wait.id
+                && matches!(&result.result, CborValue::Map(root)
+                    if matches!(&root[0].1, CborValue::Array(members)
+                        if members.len() == 2
+                            && cbor_map_text(&members[0], "original_tool_call_id")
+                                == Some(sources[0].as_str())
+                            && cbor_map_text(&members[1], "original_tool_call_id")
+                                == Some(sources[1].as_str())))
+    )));
+    for call_id in &sources {
+        assert!(!h.wait_completion_is_retained_for_test(&cid, call_id));
+        assert!(
+            !h.tool_routing
+                .tool_runtime
+                .background_completion_targets
+                .contains_key(call_id)
+        );
+        let notice = background_completion_prompt(call_id);
+        assert!(
+            h.agent_runtime.agent_registry.agents[&cid]
+                .dispatch
+                .pending_prompts
+                .iter()
+                .all(|prompt| prompt.text != notice)
+        );
+        assert!(!event_log_contains_any_source(&h, |event| matches!(
+            event,
+            Event::AgentPromptSteered(prompt) if prompt.text == notice
+        )));
+    }
+    assert!(!event_log_contains_any_source(&h, |event| matches!(
+        event,
+        Event::AgentActivationQueued(activation)
+            if activation.kind == tau_proto::ActivationKind::BackgroundCompletion
+    )));
+    h.shutdown().expect("shutdown");
+}
+
 /// A rejected plural aggregate append retains its exact terminal and source
 /// transaction for retry. A different terminal observation for the same display
 /// ID cannot commit the settlement.

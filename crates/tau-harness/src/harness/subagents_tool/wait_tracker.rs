@@ -1721,6 +1721,16 @@ impl WaitTracker {
         self.call_is_owned_by(call_id, owner) && self.is_completed(call_id)
     }
 
+    /// Check consumption of this exact terminal, not another generation sharing
+    /// its display call ID.
+    pub(super) fn terminal_is_consumed(
+        &self,
+        call_id: &ToolCallId,
+        terminal: tau_proto::ObservationId,
+    ) -> bool {
+        self.terminal_observations.get(call_id) == Some(&terminal) && self.is_consumed(call_id)
+    }
+
     /// Collect display IDs with retained output, including older generations
     /// reserved by plural waits or released back into the completion FIFO.
     pub(super) fn retained_completion_call_ids(&self) -> HashSet<ToolCallId> {

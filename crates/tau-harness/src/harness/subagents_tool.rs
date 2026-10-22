@@ -697,6 +697,19 @@ impl Harness {
         self.synchronize_work_waits();
     }
 
+    /// Check whether synchronous wait publication already consumed this exact
+    /// background terminal before its completion continuation resumes.
+    pub(super) fn wait_background_terminal_is_consumed(
+        &self,
+        call_id: &ToolCallId,
+        terminal: tau_proto::ObservationId,
+    ) -> bool {
+        self.agent_runtime
+            .subagents
+            .wait_tracker
+            .terminal_is_consumed(call_id, terminal)
+    }
+
     /// Routing ownership must not outlive the retained output it protects.
     /// Pending wait terminals have their own publication and tool-work owners.
     pub(super) fn retire_consumed_background_completion_targets(&mut self) {

@@ -731,9 +731,14 @@ impl Harness {
         &mut self,
         cid: &AgentId,
         call_id: &ToolCallId,
+        terminal: tau_proto::ObservationId,
         completion_prompt_mode: BackgroundCompletionPromptMode,
         made_progress: bool,
     ) {
+        // Recording this terminal can synchronously publish a plural wait and
+        // clear its suppression. Do not recreate ownership or a notice for
+        // output that publication already consumed.
+        let consumed = self.wait_background_terminal_is_consumed(call_id, terminal);
         if !matches!(
             completion_prompt_mode,
             BackgroundCompletionPromptMode::DoNotQueue
@@ -745,10 +750,12 @@ impl Harness {
         {
             self.record_wait_exact_all_notice_blocked(call_id);
         }
-        self.tool_routing
-            .tool_runtime
-            .background_completion_targets
-            .insert(call_id.clone(), cid.clone());
+        if !consumed {
+            self.tool_routing
+                .tool_runtime
+                .background_completion_targets
+                .insert(call_id.clone(), cid.clone());
+        }
         if made_progress
             && !self
                 .tool_routing
@@ -760,7 +767,9 @@ impl Harness {
         }
         match completion_prompt_mode {
             BackgroundCompletionPromptMode::QueueAndAdvance => {
-                self.queue_background_completion_prompt(cid, call_id);
+                if !consumed {
+                    self.queue_background_completion_prompt(cid, call_id);
+                }
                 // Keep the completion prompt queued before draining. If an
                 // unblocked queued call closes the tool round,
                 // `maybe_complete_agent_turn` can
@@ -768,10 +777,14 @@ impl Harness {
                 self.drain_pending_tool_invocations_or_report();
             }
             BackgroundCompletionPromptMode::QueueOnly => {
-                self.queue_background_completion_prompt_inner(cid, call_id, false);
+                if !consumed {
+                    self.queue_background_completion_prompt_inner(cid, call_id, false);
+                }
             }
             BackgroundCompletionPromptMode::QueuePassive => {
-                self.queue_passive_background_completion_prompt(cid, call_id);
+                if !consumed {
+                    self.queue_passive_background_completion_prompt(cid, call_id);
+                }
             }
             BackgroundCompletionPromptMode::DoNotQueue => {}
         }
