@@ -161,6 +161,44 @@ For Tau VCR runs, `ls`, `read`, `edit`, `replace`, `apply_patch`, `shell`, and `
 Inferred read-only shell mode is advisory unless `config.dir_lock.enforce_ro_bind: true` is set while directory locking is enabled. The read-only bind defaults true under `dir_lock`; when enabled, Tau requires a read-only bind mount of the tool cwd and fails the shell call if native isolation is unsupported or cannot be installed.
 
 
+### Lock lifetime and long-running work
+
+A manual reservation and a running tool's automatic guard have separate
+lifetimes. `dir_lock(unlock)`, including an explicit owner unlock, releases only
+the manual reservation. The UI force-unlock action also releases only manual
+locks. Neither action cancels running tools or releases their automatic guards.
+Other owners can remain blocked until those operations finish, even after a
+successful manual unlock. Backgrounding a call does not end its operation.
+
+For an immutable long-running test or campaign that does not need the source
+checkout, launch the built executable with a call-local cwd in a
+dedicated task directory outside the source-update tree. Put its writable
+outputs there and acquire a manual lock on that directory if it needs
+read-write shell mode. Do not launch from the source checkout and expect a
+later unlock or workdir change to move the running call's guard. Keep the
+source reservation for work that needs it; do not use a different cwd
+to hide writes to the checkout or bypass required source coordination.
+
+Create separate scratch directories for unrelated tasks, for example with
+`mktemp -d /tmp/public/campaign-XXXXX`. Keep reports inside their task directory
+rather than in a shared scratch parent. Directory overlap includes ancestors
+and descendants: editing a file directly under `/tmp/public` can
+wait on a running writer in `/tmp/public/campaign-XXXXX`.
+
+`apply_patch` derives locks from all source and destination paths, not just
+the shell cwd. Split unrelated source and scratch edits into separate calls;
+changing cwd does not avoid contention on an absolute patch target. Creating a
+file under a missing parent may lock the deepest existing ancestor. Create the
+dedicated scratch directory before editing files inside it.
+
+When a call reports `waiting for directory lock`, the progress text identifies
+the requested directories, not the blocking owner or running call. Check known
+active operations with their owners rather than assuming an unlock failed.
+An interrupted `wait` is not the operation's terminal result; use the
+background call's completion to establish its outcome. Following this guidance
+does not change lock ownership, cancellation, or lease semantics.
+
+
 ## Agent context discovery
 
 `core-shell` discovers and publishes project/user instructions and skills:
