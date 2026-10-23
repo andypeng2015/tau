@@ -1,12 +1,31 @@
-//! Headless graceful shutdown for one exact running session.
+//! Headless graceful shutdown for exact running sessions.
 
 use tau_proto::{HarnessInputMessage, UiShutdownRequest};
 
 use crate::CliError;
 
+/// Attempts every requested session in order and returns all failures together.
+pub(crate) fn run(session_ids: &[tau_proto::SessionId]) -> Result<(), CliError> {
+    if let [session_id] = session_ids {
+        return run_one(session_id);
+    }
+
+    let mut failures = Vec::new();
+    for session_id in session_ids {
+        if let Err(error) = run_one(session_id) {
+            failures.push(format!("session `{session_id}`: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::Participant(failures.join("\n")))
+    }
+}
+
 /// Requests canonical shutdown and reports success only after the exact socket
 /// peer's process exit is confirmed.
-pub(crate) fn run(session_id: &tau_proto::SessionId) -> Result<(), CliError> {
+fn run_one(session_id: &tau_proto::SessionId) -> Result<(), CliError> {
     let harness_path = tau_harness::runtime_dir::find_harness_for_session(session_id.as_str())
         .map_err(|error| CliError::Participant(error.to_string()))?
         .ok_or_else(|| {

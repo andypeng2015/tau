@@ -1113,10 +1113,10 @@ pub fn main_with_args_and_components(components: &[Component]) -> std::process::
                 wait_response,
             }) => crate::message::run(&recipient, message, wait_response),
             DispatchCommand::Other(cli::Command::Session {
-                command: cli::SessionCommand::Kill { session_id },
+                command: cli::SessionCommand::Kill { session_ids },
             }) => {
                 reject_harness_config_overrides(&harness_config_overrides, "session kill")?;
-                kill_session::run(&session_id)
+                kill_session::run(&session_ids)
             }
 
             DispatchCommand::Other(cli::Command::Session {

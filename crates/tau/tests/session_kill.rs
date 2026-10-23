@@ -318,6 +318,75 @@ fn exact_session_kill_preserves_history_and_other_sessions() {
     wait_for_success(&mut other);
 }
 
+/// Batch shutdown confirms each selected daemon's exit in argument order while
+/// preserving successful command status and each session's durable history.
+#[test]
+fn multiple_session_kill_reports_each_confirmed_exit() {
+    let root = support::bounded_runtime_tempdir();
+    let mut first = spawn_session(root.path(), "kill-first");
+    wait_for_session(root.path(), "kill-first", &mut first);
+    let mut second = spawn_session(root.path(), "kill-second");
+    wait_for_session(root.path(), "kill-second", &mut second);
+
+    let killed = command(root.path())
+        .args(["session", "kill", "kill-second", "kill-first"])
+        .output()
+        .expect("kill multiple sessions");
+    assert!(
+        killed.status.success(),
+        "batch kill failed: {:?}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&killed.stdout),
+        "Session `kill-second` terminated\nSession `kill-first` terminated\n"
+    );
+    wait_for_success(&mut first);
+    wait_for_success(&mut second);
+    for session_id in ["kill-first", "kill-second"] {
+        assert!(
+            root.path()
+                .join(".state/tau/sessions")
+                .join(session_id)
+                .is_dir()
+        );
+    }
+}
+
+/// Missing sessions before and after a live target must all be reported without
+/// preventing the live target's shutdown or turning partial success into exit
+/// 0.
+#[test]
+fn multiple_session_kill_attempts_every_id_despite_failures() {
+    let root = support::bounded_runtime_tempdir();
+    let mut target = spawn_session(root.path(), "kill-target");
+    wait_for_session(root.path(), "kill-target", &mut target);
+
+    let killed = command(root.path())
+        .args([
+            "session",
+            "kill",
+            "missing-first",
+            "kill-target",
+            "missing-last",
+        ])
+        .output()
+        .expect("kill mixed sessions");
+    assert_eq!(killed.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&killed.stdout),
+        "Session `kill-target` terminated\n"
+    );
+    let stderr = String::from_utf8_lossy(&killed.stderr);
+    for session_id in ["missing-first", "missing-last"] {
+        assert!(
+            stderr.contains(&format!("session `{session_id}` is not currently running")),
+            "missing failure for {session_id}: {stderr}"
+        );
+    }
+    wait_for_success(&mut target);
+}
+
 /// Runtime socket policy remains authoritative: an inaccessible exact session
 /// fails cleanly instead of falling back to signaling or deleting state.
 #[test]

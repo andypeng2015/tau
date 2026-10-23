@@ -149,9 +149,26 @@ fn session_commands_parse_nested_operations() {
     assert!(matches!(
         kill.command,
         Some(super::super::cli::Command::Session {
-            command: super::super::cli::SessionCommand::Kill { session_id },
-        }) if session_id.as_str() == "s1"
+            command: super::super::cli::SessionCommand::Kill { session_ids },
+        }) if session_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>() == ["s1"]
     ));
+}
+
+/// Batch shutdown requires explicit valid identities and retains their argument
+/// order so dispatch cannot silently drop or reorder requested sessions.
+#[test]
+fn session_kill_parses_one_or_more_valid_session_ids() {
+    let kill = path_super_cli::Cli::parse_from(["tau", "session", "kill", "s2", "s1"]);
+    assert!(matches!(
+        kill.command,
+        Some(path_super_cli::Command::Session {
+            command: path_super_cli::SessionCommand::Kill { session_ids },
+        }) if session_ids.iter().map(|id| id.as_str()).collect::<Vec<_>>() == ["s2", "s1"]
+    ));
+    assert!(path_super_cli::Cli::try_parse_from(["tau", "session", "kill"]).is_err());
+    assert!(
+        path_super_cli::Cli::try_parse_from(["tau", "session", "kill", "s1", "bad.id"]).is_err()
+    );
 }
 /// Missing paths and non-directory paths fail in clap's exit-2 value-validation
 /// path instead of becoming successful empty list filters.

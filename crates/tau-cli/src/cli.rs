@@ -285,10 +285,12 @@ pub enum Command {
 pub enum SessionCommand {
     /// Inspect durable cache accounting and private capture coverage offline.
     Cache(SessionCacheArgs),
-    /// Gracefully shut down one exact running session.
+    /// Gracefully shut down one or more exact running sessions.
     Kill {
-        /// Exact session identifier to shut down
-        session_id: tau_proto::SessionId,
+        /// Exact session identifiers to shut down, attempted in order even if
+        /// one fails
+        #[arg(required = true, num_args = 1..)]
+        session_ids: Vec<tau_proto::SessionId>,
     },
     /// List currently running sessions.
     List(SessionListArgs),
