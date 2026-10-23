@@ -5180,10 +5180,18 @@ where
                             .record_unauthorized(job.prompt.model.provider.clone(), identity);
                     }
                     let retry_disposition = PromptRetryPolicy::for_operation(job.prompt.operation)
-                        .after_failure(job.retry_state.attempts);
-                    let policy_delay = job
+                        .after_failure(job.retry_state.attempts, decision.class);
+                    let mut policy_delay = job
                         .retry_state
                         .next_delay(decision.class, job.agent_prompt_id.as_str());
+                    if let PromptRetryDisposition::TransportBackoff(delay) = retry_disposition {
+                        policy_delay = delay;
+                        // Keep the lifetime ordinal, but restart the short
+                        // cadence for the next burst.
+                        // The scheduler retains the same job.
+                        job.retry_state.previous = 0;
+                        job.retry_state.current = 0;
+                    }
                     let retry_hint = scheduler_retry_hint(decision.class, decision.retry_after);
                     let hint_delay = retry_hint.unwrap_or(Duration::ZERO);
                     let hint_jitter = retry_hint.map_or(Duration::ZERO, |_| {
@@ -6278,7 +6286,7 @@ impl PromptRetryState {
 enum PromptRetryPolicy {
     /// Ordinary inference retains the existing deliberately unbounded policy.
     UnboundedInference,
-    /// Standalone compaction terminates after five total provider attempts.
+    /// Compaction allows delayed transport bursts, but bounds other failures.
     FiveAttemptStandaloneCompaction,
 }
 
@@ -6287,11 +6295,14 @@ enum PromptRetryPolicy {
 enum PromptRetryDisposition {
     /// The shared scheduler retains the logical prompt for another attempt.
     Retry,
+    /// A pre-output transport burst exhausted its short retries; retain the
+    /// job.
+    TransportBackoff(Duration),
     /// The logical prompt terminalizes at this finite one-based attempt.
     Terminal(tau_proto::ProviderAttempt),
 }
 
-/// Finite total-attempt limit for standalone compaction.
+/// Attempts per transport burst, and total limit for other compaction failures.
 const STANDALONE_COMPACTION_ATTEMPT_LIMIT: tau_proto::ProviderAttempt =
     match tau_proto::ProviderAttempt::new(5) {
         Some(attempt) => attempt,
@@ -6310,14 +6321,26 @@ impl PromptRetryPolicy {
     }
 
     /// Returns the complete scheduling disposition after one more failure.
-    fn after_failure(self, previous_failures: u64) -> PromptRetryDisposition {
+    fn after_failure(self, previous_failures: u64, class: RetryClass) -> PromptRetryDisposition {
+        let failures = previous_failures.saturating_add(1);
+        let limit = u64::from(STANDALONE_COMPACTION_ATTEMPT_LIMIT.get());
         match self {
             Self::UnboundedInference => PromptRetryDisposition::Retry,
-            Self::FiveAttemptStandaloneCompaction
-                if previous_failures.saturating_add(1)
-                    >= u64::from(STANDALONE_COMPACTION_ATTEMPT_LIMIT.get()) =>
-            {
-                PromptRetryDisposition::Terminal(STANDALONE_COMPACTION_ATTEMPT_LIMIT)
+            Self::FiveAttemptStandaloneCompaction if class == RetryClass::Transport => {
+                if failures.is_multiple_of(limit) {
+                    let burst = failures / limit;
+                    // One, two, four, then five minutes between bounded bursts.
+                    let seconds = 60_u64.saturating_mul(1 << (burst - 1).min(3)).min(300);
+                    PromptRetryDisposition::TransportBackoff(Duration::from_secs(seconds))
+                } else {
+                    PromptRetryDisposition::Retry
+                }
+            }
+            Self::FiveAttemptStandaloneCompaction if limit <= failures => {
+                PromptRetryDisposition::Terminal(
+                    tau_proto::ProviderAttempt::new(u32::try_from(failures).unwrap_or(u32::MAX))
+                        .expect("failure ordinal is nonzero"),
+                )
             }
             Self::FiveAttemptStandaloneCompaction => PromptRetryDisposition::Retry,
         }

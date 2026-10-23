@@ -51,6 +51,9 @@ The user approved ignore-and-log backend compatibility and durable-derived
 inference pauses after final compaction failure for `e7xd`, including manual
 failure and cancellation below threshold. This supersedes fresh-terminal
 rearming in current scheduling; previously valid journals remain replayable.
+The user approved transport-only delayed retry bursts for `w7lq`, retaining the
+same live provider job without new durable recovery authority. Interrupted work
+after restart and historical exhausted failures still require explicit recovery.
 
 Typed image tool results are indivisible members of their existing closed
 call/result round. Durable canonical bytes replay through normal inference and
@@ -278,8 +281,16 @@ shared smaller-prefix successor, as may the narrow clean-unusable-summary
 category below; other deterministic failures do not.
 Before any semantic compact output is
 accepted, standalone compaction uses the shared transient-failure classifier
-and jittered Fibonacci scheduler with a named five-attempt policy, including the
-first attempt. A same-event error processed before content is accepted remains
+and jittered Fibonacci scheduler with five-attempt bursts, including the
+first attempt. Proven transport failures retain the same live job between bursts
+with one-, two-, four-, then capped five-minute backoffs; later trusted delays
+remain lower bounds. Other retry classes exhaust at the fifth total attempt
+(or immediately when encountered after a transport burst).
+The delayed scheduler releases worker capacity, supports cancellation and
+explicit `:retry`, and does not depend on agent timers or new inference.
+Backoff ownership is process-local. After restart, Tau pauses interrupted work
+and requires explicit recovery; it does not reclassify historical failures.
+A same-event error processed before content is accepted remains
 pre-progress. Except for clean completed unusable local summaries, after
 semantic compact output is accepted, a later failure
 discards the uncommitted output and terminalizes without automatic retry;
@@ -293,7 +304,7 @@ before accepted semantic output marks only the native route unavailable and
 immediately permits one local-summary request in the same transaction. This
 exact extra-attempt behavior was explicitly approved by the user. The local
 attempt has no transparent repair; pre-output transient failures use the shared
-bounded logical scheduler. Cancellation and failure
+logical scheduler. Cancellation and failure
 after accepted semantic output never select another implementation.
 An unchanged negative identity goes directly local without another native
 network probe. A changed identity permits one fresh serialized native probe;

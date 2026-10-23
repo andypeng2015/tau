@@ -100,9 +100,18 @@ pub(super) fn retry_status_text(
             .map(|detail| format!("{}: {detail}", class.public_reason()))
             .unwrap_or_else(|| class.public_reason().to_owned()),
     };
+    let recovery = if job.prompt.operation == tau_proto::PromptOperation::StandaloneCompaction {
+        if class == RetryClass::Transport {
+            "Compaction remains pending; Tau will retry connection failures in bounded bursts. Use :retry to retry now, or cancel to stop. Restart requires explicit compaction recovery."
+        } else {
+            "Compaction retries are limited; exhaustion pauses inference until explicit compaction recovery."
+        }
+    } else {
+        "Tau will keep trying; cancel the prompt to stop."
+    };
     format!(
-        "{}; next attempt in about {} (attempt {}). Tau will keep trying; cancel the prompt to stop.",
-        reason, delay_text, job.retry_state.attempts,
+        "{}; next attempt in about {} (attempt {}). {}",
+        reason, delay_text, job.retry_state.attempts, recovery,
     )
 }
 

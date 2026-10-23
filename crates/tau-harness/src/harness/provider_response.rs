@@ -2443,7 +2443,7 @@ impl Harness {
                 tau_proto::StandaloneCompactionFailureReason::TransientCompactionExhausted
                     | tau_proto::StandaloneCompactionFailureReason::LocalSummaryUnusable
             ) {
-                "a fresh inference terminal can retry automatically; :compact retries explicitly"
+                "inference is paused; recover explicitly with :compact or authorized agent_compact"
             } else {
                 "retry with :compact, switch model/role, or rewind"
             };

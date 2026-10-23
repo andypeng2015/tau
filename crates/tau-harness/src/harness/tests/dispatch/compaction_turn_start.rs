@@ -311,8 +311,9 @@ fn outer_turn_starting_waits_for_queued_work_to_begin_a_new_turn() {
     h.shutdown().expect("shutdown");
 }
 
-/// A protected start interrupted by restart must retain its normal recovery
-/// suppression, not gain fresh start authority from the absent runtime turn.
+/// A protected start interrupted during transport backoff must retain its
+/// normal recovery suppression after restart. Transient retry visibility is not
+/// durable evidence permitting another paid request.
 #[test]
 fn outer_turn_starting_restart_preserves_transaction() {
     let td = TempDir::new().expect("tempdir");
@@ -328,6 +329,44 @@ fn outer_turn_starting_restart_preserves_transaction() {
         h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("next task".to_owned()))
             .expect("dispatch");
         assert_eq!(starts(&h), 1);
+        let compact = read_nth_prompt_created(&h, 1);
+        let provider = h
+            .provider_runtime
+            .pending_prompts
+            .get(&compact.agent_prompt_id)
+            .cloned()
+            .expect("provider owner");
+        h.handle_extension_event(
+            provider.as_str(),
+            TestProtocolItem::Event(Event::ProviderResponseUpdatedReported(
+                ProviderResponseUpdated {
+                    agent_prompt_id: compact.agent_prompt_id.clone(),
+                    agent_id: compact.agent_id.clone(),
+                    deltas: Vec::new(),
+                    compaction: None,
+                    status: Some(tau_proto::ProviderResponseStatusUpdate {
+                        text: "compaction pending; transport burst backoff".to_owned(),
+                        clear_response: true,
+                        retry: Some(tau_proto::ProviderRetryStatus {
+                            category: tau_proto::ProviderRetryCategory::Transport,
+                            attempt: 5,
+                            next_retry_delay_secs: 60,
+                        }),
+                        native_tool: None,
+                    }),
+                    response_stats: None,
+                    originator: compact.originator,
+                },
+            )),
+        )
+        .expect("report live transport backoff");
+        assert_eq!(
+            event_log_count(&h, |event| matches!(
+                event,
+                Event::AgentStandaloneCompactionFailed(_)
+            )),
+            0,
+        );
         let records = h
             .session_runtime
             .agent_store

@@ -9,14 +9,19 @@ succeeds, is canceled, the process/session shuts down, or the unchanged request
 is positively proven deterministic and invalid. Unknown remote failures retry;
 classification selects cadence, shared cooldown, visible explanation, and
 profile reload behavior rather than default termination.
-Standalone compaction is the finite exception: transient failures use the same
-classifier, jittered Fibonacci cadence, and shared provider-profile cooldown,
-but the fifth total attempt terminalizes that transaction without scheduling a
-sixth. Its terminal fifth-attempt evidence still extends the matching shared
-cooldown for other logical prompts. Ordinary inference retains unbounded retry
-authority.
-The exhausted standalone terminal carries typed pre-output evidence for
-future-inference recovery; unclassified and post-output failures do not.
+Standalone compaction uses five-attempt bursts with the same classifier,
+jittered Fibonacci cadence, and shared provider-profile cooldown. Only a typed
+pre-output transport failure may retain the same logical job beyond the fifth
+attempt. Between exhausted bursts, the scheduler waits one, two, four, then at
+most five minutes. Later trusted timing hints and shared cooldowns still apply.
+Attempt ordinals remain cumulative; only the short cadence resets.
+Other retry classes terminalize at or beyond the fifth total attempt, including
+when they follow a transport burst. Their terminal evidence still extends the
+matching shared cooldown for other logical prompts. Deterministic failures and
+unusable output do not gain retry authority. Ordinary inference retains unbounded
+retry authority.
+The exhausted standalone terminal carries typed pre-output evidence without
+authorizing automatic recovery of a failed durable transaction.
 Native and local-summary compaction share the semantic-output safety boundary:
 once any
 semantic output has arrived, any retryable outcome terminalizes the
@@ -50,7 +55,9 @@ when delayed work becomes due.
 
 Retry state is memory-only. Cold restart intentionally does not replay an
 ambiguously accepted request because doing so can duplicate output, cost, tools,
-or side effects.
+or side effects. After a restart during compaction backoff, Tau pauses interrupted
+compaction and requires explicit recovery. Tau does not reclassify historical
+exhausted failures as transport failures.
 
 ## Scheduler state and ownership
 

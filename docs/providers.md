@@ -149,22 +149,22 @@ backends can supply optional current/total counts in consistent units; omission
 retains generic activity. These updates contain no compaction content and are
 not persisted.
 
-Native Codex and local-summary standalone compaction retry pre-output transient
-failures with the shared backoff scheduler, up to five total attempts. Exhaustion
-does not permanently disable automatic compaction: a fresh ordinary inference
-terminal may authorize another transaction, including a canonical no-output
-context-window rejection. No queue-polling or restart-only retry loop is allowed.
-Stream failures after accepted semantic output and historical unclassified failures
-require explicit recovery. A clean local-summary completion with only reasoning
-or empty text instead retries a smaller complete prefix, up to four extra
-unusable-summary-authorized successors. This allowance survives mixed
+Native Codex and local-summary standalone compaction retain pre-output transport
+failures in the shared scheduler across five-attempt bursts, with longer capped
+backoffs between bursts. Other transient failures exhaust at the fifth total
+attempt. Terminal failures pause ordinary inference until explicit `:compact` or
+authorized `agent_compact` recovery; fresh inference terminals, queue polling,
+ingress, and restart do not rearm them. Stream failures after accepted semantic
+output and historical unclassified failures still require explicit recovery.
+A clean local-summary completion with only reasoning or empty text instead
+retries a smaller complete prefix, up to four extra unusable-summary-authorized
+successors. This allowance survives mixed
 capacity/length chains and restart; it is separate from transport retries, not
-a five-paid-call total. Exhaustion can rearm on a fresh ordinary terminal, never
-queue polling alone. Draft reasoning stays private. The rule covers Chat
-Completions, public Responses, and Codex's local fallback, not native opaque
-compaction or malformed/tool-bearing output.
-Grok's unary native compactor uses the same bounded
-scheduler for proven request/body transport and absolute-deadline failures before
+a five-paid-call total. Exhaustion requires explicit recovery. Draft reasoning
+stays private. The rule covers Chat Completions, public Responses, and Codex's
+local fallback, not native opaque compaction or malformed/tool-bearing output.
+Grok's unary native compactor uses the same burst scheduler for proven
+request/body transport and absolute-deadline failures before
 accepting its complete opaque item. Unknown HTTP/status/output failures remain
 terminal; native failure never selects a different paid summary implementation.
 The CLI labels compact request input separately from the transaction-owned
@@ -1654,11 +1654,20 @@ capability snapshot remains replayable for the running harness so both live and
 late clients show neutral unknown.
 
 Required inference work has no attempt-count or elapsed-time retry limit during
-the running session. Each standalone provider prompt has at most five transient attempts:
-transient failures use the same scheduler and shared cooldown, then the fifth
-failure terminalizes without a sixth provider attempt. Transport/server
-failures, throttling, usage windows, billing/quota/credits, reloadable
-auth/configuration, and unknown remote inference failures remain pending until
+the running session. Standalone compaction retries pre-output connection failures
+in five-attempt bursts, waiting one, two, four, then at most five minutes between
+bursts. It retains the same pending prompt until success or cancellation, without
+occupying a provider worker or needing an agent timer. Later trusted provider
+delays still apply. Other transient compaction failures stop at the fifth total
+attempt; changing failure class after a transport burst does not reset that limit.
+Invalid output and errors after semantic output do not gain retries.
+Use `:retry` to release a parked retry early, or cancel to stop.
+After a restart during backoff, Tau pauses interrupted compaction. Recover
+explicitly with `:compact` or authorized `agent_compact`. Existing terminal
+failures also require explicit recovery; deploying this policy does not revive
+them.
+Transport/server failures, throttling, usage windows, billing/quota/credits,
+reloadable auth/configuration, and unknown remote inference failures remain pending until
 success or cancellation. A narrowly proven deterministic unchanged-request
 failure closes immediately for either operation.
 

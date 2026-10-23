@@ -3973,8 +3973,8 @@ fn generated_retry_delay_caps_without_exhausting_attempts() {
     assert_eq!(state.attempts, 10_000);
 }
 
-/// Standalone compaction must stop after its named five-attempt policy while
-/// ordinary inference retains deliberately unbounded retry authority.
+/// Non-transport compaction failures retain their finite budget even after a
+/// transport burst, while ordinary inference remains unbounded.
 #[test]
 fn standalone_retry_budget_exhausts_without_bounding_inference() {
     let compaction =
@@ -3983,18 +3983,34 @@ fn standalone_retry_budget_exhausts_without_bounding_inference() {
         compaction,
         PromptRetryPolicy::FiveAttemptStandaloneCompaction
     );
-    assert_eq!(compaction.after_failure(3), PromptRetryDisposition::Retry);
     assert_eq!(
-        compaction.after_failure(4),
+        compaction.after_failure(3, RetryClass::Auth),
+        PromptRetryDisposition::Retry
+    );
+    assert_eq!(
+        compaction.after_failure(4, RetryClass::Auth),
         PromptRetryDisposition::Terminal(STANDALONE_COMPACTION_ATTEMPT_LIMIT)
     );
 
     let inference = PromptRetryPolicy::for_operation(tau_proto::PromptOperation::Inference);
     assert_eq!(inference, PromptRetryPolicy::UnboundedInference);
     assert_eq!(
-        inference.after_failure(u64::MAX),
+        inference.after_failure(u64::MAX, RetryClass::Auth),
         PromptRetryDisposition::Retry
     );
+    for class in [
+        RetryClass::Auth,
+        RetryClass::Unknown,
+        RetryClass::Overload,
+        RetryClass::Throttle,
+        RetryClass::UsageWindow,
+        RetryClass::Account,
+    ] {
+        assert_eq!(
+            compaction.after_failure(9, class),
+            PromptRetryDisposition::Terminal(tau_proto::ProviderAttempt::new(10).expect("attempt"))
+        );
+    }
 }
 
 /// Ensures prompts sharing one reset lower bound receive positive stable

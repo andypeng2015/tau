@@ -3492,7 +3492,7 @@ fn retryable_attempt_is_rescheduled_then_finishes_once() {
 /// retries, then emits one terminal fifth-attempt failure without dispatching
 /// a sixth provider attempt.
 #[test]
-fn standalone_compaction_retry_policy_terminalizes_after_five_attempts() {
+fn standalone_compaction_nontransport_terminalizes_after_five_attempts() {
     let clock = Arc::new(VirtualRetryClock::new(Instant::now()));
     let input = BlockingInput::default();
     let mut compact_prompt = prompt();
@@ -3510,7 +3510,7 @@ fn standalone_compaction_retry_policy_terminalizes_after_five_attempts() {
             &execution.output_waker,
             WorkerMessage::Retry {
                 job: execution.job,
-                decision: RetryDecision::new(RetryClass::Transport),
+                decision: RetryDecision::new(RetryClass::Unknown),
                 live_detail: None,
                 canonical_unauthorized: false,
                 terminal_backend: (attempt == 0).then(|| ProviderBackend {
@@ -3589,6 +3589,180 @@ fn standalone_compaction_retry_policy_terminalizes_after_five_attempts() {
     );
     input.close();
     runtime.join().expect("standalone retry runtime joins");
+}
+
+/// Transport-only compaction bursts retain one logical prompt, expose their
+/// capped long delays, and recover once without another prompt submission.
+/// Manual retry and cancellation also transfer the same parked owner.
+#[test]
+fn standalone_compaction_transport_bursts_recover_or_cancel_once() {
+    for (failures, control) in [(25_u32, None), (5, Some(false)), (5, Some(true))] {
+        let clock = Arc::new(VirtualRetryClock::new(Instant::now()));
+        let input = BlockingInput::default();
+        let mut compact_prompt = prompt();
+        compact_prompt.operation = tau_proto::PromptOperation::StandaloneCompaction;
+        input.push(encode_frames(&[live_event(
+            11,
+            Event::AgentPromptCreated(compact_prompt),
+        )]));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let executor_attempts = Arc::clone(&attempts);
+        let executor: PromptExecutor = Arc::new(move |execution| {
+            let attempt = executor_attempts.fetch_add(1, Ordering::SeqCst) as u32 + 1;
+            if attempt <= failures {
+                send_worker_message(
+                    &execution.output_tx,
+                    &execution.output_waker,
+                    WorkerMessage::Retry {
+                        job: execution.job,
+                        decision: RetryDecision::new(RetryClass::Transport),
+                        live_detail: None,
+                        canonical_unauthorized: false,
+                        terminal_backend: None,
+                    },
+                )
+                .expect("park transport failure");
+            } else {
+                let mut writer = execution.frame_writer();
+                let mut finished = simple_finished(
+                    execution.job.agent_prompt_id,
+                    execution.job.prompt.agent_id,
+                    execution.job.prompt.originator,
+                    "done",
+                );
+                finished.error = None;
+                finished.stop_reason = ProviderStopReason::EndTurn;
+                finished.provider_attempt =
+                    tau_proto::ProviderAttempt::new(attempt).expect("nonzero attempt");
+                writer
+                    .send_report(HarnessInputMessage::emit_transient(
+                        Event::ProviderResponseFinishedReported(finished),
+                    ))
+                    .expect("finish recovered prompt");
+            }
+        });
+        let profiles = profiles_with_chatgpt_auth(chatgpt_auth());
+        let prompt_profiles = profiles.clone();
+        let output = SharedWriter::default();
+        let runtime_output = output.clone();
+        let runtime_input = input.clone();
+        let runtime_clock: Arc<dyn RetryClock> = clock.clone();
+        let runtime = thread::spawn(move || {
+            run_inner_with_executors_and_clock(
+                runtime_input,
+                runtime_output,
+                profiles,
+                move |_| prompt_profiles.clone(),
+                1,
+                RuntimeExecutors {
+                    prompt: executor,
+                    prewarm: production_prewarm_executor(),
+                    retry_clock: runtime_clock,
+                },
+            )
+            .expect("run compaction recovery provider");
+        });
+        for failure in 1..=failures {
+            let frames = wait_for_runtime_frames(&output, |frames| {
+                frames.iter().any(|frame| {
+                    matches!(
+                        input_event(frame),
+                        Some(Event::ProviderResponseUpdatedReported(update))
+                            if update.status.as_ref().and_then(|s| s.retry.as_ref())
+                                .is_some_and(|retry| retry.attempt == failure)
+                    )
+                })
+            });
+            assert!(!frames.iter().any(|frame| matches!(
+                input_event(frame),
+                Some(Event::ProviderResponseFinishedReported(_))
+            )));
+            let status = frames
+                .iter()
+                .find_map(|frame| match input_event(frame) {
+                    Some(Event::ProviderResponseUpdatedReported(update)) => update
+                        .status
+                        .as_ref()
+                        .filter(|s| s.retry.as_ref().is_some_and(|r| r.attempt == failure)),
+                    _ => None,
+                })
+                .expect("retry status");
+            assert!(status.text.contains("Compaction remains pending"));
+            let delay = status
+                .retry
+                .as_ref()
+                .expect("typed retry")
+                .next_retry_delay_secs;
+            if failure.is_multiple_of(5) {
+                let expected = [60, 120, 240, 300, 300][(failure / 5 - 1) as usize];
+                assert_eq!(delay, expected);
+            } else {
+                assert_eq!(delay, 0, "test short cadence resets below one second");
+            }
+            if failure != failures || control.is_none() {
+                // Status rounds down fractional seconds; advance past the exact
+                // deadline.
+                clock.advance(Duration::from_secs(u64::from(delay) + 1));
+            }
+        }
+        if let Some(cancel) = control {
+            let event = if cancel {
+                Event::UiCancelPrompt(tau_proto::UiCancelPrompt {
+                    session_id: "s1".parse().expect("session id"),
+                    target_agent_id: None,
+                    agent_prompt_id: Some("sp-1".parse().expect("prompt id")),
+                })
+            } else {
+                Event::UiRetryPrompt(tau_proto::UiRetryPrompt {
+                    request_id: tau_proto::RetryPromptRequestId::parse("compaction-backoff")
+                        .expect("retry request id"),
+                    session_id: "s1".parse().expect("session id"),
+                    target_agent_id: None,
+                    agent_prompt_id: Some("sp-1".parse().expect("prompt id")),
+                })
+            };
+            input.push(encode_frames(&[live_event(12, event)]));
+        }
+        let frames = wait_for_runtime_frames(&output, |frames| {
+            frames.iter().any(|frame| {
+                matches!(
+                    input_event(frame),
+                    Some(Event::ProviderResponseFinishedReported(_))
+                )
+            })
+        });
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(
+                    input_event(frame),
+                    Some(Event::ProviderPromptSubmittedReported(_))
+                ))
+                .count(),
+            1
+        );
+        let terminals: Vec<_> = frames
+            .iter()
+            .filter_map(|frame| match input_event(frame) {
+                Some(Event::ProviderResponseFinishedReported(finished)) => Some(finished),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        if control == Some(true) {
+            assert_eq!(
+                terminals[0].error.as_deref(),
+                Some("(cancelled by harness)")
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), failures as usize);
+        } else {
+            assert_eq!(terminals[0].stop_reason, ProviderStopReason::EndTurn);
+            assert_eq!(terminals[0].provider_attempt.get(), failures + 1);
+            assert_eq!(attempts.load(Ordering::SeqCst), failures as usize + 1);
+        }
+        input.close();
+        runtime.join().expect("compaction recovery runtime joins");
+    }
 }
 
 /// Pre-egress Chat cancellation retains the scheduler ordinal while correctly
