@@ -42,7 +42,9 @@ use tau_proto::{
 use crate::agent_checkpoint::read_checkpoint;
 use crate::agent_checkpoint::{AgentSummary, read_journal_bound_checkpoint};
 use crate::record_log::{MAX_RECORD_BYTES, encoded_size_with_limit};
-use crate::semantic_persistence::{AgentCheckpointCandidate, RetentionCharge, StagedFrame};
+use crate::semantic_persistence::{
+    AgentCheckpointCandidate, RetentionCharge, StagedFrame, fold_memory,
+};
 use crate::session::{
     AgentEventParent, AgentEventValidationError, AgentJournalFoldSemantics, AgentTree,
     PersistedAgentEvent, PersistedAgentEventSeq, PersistedEventSource,
@@ -410,8 +412,9 @@ pub struct AgentAppendOutcome {
 /// Durable frame failures return their original I/O error after an exact-EOF
 /// rollback. If truncation cannot restore that EOF, the store poisons only that
 /// journal and rejects later appends before reopening it. Harness-managed
-/// stores admit complete replacements through the lifecycle-owned persistence
-/// engine; ordinary public constructors are read-only inspection views.
+/// stores admit exclusive incremental folds through the lifecycle-owned
+/// persistence engine; ordinary public constructors are read-only inspection
+/// views.
 ///
 /// Durable replay and memory-only parity follow
 /// `ARCH-tau-core`.
@@ -449,7 +452,7 @@ pub struct AgentStore {
     managed_projections: HashMap<AgentId, ManagedAgentProjection>,
 }
 
-/// Complete off-side replacement committed beside one managed agent frame.
+/// Exclusive live projection advanced after admitting one managed agent frame.
 #[derive(Clone, Debug)]
 struct ManagedAgentProjection {
     /// Deterministic transcript fold.
@@ -482,25 +485,6 @@ impl ManagedAgentProjection {
             tree,
             summary,
             history: AgentHistory::from_records(events),
-        }
-    }
-
-    /// Clones this projection around one prevalidated fold and atomically
-    /// advances the retained record and encoded-charge pair.
-    fn with_appended_record(
-        &self,
-        tree: AgentTree,
-        record: PersistedAgentEvent,
-        measured_bytes: usize,
-    ) -> Self {
-        let mut summary = self.summary.clone();
-        summary.apply(&record);
-        let mut history = self.history.clone();
-        history.push(record, measured_bytes);
-        Self {
-            tree,
-            summary,
-            history,
         }
     }
 }
@@ -1495,67 +1479,118 @@ impl AgentStore {
             parent,
             recorded_at,
         };
-        let validated = projection
-            .tree
-            .prevalidate_persisted_record(&record)
-            .map_err(|source| AgentStoreError::InvalidEvent { source })?;
+        let serialization_charge = fold_memory::serialization_scratch(&record.event);
+        let reservation = count
+            .reserve_bytes(RetentionCharge {
+                replacement: serialization_charge,
+                ..Default::default()
+            })
+            .map_err(AgentStoreError::Persistence)?;
+        let journal_path = self.agent_dir(agent_id.as_str()).join("events.cbor");
         let measured = encoded_size_with_limit(&record, MAX_RECORD_BYTES).ok_or_else(|| {
             AgentStoreError::RecordTooLarge {
-                path: self.agent_dir(agent_id.as_str()).join("events.cbor"),
+                path: journal_path.clone(),
                 record_length: MAX_RECORD_BYTES + 1,
                 maximum: MAX_RECORD_BYTES,
             }
         })? as usize;
+        let validation_charge = fold_memory::validation_scratch(&record.event)
+            .saturating_add(projection.tree.validation_allocation_charge(&record.event))
+            .max(serialization_charge);
+        let summary_name_bytes = match &record.event {
+            Event::AgentStarted(started) => started
+                .display_name
+                .as_ref()
+                .filter(|name| !name.trim().is_empty())
+                .map_or_else(
+                    || {
+                        projection
+                            .summary
+                            .display_name
+                            .as_ref()
+                            .map_or(0, String::len)
+                    },
+                    String::len,
+                ),
+            Event::AgentDisplayNameSet(set) => set.display_name.len(),
+            _ => projection
+                .summary
+                .display_name
+                .as_ref()
+                .map_or(0, String::len),
+        };
+        let fold_charge = projection
+            .tree
+            .fold_allocation_charge(&record)
+            .saturating_add(projection.history.append_allocation_charge(&record))
+            .saturating_add(
+                self.loaded_tool_call_ids
+                    .append_allocation_charge(&record.event),
+            )
+            .saturating_add(summary_name_bytes.saturating_mul(2))
+            .saturating_add(fold_memory::owned_value(&projection.summary).saturating_mul(2));
         let charge = RetentionCharge {
             frame: measured.saturating_add(8),
-            replacement: managed_agent_projection_charge(projection, measured),
-            checkpoint: 64 * 1024,
-            projections: measured.saturating_mul(2),
+            replacement: validation_charge.saturating_add(fold_charge),
+            checkpoint: (64 * 1024usize)
+                .saturating_add(size_of::<AgentSummary>())
+                .saturating_add(summary_name_bytes),
+            projections: 0,
         };
-        let reservation = count
-            .reserve_bytes(charge)
+        let reservation = reservation
+            .extend_to(charge)
             .map_err(AgentStoreError::Persistence)?;
+        let projection = self
+            .managed_projections
+            .get_mut(&agent_id)
+            .expect("managed projection remains installed");
+        let ManagedAgentProjection {
+            tree,
+            summary,
+            history,
+        } = projection;
+        let prior_node_count = tree.nodes().len();
+        let validated = tree
+            .prevalidate_persisted_record(record)
+            .map_err(|source| AgentStoreError::InvalidEvent { source })?;
+        let record = validated.record();
         let mut payload = Vec::with_capacity(measured);
-        ciborium::into_writer(&record, &mut payload).map_err(|source| AgentStoreError::Encode {
-            path: self.agent_dir(agent_id.as_str()).join("events.cbor"),
+        ciborium::into_writer(record, &mut payload).map_err(|source| AgentStoreError::Encode {
+            path: journal_path,
             source,
         })?;
-        let prior_node_count = projection.tree.nodes().len();
-        let (replacement_tree, folded_node_id) =
-            AgentTree::apply_prevalidated(validated).expect("validated managed record");
-        let replacement =
-            projection.with_appended_record(replacement_tree, record.clone(), measured);
-        let selected_head_id = replacement.tree.head();
+        let mut next_summary = summary.clone();
+        next_summary.apply(record);
         let checkpoint = AgentCheckpointCandidate {
             agent_id: agent_id.clone(),
-            summary: replacement.summary.clone(),
-            next_seq: replacement.tree.next_event_seq(),
+            summary: next_summary.clone(),
+            next_seq: next_seq.next(),
         };
         #[cfg(any(test, feature = "test-persistence"))]
         let fixture_prepared = self.fixture_existing_agents.contains(&agent_id);
         #[cfg(not(any(test, feature = "test-persistence")))]
         let fixture_prepared = false;
         let staged = if matches!(record.event, Event::AgentStarted(_)) && !fixture_prepared {
-            StagedFrame::first_agent(&lease, &record, payload, Some(checkpoint))
+            StagedFrame::first_agent(&lease, record, payload, Some(checkpoint))
                 .map_err(AgentStoreError::Persistence)?
         } else {
             StagedFrame::ordinary(payload, Some(checkpoint))
         };
-        let target = self
-            .managed_projections
-            .get_mut(&agent_id)
-            .expect("managed projection remains installed");
         reservation
-            .commit_swap(target, replacement, staged)
-            .map_err(AgentStoreError::Persistence)?;
-        self.loaded_tool_call_ids
-            .extend_nodes(&target.tree.nodes()[prior_node_count..]);
-        Ok(AgentAppendOutcome {
-            observation_id,
-            seq: next_seq,
-            folded_node_id,
-            selected_head_id,
-        })
+            .commit_fold(staged, || {
+                let (tree, folded_node_id, record) = AgentTree::apply_prevalidated(validated);
+                *summary = next_summary;
+                history.push(record, measured);
+                self.loaded_tool_call_ids
+                    .extend_nodes(&tree.nodes()[prior_node_count..]);
+                AgentAppendOutcome {
+                    observation_id,
+                    seq: next_seq,
+                    folded_node_id,
+                    selected_head_id: tree.head(),
+                }
+            })
+            .map_err(AgentStoreError::Persistence)
     }
 
     /// Append one message fact before any semantic projection consumes it.
@@ -1646,83 +1681,14 @@ impl AgentStore {
         event: Event,
         recorded_at: UnixMicros,
     ) -> Result<AgentAppendOutcome, AgentStoreError> {
-        let lease =
-            self.persistence_leases
-                .get(&agent_id)
-                .cloned()
-                .ok_or(AgentStoreError::Persistence(
-                    PersistenceAdmissionError::NotPrepared,
-                ))?;
-        let count = lease
-            .try_reserve_frame()
-            .map_err(AgentStoreError::Persistence)?;
-        let projection =
-            self.managed_projections
-                .get(&agent_id)
-                .ok_or(AgentStoreError::Persistence(
-                    PersistenceAdmissionError::NotPrepared,
-                ))?;
-        let seq = projection.tree.next_event_seq();
-        let record = PersistedAgentEvent {
-            observation_id: tau_proto::ObservationId::random(),
-            seq,
+        self.append_managed_agent_event(
+            agent_id,
             source,
+            AgentEventParent::InheritHead,
             event,
-            parent: AgentEventParent::InheritHead,
-            fold_semantics: AgentJournalFoldSemantics::CommitOrder,
             recorded_at,
-        };
-        let validated = projection
-            .tree
-            .prevalidate_persisted_record(&record)
-            .map_err(|source| AgentStoreError::InvalidEvent { source })?;
-        let measured = encoded_size_with_limit(&record, MAX_RECORD_BYTES).ok_or_else(|| {
-            AgentStoreError::RecordTooLarge {
-                path: self.agent_dir(agent_id.as_str()).join("events.cbor"),
-                record_length: MAX_RECORD_BYTES + 1,
-                maximum: MAX_RECORD_BYTES,
-            }
-        })? as usize;
-        let reservation = count
-            .reserve_bytes(RetentionCharge {
-                frame: measured.saturating_add(8),
-                replacement: managed_agent_projection_charge(projection, measured),
-                checkpoint: 64 * 1024,
-                projections: measured.saturating_mul(2),
-            })
-            .map_err(AgentStoreError::Persistence)?;
-        let mut payload = Vec::with_capacity(measured);
-        ciborium::into_writer(&record, &mut payload).map_err(|source| AgentStoreError::Encode {
-            path: self.agent_dir(agent_id.as_str()).join("events.cbor"),
-            source,
-        })?;
-        let (replacement_tree, folded_node_id) = AgentTree::apply_prevalidated(validated)
-            .expect("raw message fact matches owner and sequence");
-        let replacement =
-            projection.with_appended_record(replacement_tree, record.clone(), measured);
-        let selected_head_id = replacement.tree.head();
-        let checkpoint = AgentCheckpointCandidate {
-            agent_id: agent_id.clone(),
-            summary: replacement.summary.clone(),
-            next_seq: replacement.tree.next_event_seq(),
-        };
-        let target = self
-            .managed_projections
-            .get_mut(&agent_id)
-            .expect("managed projection remains installed");
-        reservation
-            .commit_swap(
-                target,
-                replacement,
-                StagedFrame::ordinary(payload, Some(checkpoint)),
-            )
-            .map_err(AgentStoreError::Persistence)?;
-        Ok(AgentAppendOutcome {
-            observation_id: record.observation_id,
-            seq,
-            folded_node_id,
-            selected_head_id,
-        })
+            tau_proto::ObservationId::random(),
+        )
     }
 
     /// Validates one prospective event against the currently retained agent
@@ -2089,21 +2055,6 @@ fn agent_creation_facts_from_record(
         display_name,
         bytes_read,
     }
-}
-
-fn managed_agent_projection_charge(
-    projection: &ManagedAgentProjection,
-    new_record_bytes: usize,
-) -> usize {
-    let retained = projection
-        .history
-        .encoded_event_bytes
-        .saturating_add(new_record_bytes);
-    retained
-        // Cover the immutable creation and declaration facts in addition to the
-        // existing tree/record replacement estimate, even after cache eviction.
-        .saturating_mul(5)
-        .saturating_add(std::mem::size_of::<ManagedAgentProjection>())
 }
 
 fn managed_agent_encoded_event_bytes(events: &[PersistedAgentEvent]) -> usize {

@@ -114,8 +114,8 @@ impl FrameJob {
         }
     }
 
-    /// Removes the complete off-side replacement after the atomic swap drops
-    /// the superseded live projection.
+    /// Transfers producer fold staging out of worker-owned frame debt. The
+    /// producer releases these bytes only after its synchronous fold returns.
     pub(crate) fn release_staging_replacement(&mut self) {
         self.reserved_bytes = self
             .reserved_bytes
@@ -769,6 +769,7 @@ fn publish_released(
                             | StreamLifecycle::CreationFailed
                     )
                     && registered.agent_io.is_idle()
+                    && registered.active_folds == 0
             })
             .ok_or(PersistenceAdmissionError::StaleLease)?;
         let _ = registered;
@@ -1325,12 +1326,11 @@ fn append_job(
                     candidate.next_seq,
                     &position,
                 );
-                serde_json::to_vec_pretty(&checkpoint)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+                encode_checkpoint(&checkpoint)
             });
         match checkpoint {
-            Ok(bytes) if bytes.len() <= MAX_CHECKPOINT_BYTES => job.checkpoint = Some(bytes),
-            Ok(_) | Err(_) => report_failure(
+            Ok(bytes) => job.checkpoint = Some(bytes),
+            Err(_) => report_failure(
                 shared,
                 Some(Arc::clone(&job.identity)),
                 PersistenceFailureKind::Sync,
@@ -1339,6 +1339,24 @@ fn append_job(
     }
     AppendDisposition::Complete
 }
+
+/// Encodes optional checkpoint bytes within their independent worker charge.
+/// A slice-backed cursor cannot grow, even when JSON escaping expands a short
+/// display name beyond the existing checkpoint limit.
+fn encode_checkpoint(checkpoint: &crate::AgentCheckpoint) -> io::Result<Vec<u8>> {
+    let mut bytes = vec![0; MAX_CHECKPOINT_BYTES];
+    let length = {
+        let mut output = io::Cursor::new(bytes.as_mut_slice());
+        serde_json::to_writer_pretty(&mut output, checkpoint)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        output.position() as usize
+    };
+    bytes.truncate(length);
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod checkpoint_encoding_tests;
 
 /// Publishes one coalesced readable frontier only after a proven full frame.
 /// Failure to obtain the optional read handle merely keeps the cache resident.

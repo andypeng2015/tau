@@ -223,7 +223,7 @@ pub(super) fn wait_for_agent_io(
                 .get(&identity.stream)
                 .filter(|registered| registered.generation == identity.generation)
                 .ok_or(PersistenceAdmissionError::StaleLease)?;
-            active |= registered.agent_io.active != 0;
+            active |= registered.agent_io.active != 0 || registered.active_folds != 0;
         }
         if !active {
             return Ok(());

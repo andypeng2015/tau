@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use tau_proto::{AgentId, Event, SessionId, UnixMicros};
 
 use crate::record_log::{MAX_RECORD_BYTES, encoded_size_with_limit};
-use crate::semantic_persistence::{RetentionCharge, StagedFrame};
+use crate::semantic_persistence::{RetentionCharge, StagedFrame, fold_memory};
 use crate::session::{PersistedEventSource, SessionMeta};
 use crate::{
     PersistenceAdmissionError, PersistenceLease, SemanticPersistenceOwner, SessionPreparationMode,
@@ -401,8 +401,8 @@ impl SessionMembership {
 /// Durable frame failures return their original I/O error after an exact-EOF
 /// rollback. If truncation cannot restore that EOF, the store poisons only that
 /// ordinary or restore journal and rejects later appends before reopening it.
-/// Harness-managed stores advance complete in-memory replacements through the
-/// lifecycle-owned persistence engine. Ordinary public constructors are
+/// Harness-managed stores advance exclusive incremental in-memory folds through
+/// the lifecycle-owned persistence engine. Ordinary public constructors are
 /// read-only inspection views.
 ///
 /// Durable replay and memory-only parity follow
@@ -943,9 +943,16 @@ impl SessionStore {
         let record = PersistedSessionEvent {
             seq,
             source,
-            event: event.clone(),
+            event,
             recorded_at,
         };
+        let validation_charge = fold_memory::serialization_scratch(&record.event);
+        let reservation = count
+            .reserve_bytes(RetentionCharge {
+                replacement: validation_charge,
+                ..Default::default()
+            })
+            .map_err(SessionStoreError::Persistence)?;
         let measured = encoded_size_with_limit(&record, MAX_RECORD_BYTES).ok_or_else(|| {
             SessionStoreError::RecordTooLarge {
                 path: self.session_dir(&session_id).join("events.cbor"),
@@ -953,12 +960,13 @@ impl SessionStore {
                 maximum: MAX_RECORD_BYTES,
             }
         })? as usize;
-        let reservation = count
-            .reserve_bytes(RetentionCharge {
+        let reservation = reservation
+            .extend_to(RetentionCharge {
                 frame: measured.saturating_add(8),
-                replacement: managed_session_projection_charge(projection, measured),
+                replacement: validation_charge
+                    .saturating_add(managed_session_append_charge(projection, &record, false)),
                 checkpoint: 0,
-                projections: measured.saturating_mul(2),
+                projections: 0,
             })
             .map_err(SessionStoreError::Persistence)?;
         let mut payload = Vec::with_capacity(measured);
@@ -968,16 +976,16 @@ impl SessionStore {
                 source,
             }
         })?;
-        let mut replacement = projection.clone();
-        replacement.events.push(record);
-        replacement.membership.apply_event(&event);
-        replacement.membership.advance_next_event_seq();
         let target = self
             .managed
             .get_mut(&session_id)
             .expect("managed session remains installed");
         reservation
-            .commit_swap(target, replacement, StagedFrame::ordinary(payload, None))
+            .commit_fold(StagedFrame::ordinary(payload, None), || {
+                target.membership.apply_event(&record.event);
+                target.membership.advance_next_event_seq();
+                target.events.push(record);
+            })
             .map_err(SessionStoreError::Persistence)?;
         Ok(AppendOutcome {
             seq,
@@ -1126,6 +1134,13 @@ impl SessionStore {
             event,
             recorded_at,
         };
+        let validation_charge = fold_memory::serialization_scratch(&record.event);
+        let reservation = count
+            .reserve_bytes(RetentionCharge {
+                replacement: validation_charge,
+                ..Default::default()
+            })
+            .map_err(SessionStoreError::Persistence)?;
         let measured = encoded_size_with_limit(&record, MAX_RECORD_BYTES).ok_or_else(|| {
             SessionStoreError::RecordTooLarge {
                 path: self.session_dir(&session_id).join("restore-events.cbor"),
@@ -1133,12 +1148,13 @@ impl SessionStore {
                 maximum: MAX_RECORD_BYTES,
             }
         })? as usize;
-        let reservation = count
-            .reserve_bytes(RetentionCharge {
+        let reservation = reservation
+            .extend_to(RetentionCharge {
                 frame: measured.saturating_add(8),
-                replacement: managed_session_projection_charge(projection, measured),
+                replacement: validation_charge
+                    .saturating_add(managed_session_append_charge(projection, &record, true)),
                 checkpoint: 0,
-                projections: measured.saturating_mul(2),
+                projections: 0,
             })
             .map_err(SessionStoreError::Persistence)?;
         let mut payload = Vec::with_capacity(measured);
@@ -1148,15 +1164,15 @@ impl SessionStore {
                 source,
             }
         })?;
-        let mut replacement = projection.clone();
-        replacement.restore_events.push(record);
-        replacement.restore_next_seq = replacement.restore_next_seq.next();
         let target = self
             .managed
             .get_mut(&session_id)
             .expect("managed session remains installed");
         reservation
-            .commit_swap(target, replacement, StagedFrame::ordinary(payload, None))
+            .commit_fold(StagedFrame::ordinary(payload, None), || {
+                target.restore_events.push(record);
+                target.restore_next_seq = seq.next();
+            })
             .map_err(SessionStoreError::Persistence)
     }
 
@@ -1713,23 +1729,30 @@ fn load_session_events_from_file(
     Ok(events)
 }
 
-fn managed_session_projection_charge(
+fn managed_session_append_charge(
     projection: &ManagedSessionProjection,
-    new_record_bytes: usize,
+    record: &PersistedSessionEvent,
+    restore: bool,
 ) -> usize {
-    let retained = projection
-        .events
-        .iter()
-        .chain(&projection.restore_events)
-        .fold(new_record_bytes, |total, record| {
-            total.saturating_add(
-                encoded_size_with_limit(record, MAX_RECORD_BYTES).unwrap_or(MAX_RECORD_BYTES)
-                    as usize,
-            )
-        });
-    retained
-        .saturating_mul(3)
-        .saturating_add(std::mem::size_of::<ManagedSessionProjection>())
+    use crate::semantic_persistence::fold_memory::{hash_growth, vec_growth};
+    if restore {
+        return vec_growth(&projection.restore_events, 1);
+    }
+    let membership = match &record.event {
+        Event::SessionAgentLoaded(loaded) => {
+            loaded
+                .agent_id
+                .as_str()
+                .len()
+                .saturating_add(hash_growth::<AgentId>(
+                    projection.membership.loaded_agents.len(),
+                    projection.membership.loaded_agents.capacity(),
+                    1,
+                ))
+        }
+        _ => 0,
+    };
+    vec_growth(&projection.events, 1).saturating_add(membership)
 }
 
 fn read_cbor_records_from_file<T, F>(

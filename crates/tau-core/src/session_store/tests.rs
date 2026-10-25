@@ -177,6 +177,88 @@ fn restore_request(call_id: &str) -> Event {
     })
 }
 
+/// Ordinary and restore appends must not clone visible or hidden predecessor
+/// payloads. A pool smaller than the retained history still admits their actual
+/// incremental work, and cold replay keeps both sequence domains intact.
+#[test]
+fn long_session_history_keeps_incremental_normal_and_restore_admission() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let mut store = SessionStore::open_fixture(temp.path()).expect("seed store");
+        for seq in 0..12 {
+            store
+                .append_session_event_at(
+                    "session-1",
+                    None,
+                    delivered_message(&"x".repeat(1024 * 1024)),
+                    UnixMicros::new(seq),
+                )
+                .expect("seed history");
+        }
+    }
+    for mode in [SessionPreparationMode::Resume, SessionPreparationMode::New] {
+        let owner = Arc::new(
+            SemanticPersistenceOwner::new(crate::PersistenceCapacity {
+                max_frames: 16,
+                max_streams: 4,
+                max_bytes: 16 * 1024 * 1024,
+            })
+            .expect("bounded owner"),
+        );
+        let mut store = SessionStore::open_managed(temp.path(), owner).expect("managed");
+        store.prepare_session("session-1", mode).expect("prepare");
+        let sid = SessionId::parse("session-1").expect("session");
+        let first_payload = |store: &SessionStore| {
+            let projection = &store.managed[&sid];
+            let records = if mode == SessionPreparationMode::New {
+                &projection.hidden_predecessor_events
+            } else {
+                &projection.events
+            };
+            match &records[0].event {
+                Event::MessageDelivered(message) => message.text.as_ptr(),
+                _ => unreachable!("seeded message"),
+            }
+        };
+        let before = first_payload(&store);
+        let next = store.managed[&sid].membership.next_event_seq();
+        store
+            .append_session_event_at(
+                "session-1",
+                None,
+                loaded_event("session-1", "new-agent"),
+                UnixMicros::new(20),
+            )
+            .expect("normal append");
+        store
+            .append_session_restore_event_at(
+                "session-1",
+                None,
+                restore_request("restored-call"),
+                UnixMicros::new(21),
+            )
+            .expect("restore append");
+        assert_eq!(first_payload(&store), before, "retained body was copied");
+        assert_eq!(store.managed[&sid].membership.next_event_seq(), next.next());
+        store
+            .release_session("session-1", Duration::from_secs(2))
+            .expect("release");
+    }
+    let cold = SessionStore::open(temp.path()).expect("cold");
+    assert_eq!(
+        cold.session_events("session-1")
+            .expect("normal replay")
+            .len(),
+        14
+    );
+    assert_eq!(
+        cold.session_restore_events("session-1")
+            .expect("restore replay")
+            .len(),
+        2
+    );
+}
+
 /// Builds one valid restore-stream start.
 fn restore_started(call_id: &str) -> Event {
     Event::ToolStarted(ToolStarted {

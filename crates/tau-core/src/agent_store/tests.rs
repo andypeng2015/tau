@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 use std::sync as path_std_sync;
-use std::time::Instant;
 
 use super::*;
 
@@ -759,73 +758,147 @@ fn managed_history_facts_follow_only_committed_replacements() {
     drop(held);
 }
 
-fn managed_charge_projection(event_count: usize) -> ManagedAgentProjection {
-    let agent_id = AgentId::parse("charge-benchmark-agent").expect("agent id");
-    let events: Vec<_> = (0..event_count)
-        .map(|index| PersistedAgentEvent {
-            observation_id: tau_proto::ObservationId::from_bytes([index as u8; 16]),
-            seq: PersistedAgentEventSeq::new(index as u64),
-            source: None,
-            event: Event::AgentUserMessageInjected(tau_proto::AgentUserMessageInjected {
+/// A history above the old permanent admission ceiling must still accept a
+/// multi-megabyte terminal under the unchanged pool, without copying old text.
+/// Pointer identity proves resident payloads stay put; cold replay proves that
+/// eliminating the replacement did not lose the terminal or advance twice.
+#[test]
+fn long_history_accepts_large_terminal_without_copying_prior_payloads() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let agent_id = AgentId::parse("long-history").expect("agent id");
+    let mut store = AgentStore::open_fixture(temp.path()).expect("store");
+    store
+        .append_agent_event(agent_id.as_str(), None, started_event(&agent_id))
+        .expect("create");
+    for _ in 0..56 {
+        store
+            .append_agent_event(
+                agent_id.as_str(),
+                None,
+                injected_message_event(&agent_id, "x".repeat(1024 * 1024)),
+            )
+            .expect("history");
+    }
+    let payload_ptr =
+        |store: &AgentStore| match &store.managed_projections[&agent_id].history.records[1].event {
+            Event::AgentUserMessageInjected(message) => message.text.as_ptr(),
+            _ => unreachable!("seeded input"),
+        };
+    let before = payload_ptr(&store);
+    let Event::ProviderResponseFinished(mut response) =
+        history_response(&agent_id, "large-terminal")
+    else {
+        unreachable!("response fixture")
+    };
+    response.stop_reason = tau_proto::ProviderStopReason::EndTurn;
+    response.output_items = vec![tau_proto::ContextItem::Message(tau_proto::MessageItem {
+        role: tau_proto::ContextRole::Assistant,
+        content: vec![tau_proto::ContentPart::Text {
+            text: "y".repeat(3 * 1024 * 1024),
+        }],
+        phase: None,
+        responses_raw_json: None,
+    })];
+    store
+        .append_agent_event(
+            agent_id.as_str(),
+            None,
+            Event::ProviderResponseFinished(response),
+        )
+        .expect("large terminal fits incremental ownership");
+    store
+        .append_agent_event(
+            agent_id.as_str(),
+            None,
+            Event::AgentDisplayNameSet(tau_proto::AgentDisplayNameSet {
                 agent_id: agent_id.clone(),
-                text: format!("record-{index}"),
-                inference_activation: false,
-                message_class: Default::default(),
+                display_name: "complete".into(),
             }),
-            parent: AgentEventParent::InheritHead,
-            fold_semantics: AgentJournalFoldSemantics::CommitOrder,
-            recorded_at: UnixMicros::new(index as u64),
+        )
+        .expect("small append remains admissible");
+    assert_eq!(
+        payload_ptr(&store),
+        before,
+        "old payload must not be cloned"
+    );
+    assert_eq!(store.loaded_agent_record_count(&agent_id), Some(59));
+    let head = store.agent(agent_id.as_str()).expect("agent").head();
+    drop(store);
+    let cold = AgentStore::open(temp.path()).expect("cold store");
+    let tree = cold.agent(agent_id.as_str()).expect("cold agent");
+    assert_eq!(tree.head(), head);
+    assert_eq!(tree.next_event_seq().get(), 59);
+    assert_eq!(tree.display_name(), Some("complete"));
+}
+
+/// Ciborium formats ModelId into a temporary String even when its output goes
+/// to a counting writer. Reject that scratch before size counting, then permit
+/// the same prompt with a small identifier without consuming its sequence.
+#[test]
+fn large_model_identifier_reserves_formatting_before_size_counting() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let agent_id = AgentId::parse("model-scratch").expect("agent");
+    {
+        let mut fixture = AgentStore::open_fixture(temp.path()).expect("fixture");
+        fixture
+            .append_agent_event(agent_id.as_str(), None, started_event(&agent_id))
+            .expect("seed");
+    }
+    let owner = Arc::new(
+        SemanticPersistenceOwner::new(crate::PersistenceCapacity {
+            max_bytes: 2 * 1024 * 1024,
+            ..Default::default()
         })
-        .collect();
-    let tree = AgentTree::try_from_events(agent_id, &events).expect("valid benchmark records");
-    let mut summary = AgentSummary::default();
-    for event in &events {
-        summary.apply(event);
-    }
-    ManagedAgentProjection::from_replay(tree, summary, events)
-}
-
-/// The replay-derived aggregate produces the same saturating admission charge
-/// as an explicit record scan, including arithmetic overflow.
-#[test]
-fn managed_projection_cached_charge_matches_full_measurement() {
-    for event_count in [0, 1, 17, 257] {
-        let projection = managed_charge_projection(event_count);
-        let new_record_bytes = usize::MAX / 8;
-        let explicit = managed_agent_encoded_event_bytes(&projection.history.records)
-            .saturating_add(new_record_bytes)
-            .saturating_mul(5)
-            .saturating_add(std::mem::size_of::<ManagedAgentProjection>());
-        assert_eq!(
-            managed_agent_projection_charge(&projection, new_record_bytes),
-            explicit,
-            "event_count={event_count}"
-        );
-    }
-}
-
-/// Manual asymptotic benchmark reports cached-charge latency across histories
-/// from empty to large; it deliberately compares scaling instead of enforcing
-/// a flaky wall-clock threshold.
-#[test]
-#[ignore = "manual managed-charge asymptotic benchmark"]
-fn benchmark_managed_projection_cached_charge_scaling() {
-    const SAMPLES: usize = 1_000_000;
-    for event_count in [0, 16, 1_024, 65_536] {
-        let projection = managed_charge_projection(event_count);
-        let started = Instant::now();
-        let mut checksum = 0;
-        for sample in 0..SAMPLES {
-            checksum ^= std::hint::black_box(managed_agent_projection_charge(
-                std::hint::black_box(&projection),
-                sample,
-            ));
-        }
-        eprintln!(
-            "managed_charge events={event_count} samples={SAMPLES} elapsed={:?} checksum={checksum}",
-            started.elapsed()
-        );
-    }
+        .expect("owner"),
+    );
+    let mut store = AgentStore::open_managed(temp.path(), owner.clone()).expect("store");
+    store
+        .prepare_existing_agent(agent_id.as_str())
+        .expect("prepare");
+    let prompt = |model| {
+        Event::AgentInferenceDispatchStarted(tau_proto::AgentInferenceDispatchStarted {
+            agent_prompt_id: "formatting-prompt".parse().expect("prompt"),
+            agent_id: agent_id.clone(),
+            transaction_id: None,
+            through: tau_proto::AgentHead::Root,
+            model,
+            operation: tau_proto::PromptOperation::Inference,
+            activation_cut: tau_proto::AgentHead::Root,
+            output_length_continuation: None,
+        })
+    };
+    let baseline = owner.ledger_for_test();
+    let large = prompt(format!("provider/{}", "m".repeat(1024 * 1024)).into());
+    assert!(
+        crate::semantic_persistence::fold_memory::serialization_scratch(&large) > 4 * 1024 * 1024
+    );
+    assert!(matches!(
+        store.append_agent_event(agent_id.as_str(), None, large),
+        Err(AgentStoreError::Persistence(
+            PersistenceAdmissionError::Full
+        ))
+    ));
+    let pressure = owner
+        .drain_operational_status()
+        .capacity_full
+        .expect("initial scratch pressure");
+    assert_eq!(
+        pressure.usage.frames, 0,
+        "initial reservation rejection releases the count before reporting; an extension failure would still hold it"
+    );
+    assert_eq!(owner.ledger_for_test(), baseline);
+    assert_eq!(store.loaded_agent_record_count(&agent_id), Some(1));
+    store
+        .append_agent_event(agent_id.as_str(), None, prompt("provider/model".into()))
+        .expect("small retry");
+    owner
+        .release(&store.managed_persistence_leases(), Duration::from_secs(2))
+        .expect("durable");
+    drop(store);
+    let cold = AgentStore::open(temp.path()).expect("cold");
+    let records = cold.agent_events(agent_id.as_str()).expect("replay");
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1].seq, PersistedAgentEventSeq::new(1));
 }
 
 /// Normal-build inspection state rejects lock/repair mutation without

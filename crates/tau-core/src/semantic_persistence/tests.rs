@@ -5,6 +5,8 @@ mod agent_io_guard;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
+#[cfg(unix)]
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::thread;
@@ -2758,9 +2760,9 @@ fn repeated_release_reuses_capacity_and_rejects_stale_generation() {
     ));
 }
 
-/// Retiring a superseded complete projection must not hold the global admission
-/// mutex, and releasing its staging bytes must wake a concurrent byte-Full
-/// publisher without waiting for worker traffic.
+/// Producer fold staging must outlive worker retirement without holding the
+/// global admission mutex. Finishing that fold wakes a byte-Full publisher even
+/// when the worker has already disposed of every frame.
 #[test]
 fn held_projection_retirement_releases_capacity_outside_admission_lock() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -2851,6 +2853,20 @@ fn held_projection_retirement_releases_capacity_outside_admission_lock() {
         assert!(state.0, "superseded projection did not enter Drop");
     }
     backend.wait_until_write_held();
+    backend.release_writes();
+    assert_eq!(
+        owner.wait_for_latest_durability_for_test(Duration::from_secs(2)),
+        DurabilityBarrierOutcome::Durable
+    );
+    assert_eq!(
+        owner.ledger_for_test().0,
+        0,
+        "worker already retired its frame"
+    );
+    assert!(
+        owner.ledger_for_test().1 >= charge.replacement,
+        "producer still owns staging after worker retirement"
+    );
 
     let (admission_tx, admission_rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -2899,6 +2915,136 @@ fn held_projection_retirement_releases_capacity_outside_admission_lock() {
         .expect("retirement capacity recovery wake");
     assert!(owner.drain_operational_status().recovered.is_some());
     backend.release_writes();
+}
+
+/// Release cannot report a generation safely retired while its admitted
+/// producer fold is still running, even after the frame has reached disk.
+#[test]
+fn release_waits_for_admitted_producer_fold() {
+    let root = tempfile::tempdir().expect("root");
+    let owner = Arc::new(SemanticPersistenceOwner::new(Default::default()).expect("owner"));
+    let mut store = SessionStore::open_managed(root.path(), owner.clone()).expect("store");
+    store
+        .prepare_session("fold-release", SessionPreparationMode::New)
+        .expect("prepare");
+    let leases = store.managed_persistence_leases("fold-release");
+    let staging = leases[0]
+        .try_reserve_frame()
+        .expect("frame")
+        .reserve_bytes(RetentionCharge {
+            frame: 8,
+            replacement: 1024 * 1024,
+            ..Default::default()
+        })
+        .expect("staging");
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (finish_tx, finish_rx) = mpsc::sync_channel(1);
+    let producer = thread::spawn(move || {
+        staging.commit_fold(StagedFrame::ordinary(Vec::new(), None), || {
+            entered_tx.send(()).expect("entered");
+            finish_rx.recv().expect("finish fold");
+        })
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fold entered");
+    assert_eq!(
+        owner.wait_for_latest_durability_for_test(Duration::from_secs(2)),
+        DurabilityBarrierOutcome::Durable
+    );
+    let (released_tx, released_rx) = mpsc::sync_channel(1);
+    let releasing_owner = owner.clone();
+    thread::spawn(move || {
+        released_tx
+            .send(releasing_owner.release(&leases, Duration::from_secs(2)))
+            .expect("release result");
+    });
+    assert!(
+        released_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+        "release must not pass a live producer fold"
+    );
+    finish_tx.send(()).expect("release fold");
+    producer
+        .join()
+        .expect("producer")
+        .expect("admitted fold succeeds after close");
+    released_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("release returns")
+        .expect("release finished fold");
+}
+
+/// A caught panic in an irreversible producer fold must terminate the process,
+/// not return a partially folded store to an embedding caller.
+#[cfg(unix)]
+#[test]
+fn admitted_fold_panic_cannot_be_caught_and_resumed() {
+    const PROBE: &str = "TAU_PERSISTENCE_ABORT_PROBE";
+    if let Some(root) = std::env::var_os(PROBE) {
+        let owner = Arc::new(SemanticPersistenceOwner::new(Default::default()).expect("owner"));
+        let mut store = SessionStore::open_managed(Path::new(&root), owner.clone()).expect("store");
+        store
+            .prepare_session("fold-panic", SessionPreparationMode::New)
+            .expect("prepare");
+        let record = crate::PersistedSessionEvent {
+            seq: crate::PersistedSessionEventSeq::new(0),
+            source: None,
+            event: loaded_event("fold-panic"),
+            recorded_at: tau_proto::UnixMicros::new(7),
+        };
+        let mut payload = Vec::new();
+        ciborium::into_writer(&record, &mut payload).expect("encode admitted record");
+        let staging = store.managed_persistence_leases("fold-panic")[0]
+            .try_reserve_frame()
+            .expect("frame")
+            .reserve_bytes(RetentionCharge {
+                frame: payload.capacity() + 8,
+                replacement: 1024,
+                ..Default::default()
+            })
+            .expect("staging");
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            staging.commit_fold(StagedFrame::ordinary(payload, None), || {
+                assert_eq!(
+                    owner.wait_for_latest_durability_for_test(Duration::from_secs(2)),
+                    DurabilityBarrierOutcome::Durable
+                );
+                panic!("injected irreversible fold panic");
+            })
+        }));
+        assert!(
+            caught.is_err(),
+            "probe only checks the dangerous caught-unwind case"
+        );
+        return;
+    }
+    use std::os::unix::process::ExitStatusExt as _;
+    let root = tempfile::tempdir().expect("probe root");
+    let output = Command::new("sh")
+        .args(["-c", "ulimit -c 0; exec \"$@\"", "fold-panic-probe"])
+        .arg(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "semantic_persistence::tests::admitted_fold_panic_cannot_be_caught_and_resumed",
+            "--nocapture",
+        ])
+        .env(PROBE, root.path())
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .expect("run isolated panic probe");
+    assert_eq!(
+        output.status.signal(),
+        Some(6),
+        "fold must abort, not unwind: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let replay = SessionStore::open(root.path()).expect("cold store");
+    let records = replay
+        .session_events("fold-panic")
+        .expect("replay admitted frame");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].seq, crate::PersistedSessionEventSeq::new(0));
+    assert_eq!(records[0].event, loaded_event("fold-panic"));
 }
 
 /// Aggregate registry/path/handle/root-target capacity rejects at one byte
@@ -3029,6 +3175,52 @@ fn agent_checkpoint_is_published_before_clean_release() {
         crate::PersistedAgentEventSeq::new(2)
     );
     assert!(checkpoint.journal.covered_bytes > 8);
+}
+
+/// An oversized optional checkpoint must not reject its authoritative journal
+/// record or replace the last usable sidecar with truncated JSON.
+#[test]
+fn escaped_checkpoint_overflow_preserves_journal_and_previous_sidecar() {
+    let root = tempfile::tempdir().expect("root");
+    let owner = Arc::new(SemanticPersistenceOwner::new(Default::default()).expect("owner"));
+    let mut store = AgentStore::open_managed(root.path(), owner.clone()).expect("store");
+    let agent_id = tau_proto::AgentId::parse("escaped-checkpoint").expect("agent");
+    store.reserve_new_agent(agent_id.as_str()).expect("reserve");
+    store
+        .append_agent_event(agent_id.as_str(), None, started_event(&agent_id))
+        .expect("start");
+    assert_eq!(
+        owner.wait_for_latest_durability_for_test(Duration::from_secs(2)),
+        DurabilityBarrierOutcome::Durable
+    );
+    let checkpoint_path = root.path().join(agent_id.as_str()).join("meta.json");
+    let previous = std::fs::read(&checkpoint_path).expect("initial checkpoint");
+    let name = "\0".repeat(32 * 1024);
+    store
+        .append_agent_event(
+            agent_id.as_str(),
+            None,
+            display_name_event(&agent_id, &name),
+        )
+        .expect("authoritative record remains admissible");
+    owner
+        .release(&store.managed_persistence_leases(), Duration::from_secs(2))
+        .expect("journal remains drainable");
+    assert_eq!(
+        std::fs::read(checkpoint_path).expect("previous checkpoint"),
+        previous
+    );
+    drop(store);
+    let mut cold = AgentStore::open(root.path()).expect("cold");
+    assert_eq!(
+        cold.agent_events(agent_id.as_str()).expect("records").len(),
+        2
+    );
+    cold.load_agent(agent_id.as_str()).expect("cold replay");
+    assert_eq!(
+        cold.agent(agent_id.as_str()).expect("agent").display_name(),
+        Some(name.as_str())
+    );
 }
 
 /// Selected maintenance snapshot relinquishes and disposes only selected

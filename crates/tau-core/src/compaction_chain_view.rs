@@ -440,5 +440,6 @@ impl CompactionChainIndex {
     }
 }
 
+mod allocation;
 #[cfg(test)]
 mod tests;

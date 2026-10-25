@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use tau_proto::{ContextItem, ToolCallId};
 
+use crate::semantic_persistence::fold_memory::hash_growth;
 use crate::session::{AgentEntry, AgentNode, AgentTree};
 
 /// Non-persisted exact index of tool-call identities in resident agent trees.
@@ -21,6 +22,26 @@ pub(super) struct LoadedToolCallIds {
 }
 
 impl LoadedToolCallIds {
+    /// Bounds global identity-index growth for this event's new assistant node.
+    pub(super) fn append_allocation_charge(&self, event: &tau_proto::Event) -> usize {
+        let tau_proto::Event::ProviderResponseFinished(response) = event else {
+            return 0;
+        };
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        for item in &response.output_items {
+            if let ContextItem::ToolCall(call) = item {
+                count = count.saturating_add(1);
+                bytes = bytes.saturating_add(call.call_id.as_str().len());
+            }
+        }
+        bytes.saturating_add(hash_growth::<ToolCallId>(
+            self.ids.len(),
+            self.ids.capacity(),
+            count,
+        ))
+    }
+
     /// Adds identities from nodes appended by one successful canonical fold.
     pub(super) fn extend_nodes(&mut self, nodes: &[AgentNode]) {
         #[cfg(test)]

@@ -72,9 +72,12 @@ prepares `New` or strict `Resume` authority before exposing runtime state. Final
 shutdown closes the complete lease set under one deadline; failure fail-stops
 persistence rather than forging a second owner.
 
-Canonical publication first admits the semantic frame and complete in-memory
-replacement. Only successful admission may advance EventLog/debug output, bus
-delivery, reactions, or continuations. Worker I/O follows in one global FIFO.
+Before canonical publication, the producer admits the semantic frame and
+completes its exclusively owned incremental in-memory fold. Only successful
+admission may advance EventLog/debug output, bus delivery, reactions, or
+continuations.
+Worker I/O follows one global FIFO and may finish before the producer fold;
+the producer's staging reservation survives independently until that fold ends.
 Rollback-safe failures retain the accepted head; uncertain rollback poisons that
 generation. Restart therefore sees the longest valid durable prefix.
 

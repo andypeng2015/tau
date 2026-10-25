@@ -96,13 +96,30 @@ discards the overlay with the corresponding ephemeral transcripts.
 One Harness-lifecycle `SemanticPersistenceOwner` serves agent, ordinary-session,
 and restore journals through one bounded global FIFO. Explicit preparation hands
 all mutable journal files, primary locks, offsets, checkpoints, manifest authority,
-and durability debt to its sole worker. Stores retain generation-bound leases and complete
-in-memory projections; live admission reserves count and aggregate bytes, builds
-the frame and replacement off-side, then performs one nonblocking revalidation,
-swap, and FIFO insertion. Rejection changes no projection or publication state.
-The atomic swap drops the superseded complete projection and releases its
-staging-only byte reservation immediately; queued work retains only its frame,
-incremental projection ownership, checkpoint candidate, and worker/debt state.
+and durability debt to its sole worker. Stores retain generation-bound leases and
+complete in-memory projections. Live admission reserves count and serialization
+scratch, measures the frame, then extends the reservation for validation, touched
+container growth, new ownership, deferred materialization, and temporary overlap.
+It does not copy or size untouched historical payloads. Agent prevalidation owns
+the exact record and exclusively borrows its target tree; session admission also
+retains exclusive ownership of its records.
+
+After validation and encoding, the producer revalidates the lease and irreversibly
+enqueues one frame in a short owner-mutex section. It then synchronously folds
+that record into its exclusively borrowed projection outside the owner mutex,
+before returning success or allowing publication. Rejection before enqueue changes
+no projection or publication state. The worker may persist the frame before the
+producer finishes folding; after a crash, replay recovers the same record.
+An unexpected fold panic aborts the process so a caller cannot catch unwinding
+and access a partially mutated store.
+
+Producer staging bytes remain charged until the fold finishes, independently of
+worker frame retirement. Stream release waits for admitted folds as well as
+worker I/O. The worker retains only its queued frame, checkpoint candidate, and
+worker/debt state. These are conservative requested-allocation bounds, not
+allocator RSS bounds. Existing inline-image validation keeps its decoded-output
+limit. Third-party codec-internal scratch remains a separate, temporary
+limitation; this admission change adds no image decode.
 
 An exact Prepared Agent lease may run a bounded synchronous off-loop storage
 closure under the existing agent deletion-exclusion lock. This narrow physical

@@ -206,7 +206,8 @@ impl std::error::Error for PersistenceAdmissionError {}
 pub(crate) struct RetentionCharge {
     /// Encoded frame vector capacity plus its length prefix.
     pub(crate) frame: usize,
-    /// Complete off-side fold/cache/projection replacement.
+    /// Producer-owned fold growth and scratch, independent of worker
+    /// retirement.
     pub(crate) replacement: usize,
     /// Optional bounded checkpoint candidate capacity.
     pub(crate) checkpoint: usize,
@@ -334,17 +335,56 @@ pub(crate) struct StagingReservation {
 }
 
 impl StagingReservation {
-    /// Atomically swaps one complete replacement and inserts one prebuilt FIFO
-    /// node.
-    ///
-    /// The commit contains only generation checks, `mem::swap`, and insertion
-    /// into storage preallocated to the hard frame limit.
-    pub(crate) fn commit_swap<T>(
+    /// Adds the measured frame and fold charge after a separately reserved
+    /// validation/sizing pass. Failure releases the original reservation too.
+    pub(crate) fn extend_to(
         mut self,
-        target: &mut T,
-        mut replacement: T,
+        charge: RetentionCharge,
+    ) -> Result<Self, PersistenceAdmissionError> {
+        let bytes = charge
+            .total()
+            .and_then(|bytes| bytes.checked_add(self.internal_bytes))
+            .ok_or(PersistenceAdmissionError::Full)?;
+        let additional = bytes
+            .checked_sub(self.bytes)
+            .expect("extended charge retains validation scratch");
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        validate_generation(
+            &state,
+            self.shared.owner_epoch,
+            self.identity.owner_epoch,
+            &self.identity.stream,
+            self.identity.generation,
+        )?;
+        if additional
+            > self
+                .shared
+                .capacity
+                .max_bytes
+                .saturating_sub(state.ledger.bytes)
+        {
+            report_capacity_full(&self.shared, &mut state, PersistenceCapacityLimit::Bytes);
+            return Err(PersistenceAdmissionError::Full);
+        }
+        state.ledger.bytes += additional;
+        self.bytes = bytes;
+        self.charge = charge;
+        drop(state);
+        Ok(self)
+    }
+
+    /// Irrevocably admits one frame, then finishes its exclusive synchronous
+    /// fold.
+    ///
+    /// The mutex protects only lease checks and preallocated FIFO insertion.
+    /// The worker may write before `fold` finishes, but callers cannot observe
+    /// success or publish until it returns. A fold panic aborts the process:
+    /// an embedding caller must never catch an unwind and reuse partial state.
+    pub(crate) fn commit_fold<T>(
+        mut self,
         frame: StagedFrame,
-    ) -> Result<(), PersistenceAdmissionError> {
+        fold: impl FnOnce() -> T,
+    ) -> Result<T, PersistenceAdmissionError> {
         frame.validate_charge(self.charge)?;
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         validate_generation(
@@ -389,27 +429,51 @@ impl StagingReservation {
             self.internal_bytes,
             admission_watermark,
         );
-        /*
-         * The lifecycle match above is deliberately exhaustive. Keep the
-         * swap and accounting transfer and preallocated insertion
-         * adjacent: no fallible or destructor work belongs after
-         * this cut.
-         */
-        mem::swap(target, &mut replacement);
+        // This is the irreversible single-frame cut. Producer staging remains
+        // charged even if the worker retires the frame before the fold returns.
+        state
+            .streams
+            .get_mut(&self.identity.stream)
+            .expect("validated stream remains registered")
+            .active_folds += 1;
         job.release_staging_replacement();
         state.frames.push_back(job);
         self.committed = true;
         drop(state);
         self.shared.wake.notify_one();
-        drop(replacement);
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fold)) {
+            Ok(result) => result,
+            Err(_) => std::process::abort(),
+        };
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .streams
+            .get_mut(&self.identity.stream)
+            .expect("active fold prevents stream retirement")
+            .active_folds -= 1;
         state.ledger.bytes = state
             .ledger
             .bytes
             .checked_sub(self.charge.replacement)
-            .expect("committed swap releases retired replacement staging");
+            .expect("completed producer fold releases its independent staging");
         report_capacity_recovered(&self.shared, &mut state);
-        Ok(())
+        self.shared.wake.notify_all();
+        Ok(result)
+    }
+
+    /// Test adapter exercising the same admission cut with a simple
+    /// replacement.
+    #[cfg(test)]
+    pub(crate) fn commit_swap<T>(
+        self,
+        target: &mut T,
+        mut replacement: T,
+        frame: StagedFrame,
+    ) -> Result<(), PersistenceAdmissionError> {
+        self.commit_fold(frame, || {
+            mem::swap(target, &mut replacement);
+            drop(replacement);
+        })
     }
 }
 
@@ -616,6 +680,8 @@ pub(crate) struct ResourceLedger {
 }
 
 pub(crate) struct RegisteredStream {
+    /// Admitted producer folds whose staging and exclusive projection are live.
+    pub(super) active_folds: usize,
     /// Weak physical Agent lock and scoped off-loop custody count.
     pub(super) agent_io: super::agent_io_guard::AgentIoState,
     /// Worker-proven complete-written prefix, absent before its first capture.
@@ -1647,6 +1713,7 @@ impl SemanticPersistenceOwner {
         state.streams.insert(
             stream.clone(),
             RegisteredStream {
+                active_folds: 0,
                 agent_io: Default::default(),
                 readable_agent: None,
                 generation,

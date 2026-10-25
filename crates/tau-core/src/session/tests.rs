@@ -3,6 +3,7 @@ use std::io as path_std_io;
 use super::*;
 
 mod cross_model_recovery;
+mod fold_allocation;
 mod partial_provider_error;
 
 /// Passive output deduplication and non-activation must survive cold replay,
@@ -292,21 +293,19 @@ fn randomized_prevalidated_live_fold_matches_cold_replay() {
             recorded_at: UnixMicros::new(step),
         };
         let validated = live
-            .prevalidate_persisted_record(&valid_record)
+            .prevalidate_persisted_record(valid_record.clone())
             .expect("randomized valid record");
-        let (next_live, node) =
-            AgentTree::apply_prevalidated(validated).expect("prevalidated live fold");
+        let (next_live, node, _) = AgentTree::apply_prevalidated(validated);
         let mut cold_records = accepted.clone();
         cold_records.push(valid_record.clone());
         let replayed =
             AgentTree::try_from_events(agent_id.clone(), &cold_records).expect("cold valid replay");
-        assert_eq!(next_live, replayed, "accepted step={step}");
+        assert_eq!(*next_live, replayed, "accepted step={step}");
         assert_eq!(
             node,
             next_live.head(),
             "accepted input appends selected node"
         );
-        live = next_live;
         accepted.push(valid_record);
 
         let rotation = (random as usize) % INVALID_CLASSES.len();
@@ -427,7 +426,7 @@ fn randomized_prevalidated_live_fold_matches_cold_replay() {
             cold_records.push(record.clone());
             let cold_error = AgentTree::try_from_events(agent_id.clone(), &cold_records)
                 .expect_err("cold replay rejects invalid record");
-            let live_error = match live.prevalidate_persisted_record(&record) {
+            let live_error = match live.prevalidate_persisted_record(record.clone()) {
                 Ok(_) => panic!("live validation accepted invalid record"),
                 Err(error) => error,
             };
@@ -1855,11 +1854,9 @@ fn randomized_live_and_cold_ancestry_matches_allocating_reference_at_every_head(
             recorded_at: UnixMicros::new(step),
         };
         let validated = live
-            .prevalidate_persisted_record(&record)
+            .prevalidate_persisted_record(record.clone())
             .expect("valid randomized branch append");
-        let (next_live, node_id) =
-            AgentTree::apply_prevalidated(validated).expect("valid live fold");
-        live = next_live;
+        let (_, node_id, _) = AgentTree::apply_prevalidated(validated);
         records.push(record);
         heads.push(AgentHead::Node(node_id.expect("input materializes a node")));
 

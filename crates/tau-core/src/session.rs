@@ -2768,16 +2768,25 @@ impl AgentTree {
         &mut self,
         record: &PersistedAgentEvent,
     ) -> Result<Option<NodeId>, AgentEventValidationError> {
-        self.prevalidate_persisted_record(record)?;
+        self.validate_persisted_record(record)?;
         self.apply_validated_record(record)
     }
 
     /// Validates one exact durable record and returns a crate-private
-    /// capability bound to that same borrowed value and exact tree state.
-    pub(crate) fn prevalidate_persisted_record<'tree, 'record>(
-        &'tree self,
-        record: &'record PersistedAgentEvent,
-    ) -> Result<PrevalidatedPersistedRecord<'tree, 'record>, AgentEventValidationError> {
+    /// capability owning that value and exclusively borrowing the exact tree.
+    pub(crate) fn prevalidate_persisted_record(
+        &mut self,
+        record: PersistedAgentEvent,
+    ) -> Result<PrevalidatedPersistedRecord<'_>, AgentEventValidationError> {
+        self.validate_persisted_record(&record)?;
+        Ok(PrevalidatedPersistedRecord { tree: self, record })
+    }
+
+    /// Checks a record without changing the exclusively owned projection.
+    pub(crate) fn validate_persisted_record(
+        &self,
+        record: &PersistedAgentEvent,
+    ) -> Result<(), AgentEventValidationError> {
         if record.seq != self.next_event_seq {
             return Err(AgentEventValidationError::new(format!(
                 "agent event sequence mismatch: expected {}, got {}",
@@ -2820,23 +2829,24 @@ impl AgentTree {
         } else {
             self.validate_persisted_event(record)?;
         }
-        Ok(PrevalidatedPersistedRecord { tree: self, record })
+        Ok(())
     }
 
     /// Applies the exact record proven by a crate-private prevalidation token.
     ///
     /// Token construction enforces sequence, source, parent, fold-shape, and
-    /// current-tree semantic invariants. Application clones and advances the
-    /// token's bound tree, so a caller cannot substitute another tree or
+    /// current-tree semantic invariants. Application advances the exclusively
+    /// borrowed tree, so a caller cannot substitute another tree or
     /// record; a token never authorizes a later or merely
     /// sequence-equivalent state.
-    pub(crate) fn apply_prevalidated(
-        validated: PrevalidatedPersistedRecord<'_, '_>,
-    ) -> Result<(Self, Option<NodeId>), AgentEventValidationError> {
-        let mut tree = validated.tree.clone();
-        let record = validated.record;
-        let node_id = tree.apply_validated_record(record)?;
-        Ok((tree, node_id))
+    pub(crate) fn apply_prevalidated<'tree>(
+        validated: PrevalidatedPersistedRecord<'tree>,
+    ) -> (&'tree mut Self, Option<NodeId>, PersistedAgentEvent) {
+        let node = validated
+            .tree
+            .apply_validated_record(&validated.record)
+            .expect("exclusive prevalidation binds the exact tree and record");
+        (validated.tree, node, validated.record)
     }
 
     /// Applies one record after validation against this exact tree state.
@@ -7174,11 +7184,18 @@ pub struct PersistedAgentEvent {
 }
 
 /// Crate-private proof that one exact borrowed record passed live validation.
-pub(crate) struct PrevalidatedPersistedRecord<'tree, 'record> {
+pub(crate) struct PrevalidatedPersistedRecord<'tree> {
     /// Exact tree state against which the record was validated.
-    tree: &'tree AgentTree,
-    /// Exact record whose immutable fields were validated.
-    record: &'record PersistedAgentEvent,
+    tree: &'tree mut AgentTree,
+    /// Exact owned record whose immutable fields were validated.
+    record: PersistedAgentEvent,
+}
+
+impl PrevalidatedPersistedRecord<'_> {
+    /// Borrows the immutable proven record for encoding and checkpoint staging.
+    pub(crate) fn record(&self) -> &PersistedAgentEvent {
+        &self.record
+    }
 }
 
 impl AgentJournalFoldSemantics {
@@ -7199,5 +7216,6 @@ pub struct SessionMeta {
     pub last_touched: u64,
 }
 
+mod fold_allocation;
 #[cfg(test)]
 mod tests;

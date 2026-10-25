@@ -923,7 +923,9 @@ impl serde::Serialize for ModelId {
         // Wire form is the flat `"provider/model"` string — same
         // bytes as the previous flat-string newtype, so existing
         // CBOR / JSON5 / persisted logs keep working.
-        self.to_string().serialize(serializer)
+        // Counting serializers can inspect the same wire string without
+        // allocating a temporary provider/model concatenation.
+        serializer.collect_str(self)
     }
 }
 

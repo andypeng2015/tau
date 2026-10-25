@@ -40,6 +40,55 @@ pub(super) struct AgentHistory {
 }
 
 impl AgentHistory {
+    /// Bounds only this append's record/fact ownership and backing-store
+    /// growth.
+    pub(super) fn append_allocation_charge(&self, record: &PersistedAgentEvent) -> usize {
+        use crate::semantic_persistence::fold_memory::{hash_growth, owned_value, vec_growth};
+        let calls = match &record.event {
+            Event::ProviderResponseFinished(response) => response
+                .output_items
+                .iter()
+                .filter(|item| matches!(item, ContextItem::ToolCall(_)))
+                .count(),
+            _ => 0,
+        };
+        // The incoming owned record moves into the cache; the first-record fact
+        // is the only full record copy. Its typed charge also covers copied
+        // call identifiers and the first role string.
+        let payload = if self.accepted_count == 0 {
+            owned_value(record)
+        } else {
+            0
+        };
+        let text = Self::internal_prompt_text(&record.event);
+        let call_payload = match &record.event {
+            Event::ProviderResponseFinished(response) => response
+                .output_items
+                .iter()
+                .filter_map(|item| match item {
+                    ContextItem::ToolCall(call) => Some(call.call_id.as_str().len()),
+                    _ => None,
+                })
+                .fold(0usize, usize::saturating_add),
+            _ => 0,
+        };
+        payload
+            .saturating_add(call_payload)
+            .saturating_add(text.map_or(0, str::len))
+            .saturating_add(vec_growth(&self.records, 1))
+            .saturating_add(vec_growth(&self.record_bytes, 1))
+            .saturating_add(hash_growth::<(ToolCallId, ToolCallRef)>(
+                self.tool_declarations.len(),
+                self.tool_declarations.capacity(),
+                calls,
+            ))
+            .saturating_add(hash_growth::<String>(
+                self.internal_prompt_texts.len(),
+                self.internal_prompt_texts.capacity(),
+                usize::from(text.is_some()),
+            ))
+    }
+
     /// Extracts persisted internal input text without including ordinary user
     /// input or provider output.
     pub(super) fn internal_prompt_text(event: &Event) -> Option<&str> {
@@ -109,8 +158,7 @@ impl AgentHistory {
         history
     }
 
-    /// Advances records and facts together inside an off-side admission
-    /// candidate.
+    /// Advances records and facts together inside an admitted producer fold.
     pub(super) fn push(&mut self, record: PersistedAgentEvent, measured_bytes: usize) {
         self.observe(&record);
         self.encoded_event_bytes = self.encoded_event_bytes.saturating_add(measured_bytes);
