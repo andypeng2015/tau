@@ -35,7 +35,7 @@ pub(crate) struct CommittedGatedFinal {
     pub(super) is_non_tool_ext_query: bool,
     /// Connection that reported the response.
     pub(super) source: Option<ConnectionId>,
-    /// Exact tool effect withheld until terminal write-complete.
+    /// Exact tool effect withheld until canonical terminal admission.
     pub(super) tool_effect: super::CommittedOutputLengthToolEffect,
     /// Typed reducer selected behind the existing gated-final owner.
     pub(super) reducer: CommittedGatedFinalReducer,
@@ -44,6 +44,8 @@ pub(crate) struct CommittedGatedFinal {
 /// Typed post-commit reducer selected behind gated-final publication ownership.
 #[derive(Clone)]
 pub(crate) enum CommittedGatedFinalReducer {
+    /// Apply ordinary response effects without final-status invalidation.
+    Ordinary,
     /// Apply the existing shared committed-terminal projection.
     Shared,
     /// Apply the automatic-compaction or pending-message-wake reducer.

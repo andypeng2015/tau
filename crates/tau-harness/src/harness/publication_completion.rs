@@ -412,6 +412,9 @@ impl Harness {
                     } = completion.as_mut()
                 {
                     terminal.response = response.clone();
+                    // Cancellation replaces the entire terminal, including its
+                    // deferred execution plan, not just the persisted output.
+                    terminal.tool_effect = CommittedOutputLengthToolEffect::None;
                 }
             }
             return;
@@ -849,12 +852,13 @@ impl Harness {
                         );
                         return;
                     }
-                    if self
-                        .agent_runtime
-                        .agent_registry
-                        .agents
-                        .get_mut(cid)
-                        .is_some_and(|agent| agent.turn.work_status.invalidate_working())
+                    if !matches!(terminal.reducer, CommittedGatedFinalReducer::Ordinary)
+                        && self
+                            .agent_runtime
+                            .agent_registry
+                            .agents
+                            .get_mut(cid)
+                            .is_some_and(|agent| agent.turn.work_status.invalidate_working())
                     {
                         self.notify_work_status_transition(cid);
                     }
@@ -4032,9 +4036,7 @@ impl Harness {
                     | ProviderTerminalPlan::FinalStatusGated(_)
                     | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
                     | ProviderTerminalPlan::OutputLengthContinuationSource(_)
-                    | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-                    | ProviderTerminalPlan::ToolCalls(_)
-                    | ProviderTerminalPlan::OrdinaryNoTool(_) => {
+                    | ProviderTerminalPlan::OutputLengthContinuationTerminal(_) => {
                         unreachable!(
                             "unrelated provider-terminal family reached restored side-conversation classification"
                         )

@@ -723,7 +723,6 @@ impl Harness {
             agent.turn.terminal_context_size_alerts = context_size_alerts.clone();
         }
         self.apply_automatic_compaction_preparation(&cid, automatic);
-        let final_status_gated = !matches!(final_status_plan, ProviderTerminalPlan::Other);
         self.runtime_io
             .provider_terminal_timing
             .finish_stage_if_open(provider_terminal_timing::ProviderTerminalStage::Classification);
@@ -788,12 +787,6 @@ impl Harness {
             ProviderTerminalPlan::SideConversation(_) => {
                 unreachable!("side-conversation classification runs after response publication")
             }
-            ProviderTerminalPlan::ToolCalls(_) => {
-                unreachable!("tool-call classification runs after response publication")
-            }
-            ProviderTerminalPlan::OrdinaryNoTool(_) => {
-                unreachable!("no-tool classification runs after response publication")
-            }
             ProviderTerminalPlan::Other => None,
         };
         let commit_gated_owns_terminal = completion.is_none()
@@ -814,10 +807,6 @@ impl Harness {
                     },
                 },
             );
-        let commit_gated_terminal = matches!(
-            commit_gated_plan,
-            ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
-        );
         let completion = match commit_gated_plan {
             ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(
                 AutomaticCompactionOrPendingMessageWakePlan { tool_effect },
@@ -853,9 +842,7 @@ impl Harness {
             | ProviderTerminalPlan::FinalStatusGated(_)
             | ProviderTerminalPlan::OutputLengthContinuationSource(_)
             | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-            | ProviderTerminalPlan::SideConversation(_)
-            | ProviderTerminalPlan::ToolCalls(_)
-            | ProviderTerminalPlan::OrdinaryNoTool(_) => {
+            | ProviderTerminalPlan::SideConversation(_) => {
                 unreachable!("earlier provider-terminal family reached commit-gated classification")
             }
         };
@@ -864,10 +851,6 @@ impl Harness {
                 response: &response,
                 assistant_text: assistant_text.as_deref(),
             },
-        );
-        let output_length_source = matches!(
-            output_length_source_plan,
-            ProviderTerminalPlan::OutputLengthContinuationSource(_)
         );
         let completion = match output_length_source_plan {
             ProviderTerminalPlan::OutputLengthContinuationSource(
@@ -889,9 +872,7 @@ impl Harness {
             | ProviderTerminalPlan::FinalStatusGated(_)
             | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
             | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-            | ProviderTerminalPlan::SideConversation(_)
-            | ProviderTerminalPlan::ToolCalls(_)
-            | ProviderTerminalPlan::OrdinaryNoTool(_) => {
+            | ProviderTerminalPlan::SideConversation(_) => {
                 unreachable!(
                     "earlier provider-terminal family reached output-length source classification"
                 )
@@ -902,10 +883,6 @@ impl Harness {
                 final_status_challenged,
                 response: &response,
             },
-        );
-        let output_length_terminal = matches!(
-            output_length_terminal_plan,
-            ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
         );
         let completion = match output_length_terminal_plan {
             ProviderTerminalPlan::OutputLengthContinuationTerminal(
@@ -947,143 +924,57 @@ impl Harness {
             | ProviderTerminalPlan::FinalStatusGated(_)
             | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
             | ProviderTerminalPlan::OutputLengthContinuationSource(_)
-            | ProviderTerminalPlan::SideConversation(_)
-            | ProviderTerminalPlan::ToolCalls(_)
-            | ProviderTerminalPlan::OrdinaryNoTool(_) => {
+            | ProviderTerminalPlan::SideConversation(_) => {
                 unreachable!(
                     "earlier provider-terminal family reached output-length terminal classification"
                 )
             }
         };
-        let notify_watchers_after_commit = completion.is_none()
-            && !requested_tool_calls
-            && !matches!(
-                response.originator,
-                tau_proto::PromptOriginator::Extension { .. }
-            )
-            && self
-                .agent_runtime
-                .agent_registry
-                .agents
-                .get(&cid)
-                .is_some_and(|agent| !agent.turn.lifecycle_notification_only_turn)
-            && successful
-            && assistant_text.is_some();
-        self.publish_finished_response_for_agent(
-            &cid,
-            source,
-            &response,
-            completion,
-            notify_watchers_after_commit,
-        );
+        // Every terminal owns its post-commit effects, including plain
+        // responses without final-status or compaction policy. Offering
+        // publication is not acceptance: interception and persistence
+        // admission may both defer it.
+        let completion = completion.or_else(|| {
+            Some(AgentPublishCompletion::GatedFinal {
+                batch_parent: self
+                    .agent_runtime
+                    .agent_registry
+                    .agents
+                    .get(&cid)
+                    .and_then(|agent| agent.identity.head)
+                    .map_or(tau_proto::AgentHead::Root, tau_proto::AgentHead::Node),
+                disposition: GatedFinalDisposition::Accept {
+                    terminal: Box::new(CommittedGatedFinal {
+                        response: self.clone_finished_response_for_timing(
+                            provider_terminal_timing::ProviderTerminalStage::RetainedPlanClone,
+                            &response,
+                        ),
+                        response_contains_compaction,
+                        input_tokens,
+                        context_size_alerts: context_size_alerts.clone(),
+                        is_non_tool_ext_query,
+                        source: source.cloned(),
+                        tool_effect: if requested_tool_calls {
+                            CommittedOutputLengthToolEffect::Dispatch(std::mem::take(
+                                &mut normalized_tool_calls,
+                            ))
+                        } else {
+                            CommittedOutputLengthToolEffect::None
+                        },
+                        reducer: CommittedGatedFinalReducer::Ordinary,
+                    }),
+                },
+                owned_publication: None,
+            })
+        });
+        self.publish_finished_response_for_agent(&cid, source, &response, completion, false);
         if !requested_tool_calls {
             self.clear_prompt_tool_snapshot(&response.agent_prompt_id);
         }
-        if final_status_gated
-            || commit_gated_terminal
-            || output_length_source
-            || output_length_terminal
-        {
-            self.runtime_io
-                .provider_terminal_timing
-                .finish_accepted_terminal();
-            return Ok(());
-        }
-        self.runtime_io
-            .provider_terminal_timing
-            .start_stage(provider_terminal_timing::ProviderTerminalStage::EagerReducer);
-        if response_contains_compaction {
-            self.clear_agent_context_usage(&cid);
-        } else if successful {
-            self.queue_crossed_context_size_alerts_for_prompt(
-                &cid,
-                &response.agent_prompt_id,
-                input_tokens,
-                &context_size_alerts,
-            );
-        }
-        if response.recovery_disposition
-            != tau_proto::ContextRecoveryDisposition::ReactiveCompactionPlanned
-        {
-            match self.classify_side_conversation_terminal(SideConversationTerminalClassification {
-                cid: &cid,
-                response: &response,
-                requested_tool_calls,
-                is_non_tool_ext_query,
-            }) {
-                ProviderTerminalPlan::SideConversation(plan) => {
-                    self.reduce_side_conversation_terminal(
-                        &cid,
-                        EagerSideConversationTerminal {
-                            plan,
-                            response: &response,
-                            is_non_tool_ext_query,
-                            assistant_text: assistant_text.as_deref(),
-                            tool_effect: if requested_tool_calls {
-                                SideConversationToolEffect::Reject(&mut normalized_tool_calls)
-                            } else {
-                                SideConversationToolEffect::ClearPromptSnapshot
-                            },
-                            source,
-                        },
-                    );
-                    self.runtime_io.provider_terminal_timing.finish_stage(
-                        provider_terminal_timing::ProviderTerminalStage::EagerReducer,
-                    );
-                    self.runtime_io
-                        .provider_terminal_timing
-                        .finish_accepted_terminal();
-                    return Ok(());
-                }
-                ProviderTerminalPlan::Other => {}
-                ProviderTerminalPlan::StandaloneCompaction(_)
-                | ProviderTerminalPlan::ReactiveContextRecovery(_)
-                | ProviderTerminalPlan::FinalStatusGated(_)
-                | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
-                | ProviderTerminalPlan::OutputLengthContinuationSource(_)
-                | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-                | ProviderTerminalPlan::ToolCalls(_)
-                | ProviderTerminalPlan::OrdinaryNoTool(_) => {
-                    unreachable!(
-                        "unrelated provider-terminal family reached side-conversation classification"
-                    )
-                }
-            }
-        }
-        let ordinary_plan = Self::classify_ordinary_terminal(OrdinaryTerminalClassification {
-            requested_tool_calls,
-            normalized_tool_calls,
-            source: source.cloned(),
-            response,
-            assistant_text,
-        });
-        let reducer_result = match ordinary_plan {
-            ProviderTerminalPlan::ToolCalls(ToolCallTerminalPlan { reducer }) => {
-                self.reduce_tool_call_terminal(&cid, reducer)
-            }
-            ProviderTerminalPlan::OrdinaryNoTool(plan) => {
-                let OrdinaryNoToolTerminalPlan { reducer } = *plan;
-                self.reduce_ordinary_no_tool_terminal(&cid, reducer);
-                Ok(())
-            }
-            ProviderTerminalPlan::StandaloneCompaction(_)
-            | ProviderTerminalPlan::ReactiveContextRecovery(_)
-            | ProviderTerminalPlan::FinalStatusGated(_)
-            | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
-            | ProviderTerminalPlan::OutputLengthContinuationSource(_)
-            | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-            | ProviderTerminalPlan::SideConversation(_)
-            | ProviderTerminalPlan::Other => {
-                unreachable!("earlier provider-terminal family reached ordinary classification")
-            }
-        };
-        self.runtime_io
-            .provider_terminal_timing
-            .finish_stage(provider_terminal_timing::ProviderTerminalStage::EagerReducer);
         self.runtime_io
             .provider_terminal_timing
             .finish_accepted_terminal();
-        reducer_result
+        Ok(())
     }
 
     /// Normalize and publish billing for a dispatched terminal rejected before
@@ -1408,12 +1299,6 @@ impl Harness {
                 unreachable!(
                     "side-conversation classification runs after shared terminal accounting"
                 )
-            }
-            ProviderTerminalPlan::ToolCalls(_) => {
-                unreachable!("tool-call classification runs after shared terminal accounting")
-            }
-            ProviderTerminalPlan::OrdinaryNoTool(_) => {
-                unreachable!("no-tool classification runs after shared terminal accounting")
             }
             ProviderTerminalPlan::Other => return false,
         };
@@ -4647,66 +4532,6 @@ impl Harness {
         )
     }
 
-    /// Exhaustively classify the ordinary tool-call and no-tool families after
-    /// every earlier provider-terminal family and side-conversation has
-    /// returned.
-    fn classify_ordinary_terminal(
-        OrdinaryTerminalClassification {
-            requested_tool_calls,
-            normalized_tool_calls,
-            source,
-            response,
-            assistant_text,
-        }: OrdinaryTerminalClassification,
-    ) -> ProviderTerminalPlan {
-        if !requested_tool_calls {
-            return ProviderTerminalPlan::OrdinaryNoTool(Box::new(OrdinaryNoToolTerminalPlan {
-                reducer: EagerOrdinaryNoToolTerminal {
-                    response,
-                    assistant_text,
-                },
-            }));
-        }
-        ProviderTerminalPlan::ToolCalls(ToolCallTerminalPlan {
-            reducer: EagerToolCallTerminal {
-                normalized_tool_calls,
-                source,
-            },
-        })
-    }
-
-    /// Execute the unchanged eager tool-call dispatch after canonical response
-    /// publication has been offered.
-    fn reduce_tool_call_terminal(
-        &mut self,
-        cid: &AgentId,
-        reducer: EagerToolCallTerminal,
-    ) -> Result<(), HarnessError> {
-        self.dispatch_finished_response_tool_calls(
-            cid,
-            reducer.normalized_tool_calls,
-            reducer.source.as_ref(),
-        )
-    }
-
-    /// Execute the unchanged eager ordinary no-tool completion after canonical
-    /// response publication has been offered.
-    fn reduce_ordinary_no_tool_terminal(
-        &mut self,
-        cid: &AgentId,
-        reducer: EagerOrdinaryNoToolTerminal,
-    ) {
-        let EagerOrdinaryNoToolTerminal {
-            response,
-            assistant_text,
-        } = reducer;
-        self.complete_finished_response_without_tool_calls(
-            cid,
-            &response,
-            assistant_text.as_deref(),
-        );
-    }
-
     /// Perform ordinary or delegated completion only after an accepted gated
     /// final crossed its semantic append boundary.
     pub(super) fn complete_committed_gated_final(
@@ -4715,7 +4540,7 @@ impl Harness {
         terminal: CommittedGatedFinal,
     ) {
         match terminal.reducer {
-            CommittedGatedFinalReducer::Shared => {
+            CommittedGatedFinalReducer::Ordinary | CommittedGatedFinalReducer::Shared => {
                 self.complete_committed_gated_final_state(cid, terminal);
             }
             CommittedGatedFinalReducer::AutomaticCompactionOrPendingMessageWake => {
@@ -4850,9 +4675,7 @@ impl Harness {
                 | ProviderTerminalPlan::FinalStatusGated(_)
                 | ProviderTerminalPlan::AutomaticCompactionOrPendingMessageWake(_)
                 | ProviderTerminalPlan::OutputLengthContinuationSource(_)
-                | ProviderTerminalPlan::OutputLengthContinuationTerminal(_)
-                | ProviderTerminalPlan::ToolCalls(_)
-                | ProviderTerminalPlan::OrdinaryNoTool(_) => {
+                | ProviderTerminalPlan::OutputLengthContinuationTerminal(_) => {
                     unreachable!(
                         "unrelated provider-terminal family reached committed side-conversation classification"
                     )

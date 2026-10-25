@@ -161,7 +161,6 @@ use crate::harness::interception::{
     InterceptorRegistry, PendingIntercept, PostCommitContinuation, PromptDispatchAuthority,
     PromptDispatchContinuation, PromptDispatchPhase,
 };
-use crate::harness::ordinary_no_tool_terminal_reducer::EagerOrdinaryNoToolTerminal;
 use crate::harness::output_length_continuation_reducer::CommittedOutputLengthContinuation;
 use crate::harness::peer_messaging::PeerMessagingState;
 use crate::harness::pending_notices::{PendingPromptNoticeState, PendingToolAvailabilityNotice};
@@ -170,12 +169,11 @@ use crate::harness::provider_runtime_state::ProviderRuntimeState;
 use crate::harness::provider_startup::ProviderStartupSnapshot;
 use crate::harness::provider_terminal_plan::{
     AutomaticCompactionOrPendingMessageWakeClassification,
-    AutomaticCompactionOrPendingMessageWakePlan, FinalStatusGatedPlan, OrdinaryNoToolTerminalPlan,
-    OrdinaryTerminalClassification, OutputLengthContinuationSourceClassification,
-    OutputLengthContinuationSourcePlan, OutputLengthContinuationTerminalClassification,
-    OutputLengthContinuationTerminalPlan, ProviderTerminalPlan, ReactiveContextRecoveryPlan,
-    SideConversationTerminalClassification, SideConversationTerminalPlan,
-    StandaloneCompactionRejection, StandaloneCompactionTerminalPlan, ToolCallTerminalPlan,
+    AutomaticCompactionOrPendingMessageWakePlan, FinalStatusGatedPlan,
+    OutputLengthContinuationSourceClassification, OutputLengthContinuationSourcePlan,
+    OutputLengthContinuationTerminalClassification, OutputLengthContinuationTerminalPlan,
+    ProviderTerminalPlan, ReactiveContextRecoveryPlan, SideConversationTerminalClassification,
+    SideConversationTerminalPlan, StandaloneCompactionRejection, StandaloneCompactionTerminalPlan,
 };
 use crate::harness::publication_state::PublicationState;
 use crate::harness::reactive_context_recovery_reducer::CommittedReactiveContextRecovery;
@@ -186,7 +184,6 @@ use crate::harness::standalone_compaction_terminal_reducer::{
     CommittedStandaloneContextRejection, EagerStandaloneCompactionTerminal,
 };
 use crate::harness::subagents_tool::SubagentToolState;
-use crate::harness::tool_call_terminal_reducer::EagerToolCallTerminal;
 use crate::harness::tool_runtime::ToolRuntimeState;
 use crate::harness::ui_runtime::UiRuntimeState;
 use crate::internal_tools::InternalToolHandlers;
@@ -1613,7 +1610,6 @@ mod image_admission;
 mod local_summary_continuation;
 mod notification_delivery;
 mod operator_agent_unload;
-mod ordinary_no_tool_terminal_reducer;
 mod output_length_continuation_reducer;
 mod passive_context;
 mod peer_messaging;
@@ -1659,7 +1655,6 @@ mod terminal_policy_projection;
 mod terminal_response_projection;
 #[cfg(test)]
 mod terminal_response_projection_tests;
-mod tool_call_terminal_reducer;
 mod tool_routing_state;
 mod tool_runtime;
 mod ui_runtime;

@@ -83,10 +83,10 @@ fn provider_models_declaration(model: &str, context_window: u64) -> Event {
     })
 }
 
-/// A side-conversation terminal completes eagerly after its canonical response
-/// is offered, so interception must not delay or duplicate result delivery.
+/// A side-conversation result must wait for canonical admission, so a parked
+/// response cannot expose an answer which persistence may still reject.
 #[test]
-fn side_conversation_terminal_completes_once_while_response_is_intercepted() {
+fn side_conversation_terminal_completes_once_after_response_commits() {
     let tmp = TempDir::new().expect("tempdir");
     let mut h = echo_harness(tmp.path().join("state")).expect("harness");
     h.config.selected_model = Some("test/model".into());
@@ -152,14 +152,6 @@ fn side_conversation_terminal_completes_once_while_response_is_intercepted() {
         intercepted_payload(&interceptor).0,
         Event::ProviderResponseFinished(_)
     ));
-    assert!(
-        h.agent_runtime
-            .agent_registry
-            .agents
-            .get(&side_cid)
-            .is_none_or(|agent| agent.dispatch.in_flight_prompt.is_none()),
-        "eager side completion waited for canonical response commit"
-    );
     let result_count = || {
         delegate_frames
             .lock()
@@ -175,7 +167,7 @@ fn side_conversation_terminal_completes_once_while_response_is_intercepted() {
             })
             .count()
     };
-    assert_eq!(result_count(), 1);
+    assert_eq!(result_count(), 0);
     assert_eq!(
         event_log_events(&h)
             .iter()
@@ -184,15 +176,19 @@ fn side_conversation_terminal_completes_once_while_response_is_intercepted() {
         0
     );
 
+    reject_next_semantic_admission(&h);
     h.handle_extension_event(
         "side-terminal-owner",
         TestProtocolItem::Message(TestMessage::InterceptReply(InterceptReply {
             action: InterceptAction::Pass(None),
         })),
     )
-    .expect("release canonical response");
+    .expect("reject canonical response admission");
+    assert_eq!(result_count(), 0);
+    h.retry_pending_agent_publish_completion(&side_cid);
+    h.retry_pending_agent_publish_completion(&side_cid);
 
-    assert_eq!(result_count(), 1, "release duplicated eager reduction");
+    assert_eq!(result_count(), 1, "commit must deliver exactly one result");
     assert_eq!(
         event_log_events(&h)
             .iter()
@@ -430,11 +426,10 @@ fn challenged_working_final_drop_is_overridden_until_post_commit() {
     h.shutdown().expect("shutdown");
 }
 
-/// Ordinary tool-call dispatch deliberately remains eager: parking the
-/// canonical response must not withhold normalized call registration, and
-/// later committing that response must not dispatch the call again.
+/// Ordinary tool-call dispatch must wait for canonical admission, then dispatch
+/// the normalized call exactly once rather than executing an uncommitted call.
 #[test]
-fn intercepted_tool_call_response_dispatches_once_before_commit() {
+fn intercepted_tool_call_response_dispatches_once_after_commit() {
     let tmp = TempDir::new().expect("tempdir");
     let mut h = echo_harness(tmp.path().join("state")).expect("harness");
     let cid = ensure_test_user_agent(&mut h);
@@ -474,7 +469,7 @@ fn intercepted_tool_call_response_dispatches_once_before_commit() {
     response.stop_reason = tau_proto::ProviderStopReason::ToolCalls;
 
     h.handle_provider_response_finished(response)
-        .expect("park canonical response and dispatch tool");
+        .expect("park canonical response");
     let (candidate, _) = intercepted_payload(&interceptor);
     assert!(matches!(
         candidate,
@@ -490,25 +485,29 @@ fn intercepted_tool_call_response_dispatches_once_before_commit() {
         "parked response must remain uncommitted"
     );
     assert!(
-        h.tool_routing
+        !h.tool_routing
             .tool_runtime
             .pending_tools
             .contains_key(&call_id),
-        "normalized call must register before response commit"
+        "uncommitted call must not register for execution"
     );
     assert!(
-        h.tool_routing.tool_runtime.tool_turn.is_in_flight(&call_id),
-        "ordinary tool dispatch must remain eager"
+        !h.tool_routing.tool_runtime.tool_turn.is_in_flight(&call_id),
+        "ordinary tool dispatch must wait for commit"
     );
-    assert_eq!(h.tool_routing.tool_runtime.tool_turn.in_flight_len(), 1);
+    assert_eq!(h.tool_routing.tool_runtime.tool_turn.in_flight_len(), 0);
 
+    reject_next_semantic_admission(&h);
     h.handle_extension_event(
         "eager-tool-response-owner",
         TestProtocolItem::Message(TestMessage::InterceptReply(InterceptReply {
             action: InterceptAction::Pass(None),
         })),
     )
-    .expect("commit parked response");
+    .expect("reject parked response admission");
+    assert!(!h.tool_routing.tool_runtime.tool_turn.is_in_flight(&call_id));
+    h.retry_pending_agent_publish_completion(&cid);
+    h.retry_pending_agent_publish_completion(&cid);
     assert_eq!(
         event_log_events(&h)
             .iter()
@@ -2679,11 +2678,10 @@ fn intercepted_final_response_cannot_fan_out_after_watched_agent_unload() {
     h.shutdown().expect("shutdown");
 }
 
-/// Ordinary no-tool completion deliberately remains eager: parking the
-/// canonical response must make the agent idle before the response commits,
-/// and releasing publication must not append or reduce the terminal twice.
+/// Ordinary no-tool completion cannot settle a turn while its response is
+/// uncommitted; releasing publication must append and reduce the terminal once.
 #[test]
-fn intercepted_no_tool_response_completes_once_before_commit() {
+fn intercepted_no_tool_response_completes_once_after_commit() {
     let tmp = TempDir::new().expect("tempdir");
     let mut h = echo_harness(tmp.path().join("state")).expect("harness");
     let cid = ensure_test_user_agent(&mut h);
@@ -2717,7 +2715,7 @@ fn intercepted_no_tool_response_completes_once_before_commit() {
         durable_agent_id_for_conversation(&h, &cid),
         assistant_text,
     ))
-    .expect("park canonical response and reduce no-tool terminal");
+    .expect("park canonical response");
     let (candidate, _) = intercepted_payload(&interceptor);
     assert!(matches!(
         candidate,
@@ -2735,9 +2733,9 @@ fn intercepted_no_tool_response_completes_once_before_commit() {
     assert!(
         matches!(
             h.agent_runtime.agent_registry.agents[&cid].turn.turn_state,
-            AgentTurnState::Idle
+            AgentTurnState::AgentThinking { .. }
         ),
-        "ordinary no-tool reduction must remain eager"
+        "ordinary no-tool reduction must wait for commit"
     );
     assert!(
         event_log_events(&h).iter().all(|event| !matches!(
@@ -2746,7 +2744,7 @@ fn intercepted_no_tool_response_completes_once_before_commit() {
                 if steered.message_class == tau_proto::PromptMessageClass::Internal
                     && steered.text.contains("Loop guard:")
         )),
-        "one eager reduction must remain below the preseeded loop threshold"
+        "parked response must not advance the loop guard"
     );
 
     h.handle_extension_event(

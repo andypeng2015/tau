@@ -3054,6 +3054,294 @@ fn output_length_append_rejected_terminal_cancellation_repairs_once() {
     h.shutdown().expect("shutdown");
 }
 
+/// Plain terminals without status or compaction policy must retain their exact
+/// completion through admission rejection. Initial and post-tool responses may
+/// settle (or cancel) only after commit, and replay must not repeat either
+/// fact.
+#[test]
+fn ordinary_terminal_admission_rejection_retains_completion_until_commit() {
+    for (post_tool, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
+        let td = TempDir::new().expect("tempdir");
+        let mut h = quiet_provider_harness(td.path()).expect("start");
+        let cid = ensure_test_user_agent(&mut h);
+        h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("ordinary terminal".to_owned()))
+            .expect("dispatch");
+        let initial = read_nth_prompt_created(&h, 0);
+        let prompt = if post_tool {
+            h.handle_provider_response_finished(provider_tool_response(
+                &initial,
+                "ordinary-terminal-tool",
+                "self_info",
+                CborValue::Map(Vec::new()),
+            ))
+            .expect("complete tool round");
+            read_nth_prompt_created(&h, 1)
+        } else {
+            initial
+        };
+        let outer_turn_id = h.agent_runtime.agent_registry.agents[&cid]
+            .turn
+            .outer_turn
+            .owned_id()
+            .expect("active outer turn")
+            .clone();
+        connect_test_tool(&mut h, "ordinary-terminal-interceptor");
+        h.handle_extension_event(
+            "ordinary-terminal-interceptor",
+            TestProtocolItem::Message(TestMessage::Intercept(Intercept {
+                selectors: vec![EventSelector::Exact(
+                    tau_proto::EventName::PROVIDER_RESPONSE_FINISHED,
+                )],
+                priority: InterceptionPriority::new(0),
+            })),
+        )
+        .expect("intercept terminal");
+        h.handle_provider_response_finished(provider_text_response(
+            &prompt.agent_prompt_id,
+            prompt.agent_id.clone(),
+            "retained ordinary answer",
+        ))
+        .expect("park terminal");
+        reject_next_semantic_admission(&h);
+        h.handle_extension_event(
+            "ordinary-terminal-interceptor",
+            TestProtocolItem::Message(TestMessage::InterceptReply(InterceptReply {
+                action: InterceptAction::Pass(None),
+            })),
+        )
+        .expect("reject canonical admission");
+        let counts = |h: &Harness| {
+            let records = h
+                .session_runtime
+                .agent_store
+                .snapshot_agent_events_for_test(prompt.agent_id.as_str())
+                .expect("records");
+            (
+                records
+                    .iter()
+                    .filter(|record| {
+                        matches!(
+                            &record.event,
+                            Event::ProviderResponseFinished(response)
+                                if response.agent_prompt_id == prompt.agent_prompt_id
+                        )
+                    })
+                    .count(),
+                records
+                    .iter()
+                    .filter(|record| {
+                        matches!(
+                            &record.event,
+                            Event::AgentOuterTurnFinished(finished)
+                                if finished.outer_turn_id == outer_turn_id
+                        )
+                    })
+                    .count(),
+            )
+        };
+        assert_eq!(counts(&h), (0, 0));
+        assert!(
+            h.prompt_coordination
+                .prompt_runtime
+                .pending_publish_completions
+                .get(&cid)
+                .is_some_and(
+                    |completion| completion.owns_provider_terminal(&prompt.agent_prompt_id)
+                )
+        );
+        assert_eq!(
+            h.agent_runtime.agent_registry.agents[&cid]
+                .turn
+                .outer_turn
+                .owned_id(),
+            Some(&outer_turn_id)
+        );
+        if cancel {
+            h.handle_cancel_prompt(
+                crate::harness::harness_connection_id(),
+                &tau_proto::UiCancelPrompt {
+                    session_id: h.session_runtime.current_session_id.clone(),
+                    target_agent_id: Some(prompt.agent_id.clone()),
+                    agent_prompt_id: None,
+                },
+            );
+        }
+        h.retry_pending_agent_publish_completion(&cid);
+        h.retry_pending_agent_publish_completion(&cid);
+        assert_eq!(counts(&h), (1, 1));
+        assert!(
+            h.prompt_coordination
+                .prompt_runtime
+                .pending_publish_completions
+                .is_empty()
+        );
+        assert!(
+            h.agent_runtime.agent_registry.agents[&cid]
+                .dispatch
+                .pending_cancel
+                .is_none()
+        );
+        let records = h
+            .session_runtime
+            .agent_store
+            .snapshot_agent_events_for_test(prompt.agent_id.as_str())
+            .expect("records");
+        let response = records
+            .iter()
+            .find_map(|record| match &record.event {
+                Event::ProviderResponseFinished(response)
+                    if response.agent_prompt_id == prompt.agent_prompt_id =>
+                {
+                    Some(response)
+                }
+                _ => None,
+            })
+            .expect("committed response");
+        assert_eq!(response.error.as_deref(), cancel.then_some("cancelled"));
+        assert_eq!(response.output_items.is_empty(), cancel);
+        h.shutdown().expect("shutdown");
+        drop(h);
+        wait_for_session_unlock(td.path(), "s1");
+        let resumed =
+            echo_harness_with_start_reason("s1", td.path(), tau_proto::SessionStartReason::Resume)
+                .expect("resume");
+        assert_eq!(counts(&resumed), (1, 1));
+    }
+}
+
+/// Cancellation must discard the retained tool execution plan as well as the
+/// canonical output, both before interception releases and after admission
+/// rejects. Otherwise the committed canceled terminal could still run tools.
+#[test]
+fn canceled_retained_tool_terminal_never_dispatches_calls() {
+    for reject_before_cancel in [false, true] {
+        let td = TempDir::new().expect("tempdir");
+        let mut h = quiet_provider_harness(td.path()).expect("start");
+        let cid = ensure_test_user_agent(&mut h);
+        h.dispatch_prompt_for_agent(&cid, PendingPrompt::user("cancel tools".to_owned()))
+            .expect("dispatch");
+        let prompt = read_nth_prompt_created(&h, 0);
+        let outer_turn_id = h.agent_runtime.agent_registry.agents[&cid]
+            .turn
+            .outer_turn
+            .owned_id()
+            .expect("outer turn")
+            .clone();
+        connect_test_tool(&mut h, "cancel-tools-interceptor");
+        h.handle_extension_event(
+            "cancel-tools-interceptor",
+            TestProtocolItem::Message(TestMessage::Intercept(Intercept {
+                selectors: vec![EventSelector::Exact(
+                    tau_proto::EventName::PROVIDER_RESPONSE_FINISHED,
+                )],
+                priority: InterceptionPriority::new(0),
+            })),
+        )
+        .expect("intercept");
+        let call_id = ToolCallId::from("must-not-execute");
+        h.handle_provider_response_finished(provider_tool_response(
+            &prompt,
+            call_id.as_str(),
+            "self_info",
+            CborValue::Map(Vec::new()),
+        ))
+        .expect("park tool terminal");
+        let release = |h: &mut Harness| {
+            h.handle_extension_event(
+                "cancel-tools-interceptor",
+                TestProtocolItem::Message(TestMessage::InterceptReply(InterceptReply {
+                    action: InterceptAction::Pass(None),
+                })),
+            )
+            .expect("release terminal");
+        };
+        if reject_before_cancel {
+            reject_next_semantic_admission(&h);
+            release(&mut h);
+        }
+        h.handle_cancel_prompt(
+            crate::harness::harness_connection_id(),
+            &tau_proto::UiCancelPrompt {
+                session_id: h.session_runtime.current_session_id.clone(),
+                target_agent_id: Some(prompt.agent_id.clone()),
+                agent_prompt_id: None,
+            },
+        );
+        if reject_before_cancel {
+            h.retry_pending_agent_publish_completion(&cid);
+        } else {
+            release(&mut h);
+        }
+        h.retry_pending_agent_publish_completion(&cid);
+        assert!(
+            h.prompt_coordination
+                .prompt_runtime
+                .pending_publish_completions
+                .is_empty()
+        );
+        assert!(
+            h.agent_runtime.agent_registry.agents[&cid]
+                .dispatch
+                .pending_cancel
+                .is_none()
+        );
+        assert!(
+            !h.tool_routing
+                .tool_runtime
+                .pending_tools
+                .contains_key(&call_id)
+        );
+        assert!(!h.tool_routing.tool_runtime.tool_turn.is_in_flight(&call_id));
+        let assert_records = |h: &Harness| {
+            let records = h
+                .session_runtime
+                .agent_store
+                .snapshot_agent_events_for_test(prompt.agent_id.as_str())
+                .expect("records");
+            let terminals = records
+                .iter()
+                .filter_map(|record| match &record.event {
+                    Event::ProviderResponseFinished(response)
+                        if response.agent_prompt_id == prompt.agent_prompt_id =>
+                    {
+                        Some(response)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(terminals.len(), 1);
+            assert_eq!(terminals[0].error.as_deref(), Some("cancelled"));
+            assert!(terminals[0].output_items.is_empty());
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(
+                        &record.event, Event::AgentOuterTurnFinished(finished)
+                            if finished.outer_turn_id == outer_turn_id
+                    ))
+                    .count(),
+                1
+            );
+            assert!(records.iter().all(|record| !matches!(
+                &record.event,
+                Event::ToolResult(_) | Event::ToolError(_) | Event::ToolStarted(_)
+            )));
+        };
+        assert_records(&h);
+        assert!(event_log_events(&h).iter().all(|event| !matches!(
+            event,
+            Event::ToolStarted(_) | Event::ToolResult(_) | Event::ToolError(_)
+        )));
+        h.shutdown().expect("shutdown");
+        drop(h);
+        wait_for_session_unlock(td.path(), "s1");
+        let resumed =
+            echo_harness_with_start_reason("s1", td.path(), tau_proto::SessionStartReason::Resume)
+                .expect("resume");
+        assert_records(&resumed);
+    }
+}
+
 /// Cancellation accepted while an ordinary provider terminal is parked owns
 /// the sole durable initial or post-tool terminal, outer finish, and protected
 /// standalone start; it releases retained/runtime state only after commit and

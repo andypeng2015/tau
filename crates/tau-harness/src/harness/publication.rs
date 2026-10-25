@@ -3021,6 +3021,11 @@ impl Harness {
             timing.finish(PromptAcceptanceTerminal::Accepted);
         }
         let post_commit_started = Instant::now();
+        // Observe commit order before continuations can publish nested facts.
+        // Otherwise a tool response could see its own message receipt and be
+        // mistaken for the later sender terminal by the crash-cut fixture.
+        #[cfg(feature = "output-length-test-barrier")]
+        let typed_receipt_cut = crate::output_length_test_barrier::observe_typed_receipt(&event);
         // A committed acceptance makes its reserved placeholder addressable.
         // First-party `agent_start` reacts below by installing a watch, so
         // expose that post-commit state before invoking internal tool
@@ -3125,7 +3130,7 @@ impl Harness {
             self.complete_agent_publish(&cid, completion, through);
         }
         #[cfg(feature = "output-length-test-barrier")]
-        if let Some(cut) = crate::output_length_test_barrier::observe_typed_receipt(&event) {
+        if let Some(cut) = typed_receipt_cut {
             use tau_core::DurabilityBarrierOutcome;
 
             crate::output_length_test_barrier::wait_and_reach(

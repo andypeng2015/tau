@@ -1716,24 +1716,21 @@ fn provider_terminal_timing_records_ordinary_terminal_source_order() {
     assert!(timing.canonical_commit.is_some());
     assert_eq!(timing.output_items_visited, 1);
     assert_eq!(timing.tool_calls_visited, 0);
-    assert_eq!(timing.output_items_copied, 1);
+    assert_eq!(timing.output_items_copied, 2);
     assert_eq!(timing.tool_calls_copied, 0);
     for stage in [
         ProviderTerminalStage::Projection,
         ProviderTerminalStage::Normalize,
         ProviderTerminalStage::Accounting,
         ProviderTerminalStage::Classification,
+        ProviderTerminalStage::RetainedPlanClone,
         ProviderTerminalStage::CanonicalCandidateClone,
         ProviderTerminalStage::CanonicalEnqueue,
-        ProviderTerminalStage::EagerReducer,
+        ProviderTerminalStage::CommitGatedReducer,
     ] {
         assert!(timing.stage(stage).is_some(), "missing stage {stage:?}");
     }
-    assert!(
-        timing
-            .stage(ProviderTerminalStage::RetainedPlanClone)
-            .is_none()
-    );
+    assert!(timing.stage(ProviderTerminalStage::EagerReducer).is_none());
     assert_eq!(
         timing.stage_order,
         [
@@ -1741,9 +1738,10 @@ fn provider_terminal_timing_records_ordinary_terminal_source_order() {
             ProviderTerminalStage::Normalize,
             ProviderTerminalStage::Accounting,
             ProviderTerminalStage::Classification,
+            ProviderTerminalStage::RetainedPlanClone,
             ProviderTerminalStage::CanonicalCandidateClone,
             ProviderTerminalStage::CanonicalEnqueue,
-            ProviderTerminalStage::EagerReducer,
+            ProviderTerminalStage::CommitGatedReducer,
         ]
     );
     assert!(
