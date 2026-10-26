@@ -2786,6 +2786,7 @@ impl Harness {
         }
         let _published = self.publish_current_session_shutdown();
         self.quiesce_synchronized_publications_for_shutdown();
+        self.send_remote_shutdown_disconnects();
         let final_ui_closes = std::mem::take(&mut self.ui_runtime.client_writers)
             .into_values()
             .filter_map(|writer| writer.start_bounded_close(FINAL_UI_DISCONNECT_GRACE))

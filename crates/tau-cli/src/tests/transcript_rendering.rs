@@ -6,6 +6,20 @@ use std::time::{Duration, Instant};
 use super::super::markdown_render::markdown_block;
 use super::*;
 
+/// Intentional remote shutdown must remain visible in the terminal rather than
+/// being presented as an unexplained transport failure.
+#[test]
+fn remote_shutdown_disconnect_renders_reason() {
+    let (_term, handle, vt) = setup(80, 24);
+    let mut renderer = marker_test_renderer(handle.clone());
+    renderer.handle_disconnect(Some(
+        "session is shutting down: remote kill request".to_owned(),
+    ));
+    sync(&handle);
+    assert!(vt.screen_contains(80, "session is shutting down: remote kill request"));
+    assert!(!vt.screen_contains(80, "harness connection closed"));
+}
+
 #[test]
 fn renderer_starts_without_selected_or_default_agent() {
     // Regression: the UI opens in the start-new-agent state instead of

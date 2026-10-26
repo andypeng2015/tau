@@ -4,7 +4,7 @@
 //! invokes them in order.
 
 use super::*;
-use crate::event::StartupFrameKind;
+use crate::event::{ShutdownCause, StartupFrameKind};
 
 /// Result of waiting for the next runtime-loop event.
 pub(super) enum RuntimeEventWait {
@@ -1081,6 +1081,7 @@ impl Harness {
                 }
                 if self.is_authorized_ui_shutdown_request(&connection_id, &message) {
                     self.ui_runtime.shutdown_requested = true;
+                    self.ui_runtime.shutdown_cause = Some(ShutdownCause::RemoteKillRequest);
                     self.publish_ui_quit_dispositions();
                 }
                 let is_hello = matches!(message.as_ref(), HarnessInputMessage::Hello(_));
@@ -1362,6 +1363,28 @@ impl Harness {
             self.runtime_io.component_ingress_tx.clone(),
         );
         Ok(conn_id)
+    }
+
+    /// Queues a reason-bearing terminal after canonical shutdown publications.
+    ///
+    /// Directed control frames reach every attached UI regardless of event
+    /// subscriptions, without interception or persistence. The existing bounded
+    /// writer drain owns delivery and closure even when a UI stops reading.
+    pub(super) fn send_remote_shutdown_disconnects(&mut self) {
+        if self.ui_runtime.shutdown_cause != Some(ShutdownCause::RemoteKillRequest) {
+            return;
+        }
+        for client_id in self.ui_runtime.client_writers.keys() {
+            if self.is_attached_socket_ui(client_id) {
+                let _ = self.runtime_io.bus.send_to(
+                    client_id,
+                    None,
+                    HarnessOutputMessage::Disconnect(Disconnect {
+                        reason: Some("session is shutting down: remote kill request".to_owned()),
+                    }),
+                );
+            }
+        }
     }
 
     pub(crate) fn send_startup_disconnect_to_initial_client(

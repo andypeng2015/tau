@@ -760,7 +760,8 @@ fn tree_request_is_silently_denied_for_other_client_origins() {
 }
 
 /// An attached socket UI may request unconditional canonical shutdown without
-/// mutating disconnect policy or publishing the request as a bus event.
+/// mutating disconnect policy or publishing the request as a bus event. Every
+/// attached UI receives the reason after the terminal fact and before EOF.
 #[test]
 fn shutdown_request_queues_canonical_shutdown_without_publication() {
     let td = TempDir::new().expect("tempdir");
@@ -768,6 +769,7 @@ fn shutdown_request_queues_canonical_shutdown_without_publication() {
     let mut h = quiet_provider_harness(&sp).expect("harness");
     let (ui_id, mut ui) = connect_socket_ui(&mut h);
     let (observer_id, mut observer) = connect_socket_ui(&mut h);
+    let (_unsubscribed_id, mut unsubscribed) = connect_socket_ui(&mut h);
     for connection_id in [&ui_id, &observer_id] {
         h.runtime_io
             .bus
@@ -791,7 +793,7 @@ fn shutdown_request_queues_canonical_shutdown_without_publication() {
 
     assert_eq!(served_clients, 0);
     assert_eq!(h.runtime_io.event_log.next_seq(), baseline_seq);
-    for reader in [&mut ui, &mut observer] {
+    for reader in [&mut ui, &mut observer, &mut unsubscribed] {
         assert_eq!(
             reader.read_message().expect("read quit projection"),
             Some(quit_projection(tau_proto::UiQuitDisposition::Terminating))
@@ -809,6 +811,15 @@ fn shutdown_request_queues_canonical_shutdown_without_publication() {
             peel_inner_event(&message),
             Some(Event::SessionShutdown(shutdown)) if shutdown.session_id.as_str() == "s1"
         ));
+    }
+    for reader in [&mut ui, &mut observer, &mut unsubscribed] {
+        assert_eq!(
+            reader.read_message().expect("read shutdown explanation"),
+            Some(HarnessOutputMessage::Disconnect(tau_proto::Disconnect {
+                reason: Some("session is shutting down: remote kill request".to_owned()),
+            }))
+        );
+        assert_eq!(reader.read_message().expect("read final EOF"), None);
     }
 }
 

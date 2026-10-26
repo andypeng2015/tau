@@ -15,6 +15,81 @@ const TEST_DELIVERY_ID_ONE: RendererDeliveryId = RendererDeliveryId::new(1);
 const TEST_DELIVERY_ID_TWO: RendererDeliveryId = RendererDeliveryId::new(2);
 const TEST_DELIVERY_ID_THREE: RendererDeliveryId = RendererDeliveryId::new(3);
 
+/// A reason-bearing shutdown frame must win over the following EOF, while a
+/// genuinely unexpected EOF still produces the useful transport diagnostic.
+#[test]
+fn socket_reader_preserves_remote_shutdown_reason_before_eof() {
+    for explicit_shutdown in [true, false] {
+        let (client, server) = UnixStream::pair().expect("socket pair");
+        let writer = Arc::new(Mutex::new(UiWriter::new(
+            client.try_clone().expect("clone client"),
+            UiIoMeter::default(),
+        )));
+        let (paste_upload, paste_worker) = paste_upload::PasteUpload::spawn(writer.clone());
+        let (clipboard_export, clipboard_worker) = clipboard_export::ClipboardExport::spawn(
+            writer,
+            tau_proto::SessionId::parse("s1").expect("session id"),
+        );
+        let admitted = Arc::new(path_std_sync_atomic::AtomicU64::new(0));
+        let arbiter = Arc::new(Mutex::new(()));
+        let (remote_tx, local_tx, mut scheduler) =
+            renderer_scheduler_channels(4, admitted.clone(), arbiter.clone());
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let (quit_tx, _quit_rx) = mpsc::channel();
+        let reader = spawn_socket_reader(
+            PeerInputReader::new(Box::new(client)),
+            true,
+            remote_tx,
+            Arc::new(RendererByteBudget::new()),
+            Arc::new(path_std_sync_atomic::AtomicUsize::new(0)),
+            admitted,
+            arbiter,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            disconnected.clone(),
+            Arc::new(Mutex::new(SubscriptionHandoff::new(None))),
+            UiIoMeter::default(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            quit_tx,
+            paste_upload.clone(),
+            clipboard_export.clone(),
+        );
+        let mut server = HarnessOutputWriter::new(server);
+        let expected = if explicit_shutdown {
+            let reason = "session is shutting down: remote kill request";
+            server
+                .write_message(&HarnessOutputMessage::Disconnect(tau_proto::Disconnect {
+                    reason: Some(reason.to_owned()),
+                }))
+                .expect("write shutdown");
+            server.flush().expect("flush shutdown");
+            reason
+        } else {
+            "harness connection closed"
+        };
+        drop(server);
+        let command = scheduler
+            .recv_timeout(Duration::from_secs(2))
+            .expect("disconnect command");
+        assert!(matches!(
+            command,
+            RendererCmd::RemoteDisconnect { reason: Some(reason), .. } if reason == expected
+        ));
+        reader.join().expect("reader");
+        assert!(disconnected.load(Ordering::Acquire));
+        drop(local_tx);
+        assert!(matches!(
+            scheduler.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        paste_upload.stop();
+        clipboard_export.stop();
+        paste_worker.join().expect("paste worker");
+        clipboard_worker.join().expect("clipboard worker");
+    }
+}
+
 /// The interactive terminal identifies its executable, so harness warnings name
 /// `tau-cli` rather than its former chat-mode label.
 #[test]

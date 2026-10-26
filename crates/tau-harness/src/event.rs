@@ -55,6 +55,9 @@ pub(crate) enum HarnessCommand {
 /// Owner that requested termination of the central event loop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShutdownCause {
+    /// An authenticated attached UI requested unconditional session
+    /// termination.
+    RemoteKillRequest,
     /// An operating-system termination signal requested ordinary success.
     ExternalSignal,
     /// The harness-owned bootstrap worker failed before admission.
